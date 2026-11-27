@@ -558,3 +558,30 @@ fn provider_of_another_publisher_cannot_route_through_a_private_node() {
         && l.reason == LeftOutReason::NodeNotListed("acme-ledger".into())));
     assert_eq!(built.left_out.len(), 2);
 }
+
+/// A later private claim of an unlisted node is handled as `T-020-65`'s rule says: a provider's claim of a node on the
+/// operator's public list is refused; once the operator has taken the node off (which Core permits only while nothing of
+/// its rests at the node or moves through it), the claim is joined and the node is the claiming publisher's, so the
+/// snapshot lists its provider's tuples there by its publisher alone.
+// verifies: REQ-CAT-22
+#[test]
+fn private_claim_of_a_node_is_joined_only_once_the_operator_unlisted_it() {
+    let ad = ramp_advertisement();
+    let mut catalogue = Catalogue::new();
+    catalogue.add_public_node("acme-ledger").unwrap();
+    catalogue
+        .grant(grant("g-1", &ad.provider, tuples_of(&ad), 100_000))
+        .unwrap();
+    assert_eq!(
+        join(&mut catalogue, &ad, JOINED_AT),
+        Err(JoinRefusal::PrivateNodeIsPublic("acme-ledger".into()))
+    );
+    assert!(catalogue.remove_public_node("acme-ledger"), "it was listed");
+    assert!(!catalogue.nodes().is_public("acme-ledger"));
+    join(&mut catalogue, &ad, JOINED_AT).expect("the claim, once unlisted");
+    assert_eq!(
+        catalogue.publishers().publisher_of_node("acme-ledger"),
+        Some(ad.publisher.as_str())
+    );
+    assert!(!catalogue.remove_public_node("acme-ledger"), "off already");
+}

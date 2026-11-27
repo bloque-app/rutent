@@ -979,8 +979,9 @@ impl Lifecycle {
     }
 
     /// Marks the provider's `version` stale, by `by`: every segment in flight on it moves to the version in force,
-    /// the newest version available, and the move is recorded in its segment's record (`REQ-MDL-19`). Refused
-    /// while a release is staged (ADR-0014, `THR-16`), for the version in force itself, and where none is in force.
+    /// the newest version available, and the move is recorded in its segment's record (`REQ-MDL-19`). Refused for a
+    /// version marked already (before anything else), while a release is staged (ADR-0014, `THR-16`), for the version
+    /// in force itself, and where none is in force.
     /// How many segments moved.
     pub fn mark_stale(
         &mut self,
@@ -995,11 +996,14 @@ impl Lifecycle {
             .get_mut(provider)
             .filter(|r| r.accepted.contains(version))
             .ok_or(LifecycleRefusal::NoSuchVersion)?;
-        if releases.staged.is_some() {
-            return Err(LifecycleRefusal::StagingInProgress);
-        }
+        // A version marked already is answered so before any staging is looked at: taking a stale mark again, as Core
+        // does before a provider's releases come back after an unclean end, holds while a newer release is staged
+        // (`T-020-65`). `revoke` and `declare_exploited` (`retire`) look at no staging.
         if releases.marks.contains_key(version) {
             return Err(LifecycleRefusal::AlreadyMarked);
+        }
+        if releases.staged.is_some() {
+            return Err(LifecycleRefusal::StagingInProgress);
         }
         let to = match &releases.in_force {
             Some(in_force) if in_force != version => in_force.clone(),

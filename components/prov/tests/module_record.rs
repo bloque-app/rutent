@@ -1138,3 +1138,58 @@ fn unrecorded_restriction_after_a_confirmation_is_held_after_a_second_unclean_en
         "nothing exploited is back in force"
     );
 }
+
+/// A provider marked stale with a release staged is confirmed after an unclean end (`T-020-65`, the milestone
+/// reviewer's check of `T-020-49`): 1.0.0 is marked stale once 1.1.0 is in force, a later 1.2.0 is staged, and the
+/// platform ends unclean. Held on reopening, the provider's restriction is taken again before its confirmation, as Core's
+/// confirmation does: the platform answers that 1.0.0 is marked already, which holds, and not that a staging is in
+/// progress, which would refuse the confirmation for as long as the staging lasts. Then the confirmation puts the
+/// provider back, 1.1.0 in force and 1.2.0 staged.
+// verifies: NFR-6, REQ-MDL-4
+#[test]
+fn provider_marked_stale_with_a_release_staged_is_confirmed_after_an_unclean_end() {
+    let broken = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let inner = MemoryRecord::new();
+    let mut s = Signed::on(
+        Box::new(Breakable {
+            inner: inner.clone(),
+            broken: broken.clone(),
+        }),
+        TestWorld::default(),
+    );
+    admit_version(&mut s, RESERVE, "1.0.0");
+    admit_version(&mut s, RESERVE, "1.1.0");
+    assert_eq!(s.platform.lifecycle().in_force(RESERVE), Some("1.1.0"));
+    assert_eq!(
+        s.platform.mark_stale(RESERVE, "1.0.0", "test-operator", AT),
+        Ok(0)
+    );
+    s.platform
+        .set_staging(Some(Staging::new(100, 60, 2).expect("a policy")));
+    admit_version(&mut s, RESERVE, "1.2.0");
+    assert_eq!(s.platform.lifecycle().staged(RESERVE), Some("1.2.0"));
+    broken.store(true, std::sync::atomic::Ordering::SeqCst);
+    let world = stop(s);
+
+    let mut s = Signed::on(Box::new(inner), world);
+    s.platform
+        .set_staging(Some(Staging::new(100, 60, 2).expect("a policy")));
+    for version in ["1.0.0", "1.1.0", "1.2.0"] {
+        let _ = readmitted(&mut s, RESERVE, version);
+    }
+    assert!(s.platform.awaiting_confirmation(RESERVE).is_some(), "held");
+    assert_eq!(s.platform.lifecycle().staged(RESERVE), Some("1.2.0"));
+    assert_eq!(
+        s.platform.mark_stale(RESERVE, "1.0.0", "test-operator", AT),
+        Err(LifecycleRefusal::AlreadyMarked),
+        "the restriction holds: the mark is checked before the staging"
+    );
+    s.platform
+        .confirm(RESERVE, "test-operator", AT)
+        .expect("confirmed");
+    assert_eq!(s.platform.active_version(RESERVE).as_deref(), Some("1.1.0"));
+    assert_eq!(
+        s.platform.lifecycle().mark(RESERVE, "1.0.0"),
+        Some(Mark::Stale)
+    );
+}
