@@ -10744,6 +10744,15 @@ log and the evidence store the log already reads. **Every caller of v0 behaviour
   provider declaring a safe repeat has it run again (`T-020-63`). Otherwise it waits for the stuck check: Core writes no result
   it has no answer for. `segment_begun_before_core_stopped_is_carried_on_after_it_reopens`; `T-024-21`'s marker
   `stuck_until_t020_61` is empty, so every caught order of seeds 113 to 116 must complete.
+- **(9)** (the milestone reviewer's check of `T-024-21` at `2da9704f`, plan `6052e157`): `T-024-21`'s restart runs gain
+  `RestartAfterEffect` in place of `RestartBeforeEffect` (which fell at `RestartAfterRecord`'s point): the process crashes after
+  `Modules::carry_out` returned, the provider having moved and answered, and before Core took the answer (`Fault::CrashAfterEffect`
+  at the platform's seam). The restarted Core carries the segment on (item 8): the provider's status gives its own result, which
+  the segment takes; a hand-again would meet the platform's `DuplicateTransaction`. The order completes and `INV-8` holds:
+  `restart_after_the_provider_moved_and_before_its_answer_was_logged_moves_nothing_twice`, which also asserts that every pinned
+  restart's crash fell. On the joined route the crash falls at the ramp (`RestartAfterEffect(2)`; a drawn `(1)` is moved to
+  `(2)`): after the exchange carried its conversion out, only the platform's record holds the answer, and the exchange declares
+  neither a status query nor a safe repeat, so the segment waits for the stuck check (gap 5).
 - **Lows of `T-020-57`'s review.** A restart between a return's landing and its recalculation lands nothing twice, to the
   exact balance: `return_landed_before_a_restart_is_not_landed_again_before_its_recalculation`. A second recalculation of a
   route not yet run is never asked by Core's run (held by the recalculation test's "recalculated once"); one from a segment
@@ -10799,5 +10808,12 @@ log and the evidence store the log already reads. **Every caller of v0 behaviour
 3. **`accept_linked` stays the assembly's**: the linked order's acceptance (its routing, the quote shown and the customer's
    acceptance entry) is written by the assembly, with its id now drawn through `draw_order`. Moving the linked acceptance into
    Core is a row of its own (owner: `T-020-61`'s follow-up, or `F-030`'s customer surface).
+5. **An answer only the platform's record holds** (item 9, at a provider with no status query and no safe repeat, such as the
+   simulated exchange): the platform refuses the repeat (`DuplicateTransaction`) and no port hands its kept answer back, so the
+   segment waits for the stuck check; nothing moves twice. Owner: `F-013` (a decided read of a carried answer from the platform's
+   record), `DEC-20` path, not this row's.
+6. **Item 9's Lows not taken here**: the "lose no order" snapshot of ids, states and amounts across a restart, the re-proof of
+   `INV-4`'s relaxed contradiction rule by its rule-off, the two-order `RestartWhileStuck` read by each order's own caught set,
+   and a test of `Landing::restore`'s `NotNow`. Owner: `T-024-21`'s follow-up (`F-024`), with this row's run in place.
 4. **The release acceptance in scenarios** (`T-020-49`'s gap 6) is unchanged: `accept_waiting_release` and the wallet's
    `accept_release` still accept through the fleet; not this row's run.

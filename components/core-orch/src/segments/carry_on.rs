@@ -103,9 +103,16 @@ impl Segments {
                 provider: provider.clone(),
                 transaction: asking.clone(),
             };
-            let answered = match self.decided(parts, carry.core, action, |modules, effect| {
-                modules.status(effect, &provider, &asking, &statement)
-            }) {
+            let answered = match self.decided(
+                parts,
+                carry.core,
+                action,
+                Ask::Status {
+                    provider: &provider,
+                    asking: &asking,
+                    about: &statement,
+                },
+            ) {
                 Ok(answered) => answered,
                 Err(stopped) => return stopped,
             };
@@ -127,18 +134,20 @@ impl Segments {
             provider: provider.clone(),
             transaction: transaction.clone(),
         };
-        let answered =
-            match self.decided(parts, carry.core, action, |modules, effect| {
-                match modules.carry_out(effect, &provider, &statement) {
-                    Answered::Refused(PlatformRefusal::DuplicateTransaction) if repeats => {
-                        modules.repeat_operation(effect, &provider, &transaction)
-                    }
-                    answered => answered,
-                }
-            }) {
-                Ok(answered) => answered,
-                Err(stopped) => return stopped,
-            };
+        let answered = match self.decided(
+            parts,
+            carry.core,
+            action,
+            Ask::Again {
+                provider: &provider,
+                operation: &statement,
+                transaction: &transaction,
+                repeats,
+            },
+        ) {
+            Ok(answered) => answered,
+            Err(stopped) => return stopped,
+        };
         match answered {
             Answered::Bytes(bytes) => self.take_answer(&at, bytes),
             Answered::Refused(PlatformRefusal::DuplicateTransaction) => {
@@ -166,7 +175,7 @@ impl Segments {
         parts: &mut Parts<'_>,
         core: &Actor,
         action: Action,
-        ask: impl FnOnce(&mut dyn super::Modules, &Effect) -> Answered,
+        ask: Ask<'_>,
     ) -> Result<Answered, CarriedOn> {
         let at = now(parts.clock).map_err(|_| CarriedOn::Failed)?;
         let request = DecisionRequest {
@@ -202,7 +211,7 @@ impl Segments {
             receipt: receipt.clone(),
         };
         let answered = if self.act_on(&receipt) {
-            ask(&mut *parts.modules, &effect)
+            put(parts, &effect, ask)
         } else {
             Answered::Refused(PlatformRefusal::Unavailable)
         };
@@ -285,6 +294,51 @@ impl Segments {
         self.refused
             .contains_key(&(order.as_str().to_owned(), part.as_str().to_owned()))
     }
+}
+
+/// Puts `ask` to the platform as the recorded `effect` lets it: the segment's status, or its own operation handed again,
+/// carried out only where the platform never carried the transaction and, where it did and got no answer, run again at a
+/// provider that declares a safe repeat.
+fn put(parts: &mut Parts<'_>, effect: &Effect, ask: Ask<'_>) -> Answered {
+    match ask {
+        Ask::Status {
+            provider,
+            asking,
+            about,
+        } => parts.modules.status(effect, provider, asking, about),
+        Ask::Again {
+            provider,
+            operation,
+            transaction,
+            repeats,
+        } => match parts.modules.carry_out(effect, provider, operation) {
+            Answered::Refused(PlatformRefusal::DuplicateTransaction) if repeats => parts
+                .modules
+                .repeat_operation(effect, provider, transaction),
+            answered => answered,
+        },
+    }
+}
+
+/// What a decided carry-on step asks of the platform, once its effect is recorded.
+enum Ask<'a> {
+    /// The segment's status, under a fresh transaction of Core's.
+    Status {
+        provider: &'a Id,
+        asking: &'a Id,
+        about: &'a rutent_contracts::provider_role::Statement<
+            rutent_contracts::provider_role::Operation,
+        >,
+    },
+    /// The segment's own operation, handed again under its own transaction.
+    Again {
+        provider: &'a Id,
+        operation: &'a rutent_contracts::provider_role::Statement<
+            rutent_contracts::provider_role::Operation,
+        >,
+        transaction: &'a Id,
+        repeats: bool,
+    },
 }
 
 /// Whether `result`, a provider's signed result, names `transaction` as the one it answers.
