@@ -19,11 +19,11 @@ use crate::provider_role::{
 };
 
 /// The refusal of `rule`, broken: `Err` unless a contract test switched the rule off on this thread
-/// ([`without_rule`](crate::core_internal::without_rule)), so it can see that a value it reads breaks that rule alone
+/// (`rule_switch::without_rule`), so it can see that a value it reads breaks that rule alone
 /// (`T-020-54`, the milestone reviewer's check of `T-020-45`). The switch exists only with the `rule-switches` feature,
 /// which the contract's own tests turn on and nothing shipped does.
 fn broke(rule: &'static str) -> Result<(), Violation> {
-    if crate::core_internal::switched_off(rule) {
+    if crate::rule_switch::switched_off(rule) {
         Ok(())
     } else {
         Err(Violation(rule))

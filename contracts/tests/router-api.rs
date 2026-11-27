@@ -5,11 +5,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use jsonschema::{Registry, Validator};
-use rutent_contracts::core_internal::without_rule;
 use rutent_contracts::router_api::{
     Candidate, CatalogueSnapshot, FigureValue, HeldQuote, Id, NonEmpty, Operation, Part,
     PolicyBounds, RecordedDecision, Request, SettlementTimes, StatedTerms, VERSION,
 };
+use rutent_contracts::rule_switch::without_rule;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;

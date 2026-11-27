@@ -84,3 +84,7 @@ directory (see `README.md`).
   (`REQ-PRT-2`), stated in this README; and `Cargo.toml`'s `rule-switches` feature, the crate a dev-dependency of
   itself with it, so `tests/core-internal.rs` reads each invalid fixture with its one rule switched off, which adds one
   dependency edge to the root `Cargo.lock` and moves no package. (DEC-4, DEC-20, REQ-PRT-2, T-020-45)
+- The contract tests' rule switch is the crate's own (`T-020-54`, the boundary check): `rule_switch` holds the thread-local list of
+  rules switched off and `without_rule`, built only with the `rule-switches` feature, so no contract names another to reach
+  it; `core_internal::without_rule` stays as a re-export. Before it, router-api's checks named core-internal for it, which
+  `DEC-2` forbids. (DEC-2, DEC-4, DEC-20, T-020-54)
