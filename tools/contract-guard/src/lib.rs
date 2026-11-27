@@ -26,7 +26,12 @@
 //! - The protocol's contract (`provider-role`, whose version a statement names, `REQ-PRT-1`) says of each change
 //!   whether a party may ignore it (`REQ-PRT-2`): every new bullet of its changelog under a version from 4.0.0 on
 //!   says `Ignorable: yes` or `Ignorable: no`, exactly one of them, and one that says `Adds a protection` says
-//!   `Ignorable: no`, since a change adding a protection is never ignorable.
+//!   `Ignorable: no`, since a change adding a protection is never ignorable. An entry that says `Ignorable: yes` does
+//!   not name, in backticks, a field its change adds to an object the schema's older text closes with
+//!   `additionalProperties: false`: an older reader refuses that field, so the schema and the entry must agree.
+//! - A contract version that `develop` holds no heading for is unreleased. Against a base that is no release line (a
+//!   milestone branch such as `m3`), a change to an unreleased version needs no bump, and a README-only change to it
+//!   needs no new bullet. Against `develop` and `main`, and for a version `develop` holds, both rules stand.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -62,6 +67,18 @@ pub trait Files {
     fn head(&self, path: &str) -> Option<String>;
     /// Every file path at the base ref. An error means the base cannot be listed, and the guard then fails.
     fn base_files(&self) -> Result<Vec<String>, String>;
+    /// Whether the base is itself on a release line (`develop` or `main`), where a version that has shipped never
+    /// changes. A base that is not (a milestone branch, a branch's earlier commit) holds versions no release has seen.
+    /// A guard that can't tell says yes, which keeps every rule: the default.
+    fn base_is_release(&self) -> bool {
+        true
+    }
+    /// The file's text on the release line (`develop`'s tip), or `None` if it does not exist there. Only read where
+    /// [`Files::base_is_release`] is false; a contract version whose heading the release line's changelog lacks is
+    /// unreleased.
+    fn released(&self, _path: &str) -> Option<String> {
+        None
+    }
 }
 
 /// One rule broken. `subject` is a contract's name, or `shared` for the files no contract owns.
@@ -449,6 +466,106 @@ fn check_ignorable(bullet: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// A property a schema adds to an object its older text closes: the file, the object's JSON pointer, the property.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Refused {
+    file: String,
+    pointer: String,
+    property: String,
+}
+
+/// Walks two parsed schemas in step: each object the older one has, that it closes (`additionalProperties: false`),
+/// and whose `properties` the newer one adds a name to, is a [`Refused`] addition. An object only the newer one has is
+/// new, and no older reader read it. Objects are matched by their pointer.
+fn closed_additions(
+    file: &str,
+    pointer: &str,
+    older: &serde_json::Value,
+    newer: &serde_json::Value,
+    out: &mut Vec<Refused>,
+) {
+    use serde_json::Value;
+    match (older, newer) {
+        (Value::Object(before), Value::Object(after)) => {
+            if before.get("additionalProperties") == Some(&Value::Bool(false))
+                && let (Some(Value::Object(was)), Some(Value::Object(is))) =
+                    (before.get("properties"), after.get("properties"))
+            {
+                for name in is.keys().filter(|name| !was.contains_key(*name)) {
+                    out.push(Refused {
+                        file: file.to_string(),
+                        pointer: pointer.to_string(),
+                        property: name.clone(),
+                    });
+                }
+            }
+            for (key, was) in before {
+                if let Some(is) = after.get(key) {
+                    let escaped = key.replace('~', "~0").replace('/', "~1");
+                    closed_additions(file, &format!("{pointer}/{escaped}"), was, is, out);
+                }
+            }
+        }
+        (Value::Array(before), Value::Array(after)) => {
+            for (index, (was, is)) in before.iter().zip(after).enumerate() {
+                closed_additions(file, &format!("{pointer}/{index}"), was, is, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The additions each changed schema of the protocol's contract makes to an object its older text closes. A schema
+/// either side of which is not JSON, or that has no older text, says nothing: the entry's own marker stands.
+fn refused_additions(changed: &[String], schemas: &str, files: &dyn Files) -> Vec<Refused> {
+    let mut out = Vec::new();
+    for path in changed {
+        if !(within(path, schemas) && path.ends_with(".json")) {
+            continue;
+        }
+        let parse = |text: Option<String>| {
+            text.and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        };
+        if let (Some(older), Some(newer)) = (parse(files.base(path)), parse(files.head(path))) {
+            let file = path.rsplit('/').next().unwrap_or(path);
+            closed_additions(file, "", &older, &newer, &mut out);
+        }
+    }
+    out
+}
+
+/// The backticked words of a bullet.
+fn code_words(bullet: &str) -> Vec<&str> {
+    bullet.split('`').skip(1).step_by(2).collect()
+}
+
+/// A protocol entry that says a party may ignore it does not name a field its schema's older text refuses
+/// (`REQ-PRT-2`): a field added to an object the older schema closes is refused by an older reader, so the entry that
+/// names it says `Ignorable: no`. The field is named in backticks, as `field`, `Type.field`, `Type::field`.
+fn check_ignorable_fields(bullet: &str, refused: &[Refused]) -> Result<(), String> {
+    let first = bullet.lines().next().unwrap_or(bullet);
+    let words: Vec<&str> = bullet.split_whitespace().collect();
+    let says_yes = words.windows(2).any(|pair| {
+        pair[0] == "Ignorable:" && pair[1].trim_end_matches(['.', ',', ';', ')']) == "yes"
+    });
+    if !says_yes {
+        return Ok(());
+    }
+    for word in code_words(bullet) {
+        if let Some(found) = refused.iter().find(|r| {
+            word == r.property
+                || word.ends_with(&format!(".{}", r.property))
+                || word.ends_with(&format!("::{}", r.property))
+        }) {
+            return Err(format!(
+                "protocol changelog entry says a party may ignore `{}`, but the older schema ({} at `{}`) closes the object with additionalProperties: false, so an older reader refuses it: say `Ignorable: no`, or admit the field in the older schema (REQ-PRT-2): {first}",
+                found.property, found.file, found.pointer
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// The new bullets of the protocol's changelog under a version from [`IGNORABLE_SINCE`] on.
 fn new_protocol_bullets(base: Option<&str>, head: Option<&str>) -> Vec<String> {
     let before: Vec<String> = base
@@ -496,6 +613,8 @@ pub fn check(
 
     // A changed path touches every contract that either mapping assigns it to; a path neither assigns is shared.
     let mut touched: BTreeSet<String> = BTreeSet::new();
+    // The changed paths each contract owns, at either mapping.
+    let mut touching: BTreeMap<String, Vec<&str>> = BTreeMap::new();
     let mut shared_paths: Vec<&str> = Vec::new();
     for path in changed {
         if !path.starts_with("contracts/") {
@@ -505,6 +624,9 @@ pub fn check(
         let in_base = owner(path, &base_contracts).map(|i| base_contracts[i].name.clone());
         if in_head.is_none() && in_base.is_none() {
             shared_paths.push(path);
+        }
+        for name in in_head.iter().chain(in_base.iter()) {
+            touching.entry(name.clone()).or_default().push(path);
         }
         touched.extend(in_head.into_iter().chain(in_base));
     }
@@ -534,6 +656,9 @@ pub fn check(
         .collect();
 
     let mut bumped: BTreeSet<String> = BTreeSet::new();
+    // Against a base that is no release line, the contracts whose head version no release holds: they take changes
+    // folded into it, so a lock move that touches them asks for no bump of them either.
+    let mut folded: BTreeSet<String> = BTreeSet::new();
     for name in &names {
         let head_contract = head_contracts.iter().find(|c| &c.name == name);
         let base_contract = base_contracts.iter().find(|c| &c.name == name);
@@ -547,8 +672,17 @@ pub fn check(
             }
         }
         if name == PROTOCOL_CONTRACT {
+            let schemas = format!(
+                "{}/schemas",
+                head_contract
+                    .or(base_contract)
+                    .map_or("", |c| &c.artefact_dir)
+            );
+            let refused = refused_additions(changed, &schemas, files);
             for bullet in new_protocol_bullets(base_text.as_deref(), head_text.as_deref()) {
-                if let Err(message) = check_ignorable(&bullet) {
+                if let Err(message) = check_ignorable(&bullet)
+                    .and_then(|()| check_ignorable_fields(&bullet, &refused))
+                {
                     violations.push(violation(name, message));
                 }
             }
@@ -592,9 +726,26 @@ pub fn check(
             .as_ref()
             .map(|s| bullets(&s.body))
             .unwrap_or_default();
+        // A version no release line holds changes in place against a milestone base (the fold rule); and a README-only
+        // rewording of it needs no new entry there.
+        let unreleased = !files.base_is_release()
+            && !files.released(&log).is_some_and(|text| {
+                sections(&text)
+                    .iter()
+                    .any(|s| s.version == head_top.version)
+            });
+        let readme = format!(
+            "{}/README.md",
+            head_contract.map_or("", |c| &c.artefact_dir)
+        );
+        let readme_only = moved.is_empty()
+            && touching
+                .get(name)
+                .is_some_and(|paths| !paths.is_empty() && paths.iter().all(|p| *p == readme));
         if !bullets(&head_top.body)
             .iter()
             .any(|bullet| !base_top_bullets.contains(bullet))
+            && !(unreleased && readme_only)
         {
             violations.push(violation(
                 name,
@@ -624,7 +775,9 @@ pub fn check(
                 format!("the base {log} has no version heading to bump from"),
             )),
             Some((base_label, base_version)) => {
-                if head_version <= base_version {
+                if unreleased && head_version >= base_version {
+                    folded.insert(name.clone());
+                } else if head_version <= base_version {
                     violations.push(violation(
                         name,
                         format!(
@@ -773,7 +926,9 @@ pub fn check(
             .iter()
             .map(|c| c.name.as_str())
             .filter(|name| {
-                head_contracts.iter().any(|c| c.name == *name) && !bumped.contains(*name)
+                head_contracts.iter().any(|c| c.name == *name)
+                    && !bumped.contains(*name)
+                    && !folded.contains(*name)
             })
             .collect();
         if !unbumped.is_empty() {

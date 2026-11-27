@@ -87,6 +87,7 @@ pub use attribution::{
     IN_A_ROLE_ITS_MAKER_DOES_NOT_HOLD, STATED_WITHOUT_ITS_KEPT_BYTES, attribute,
     granted_advertising_keys, release_statement_keys, revoked_before_receipt,
 };
+pub(crate) use check::switched_off;
 #[cfg(feature = "rule-switches")]
 pub use check::without_rule;
 pub use relations::{

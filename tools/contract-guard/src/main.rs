@@ -11,6 +11,11 @@ use std::process::{Command, ExitCode};
 struct Git {
     root: PathBuf,
     merge_base: String,
+    /// The release line's tip (`origin/develop`, else `develop`), if this clone has one.
+    release: Option<String>,
+    /// Whether the base commit is on a release line (an ancestor of `develop` or `main`). Without a release line to
+    /// compare with, it is taken to be one, which keeps every rule.
+    base_is_release: bool,
 }
 
 impl Files for Git {
@@ -24,6 +29,15 @@ impl Files for Git {
 
     fn head(&self, path: &str) -> Option<String> {
         std::fs::read_to_string(self.root.join(path)).ok()
+    }
+
+    fn base_is_release(&self) -> bool {
+        self.base_is_release
+    }
+
+    fn released(&self, path: &str) -> Option<String> {
+        let release = self.release.as_ref()?;
+        git(&self.root, &["show", &format!("{release}:{path}")]).ok()
     }
 
     fn base_files(&self) -> Result<Vec<String>, String> {
@@ -92,7 +106,54 @@ fn run() -> Result<bool, (u8, String)> {
     let contracts_text = std::fs::read_to_string(root.join("contracts/CONTRACTS"))
         .map_err(|e| (2, format!("cannot read contracts/CONTRACTS: {e}")))?;
 
-    let files = Git { root, merge_base };
+    // A base is a release line when its commit is already in `develop` or `main`. One that holds commits neither has,
+    // a milestone branch such as `m3`, holds contract versions no release has seen, and they may change in place.
+    let on = |reference: &str| {
+        ["origin/", ""]
+            .iter()
+            .map(|prefix| format!("{prefix}{reference}"))
+            .find(|name| {
+                git(
+                    &root,
+                    &[
+                        "rev-parse",
+                        "--verify",
+                        "--quiet",
+                        &format!("{name}^{{commit}}"),
+                    ],
+                )
+                .is_ok()
+            })
+    };
+    let release = on("develop");
+    let lines: Vec<String> = [release.clone(), on("main")]
+        .into_iter()
+        .flatten()
+        .collect();
+    let base_is_release = lines.is_empty()
+        || lines.iter().any(|line| {
+            git(
+                &root,
+                &[
+                    "merge-base",
+                    "--is-ancestor",
+                    &format!("{base}^{{commit}}"),
+                    line,
+                ],
+            )
+            .is_ok()
+        });
+    if lines.is_empty() {
+        eprintln!(
+            "contract guard: no develop or main here, so every rule applies as for a release base; fetch them for a milestone base"
+        );
+    }
+    let files = Git {
+        root,
+        merge_base,
+        release,
+        base_is_release,
+    };
     let violations = check(&changed, &contracts_text, &files).map_err(|e| (2, e))?;
     if violations.is_empty() {
         println!(

@@ -42,12 +42,12 @@ std::thread_local! {
 }
 
 #[cfg(feature = "rule-switches")]
-fn switched_off(rule: &str) -> bool {
+pub(crate) fn switched_off(rule: &str) -> bool {
     OFF.with(|off| off.borrow().contains(&rule))
 }
 
 #[cfg(not(feature = "rule-switches"))]
-fn switched_off(_: &str) -> bool {
+pub(crate) fn switched_off(_: &str) -> bool {
     false
 }
 

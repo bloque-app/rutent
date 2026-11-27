@@ -317,6 +317,10 @@ terms back in a dry-run answer's optional `terms` (4.0.0), and a reserve its hol
   optional: `true` where it answers them, and absent or `false` where it doesn't, so the operator asks it for none
   (`ReserveDeclaration::answers_hold_requests`). It is the reserve's own word at publishing, as its other two answers
   are; a reserve that doesn't declare it is never asked, and a quote at it is shown unheld, as before 4.0.0.
+  A declaration admits fields it doesn't name (`T-020-54`): an optional field a later version adds is one an older
+  reader ignores, as that version's changelog entry says (`REQ-PRT-2`), and the contract guard holds an entry that says
+  so to the older schema's own text. The 3.0.0 declaration was closed, so `answers_hold_requests` itself is not ignorable
+  by a 3.0.0 reader; the changelog says so.
 - **Terms handed back** (4.0.0). A withdrawal's, deposit's, transfer's or conversion's dry-run answer may carry the provider's
   own signed `terms`, a nested statement of the result's maker (`ResultBody::terms`).
 

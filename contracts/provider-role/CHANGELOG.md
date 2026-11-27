@@ -1,6 +1,14 @@
 # provider-role changelog
 
 ## 4.0.0
+- A reserve declaration admits the optional fields a later version adds (`T-020-54`, the milestone reviewer's Low of
+  2026-11-26): `reserve-declaration.schema.json` no longer closes the object, and `ReserveDeclaration` no longer denies
+  unknown fields, so an older reader ignores a field a later version adds, as that version's entry says. The arrival
+  question's schema says what a provider states of it and no more of Core's log (the review's Low). The contract guard
+  holds an entry that says `Ignorable: yes` to the schema's older text: it refuses an entry that names a field added to
+  an object the older schema closes (`tools/contract-guard`), which is why three entries (the reserve's hold-request answer, a failed outcome's
+  fault and a fee's separate billing) now say `Ignorable: no`. One valid fixture reads a declaration with a field of a
+  later version in the contract's test. Ignorable: yes. (DEC-4, DEC-20, REQ-PRT-2, T-020-54)
 - Breaking: the unreleased 3.1.0 is this major (finding 9 of `M3`'s milestone review of 2026-11-24, `T-020-45`).
   `check_context` matched the protocol version exactly, so 3.1.0's optional fields, under a new protocol version, made
   every provider re-sign its statements, its advertisement among them: not a compatible addition, whatever the
@@ -14,7 +22,10 @@
   for a hold only where its declaration says it answers them. A reader that ignores the field asks no reserve for a
   hold, and every quote is shown unheld, as before this major: it loses a hold, never a protection. One valid fixture,
   `advertisement-reserve-answering-hold-requests`; one invalid, `advertisement-reserve-declaring-hold-requests-as-null`
-  (an optional field is never `null`). Ignorable: yes. (DEC-4, DEC-20, REQ-QTE-15, REQ-PRT-2, T-020-56)
+  (an optional field is never `null`). Not ignorable by a 3.0.0 reader: its reserve declaration schema closes the
+  object (`additionalProperties: false`), so it refuses the field, and the contract guard holds the entry to that
+  (`T-020-54`); from 4.0.0 the declaration admits the optional fields a later version adds, which an older reader
+  ignores. Ignorable: no. (DEC-4, DEC-20, REQ-QTE-15, REQ-PRT-2, T-020-56, T-020-54)
 - A reader takes statements under the protocol versions in force (finding 11, `REQ-PRT-4`): `check_context(deployment,
   versions, at)` takes `ProtocolVersions`, the current version and each older one still in force with its `Cutover`,
   the date from which a statement under it is void, in place of one exact version. A statement under the current
@@ -66,7 +77,7 @@
   question or request and its answer); seventeen invalid, one per rule. Ignorable: no. (DEC-4, DEC-20, REQ-ORD-1,
   REQ-QTE-6, REQ-QTE-15, REQ-CAT-16, T-020-45)
 - Docs (the review's Low on this README's wording): the README and the schema descriptions say what a provider states,
-  and no more of Core's internal log, which core-internal's README says instead (`hold.schema.json`, `terms`,
+  and no more of Core's internal log, which core-internal's README says instead (`hold.schema.json`, `terms.schema.json`,
   `arrival-notice`, `arrival-answer` and `inner-segments` among them). No shape or rule changed. Ignorable: yes.
   (DEC-4, DEC-20, T-020-45)
 - A deposit tuple says how it pays out (item `shared-movement-reading`, `T-020-39`): `ReserveTuple.payouts`, optional,
@@ -178,13 +189,16 @@
   the `failed` outcome (`REQ-ORD-11`). Until the party it names accepts it, the provider carries the reversal.
   Before it, no shape carried it, so `T-020-12`'s Core read a stopgap prefix (`fault:`) in an evidence piece's
   reference. Minor, folded into 3.1.0 before its release: an optional field, absent on the wire where not shown. A
-  valid and an invalid fixture. Ignorable: yes. (DEC-4, DEC-20, REQ-ORD-11, T-020-01, T-020-12)
+  valid and an invalid fixture. The 3.0.0 schema closes the `failed` outcome, so a 3.0.0 reader refuses the field:
+  not ignorable (the contract guard's check of an entry against the older schema, `T-020-54`). Ignorable: no.
+  (DEC-4, DEC-20, REQ-ORD-11, T-020-01, T-020-12, T-020-54)
 - A fee may say whether its provider bills it separately, outside the amounts it reports: an optional
   `billed_separately` on the result's `fee`. Absent means the provider doesn't say. Before it, no shape carried it, so
   a fee record (`REQ-AUD-11`) had to state what no provider said. Minor: an optional field, absent on the wire where
   not given, so a 3.0.0 statement reads the same. A valid and an invalid fixture. The protocol version moves with
   it, and `check_context` matches it exactly, so a statement made under 3.0.0 is refused under 3.1.0: a provider
-  re-signs its statements, its advertisement among them, under 3.1.0. Ignorable: yes. (DEC-4, DEC-20, REQ-AUD-11, T-020-09)
+  re-signs its statements, its advertisement among them, under 3.1.0. The 3.0.0 schema closes the `fee`, so a 3.0.0
+  reader refuses the field: not ignorable (`T-020-54`). Ignorable: no. (DEC-4, DEC-20, REQ-AUD-11, T-020-54, T-020-09)
 
 ## 3.0.0
 - Breaking: a holding account's balance gets its own operation and result, `holding_balance`, so `CMP-CORE-AUDIT`

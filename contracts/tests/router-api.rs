@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use jsonschema::{Registry, Validator};
+use rutent_contracts::core_internal::without_rule;
 use rutent_contracts::router_api::{
     Candidate, CatalogueSnapshot, FigureValue, HeldQuote, Id, NonEmpty, Operation, Part,
     PolicyBounds, RecordedDecision, Request, SettlementTimes, StatedTerms, VERSION,
@@ -25,6 +26,115 @@ const SHAPES: [&str; 10] = [
     "stated-terms",
     "settlement-times",
     "held-quote",
+];
+
+/// The invalid fixtures that still break a second rule beside the one they name, each with that second rule: read with
+/// its own rule switched off, the fixture is refused by this one. The milestone reviewer's Low on fixtures pinned by
+/// their first refusal (`T-020-45` (6), `T-020-54`) holds router-api's fixtures to one rule each; these are the ones
+/// not yet made to, pinned as they are so the list can only shrink: the test fails when one of them is mended or
+/// when another joins. `T-020-54`'s gap, in F-020's notes.
+const ALSO_BREAK: [(&str, &str); 20] = [
+    (
+        "decision-record-batched-payout-naming-an-operation-before-the-last",
+        "a batched-payout reason names a deposit at a reserve tuple that pays out in batches",
+    ),
+    (
+        "candidate-with-a-gap-between-operations",
+        "each operation of a part takes in what the one before it delivered",
+    ),
+    (
+        "catalogue-snapshot-quote-made-after-the-snapshot",
+        "a statement figure's validity runs from its making to its valid_until, rounded down",
+    ),
+    (
+        "decision-record-candidate-id-twice",
+        "a stale, void or voided statement drops its candidate only where no usable answer covers its operation",
+    ),
+    (
+        "decision-record-chosen-not-a-candidate",
+        "every candidate but the chosen one has a drop reason, and the chosen one has none",
+    ),
+    (
+        "decision-record-chosen-candidate-with-a-drop-reason",
+        "a below-floor reason names a candidate that leaves the customer less than the floor after the operator's fee",
+    ),
+    (
+        "decision-record-operation-citing-a-missing-figure",
+        "a stale, void or voided statement drops its candidate only where no usable answer covers its operation",
+    ),
+    (
+        "decision-record-void-reason-naming-a-statement-valid-here",
+        "a stale, void or voided statement drops its candidate only where no usable answer covers its operation",
+    ),
+    (
+        "decision-record-drop-reason-naming-a-figure-its-candidate-does-not-cite",
+        "a drop reason's figure supports the drop",
+    ),
+    (
+        "decision-record-quote-voided-by-a-condition-it-does-not-name",
+        "a stale, void or voided statement drops its candidate only where no usable answer covers its operation",
+    ),
+    (
+        "decision-record-quote-voided-by-an-unchanged-amount",
+        "a stale, void or voided statement drops its candidate only where no usable answer covers its operation",
+    ),
+    (
+        "decision-record-choosing-an-unconfirmed-candidate",
+        "a stale, void or voided statement drops its candidate only where no usable answer covers its operation",
+    ),
+    (
+        "decision-record-operation-citing-another-providers-tuple",
+        "every operation cites a tuple with its own two ends",
+    ),
+    (
+        "decision-record-operation-citing-a-tuple-with-other-ends",
+        "every other figure an operation cites names the operation's own tuple",
+    ),
+    (
+        "decision-record-over-a-ceiling-at-other-decimals",
+        "an over-ceiling reason names a ceiling the candidate passes",
+    ),
+    (
+        "decision-record-refused-dry-run-moved-to-the-deposit",
+        "every dry run an operation cites is for its amount in",
+    ),
+    (
+        "decision-record-over-a-ceiling-the-bounds-lack",
+        "an over-ceiling reason names a ceiling the candidate passes",
+    ),
+    (
+        "decision-record-no-price-naming-an-operation-before-the-last",
+        "a no-price reason names an operation whose tuple the snapshot holds no price for, and which cites none",
+    ),
+    (
+        "decision-record-confirmed-by-an-answer-made-before-the-shortlist",
+        "the choice round chooses only a candidate whose every operation is confirmed",
+    ),
+    (
+        "decision-record-refining-a-shortlist-taken-after-its-snapshot",
+        "a confirming answer is made at or after the shortlist round it refines",
+    ),
+];
+
+/// The invalid fixtures whose rule can't be switched off, because the check returns where it can't go on (a
+/// `let ... else`, a match arm, a rule whose refusal stands for a value the rest needs): read with the rule "off", the
+/// fixture is refused by it still, so the fixture is not shown to break that rule alone. Pinned the same way.
+const UNSWITCHABLE: [&str; 15] = [
+    "held-quote-of-a-record-choosing-nothing",
+    "decision-record-naming-a-call-without-its-calls-figure",
+    "decision-record-citing-a-calls-figure-and-naming-no-call",
+    "operation-fee-above-amount-in",
+    "catalogue-snapshot-price-for-a-missing-figure",
+    "catalogue-snapshot-price-of-a-price",
+    "catalogue-snapshot-quote-fee-above-amount-in",
+    "decision-record-stale-reason-naming-a-missing-figure",
+    "decision-record-outranked-by-a-missing-candidate",
+    "decision-record-operation-citing-no-tuple",
+    "decision-record-below-floor-without-a-floor",
+    "decision-record-below-floor-for-a-candidate-that-arrives-above-it",
+    "decision-record-below-floor-for-a-candidate-the-operator-s-fee-leaves-above-it",
+    "decision-record-no-positive-outcome-for-a-candidate-that-arrives",
+    "decision-record-excluded-without-an-exclusion",
 ];
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
@@ -1327,6 +1437,68 @@ fn every_invalid_fixture_is_rejected_by_the_rust_types_too() {
         .map(|(name, _)| name)
         .collect();
     assert!(accepted.is_empty(), "Rust accepts: {}", accepted.join(", "));
+}
+
+/// The review's Low on fixtures pinned by their first refusal, as `core-internal`'s test holds it (`T-020-54`, the
+/// milestone reviewer's check of `T-020-45`): each invalid fixture only the Rust types refuse breaks the one rule it
+/// names, so read with that rule switched off it is accepted; a fixture that broke two rules would be refused still,
+/// by the other. The fixtures in `ALSO_BREAK` and `UNSWITCHABLE` are pinned as they are, so a mended one leaves its
+/// list and a new one can't join silently.
+// verifies: DEC-4
+#[test]
+fn each_router_api_invalid_fixture_breaks_only_the_rule_it_names() {
+    let mut failures = Vec::new();
+    for list in [
+        ALSO_BREAK.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+        UNSWITCHABLE.to_vec(),
+    ] {
+        for name in list {
+            if !RUST_RULES.iter().any(|(n, _)| *n == name) {
+                failures.push(format!("{name} is pinned but is no Rust-read fixture"));
+            }
+        }
+    }
+    for name in UNSWITCHABLE {
+        if ALSO_BREAK.iter().any(|(n, _)| *n == name) {
+            failures.push(format!("{name} is pinned in both lists"));
+        }
+    }
+    for (name, rule) in RUST_RULES {
+        let shape = shape_of(name);
+        let value = fixture("invalid", name);
+        match through_rust(shape, &value) {
+            Err(e) if e.contains(rule) => {}
+            other => failures.push(format!("{name}: {other:?}, not refused by its rule")),
+        }
+        let off = without_rule(rule, || through_rust(shape, &value));
+        let second = ALSO_BREAK.iter().find(|(n, _)| *n == name).map(|(_, r)| *r);
+        match (off, second) {
+            (Ok(_), None) if !UNSWITCHABLE.contains(&name) => {}
+            (Ok(_), None) => failures.push(format!(
+                "{name} is pinned as unswitchable and can be switched: unpin it"
+            )),
+            (Ok(_), Some(_)) => failures.push(format!(
+                "{name} breaks only its own rule now: unpin it from ALSO_BREAK"
+            )),
+            (Err(e), Some(other)) if e.contains(other) => {}
+            (Err(e), Some(other)) => failures.push(format!(
+                "{name}: it pins {other:?} as its second rule, and is refused for {e}"
+            )),
+            (Err(e), None) if UNSWITCHABLE.contains(&name) && e.contains(rule) => {}
+            (Err(e), None) if e.contains(rule) => failures.push(format!(
+                "{name}: its rule can't be switched off: pin it in UNSWITCHABLE: {e}"
+            )),
+            (Err(e), None) => {
+                failures.push(format!("{name} breaks another rule than its own: {e}"))
+            }
+        }
+    }
+    // The switch is the test's alone: off the closure, every rule is back.
+    let (name, rule) = RUST_RULES[0];
+    assert!(
+        through_rust(shape_of(name), &fixture("invalid", name)).is_err_and(|e| e.contains(rule))
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 // verifies: REQ-QTE-4

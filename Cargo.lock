@@ -1474,6 +1474,9 @@ dependencies = [
 [[package]]
 name = "rutent-contract-guard"
 version = "0.0.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "rutent-contracts"

@@ -1,6 +1,11 @@
 # router-api changelog
 
 ## 4.0.0
+- Each Rust rule's refusal can be switched off in the contract's own tests (`T-020-54`, the milestone reviewer's check
+  of `T-020-45`): the `rule-switches` feature's `without_rule`, which `core-internal` has, now reaches this contract's
+  checks, so a test sees whether an invalid fixture breaks the one rule it names. Nothing shipped turns it on; no shape
+  or rule changed. The test `each router api invalid fixture breaks only the rule it names` pins the fixtures that
+  still break a second rule, or whose rule can't be switched off, so the lists only shrink. (DEC-4, DEC-20, T-020-54)
 - Following provider-role 4.0.0 and module-interface 5.0.0 (`T-020-45`, findings 4 and 9 of `M3`'s milestone review):
   this contract's schemas name both contracts' URNs and its Rust uses their modules, so its shapes change with them,
   in this unreleased major. A cross-module call's kind (`call_kind`, `CallKind`) is never one of the operator's own
