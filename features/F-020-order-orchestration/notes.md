@@ -9050,6 +9050,169 @@ schema-rule and fixture counts (both sides' rows kept: 120 relations, 131 schema
 |---|---|
 | the watch doesn't read `routes_ran` (the first route always) | `recalculated_route_is_watched_after_a_restart` |
 
+## T-020-58: a private node's record asked of its publisher (`REQ-ORD-41`; the review of `T-020-48`'s first build, its S3)
+
+Branch `f-020/t-020-58`, from `m3` (`e7418a53`), then `origin/m3` (`f0c66ab4`, plan-only: `T-020-63`) merged. `DEC-20` paths
+edited: `contracts/provider-role/` (folded into the unreleased 4.0.0: schemas, `operation.rs`, `outcome.rs`, README,
+CHANGELOG, fixtures), `contracts/module-interface/` and `contracts/router-api/` (one variant and one list entry each,
+below), `components/prov/src/proxy/` (`signing.rs`, `calls.rs`) and `components/prov/src/module/platform.rs`
+(`READ_ONLY_KINDS`); `components/core-orch/` is not one. `F-024` files: `conformance/src/sim/mod.rs`,
+`conformance/src/role/{stand_in,suite}.rs`, `conformance/scenarios/src/sim/fleet.rs`,
+`conformance/scenarios/src/assembly/{grading,mod,schedule}.rs`, and the tests `publishers_record.rs`.
+
+### Design (T-020-58)
+
+- **The operation.** `Operation::InnerSegmentsQuery {transaction, provider, node}` (`inner_segments_query`), the operator's
+  question of a provider's record of `node`, under a transaction of its own, read-only and never a dry run. Its result,
+  `ResultBody::InnerSegmentsQuery {transaction, node, outcome}`, is `answered` (the provider's own `InnerSegments`, whole,
+  nested as a statement of the answer's maker), `not_known` or `refused`. `check_inner_segments_answer(question, answer)`
+  holds it to the question (`InnerSegmentsMismatch`: another provider, transaction, node, a record of another maker, or
+  not an answer to this kind of question). It takes the question, not its signed statement, so Core's tick, which hands the
+  assembly an operation to sign, needs no envelope to hold an answer. That the record is signed with a key its maker
+  lists, and the node and publisher are ones its maker declares, stay `check_inner_segments`'s. Fixtures: five valid,
+  eight invalid; the changelog entry says `Ignorable: no`.
+- **Where the other contracts follow.** `OperationKind::InnerSegmentsQuery` (module-interface 5.0.0, so a module can list it
+  in `handles`), barred from a declaration's `calls` (`DeclaredCallOfAnOperatorsQuestion`), and from router-api's `call_kind`
+  and its two checks, each with one invalid fixture. These are forced by the exhaustive matches the variant breaks and by
+  the rule that no module calls for an operator's question; `T-020-59` adds its three kinds to the same three lists, so
+  its edit is a one-line merge in each. The result schema now refers to `inner-segments`, so the schema lists of
+  `module-interface`'s test and of `prov`'s output check name it.
+- **The platform** carries it as it carries a question that moves nothing: `inner_segments_query` is among
+  `READ_ONLY_KINDS`, so it is handed through `Platform::handle` to a module whose release lists it (else `NotHandled`,
+  never run), under its own transaction, with no record and no repeat. `judge_call` refuses it however a module names it.
+- **The signer** (`proxy/signing.rs`) signs a record nested in an answer only to the question of that node, put to the
+  provider that answers (`asks_an_inner_segments_record`), and refuses an answer naming another question's
+  transaction or node (`AnswerOfAnotherQuestion`); a record nested in any other answer, a status answer included, is
+  `NestedNotAsked`, and an `inner_segments_query` result is not an operation's result a status answer may carry.
+- **Core asks, twice.** `closing::publishers` (`serving`, `question`, `taken`) is Core's. *Closing*: `Grading::records_wanted`, read
+  by the segments before each grading (`keep_asked`; round 2 below), is `Evidenced`'s: for each private node this segment's
+  closing reads (the node a public segment enters, the nodes the value leaves for a public one: the ones `to_keep` and
+  `replayed` read), each provider of the node's publisher whose accepted advertisement declares it is asked, as a decided
+  effect, through `Modules::ask_for_record`, the answer is taken only by `publishers::taken`, and `Books::took` hands the books the record or nothing. *The tick*:
+  `Job::PublishersRecords` derives the nodes from the routes of the orders Core started (`Ports::started`), asks the
+  same providers through the existing `Ports::ask_as_operator`, and takes the answers the same way. `Ports::publishers_records`
+  is gone: the assembly chooses no node and no provider, it only carries a question to the platform.
+- **`taken`** (`NotTaken`): the answer is to this question (`check_inner_segments_answer`), signed by the provider asked with
+  a key its advertisement lists and for this deployment and version (`Catalogue::verify_statement`), the record in it is
+  signed likewise, and it is held to its maker's accepted advertisement (`check_inner_segments`). Anything else leaves the
+  node with nothing recorded, so the replay says `NothingRecorded`, never the rest of a node passed off as all of it.
+- **The simulated publisher** (`Simulated::answer`) answers the question from its own books, nested for the platform to sign,
+  `not_known` where they hold no segment inside its node, a final refusal where it isn't the provider asked or serves in no
+  such node. `publishers_record` and the world read in `Readings` (`published_by`, `published_in`, `accepted`) are gone.
+  The planted fault `forge_record_of` now alters the answer between the platform and Core; `tamper_with_record_of(provider,
+  Tamper)` adds a record of another publisher's, of another node, signed with an unlisted key, and an answer altered after it
+  was signed.
+- **Nothing a restart loses.** Core relies on no held answer: closing asks again at each grading, and the record it cites
+  is a stated entry of the log (`T-020-32`). `Readings` keeps the last taken record for each provider and node only so
+  `Books::recorded` can read it within the grading, and is rebuilt by the next asking.
+
+- **The tick feeds the books.** `Core::tick` hands the records the round took to the same `Books::took` closing uses, so a
+  node Core read on a tick is read by a test's `books_for` as well; `books_for` itself asks nothing.
+- **Local checks** (through the lock, `contracts/src/lib.rs` touched first, a private plain wallet, `origin/m3` `f0c66ab4`
+  merged): `fmt --check` and `clippy --workspace --all-targets -D warnings` clean; contracts, prov, core-orch, core-authz
+  `--lib`, core-audit and conformance pass; the role suite 2; the whole `rutent-scenarios` package passes (56 binaries,
+  default seeds), `assembly` and `invariants` under seeds `11,12,13,14,15` (the CI step's list, together: the thresholds
+  count across seeds, so a single seed fails `answers >= 80` by design) 5 and 10; `sim_providers` 15, `private_nodes` 14,
+  `publishers_record` 7; the doc check clean; `plan-check --strict` 0 findings, `tag-check --strict` 2461 tests, 0
+  findings; the contract guard against `origin/develop`: no violations (against `m3` it fails on the fold, by design).
+  Three existing private-node tests moved: `private_nodes.rs`'s pair test reads the records in name order, its reopen test
+  counts the operations in the providers' books rather than every question they were asked, and `publishers_record.rs`'s
+  three tests sort the round's records by the route.
+
+### Defaults (T-020-58), reversible and fail closed
+
+1. A record that isn't taken leaves the node with nothing recorded (`NothingRecorded`); a provider's answer that isn't the
+   record of the node asked is never partly used.
+2. Core asks every provider of the publisher whose advertisement declares the node, at each grading of a segment that
+   reads it, and on each tick for each node of a started order's route: no cadence, no cache. Reversible by giving the
+   question a cadence (the schedule's cadences are `T-020-48`'s).
+3. Providers come in name order (the catalogue's), so a round's records are in that order, where the world read gave
+   install order; `Books::recorded` still reads them in install order.
+4. A question a module can't answer (a refusal, no answer, `NotHandled`) is no record, and no raise: the replay's
+   `NothingRecorded` is the record that it said nothing (recording is a SHOULD).
+
+### Gaps (T-020-58)
+
+Gaps 1 and 2 of the first build are closed in this row's second round (the coordinator's call: pre-production, a contract
+gap is fixed now), below.
+
+1. **`holding_balance` has the same assembly-only gap, not fixed here.** Core's reads of a holding account's balance go
+   through `Ports::ask_as_operator`, which the assembly answers with `Platform::handle`: no decided action, no effect, and
+   no production path in core-orch. Routed to `T-020-63`, the holding-check row. `ask_as_operator` serves no read of a
+   private node's record any more (round 3 below).
+2. `T-020-59` and `T-020-60` still add their kinds to the three call lists; no fold collision beyond those lines.
+3. `Tamper::Node` is refused by the answer's own node check before `check_inner_segments`, so the declared-node rule is
+   reached by `Tamper::Publisher` only.
+4. `read_node_record` has no relation of its own: nothing in the log holds that the provider asked is one that declares
+   the node (the publishers' register does, in Core's catalogue, when Core chooses the providers), nor that its
+   transaction is fresh beyond `status-is-asked-under-a-fresh-transaction` counting it among those named. A relation
+   would need the catalogue's declarations in the log's reading, which `T-020-54`'s sources don't carry. Owner: the lead.
+5. A segment is asked about once for each node and provider while a Core lives (`Segments::records_read`), so a segment
+   graded again while it waits appends nothing (`closing.rs`'s "nothing appended while it waits" holds). The books keep what
+   was read; a record that changes while the segment waits is read at the next segment's grading, and a reopened Core reads
+   again, once. Default, reversible: re-reading on each grading would give a fresher record at the cost of an entry triple a try.
+6. The planted crashes (`Fault::CrashAfterRecord { call: "effect", .. }`) count move effects only: a `read_node_record`
+   effect is no move (`durable.rs`).
+
+### Round 2: the read is decided and carried by the production platform (gaps 1 and 2 of the first build)
+
+- **`Action::ReadNodeRecord {order, segment, node, provider, transaction}`** (`read_node_record`), folded into core-internal's
+  unreleased 1.0.0 with a valid and an invalid fixture, a schema definition, a CHANGELOG entry (`Ignorable: no`), a README
+  line and `action_transactions` counting its transaction (a late status is never asked under it). No new relation, one schema rule more.
+- **core-authz.** `Permission::ReadNodeRecord`, held to the operator alone (`roles`: `operator_holds`, no
+  `CarryOnward` for Core), `Scope::ReadNodeRecord`, the entry-point scan's `handle` row naming the action. Tests:
+  `a_private_nodes_record_is_read_by_the_operator_alone` (REQ-AUZ-1, REQ-ORD-41), and the sweeps' counts moved (26
+  decided actions, 36 permissions, 39 calls, 90 callers).
+- **core-orch.** The grading no longer asks: `Grading::records_wanted` names the reads (which node, which provider) and
+  `Grading::record_read` takes what came back; the segments (`segments/records.rs`) do what they do for any decided action:
+  fresh transaction, `decide` as the operator, the effect recorded before anything is sent, acted on once, the question
+  signed and put through `Modules::ask_for_record(effect, ..)`, and the result recorded. `impl Modules for Platform` carries
+  it through `Platform::handle`, holding the effect (the scan's rule 3). A refusal by policy asks nothing and the node's
+  books say nothing of that provider. `AskDesk` is gone.
+- **Assembly.** `Running::ask_for_record` delegates to the production `impl Modules for Platform` (adding only the planted
+  faults and the noting of questions), and the register permits `ReadNodeRecord` to the operator. Tests:
+  `production_platform_answers_the_question_of_a_private_nodes_record` and
+  `private_node_record_is_not_read_where_policy_denies_it` (REQ-AUZ-1, REQ-ORD-41).
+- **Gap 2.** The kit has `sim-join-cashier`, a provider of the join publisher that declares no private node; test
+  `a_provider_of_the_publisher_that_declares_no_node_is_never_asked_for_its_record`.
+
+### Rule-off table (T-020-58)
+
+Each switched off alone on the tree of the row's commit (script `ruleoff.py`, `ruleoff2.py` in the row's scratch folder, the
+file restored after each); the named test went red on an assertion each time, except the row marked.
+
+| Rule switched off | Red |
+|---|---|
+| closing asks no publisher (`Evidenced::ask`) | `private_node_record_is_asked_of_its_publisher_and_read_by_closing` (and four more of `publishers_record`) |
+| the tick asks no node of a started route | `private_node_record_is_asked_of_its_publisher_and_read_by_closing`, `publishers_records_are_read_through_the_platform_for_a_replay` |
+| an answer isn't held to its question | `answer_to_another_question_is_not_taken_as_a_private_node_record` |
+| the answer's signature isn't verified | `a_record_its_maker_cannot_stand_behind_is_not_the_nodes_record` |
+| the record's signature isn't verified | `a_record_its_maker_cannot_stand_behind_is_not_the_nodes_record` |
+| the record isn't held to its maker's advertisement | `a_record_its_maker_cannot_stand_behind_is_not_the_nodes_record` |
+| the providers asked aren't narrowed to those declaring the node | `a_provider_of_the_publisher_that_declares_no_node_is_never_asked_for_its_record` |
+| the signer signs a record for any question | `record_nested_in_an_inner_segments_answer_is_signed_only_for_the_node_asked` |
+| the signer signs an answer to another question | `record_nested_in_an_inner_segments_answer_is_signed_only_for_the_node_asked` |
+| the question counts as an operation carried out (`READ_ONLY_KINDS`) | `question_of_a_private_nodes_record_is_handed_to_a_module_that_handles_it_and_moves_nothing` |
+| a module may call for a record (`judge_call`) | `status_query_and_hold_are_refused_as_a_declared_call_and_as_a_kind_a_route_names` |
+| an answer isn't held to the node asked (contract) | `private_node_record_is_answered_by_the_providers_own_record_of_the_node_asked_about`, `every_valid_fixture_validates_and_every_invalid_one_is_rejected` |
+| a declaration may call for a record (module-interface) | `every_valid_fixture_validates_and_every_invalid_one_is_rejected` (module-interface) |
+| an operation may name a call for a record (router-api) | `every_invalid_fixture_is_rejected_by_the_rust_types_too` |
+
+The two named tests: `private_node_record_is_asked_of_its_publisher_and_read_by_closing` (`conformance/scenarios/tests/publishers_record.rs`)
+and `answer_to_another_question_is_not_taken_as_a_private_node_record` (`components/core-orch/src/closing/publishers.rs`). Both
+were written after the wiring in this build and seen red by switching off the rule each guards (first two rows above), not before
+it.
+
+Round 2's rules, each switched off alone (`ruleoff3.py`):
+
+| Rule switched off | Red |
+|---|---|
+| the read is permitted to anyone (the roles' rule) | `private_node_record_is_not_read_where_policy_denies_it` |
+| the production platform carries no question of a record | `production_platform_answers_the_question_of_a_private_nodes_record` |
+
+
+### T-020-57, round 3: a handed-on route recalculated from its reversed first move (the lead's authorisation)
+
 ## T-020-49: the operator's settings and a release's lifecycle actions, each through policy
 
 Branch `f-020/t-020-49`, from `e7418a53` (`origin/m3`, with `T-020-48`'s schedule and `tick`). Edits `components/core-orch/`
@@ -9229,6 +9392,78 @@ and `components/prov/src/module/platform.rs` with `record.rs` (the partial confi
 
   | Rule switched off | Red |
   |---|---|
+  | Core asks the holder the log names (the catalogue's current registration asked instead) | `reversal_is_asked_of_the_holder_the_log_names_after_the_node_is_registered_again` (`HolderNotInForce("operator-wallet-2")`) |
+  | a holder with no release in force isn't asked | `holder_with_no_release_in_force_is_not_asked_and_the_reversal_stays_owed` (the wallet asked, answered `NotCompleted`) |
+  | a return kept at nothing lands nothing (the fallback stands in again) | `return_confirmed_at_nothing_lands_nothing_again` |
+
+### Round 3: the tick's read goes the same decided path
+
+`Job::PublishersRecords` no longer asks through `Ports::ask_as_operator`. It names each private node an order Core
+started passes, from the started order's plan (the first of its segments that passes the node is the segment the action
+names), and for each provider of the node's publisher that declares it calls `Segments::read_node_record`
+(`segments/records.rs`, lent through `Ports::with_segments`): policy decides `read_node_record` as the operator, the effect
+is recorded before the question, the question goes through `Modules::ask_for_record`, the result is recorded, and
+`closing::publishers::taken` takes the answer. Closing's read is the same function. The tick reads on each run (its
+cadence is `T-020-48`'s), so each tick records a decision, an effect and a result for each provider and node; closing's
+once-per-segment rule is closing's alone (`records_read`). A denial asks nothing and the round publishes no record. The
+assembly's `ask_as_operator` no longer notes or alters a record question; the planted faults and the noting of questions
+are in `Running::ask_for_record`, which both paths reach. Test
+`ticks_question_about_a_private_node_is_decided_and_recorded_and_a_denial_asks_nothing` (REQ-AUZ-1, REQ-ORD-41).
+
+| Rule switched off | Red |
+|---|---|
+| the read is permitted to anyone (the roles' rule) | `ticks_question_about_a_private_node_is_decided_and_recorded_and_a_denial_asks_nothing` (and the closing test) |
+| the tick asks no node of a started plan | `ticks_question_about_a_private_node_is_decided_and_recorded_and_a_denial_asks_nothing` (and the tick's others) |
+
+### Round 4: the review of `4e8e04f0` (#340, CHANGES): M1, M2 and L1 to L7
+
+- **M2: the question is scoped.** `InnerSegmentsQuery {transaction, provider, node, about}`: `about` lists the transactions
+  whose segments are asked for (at least one). The provider answers with those segments alone; `check_inner_segments_answer`
+  refuses a record listing another (`SegmentNotAsked`) and the signer signs a nested record only if every segment is under a
+  transaction asked about (`lists_only_segments_asked`). `Action::ReadNodeRecord` names the same `about` (the decided
+  scope). The platform's `result_matches` compares a status answer's `about` and an inner-segments answer's `node`, no
+  longer `about` for every kind. Closing asks per segment, about the order's own transactions at the node (the entering
+  segment's, or `run_nodes`'); the simulated publisher filters its book to them. Fixtures: provider-role five valid and ten
+  invalid (counted from the files), core-internal one valid and two invalid, 133 schema rules. Test
+  `two_orders_through_one_node_each_keep_their_own_records`.
+- **M1: the tick's reads are bounded.** The job reads only for an order with a segment handed over at the node that has not
+  settled (or had its reversal completed), once for each node and provider in a run, about the transactions of every such
+  order's segments there (the action names the first order and its segment); an order whose segments there have all settled
+  is read by no tick (closing kept its record). The job's default cadence is 3600 s as the holding check's; the once-for-each-node-and-provider rule is held by `ticks_reads_stay_bounded_over_many_ticks` (three questions a tick for two orders) and was not switched off alone. Closing's
+  once-per-segment rule marks a read only once policy refused it or its record was taken: a failed read, or an answer that
+  was no record yet, is read again when the segment is graded again (`Grading::record_read` answers whether it was taken).
+  Tests `ticks_reads_stay_bounded_over_many_ticks` and `a_read_that_failed_is_tried_again_and_one_taken_or_refused_is_not`
+  (`core-orch/tests/segments.rs`). The tick's records go to its round only; the books are closing's.
+- **L1: Core decides.** A read is decided with `caller = Core`, as every other decision Core starts: `roles` takes Core's actor
+  listed for `CarryOnward` and for `ReadNodeRecord` both (the operator's standing permission, which the register gives Core
+  beside the other), the operator's login listed for it as before, and nobody else. As `ask_status` (Core: `CarryOnward`
+  alone) but for the second listing, which gives the "Core is refused" case a lever that leaves moves alone: the register
+  without `ReadNodeRecord` for Core. `T-021-15`'s model (a permission of the operator's, listed per login) is unchanged for
+  the operator. Test `a_private_nodes_record_is_read_by_core_carrying_the_operators_permission_onward`.
+- **L2:** `Running::ask_for_record` delegates to `impl Modules for Platform` and adds only the planted faults and the
+  noting of questions.
+- **L3:** the signer's node clause and its `about` clause each have a case that only they refuse
+  (`record_nested_in_an_inner_segments_answer_is_signed_only_for_the_node_asked`).
+- **L4:** the read's time for its result is read before anything is asked; an answer is handed back only once its result entry
+  is in the log, so a failed append or clock read can't leave an answer used with no result.
+- **L5:** `Books::took` takes a record, never nothing: a failed closing read leaves the record the books hold.
+- **L6:** the measure test compares the two logs after the ticks, leaving out the tick's reads (a decision, its effect and
+  its result, found by the effect's receipt).
+- **L7:** the docs say the tick reads too; the schema's comma is restored; this commit and later ones name their `DEC-20` paths.
+
+| Rule switched off | Red |
+|---|---|
+| the read marks its segment before it succeeds | `a_read_that_failed_is_tried_again_and_one_taken_or_refused_is_not` |
+| the tick reads for every order started | `ticks_reads_stay_bounded_over_many_ticks` |
+| the tick runs every tick by default (cadence 0) | `ticks_reads_stay_bounded_over_many_ticks` |
+| an answer is used without its result entry | `a_read_that_failed_is_tried_again_and_one_taken_or_refused_is_not` |
+| the sim answers its whole book | `two_orders_through_one_node_each_keep_their_own_records` (and the mismatching-record test) |
+| the signer's `about` clause | `record_nested_in_an_inner_segments_answer_is_signed_only_for_the_node_asked` |
+| the signer's node clause | the same |
+| the contract lets a record list a segment not asked | `private_node_record_is_answered_by_the_providers_own_record_of_the_node_asked_about` and the fixture sweep |
+| Core's second listing is not required | `a_private_nodes_record_is_read_by_core_carrying_the_operators_permission_onward` |
+
+
   | settings are rebuilt from the log's done effects | `operator_setting_takes_effect_only_on_a_permitted_decision_and_is_rebuilt_from_the_log` |
   | the operator's slippage limit in the router's bounds | `slippage_limit_set_by_the_operator_bounds_the_router` |
   | the platform carries out a decided `declare_exploited` | `operator_declares_a_version_exploited_through_policy_and_its_segments_stop_on_it` |
@@ -9570,6 +9805,42 @@ staging `a_repeat_of_an_unanswered_operation_counts_for_nothing_towards_a_stagin
 `secret_planted_elsewhere_in_a_holding_raise_is_still_found`; L1 and L2 the two late-answer tests of `module_record.rs`; L6
 `holding_balance_whose_clock_fails_after_its_effect_still_has_its_result_recorded`. The new relation, each half alone (the provider, the outcome) turns `repeat_of_a_segment_that_already_has_an_outcome_is_refused_by_the_log` red.
 
+### Round 5: the second review of `45600ac8` (#340): M3, L-a, L-b, L-c
+
+- **M3: the books are kept for each order.** An answer covers one order's transactions, so a record for each provider and
+  node would be replaced by another order's read. `Books::took(provider, node, order, record)` keeps one for each provider,
+  node and order, whole as the provider signed it, so what closing cites stays exact and one order's read never drops
+  another's; `Books::recorded` reads every order's records of the node, an order's transactions being listed in its own
+  alone. `Grading::record_read` takes the order. A segment that waits keeps the record it took. The books grow by one
+  record for each order that read a node until the Core restarts (they rebuild from the next asking); an order's records
+  are small, and pruning them when its part closes is a gap (owner: `T-020-61`'s order run). Test, written first and seen
+  red: `a_waiting_segments_record_survives_another_orders_read_of_the_same_node` (order A's deposit waits, order B runs
+  whole through the same ledger, A's movement reaches the bank's record, A closes on the record it took).
+- **L-a: the tick reads for each order.** `Job::PublishersRecords` asks, for each order unsettled at a node, once in a run,
+  about that order's own segments, and the read names that order and one of its segments: the log's effect says what it asks
+  about. The records go to `Round::published` (now with their `order`) and no further: they are what the publishers state,
+  now, of the orders in flight, for the operator's view; closing's books are closing's, read by closing for each segment
+  it grades. The log's entries for the tick are bounded by the orders in flight (three for each provider, node and
+  unsettled order a run). `ticks_reads_stay_bounded_over_many_ticks` holds six questions a tick for two orders and that each
+  read asks about its own order's segments.
+- **L-b: Rust refuses an empty or repeated `about`, as the schemas do.** `InnerSegmentsQuery::asks_about_each_once`;
+  `check_inner_segments_answer` gives `AboutNotAList`; `Action::check` refuses a `ReadNodeRecord` that names none or one twice
+  (fixtures `--naming-no-transactions`, `--naming-a-transaction-twice`, held by the schema and Rust both); the signer signs
+  nothing for a question that names a transaction twice, and never a record of no segment (a question about nothing signs
+  nothing as well, since no segment is under none, so that clause is no rule of its own).
+- **L-c:** `an_answer_about_another_node_is_no_result_of_the_question_of_a_nodes_record` (`platform.rs`) fails without
+  `result_matches`' node clause.
+
+| Rule switched off | Red |
+|---|---|
+| the books are not kept for each order | `a_waiting_segments_record_survives_another_orders_read_of_the_same_node` |
+| Rust holds a question about nothing or twice | `private_node_record_is_answered_by_the_providers_own_record_of_the_node_asked_about` |
+| Rust holds a read about nothing or twice | core-internal's fixture test (`request_to_read_a_private_nodes_record_names_its_node_and_provider`) |
+| the signer signs a record of no segment | `record_nested_in_an_inner_segments_answer_is_signed_only_for_the_node_asked` |
+| the signer signs a question that names a transaction twice | the same (not switched off alone) |
+| `result_matches` doesn't compare the node | `an_answer_about_another_node_is_no_result_of_the_question_of_a_nodes_record` |
+
+
 ## T-020-65: no provider held for good, and the public-node listing made a rule
 
 Branch `f-020/t-020-65`, from `2c86d6a9` (`origin/m3` with `T-020-49` merged), issue #341: the milestone reviewer's check of
@@ -9650,6 +9921,30 @@ Branch `f-020/t-020-65`, from `2c86d6a9` (`origin/m3` with `T-020-49` merged), i
   `private_nodes`, `segments`, `module_scenarios`, `reopened`, `execution_routes`, `sim_providers`) 156; `invariants` on
   seeds 11 to 15, 10; `plan-check --strict` 0 findings, `tag-check --strict` 2527 tests, 0 findings; the contract guard
   against `origin/develop`: no violations. No `cargo doc` locally (the owner's rule): CI's doc step is the check.
+
+### Round 6: the third review of `11935986` (#340): H1, L-d, L-e
+
+- **H1:** `Round::published` in the job's doc is `[`Round::published`](super::Round::published)`; `records.rs`' two links
+  (`Grading::records_wanted`, `Modules::ask_for_record`) were out of scope there too and now name their paths. Each doc link
+  this row added was checked against the names its file defines or imports; the glob re-exports of provider-role's
+  `mod.rs` resolve. No `cargo doc` was run (CI's doc step is the check).
+- **L-d: a restart doesn't keep a record twice.** On reopening, `Segments::records_held` is rebuilt from the log: each
+  `inner-segments` stated entry about an order and node, by its maker and what it says (the inner segments, not the
+  signature). `keep_asked` finds a freshly signed record that says the same of the same order, node and maker, and cites
+  the receipt the log already gave the first (the step is built, never appended). Test
+  `a_restart_while_a_segment_waits_keeps_its_record_once`: the waiting deposit's order is reopened, run again and closed, the
+  log holds the same number of records throughout and the replay is `ConsistentWithTheExit`.
+- **L-e: the books are pruned.** `Books::forget(order, node)`, called from `Evidenced::recorded` (after the graded entries
+  are in the log) for the nodes the segment read, drops that order's records at the node: its segments there have settled
+  and their records are kept and cited, and a later grading reads again what it needs. A waiting segment keeps its own. The
+  assembly's `Readings` keeps a second, unpruned map of everything taken for what a scenario reads of it
+  (`Core::books_for`, `records_taken`), and `Core::records_held` counts what the books hold. Test
+  `closing_books_drop_an_orders_records_once_its_segments_have_settled`.
+
+| Rule switched off | Red |
+|---|---|
+| a re-read record is kept again after a restart | `a_restart_while_a_segment_waits_keeps_its_record_once` |
+| the books keep an order after its segments settle | `closing_books_drop_an_orders_records_once_its_segments_have_settled` |
 
 ## T-020-59: the reader contract, and a public network listed with its reader service
 

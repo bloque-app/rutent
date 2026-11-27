@@ -105,6 +105,8 @@ pub enum Scope {
     AskReversal,
     /// Asking a segment's provider for its late status (`decide`, `ask_status`).
     AskStatus,
+    /// Reading a private node's record from its publisher's provider (`decide`, `read_node_record`, `T-020-58`).
+    ReadNodeRecord,
     /// Reading a holding account's balance from the module that holds it (`decide`, `read_holding_balance`, `T-020-63`).
     ReadHoldingBalance,
     /// Asking a segment's provider to carry out the segment's own operation again (`decide`, `repeat_operation`, `T-020-63`).
@@ -154,6 +156,7 @@ impl Scope {
                 Action::EraseStatement { .. } => Scope::EraseStatement,
                 Action::AskReversal { .. } => Scope::AskReversal,
                 Action::AskStatus { .. } => Scope::AskStatus,
+                Action::ReadNodeRecord { .. } => Scope::ReadNodeRecord,
                 Action::ReadHoldingBalance { .. } => Scope::ReadHoldingBalance,
                 Action::RepeatOperation { .. } => Scope::RepeatOperation,
                 Action::RefileArrival { .. } => Scope::RefileArrival,

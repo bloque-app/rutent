@@ -166,6 +166,9 @@ pub enum Permission {
     /// An operator's login asking a segment's provider for its late status (`REQ-ORD-1`, `T-021-09`). Core's own
     /// actors ask it through [`Permission::CarryOnward`].
     AskStatus,
+    /// An operator's login reading a private node's record from its publisher's provider (`REQ-ORD-41`, `T-020-58`), or
+    /// one of Core's own actors carrying that standing permission onward, which holds it beside [`Permission::CarryOnward`].
+    ReadNodeRecord,
     /// An operator's login reading a holding account's balance from the module that holds it (`REQ-AUD-15`, `T-020-63`), or
     /// one of Core's own actors carrying that standing permission onward, which holds it beside [`Permission::CarryOnward`].
     ReadHoldingBalance,
@@ -312,6 +315,28 @@ fn needs_of(asked: Asked<'_>) -> Option<Needs> {
                         operator_holds(caller, Permission::AskStatus).map(Needs::from)
                     }
                     Role::Core => Some(vec![listed(caller, Permission::CarryOnward)].into()),
+                    Role::Customer
+                    | Role::Provider
+                    | Role::Verifier
+                    | Role::Regulator
+                    | Role::Checker => None,
+                },
+                // Reading a private node's record from its publisher's provider (`REQ-ORD-41`, `T-020-58`): an operator's
+                // login the register lists for it, a permission of its own, or one of Core's own actors, which carries the
+                // operator's standing permission onward: Core's actor listed for `CarryOnward` and for this permission
+                // both, the one it is given beside the other, as every other decision Core starts is asked as Core. Nobody
+                // else, and an unknown role fails closed. Which provider and node, the question's answer holds.
+                Action::ReadNodeRecord { .. } => match caller.role {
+                    Role::Operator => {
+                        operator_holds(caller, Permission::ReadNodeRecord).map(Needs::from)
+                    }
+                    Role::Core => Some(
+                        vec![
+                            listed(caller, Permission::CarryOnward),
+                            listed(caller, Permission::ReadNodeRecord),
+                        ]
+                        .into(),
+                    ),
                     Role::Customer
                     | Role::Provider
                     | Role::Verifier

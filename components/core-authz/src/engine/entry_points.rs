@@ -55,7 +55,7 @@ pub(super) const CARRY_OUT: &[(&str, &str, &str)] = &[
     (
         "handle",
         "prov/src/module/platform.rs",
-        "move_value, resolve_stuck, read_holding_balance",
+        "move_value, resolve_stuck, read_node_record, read_holding_balance",
     ),
     // Carries a segment's own operation out again on a decided effect, which may be that move's first carrying-out (`T-020-63`).
     (

@@ -455,7 +455,14 @@ fn route_ending_inside_a_private_node_records_no_replay_check() {
 
     // What there is of it is its publisher's word: the reserve's record of the deposit, labelled so, which is replayed
     // against no exit.
-    let records = published(&mut core, RAIL);
+    // Closing reads no record of a node the route ends inside: Core reads it, decided, for the deposit's own segment.
+    let deposit_tx = transaction(&segments[3]);
+    let records = core.read_records_about(
+        &order,
+        &segments[3].segment,
+        RAIL,
+        std::slice::from_ref(&deposit_tx),
+    );
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].maker, OUT_PRIVATE);
     assert_eq!(records[0].statement.node, RAIL);
@@ -463,11 +470,25 @@ fn route_ending_inside_a_private_node_records_no_replay_check() {
         records[0].statement.standing,
         rutent_contracts::provider_role::Standing::PublishersWord
     );
-    let deposit = transaction(&segments[3]);
-    let held = core
-        .books_for(RAIL, std::slice::from_ref(&deposit))
-        .expect("the record holds the deposit");
-    assert_eq!(held, [recorded("USD", AMOUNT, "USD", AMOUNT, "0")]);
+    let held: Vec<_> = records[0]
+        .statement
+        .segments
+        .iter()
+        .map(|s| {
+            (
+                s.transaction.as_str(),
+                s.asset_in.as_str(),
+                s.amount_in.as_str(),
+                s.asset_out.as_str(),
+                s.amount_out.as_str(),
+                s.fee.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        held,
+        [(deposit_tx.as_str(), "USD", AMOUNT, "USD", AMOUNT, "0")]
+    );
     let net = core
         .world()
         .network(CHAIN)
@@ -477,7 +498,7 @@ fn route_ending_inside_a_private_node_records_no_replay_check() {
         replay_route(
             &[NodeRecord {
                 node: RAIL.to_owned(),
-                segments: held
+                segments: vec![recorded("USD", AMOUNT, "USD", AMOUNT, "0")]
             }],
             &RouteEnd::InsideNode,
             &net
@@ -1313,9 +1334,13 @@ fn node_records(core: &Core, order: &Id) -> usize {
 #[test]
 fn private_node_segment_record_queued_before_core_reopens_is_written_once() {
     let names = [IN, EXCHANGE, RAMP, OUT];
-    let (ran_on, ran_order, _) = run_across(&names, OUT, "sim-join-out-bank", |_| {});
+    let (mut ran_on, ran_order, _) = run_across(&names, OUT, "sim-join-out-bank", |_| {});
     let written = node_records(&ran_on, &ran_order);
     assert!(written > 0, "the replay keeps a publisher's record");
+    let ran_on_journals: std::collections::BTreeMap<&str, usize> = names
+        .iter()
+        .map(|p| (*p, ran_on.world().journal(p).len()))
+        .collect();
 
     let (mut core, session) = core_with("AC-35", &names);
     let order = accepted(
@@ -1341,9 +1366,11 @@ fn private_node_segment_record_queued_before_core_reopens_is_written_once() {
         "written once, as the Core that ran on"
     );
     for provider in names {
+        // The operations carried out, as the provider's books hold them: Core's questions of a private node's record
+        // move nothing and are asked again at each grading (`T-020-58`), so they are no part of the count.
         assert_eq!(
-            core.operations_received(provider),
-            ran_on.operations_received(provider),
+            core.world().journal(provider).len(),
+            ran_on_journals[provider],
             "{provider} is asked what the Core that ran on asked it, nothing twice"
         );
     }

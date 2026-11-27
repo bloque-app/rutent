@@ -17,8 +17,9 @@
 //!    (`INV-1`'s second half), a public node's beside the wallet host's own record too, and goes to the log's checks. An
 //!    account whose module gives no balance, one policy didn't let Core read, one Core's clock couldn't time, and a holding
 //!    account the catalogue lists that the register doesn't name, is raised to the operator (`holding_not_read`);
-//! 4. the publishers' records of their private nodes' segments ([`Job::PublishersRecords`], `REQ-ORD-41`; read as the
-//!    scenario world holds them until `T-020-58` gives the platform a question for them);
+//! 4. the publishers' records of their private nodes' segments ([`Job::PublishersRecords`], `REQ-ORD-41`): each private
+//!    node the routes Core runs pass is asked of the providers of its publisher through the platform
+//!    (`inner_segments_query`, `T-020-58`), and an answer is taken only as a record of that node;
 //! 5. a status question again for each segment still unknown, at its provider's cadence ([`Job::StatusAsks`],
 //!    `REQ-ORD-1`); each followed order's part timed, a material change of a p99 raised and a part over its time
 //!    declared stuck ([`Job::Watch`], `REQ-ORD-29`, `REQ-ORD-6`, `AC-5`); and what Core kept of an answer handed to the
@@ -147,11 +148,11 @@ impl Job {
     }
 
     /// The cadence a job has until the operator sets another, in seconds. A job whose work is only what has happened
-    /// since it last ran runs every tick (zero); a check of a balance, which asks a module, runs hourly. The status job runs every
+    /// since it last ran runs every tick (zero); a check of a balance, or of a private node's record, which ask a module, runs hourly. The status job runs every
     /// tick and holds each segment to its provider's cadence ([`Cadences::status_of`]).
     pub const fn default_seconds(self) -> u64 {
         match self {
-            Job::HoldingCheck => 3600,
+            Job::HoldingCheck | Job::PublishersRecords => 3600,
             _ => 0,
         }
     }
@@ -268,6 +269,8 @@ pub struct WalletCompared {
 /// A publisher's signed record of the segments inside one of its private nodes, as Core read it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Published {
+    /// The order whose segments the record is about.
+    pub order: Id,
     /// The private node.
     pub node: String,
     /// The record, held to its maker's advertisement and its signature.

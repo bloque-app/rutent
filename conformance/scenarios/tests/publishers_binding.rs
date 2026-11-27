@@ -209,10 +209,10 @@ fn reserves_confirmation_of_its_own_publishers_providers_reversal_stays_refused(
 
 // verifies: REQ-ORD-41
 #[test]
-fn a_book_spanning_two_orders_binds_nothing_for_the_second_and_stops_nothing() {
-    // The reserve's book holds the first order's withdrawal when the second enters the node, so its record lists a
-    // segment the second order didn't run: the log would not verify it about the second order, so it isn't appended
-    // or cited (fail closed), and the second order still runs.
+fn a_book_spanning_two_orders_gives_each_order_its_own_records() {
+    // The reserve's book holds the first order's withdrawal when the second enters the node. The question is about the
+    // segments of the order asked for, so each order's record lists its own and no other's, and each order's closing
+    // binds and cites it (the review of `T-020-58`, M2).
     let (mut core, session) = core_with("AC-35", &[IN, EXCHANGE, RAMP, OUT]);
     let (first, _) = run(&mut core, across("req-first", &session));
     assert_eq!(state(&mut core, &first), OrderState::Complete);
@@ -224,9 +224,10 @@ fn a_book_spanning_two_orders_binds_nothing_for_the_second_and_stops_nothing() {
         "{ran:?}"
     );
     assert_eq!(records(&core, &first).len(), 2, "the first order's");
-    assert!(
-        records(&core, &second).is_empty(),
-        "{:?}",
+    assert_eq!(
+        records(&core, &second).len(),
+        2,
+        "the second order's own: {:?}",
         records(&core, &second)
     );
 }

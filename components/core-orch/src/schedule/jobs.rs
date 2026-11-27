@@ -248,9 +248,6 @@ pub trait Ports {
     fn public_accounts(&self) -> Vec<PublicAccount>;
     /// The register's private nodes' accounts.
     fn publisher_accounts(&self) -> Vec<PublisherAccount>;
-    /// The publishers' signed records of their private nodes' segments (`REQ-ORD-41`). The platform carries no
-    /// question for them yet, so the deployment reads them as the scenario world holds them (`T-020-58`).
-    fn publishers_records(&mut self) -> Vec<Published>;
     /// Runs the checkpointer's ticks due and publishes what they issue (`REQ-AUD-14`); how many it published.
     ///
     /// # Errors
@@ -1123,8 +1120,141 @@ impl Duties for Jobs<'_> {
         checked
     }
 
+    /// Each private node an order Core started is still unsettled at, asked of each provider of the node's publisher
+    /// that declares it (`REQ-ORD-41`, `REQ-AUZ-1`, `T-020-58`): for each such order, node and provider, once in a run,
+    /// about the transactions of that order's segments there, and the read names that order and one of its segments. An
+    /// order whose segments at the node have all settled (or had their reversal completed) is read no more: closing kept
+    /// its record when it settled, so the job's reads, and the log's entries for them, are bounded by the orders in flight
+    /// and not by those ever started. Each read is decided by policy and recorded as an effect, as closing's is
+    /// ([`Segments::read_node_record`]), and its answer is taken as a record only as `closing::publishers::taken` allows.
+    ///
+    /// **What it serves.** The records go to the round ([`Round::published`](super::Round::published)) and no further: they are what the
+    /// publishers state, now, of the orders in flight through their nodes, for the operator's view and for what reads a
+    /// round. Closing's books are closing's own: it reads for itself, for each segment it grades, and keeps what it
+    /// cites. The deployment carries each question to the platform and chooses neither node, provider nor order; where
+    /// policy refuses a read nothing is asked.
     fn read_publishers(&mut self) -> Vec<Published> {
-        self.ports.publishers_records()
+        use rutent_contracts::state_machine::SegmentState;
+        use std::collections::BTreeMap;
+        // For each order and node it is unsettled at: a segment of it there and the transactions of its segments there.
+        let mut places: Vec<(
+            Id,
+            String,
+            Id,
+            rutent_contracts::router_api::PolicyBounds,
+            BTreeSet<String>,
+        )> = Vec::new();
+        for (order_name, started) in self.ports.started() {
+            let (Some(order), Some(followed)) = (
+                id(order_name),
+                id(order_name).and_then(|o| self.ports.segments().order(&o)),
+            ) else {
+                continue;
+            };
+            let mut here: BTreeMap<String, (Id, BTreeSet<String>, bool)> = BTreeMap::new();
+            for segment in followed.parts.iter().flat_map(|part| part.segments.iter()) {
+                let Some(segment_id) = id(segment.segment_id.as_str()) else {
+                    continue;
+                };
+                // Only a segment handed over has anything to ask about.
+                let Some(transaction) = self
+                    .ports
+                    .segments()
+                    .statement_of(&order, &segment_id)
+                    .and_then(|s| crate::closing::publishers::transaction_of(&s.statement))
+                else {
+                    continue;
+                };
+                let open = !matches!(
+                    segment.state,
+                    SegmentState::Settled | SegmentState::ReversalComplete
+                );
+                for end in [&segment.from.node, &segment.to.node] {
+                    let name = match end {
+                        rutent_contracts::provider_role::NodeRef::Inner(id) => id.as_str(),
+                        rutent_contracts::provider_role::NodeRef::Outer(o) => o.network.as_str(),
+                    };
+                    if self
+                        .ports
+                        .catalogue()
+                        .publishers()
+                        .publisher_of_node(name)
+                        .is_none()
+                    {
+                        continue;
+                    }
+                    let entry = here
+                        .entry(name.to_owned())
+                        .or_insert_with(|| (segment_id.clone(), BTreeSet::new(), false));
+                    entry.1.insert(transaction.clone());
+                    entry.2 |= open;
+                }
+            }
+            for (node, (segment, about, open)) in here {
+                if open {
+                    places.push((
+                        order.clone(),
+                        node,
+                        segment,
+                        started.record.bounds.clone(),
+                        about,
+                    ));
+                }
+            }
+        }
+        let actors = self.ports.actors();
+        let mut wanted = Vec::new();
+        for (order, node, segment, bounds, about) in places {
+            let about: Vec<Id> = about.iter().filter_map(|t| id(t)).collect();
+            for provider in crate::closing::publishers::serving(self.ports.catalogue(), &node) {
+                wanted.push((
+                    order.clone(),
+                    segment.clone(),
+                    node.clone(),
+                    provider,
+                    bounds.clone(),
+                    about.clone(),
+                ));
+            }
+        }
+        let mut answers = Vec::new();
+        self.ports.with_segments(&mut |segments, parts| {
+            for (order, segment, node, provider, bounds, about) in &wanted {
+                let read = crate::segments::RecordRead {
+                    order,
+                    segment,
+                    node,
+                    provider,
+                    about,
+                    bounds,
+                    operator: &actors.operator,
+                    core: &actors.core,
+                };
+                if let crate::segments::Read::Answered(question, bytes) =
+                    segments.read_node_record(parts, &read)
+                {
+                    answers.push((order.clone(), node.clone(), question, bytes));
+                }
+            }
+        });
+        let at = self.ports.clock().now().floor();
+        answers
+            .into_iter()
+            .filter_map(|(order, node, question, bytes)| {
+                crate::closing::publishers::taken(
+                    self.ports.catalogue(),
+                    at,
+                    &question.statement,
+                    &bytes,
+                )
+                .ok()
+                .map(|record| Published {
+                    order,
+                    node,
+                    record,
+                })
+            })
+            .collect()
     }
 
     fn unknown_segments(&self) -> Vec<Unknown> {
@@ -1437,9 +1567,6 @@ mod tests {
                 asset: "USDC".to_owned(),
                 decimals: 2,
             }]
-        }
-        fn publishers_records(&mut self) -> Vec<Published> {
-            Vec::new()
         }
         fn run_checkpoints(&mut self) -> Result<usize, String> {
             Err("the checkpointer can't be reached".to_owned())

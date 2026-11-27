@@ -5754,6 +5754,7 @@ fn operator_question<'a>(statement: &'a StatedEntry, operator: &Id) -> Option<&'
 fn action_transactions(action: &Action) -> Option<&str> {
     match action {
         Action::AskStatus { transaction, .. }
+        | Action::ReadNodeRecord { transaction, .. }
         | Action::ReadHoldingBalance { transaction, .. }
         | Action::ResolveStuck { transaction, .. } => Some(transaction.as_str()),
         Action::AcceptFault { showing, .. } => Some(showing.transaction.as_str()),
