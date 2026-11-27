@@ -339,6 +339,47 @@ fn a_measure_that_cannot_be_written_leaves_the_segments_outcome_unchanged() {
             .collect()
     };
     assert_eq!(others(&with), others(&without));
+    // The reads left out are counted instead, so they are asserted, not hidden: each Core holds the same number of
+    // `read_node_record` entries (a decision, an effect and a result for each read), and at least one read was made.
+    let read_entries = |core: &Core| -> usize {
+        use rutent_contracts::core_internal::Action;
+        let reads: Vec<String> = core
+            .log()
+            .entries()
+            .iter()
+            .filter_map(|(receipt, e)| match e {
+                Entry::Verified(v)
+                    if matches!(
+                        &v.what,
+                        What::Effect {
+                            action: Action::ReadNodeRecord { .. },
+                            ..
+                        }
+                    ) =>
+                {
+                    Some(format!("{receipt:?}"))
+                }
+                _ => None,
+            })
+            .collect();
+        core.verified_whats()
+            .iter()
+            .filter(|w| match w {
+                What::Decide { request, .. } => {
+                    matches!(request.action, Action::ReadNodeRecord { .. })
+                }
+                What::Effect { action, .. } => matches!(action, Action::ReadNodeRecord { .. }),
+                What::Result { effect } => reads.contains(&format!("{effect:?}")),
+                _ => false,
+            })
+            .count()
+    };
+    assert!(read_entries(&with) > 0, "reads were made");
+    assert_eq!(
+        read_entries(&with),
+        read_entries(&without),
+        "the same reads were made"
+    );
 
     // The log able to take them again, the caller's next call writes what waited, each once.
     without.refuse_log_appends("measure", 0);

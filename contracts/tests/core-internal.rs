@@ -365,7 +365,7 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 153] = [
+const SCHEMA_RULES: [SchemaRule; 155] = [
     (
         "decision-request-to-list-a-public-network-under-a-hexadecimal-ip-subject-name",
         &[("/action/public_network/listing/reader/subject_name", "not")],
@@ -517,6 +517,16 @@ const SCHEMA_RULES: [SchemaRule; 153] = [
         "decision-request-to-read-a-private-nodes-record-without-the-transactions-it-is-about",
         &[("/action", "required")],
         "missing field `about`",
+    ),
+    (
+        "decision-request-to-read-a-private-nodes-record-without-who-asked",
+        &[("/action", "required")],
+        "missing field `by`",
+    ),
+    (
+        "decision-request-to-read-a-private-nodes-record-naming-another-asker",
+        &[("/action/by", "enum")],
+        "unknown variant",
     ),
     (
         "decision-request-to-read-a-holding-balance-without-its-node",
@@ -3498,6 +3508,10 @@ fn request_to_repeat_an_operation_names_its_segment_and_transaction() {
 #[test]
 fn request_to_read_a_private_nodes_record_names_its_node_and_provider() {
     assert_accepted_by_both("decision-request-to-read-a-private-nodes-record");
+    // Who asked is kept: the grading's or the tick's, no other (`T-020-67`).
+    assert_accepted_by_both("decision-request-to-read-a-private-nodes-record-by-the-tick");
+    assert_rejected("decision-request-to-read-a-private-nodes-record-without-who-asked");
+    assert_rejected("decision-request-to-read-a-private-nodes-record-naming-another-asker");
     assert_rejected("decision-request-to-read-a-private-nodes-record-without-its-node");
     for name in [
         "decision-request-to-read-a-private-nodes-record-without-the-transactions-it-is-about",

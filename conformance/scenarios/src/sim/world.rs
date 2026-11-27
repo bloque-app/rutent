@@ -84,6 +84,9 @@ pub struct SimWorld {
     secrets_delivered: Vec<(String, String)>,
     clock: Option<Instant>,
     keys_down: Vec<String>,
+    /// The endpoints the world serves each network's reader, and the networks as it last published them to them
+    /// (`T-024-25`).
+    readers: super::readers::Endpoints,
     /// The flag of the fleet's operation clock: raised when a script holds a behaviour that waits out a real
     /// deadline (silent, late), which is real time's to judge (`T-013-08`).
     pub(crate) wall_time: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -122,13 +125,32 @@ impl SimWorld {
         self.journals.entry(provider.to_owned()).or_default();
     }
 
-    /// Serves a simulated public network, `network`, with `rules` for its finality and its reorgs (`T-015-02`).
+    /// Serves a simulated public network, `network`, with `rules` for its finality and its reorgs (`T-015-02`), and
+    /// its reader the endpoints its listing declares (`T-024-25`).
     pub fn serve_network(&mut self, network: &str, rules: NetworkRules) {
         let host = chain_host(network);
         self.serve(&host);
         self.chains.insert(host, network.to_owned());
         self.networks
             .insert(network.to_owned(), SimulatedNetwork::new(network, rules));
+        self.readers.serve(network);
+    }
+
+    /// The endpoints the world serves the networks' readers (`T-024-25`): a handle on them, shared, which the reader
+    /// host's network reads from threads of its own.
+    pub fn reader_endpoints(&self) -> super::readers::Endpoints {
+        self.readers.clone()
+    }
+
+    /// Publishes every network as it stands now, and the movements delivered to them, to the endpoints the readers
+    /// read (`T-024-25`): what they answer from until the next publication.
+    pub fn publish_to_readers(&self) {
+        let delivered: Vec<Movement> = self
+            .delivered
+            .iter()
+            .filter_map(|d| serde_json::from_str(&d.body).ok())
+            .collect();
+        self.readers.publish(&self.networks, &delivered);
     }
 
     /// A simulated public network.

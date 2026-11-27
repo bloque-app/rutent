@@ -134,24 +134,17 @@ impl Began {
         }
     }
 
-    /// What a segment began under, derived from `history` as it stood before the segment's start effect, the entry
-    /// at `start`: the cutovers the log's settings held then, over `current`.
+    /// What a segment began under, derived from the log's cutovers as they stood before the segment's start effect, the
+    /// entry at `start` (`timeline`, folded once for the whole log): the cutovers the log's settings held then, over
+    /// `current`.
     pub fn from_log(
         made_at: &str,
-        history: &[(
-            rutent_contracts::core_internal::Receipt,
-            rutent_contracts::core_internal::Entry,
-        )],
+        timeline: &crate::settings::CutoverTimeline,
         start: usize,
         current: &str,
         fallback: Instant,
     ) -> Self {
-        Self::of(
-            made_at,
-            crate::settings::Settings::reopened(&history[..start.min(history.len())])
-                .protocol_versions(current),
-            fallback,
-        )
+        Self::of(made_at, timeline.versions_at(start, current), fallback)
     }
 }
 

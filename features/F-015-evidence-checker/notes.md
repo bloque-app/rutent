@@ -474,6 +474,13 @@ send's wait ends with the phase (M2's fix): after the bound each send returns at
 the reader refills, and the timeout path stops it too. So the `pipeline` reader, whose stand-in endpoints take 20 ms
 whatever the deadline, is the case that shows the per-turn bound load-bearing; the `stream` reader stays in the test.
 
+### #348's L10, fixed in `T-024-25`
+
+The link's per-source handshake map left an empty entry for each refused address. `T-024-25` takes each connection's
+slot through `link::admit`, which keeps an entry only for a source with a handshake under way, and tests it
+(`link::tests::refused_sources_leave_no_entry_and_the_map_of_sources_stays_bounded`); its rule-off is in `F-024`'s
+notes, beside #348's L9 (`tools/boundary-check`).
+
 ## T-015-05: what the check of T-015-04 left
 
 The milestone reviewer's check of `T-015-04` at `ce68f7a2` (review channel, 2026-11-27): one Low-Medium and eight

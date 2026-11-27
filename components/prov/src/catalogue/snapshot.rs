@@ -32,6 +32,9 @@ pub enum LeftOutReason {
         /// What the provider declares.
         declared: Option<EvidenceGrade>,
     },
+    /// Its advertisement was made under an older protocol version whose cutover has passed: no tuple of it is routed from
+    /// the date (`REQ-PRT-4`, `T-020-67`).
+    PastCutover(String),
     /// A name in it can't be written into the router's snapshot.
     NotRepresentable(&'static str),
 }
@@ -120,6 +123,14 @@ impl Catalogue {
 
     fn admit(&self, provider: &str, tuple: &TupleKey, at: Instant) -> Result<(), LeftOutReason> {
         check_tuple(tuple).map_err(LeftOutReason::Malformed)?;
+        if let (Some(joined), Some(versions), Some(now)) = (
+            self.joined.get(provider),
+            self.protocol_versions(),
+            at.rfc3339(),
+        ) && versions.in_force(&joined.protocol_version, &now).is_err()
+        {
+            return Err(LeftOutReason::PastCutover(joined.protocol_version.clone()));
+        }
         self.usable(provider, tuple, at)
             .map_err(LeftOutReason::Unusable)?;
         if !self.modules.contains_key(provider) {

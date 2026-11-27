@@ -96,7 +96,8 @@ security review. It may land on `develop` before that, once the reviewer approve
   (`components/prov/src/module/sandbox.rs`) and the module that declares it (`components/prov/src/module/mod.rs`), the
   files that define the key resolver (under `components/prov/src/proxy/`, already listed), and the provider system's
   manifest (`components/prov/Cargo.toml`), where a target path could move the library;
-- the repository's own gates: `.github/`, `licences/`, `tools/licence-check/` and `tools/contract-guard/`.
+- the repository's own gates: `.github/`, `licences/`, `tools/licence-check/`, `tools/contract-guard/` and
+  `tools/boundary-check/`, which holds the module boundary and the reader host's admitted paths.
 
 `.github/CODEOWNERS` holds each of these paths for the owner, and `main`'s protection requires code-owner review.
 Its `enforce_admins` is off, so the owner's own merge of the release is the click. A path added to this list is

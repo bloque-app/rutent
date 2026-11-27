@@ -161,69 +161,74 @@ pub fn violations(graph: &Graph, krates: &[&str]) -> Vec<Violation> {
 
 const DEP_TABLES: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
 
+/// A manifest read as TOML (`toml_edit`'s parser, spans kept): every key and header decoded as cargo decodes it,
+/// quotes and escapes included, and a multi-line string read as the one value it is, so no spelling can make a line
+/// read as another table's (#353's review, Medium 1).
+fn document(text: &str) -> Result<toml_edit::Document<&str>, String> {
+    toml_edit::Document::parse(text).map_err(|e| format!("not TOML: {e}"))
+}
+
+/// The 1-based line a span starts on, or the first where the parser kept none.
+fn line_of_span(text: &str, span: Option<std::ops::Range<usize>>) -> usize {
+    span.map_or(1, |s| {
+        text[..s.start.min(text.len())].matches('\n').count() + 1
+    })
+}
+
 /// Parses one manifest into its package name and the dependencies of ours it declares.
 ///
-/// Fails closed: it reads the plain `[dependencies]`, `[dev-dependencies]` and `[build-dependencies]`
-/// tables, one bare `key = value` per line, and reports as an error any other form that could name
-/// a dependency (target tables, sub-tables, quoted keys, `package =` renames, multi-line values),
-/// never skipping it.
+/// Reads it as TOML ([`toml_edit`]), so a table, a key or a value counts by what it decodes to, however it is spelled:
+/// a dependency is read from `[dependencies]`, `[dev-dependencies]` or `[build-dependencies]`, as a plain key, a
+/// quoted one, a sub-table, a dotted key or an inline table over several lines. Fails closed on what it doesn't
+/// follow, never skipping it: a `target` table, any other table whose name is a dependencies table's spelled otherwise
+/// (`dev_dependencies`), a `package =` rename, and a dependency inherited from the workspace (`workspace = true`),
+/// whose package the root's `[workspace.dependencies]` would name.
 pub fn parse_manifest(text: &str) -> Result<(String, Vec<Dep>), String> {
-    let mut name = None;
+    let doc = document(text)?;
+    let root = doc.as_item().as_table_like().ok_or("not a table")?;
+    let name = root
+        .get("package")
+        .and_then(|p| p.get("name"))
+        .and_then(|n| n.as_str())
+        .ok_or("no package name")?
+        .to_string();
+    for (key, _) in root.iter() {
+        if key == "target" {
+            return Err("unrecognised table header: a target table".to_string());
+        }
+        if key.replace('_', "-").contains("dependencies") && !DEP_TABLES.contains(&key) {
+            return Err(format!("unrecognised dependency table `{key}`"));
+        }
+    }
     let mut deps: Vec<Dep> = Vec::new();
-    let mut section = "";
-    for (n, raw) in text.lines().enumerate() {
-        let at = |why: &str| format!("line {}: {why}: `{}`", n + 1, raw.trim());
-        let line = raw.split('#').next().unwrap_or("").trim();
-        if let Some(header) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
-            let header = header.trim();
-            if header.starts_with("target")
-                || header.contains("dependencies") && !DEP_TABLES.contains(&header)
-            {
-                return Err(at("unrecognised table header"));
+    for table in DEP_TABLES {
+        let Some(item) = root.get(table) else {
+            continue;
+        };
+        let entries = item
+            .as_table_like()
+            .ok_or_else(|| format!("`{table}` is not a table"))?;
+        for (dep, spec) in entries.iter() {
+            if let Some(spec) = spec.as_table_like() {
+                if spec.contains_key("package") {
+                    return Err(format!("`{dep}`: dependency rename with `package`"));
+                }
+                if spec.contains_key("workspace") {
+                    return Err(format!(
+                        "`{dep}`: a dependency inherited from the workspace, which the check doesn't read"
+                    ));
+                }
             }
-            section = header;
-        } else if let Some((key, value)) = line.split_once('=') {
-            let key = key.trim();
-            if section.is_empty()
-                && (key.starts_with("target") || DEP_TABLES.iter().any(|t| key.starts_with(t)))
-            {
-                return Err(at("unrecognised dependency key"));
-            }
-            if section == "package" && key == "name" {
-                name = Some(value.trim().trim_matches('"').to_string());
-            } else if DEP_TABLES.contains(&section) {
-                if key.contains(['"', '\'']) {
-                    return Err(at("quoted dependency key"));
-                }
-                let (dep, rest) = key.split_once('.').unwrap_or((key, ""));
-                let dep = dep.trim();
-                let count = |c| value.matches(c).count();
-                if count('{') != count('}') || count('[') != count(']') {
-                    return Err(at("value continues past the line"));
-                }
-                if rest.trim() == "package" || has_package_key(value) {
-                    return Err(at("dependency rename with `package`"));
-                }
-                let dev = section == "dev-dependencies";
-                if dep.starts_with(OURS) && !deps.iter().any(|d| d.name == dep && d.dev == dev) {
-                    deps.push(Dep {
-                        name: dep.to_string(),
-                        dev,
-                    });
-                }
+            let dev = table == "dev-dependencies";
+            if dep.starts_with(OURS) && !deps.iter().any(|d| d.name == dep && d.dev == dev) {
+                deps.push(Dep {
+                    name: dep.to_string(),
+                    dev,
+                });
             }
         }
     }
-    name.map(|n| (n, deps))
-        .ok_or_else(|| "no package name".to_string())
-}
-
-/// True when an inline table has a `package` key.
-fn has_package_key(value: &str) -> bool {
-    value.split(['{', ',']).any(|part| {
-        part.split_once('=')
-            .is_some_and(|(k, _)| k.trim().trim_matches(['"', '\'']) == "package")
-    })
+    Ok((name, deps))
 }
 
 /// Loads the graph of the workspace rooted at `root`, from the `members` of its root manifest.
@@ -239,38 +244,26 @@ pub fn load(root: &Path) -> std::io::Result<Graph> {
     Ok(graph)
 }
 
-/// The paths in the `members = [ ... ]` array of the `[workspace]` table of a root manifest.
+/// The paths in the `members` array of the `[workspace]` table of a root manifest, read as TOML.
 ///
-/// Matches the `members` key itself, so `default-members` and comments do not count.
+/// Reads the `members` key itself, so `default-members` and comments do not count.
 pub fn members(root_manifest: &str) -> Result<Vec<String>, String> {
-    let mut in_workspace = false;
-    let mut array: Option<String> = None;
-    for raw in root_manifest.lines() {
-        let line = raw.split('#').next().unwrap_or("").trim();
-        if let Some(buf) = array.as_mut() {
-            buf.push_str(line);
-        } else if line.starts_with('[') {
-            in_workspace = line == "[workspace]";
-        } else if in_workspace
-            && let Some(("members", rest)) = line.split_once('=').map(|(k, v)| (k.trim(), v))
-        {
-            array = Some(rest.trim().to_string());
-        }
-        if array.as_ref().is_some_and(|b| b.contains(']')) {
-            break;
-        }
-    }
-    let array = array.ok_or("no `members` in `[workspace]`")?;
-    let inner = array
-        .strip_prefix('[')
-        .and_then(|a| a.split_once(']'))
-        .ok_or("`members` is not an array")?
-        .0;
-    Ok(inner
-        .split(',')
-        .map(|m| m.trim().trim_matches('"').to_string())
-        .filter(|m| !m.is_empty())
-        .collect())
+    let doc = document(root_manifest)?;
+    let members = doc
+        .as_item()
+        .get("workspace")
+        .and_then(|w| w.get("members"))
+        .ok_or("no `members` in `[workspace]`")?
+        .as_array()
+        .ok_or("`members` is not an array")?;
+    members
+        .iter()
+        .map(|m| {
+            m.as_str()
+                .map(str::to_string)
+                .ok_or_else(|| "a member is not a string".to_string())
+        })
+        .collect()
 }
 
 /// Loads the directory of each member of the workspace rooted at `root`, by package name.
@@ -960,10 +953,44 @@ fn module_file(src: &Path, module: &str) -> Result<PathBuf, (PathBuf, usize)> {
     Ok(parent)
 }
 
+/// The lines of a manifest that set the library target or a build script, however TOML spells them (#348's L9,
+/// #353's review, Medium 1): the manifest is read as TOML ([`toml_edit`]), so a key counts by what it decodes to,
+/// quotes, escapes and multi-line strings included. Refused: a `lib` key at the top level, as a table (`[lib]`,
+/// `["lib"]`, `[lib.x]`) or a key (`lib = { .. }`, `lib.path`); in the package table, `build` (a build script, or
+/// `false`) and `autolib`; and a `project` table, the package table's old name. A manifest that doesn't read as TOML is
+/// refused at its first line. A target array (`[[bin]]`, `[[test]]`, `[[example]]`, `[[bench]]`) builds a crate of
+/// its own, never `rutent_prov`, so its `path` can't widen what the reader host reaches, and passes. The
+/// boundary check's test of the crate graph holds the same to `cargo metadata` (`tests/graph.rs`).
+fn moves_the_library(manifest: &str) -> Vec<usize> {
+    let Ok(doc) = document(manifest) else {
+        return vec![1];
+    };
+    let Some(root) = doc.as_item().as_table_like() else {
+        return vec![1];
+    };
+    let mut found = Vec::new();
+    for key in ["lib", "project"] {
+        if let Some((key, _)) = root.get_key_value(key) {
+            found.push(line_of_span(manifest, key.span()));
+        }
+    }
+    if let Some(package) = root.get("package").and_then(|p| p.as_table_like()) {
+        for key in ["build", "autolib"] {
+            if let Some((key, _)) = package.get_key_value(key) {
+                found.push(line_of_span(manifest, key.span()));
+            }
+        }
+    }
+    found.sort_unstable();
+    found.dedup();
+    found
+}
+
 /// The findings, under the provider system's package `prov`, against what the reader host's
 /// admitted paths admit ([`PROV_CONFINE`], [`PROV_KEYS`]): each admitted file and every module on
 /// the way to what it re-exports is declared plainly and found by file layout alone, so no
-/// `#[path]` (or `include!`) anywhere under `src/` and no `[lib]` table in the manifest moves one;
+/// `#[path]` (or `include!`) anywhere under `src/`, no lib table or key in the manifest in any
+/// spelling and no build script ([`moves_the_library`]) moves one;
 /// each admitted file holds its re-exports and nothing more; and each name they re-export is
 /// defined in the file of the module it is re-exported from. A lint over the source, beside the
 /// code review that every one of these files gets as a `DEC-20` path.
@@ -971,11 +998,14 @@ fn admitted_path_findings(prov: &Path) -> std::io::Result<Vec<(PathBuf, usize)>>
     let mut found = Vec::new();
     let src = prov.join("src");
     let manifest = std::fs::read_to_string(prov.join("Cargo.toml"))?;
-    for (n, line) in manifest.lines().enumerate() {
-        let line = line.split('#').next().unwrap_or("").trim();
-        if line.starts_with("[lib]") || line.replace(' ', "").starts_with("lib.") {
-            found.push((prov.join("Cargo.toml"), n + 1));
-        }
+    for line in moves_the_library(&manifest) {
+        found.push((prov.join("Cargo.toml"), line));
+    }
+    // A build script runs at build time and can write the sources the library compiles, so prov has none: a
+    // `build.rs` at its root, which cargo runs unasked, is refused outright (#348's L9).
+    let script = prov.join("build.rs");
+    if script.exists() {
+        found.push((script, 1));
     }
     for file in rust_files(&src, &[])? {
         let text = std::fs::read_to_string(&file)?;
@@ -1038,7 +1068,8 @@ fn admitted_path_findings(prov: &Path) -> std::io::Result<Vec<(PathBuf, usize)>>
 ///   and any that names the provider system other than through its admitted paths
 ///   ([`PROV_PATHS`], `T-020-59`, `T-015-04`);
 /// - in the provider system, once the reader host is a member, anything that widens an admitted
-///   path: a `#[path]` or `include!` anywhere under `src/`, a `[lib]` table in its manifest, a
+///   path: a `#[path]` or `include!` anywhere under `src/`, the library target or a build script
+///   set in its manifest in any spelling, or a `build.rs` at its root (`moves_the_library`), a
 ///   module on the way declared other than plainly or found other than by file layout, an admitted
 ///   file that holds more or other than its re-exports, or a name they re-export that its source
 ///   file doesn't itself define ([`PROV_CONFINE`], [`PROV_KEYS`], [`holds_its_reexports`],

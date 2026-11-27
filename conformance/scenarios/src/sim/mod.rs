@@ -4,6 +4,8 @@
 //! - [`world`]: [`SimWorld`], the platform's world: scripts, journals, simulated public networks and the rails.
 //! - [`orders`]: an order's state machine, fed as a host feeds it.
 //! - [`fleet`]: [`Fleet`], a platform with simulated providers admitted to it like any module.
+//! - [`readers`]: what each simulated network lists for its reader service, and the endpoints the world serves it
+//!   (`T-024-25`).
 //!
 //! What the providers are, and what a script can make them do, is `rutent_conformance::sim`.
 
@@ -11,6 +13,7 @@ pub mod disk;
 pub mod fleet;
 pub mod orders;
 pub mod probes;
+pub mod readers;
 pub mod world;
 
 pub use fleet::{Fleet, InProcess, Installed, InstalledWallet, Release};

@@ -3533,3 +3533,117 @@ fn private_node_record_listing_a_reversal_is_read() {
     let strangers = listing_of(&["tx-w", "tx-someone-elses"]);
     assert!(kept(&strangers, &["tx-reversal"]).is_empty());
 }
+
+/// What Core takes of an answer is a record of the node it asked about, from the provider it asked: an answer to another
+/// kind of question, another question, another node, another provider, a record of another maker's, or one listing a
+/// segment the question didn't ask about is none, whatever else it carries, and the answer that is to the question is
+/// taken, over a catalogue that holds its maker's advertisement (`REQ-ORD-41`, `T-020-58`, `T-020-67`).
+// verifies: REQ-ORD-41
+#[test]
+fn answer_to_another_question_is_not_taken_as_a_private_node_record() {
+    use rutent_contracts::provider_role::{InnerSegmentsMismatch, Operation as ProviderOperation};
+    use rutent_core_orch::closing::publishers::{NotTaken, taken};
+    const MAKER: &str = "reserve-bank-co";
+    let catalogue = catalogue(&[(MAKER, "bank-co", 3, &["ledger-in"])]);
+    let made = snapshot_support::JOINED_AT + 10;
+    let at = Instant(made);
+    let key = snapshot_support::statements_key(MAKER, 1);
+    let deployment = snapshot_support::deployment();
+    let question: ProviderOperation = serde_json::from_value(json!({
+        "kind": "inner_segments_query", "transaction": "tx-q1", "provider": MAKER,
+        "node": "ledger-in", "about": ["tx-w", "tx-x"],
+    }))
+    .unwrap();
+    // The answer to it: the maker's record of the node, signed by the maker's statements key, in its signed answer.
+    let answer = |edit: &dyn Fn(&mut Value)| {
+        let mut record = snapshot_support::envelope(
+            &deployment,
+            rutent_contracts::provider_role::INNER_SEGMENTS_SHAPE,
+            MAKER,
+            made,
+            json!({ "node": "ledger-in", "publisher": "bank-co", "standing": "publishers_word", "segments": [
+                { "transaction": "tx-w", "asset_in": "COP", "amount_in": "100000", "asset_out": "COP", "amount_out": "99900", "fee": "100" },
+            ] }),
+        );
+        let mut whole = snapshot_support::envelope(
+            &deployment,
+            rutent_contracts::provider_role::RESULT_SHAPE,
+            MAKER,
+            made,
+            json!({ "kind": "inner_segments_query", "transaction": "tx-q1", "node": "ledger-in",
+                    "outcome": { "status": "answered", "record": null } }),
+        );
+        let mut parts = json!({ "record": record.take(), "whole": whole.take() });
+        edit(&mut parts);
+        let mut record = parts["record"].take();
+        let mut whole = parts["whole"].take();
+        snapshot_support::sign_value(&mut record, &key);
+        whole["statement"]["outcome"]["record"] = record;
+        serde_json::to_vec(&{
+            snapshot_support::sign_value(&mut whole, &key);
+            whole
+        })
+        .unwrap()
+    };
+    let good = answer(&|_| {});
+    let record =
+        taken(&catalogue, at, &question, &good).expect("the answer to this question is taken");
+    assert_eq!(record.maker, MAKER);
+    assert_eq!(record.statement.segments.len(), 1);
+    // The same answer from a catalogue that holds no advertisement of its maker isn't: a record counts as its maker's.
+    let (mut empty, _) = (Catalogue::new(), ());
+    empty.set_context(deployment.clone(), rutent_contracts::provider_role::VERSION);
+    assert!(matches!(
+        taken(&empty, at, &question, &good),
+        Err(NotTaken::NotItsMakers(_))
+    ));
+    // An answer to another kind of question, whatever it carries.
+    for other in [
+        "result-status-query-not-known",
+        "result-holding-balance-answered",
+        "result-withdrawal-succeeded",
+    ] {
+        let mut value = read(&format!("provider-role/fixtures/valid/{other}.json"));
+        value["maker"] = MAKER.into();
+        assert_eq!(
+            taken(
+                &catalogue,
+                at,
+                &question,
+                &serde_json::to_vec(&value).unwrap()
+            ),
+            Err(NotTaken::AnotherQuestion(vec![
+                InnerSegmentsMismatch::NotAnInnerSegmentsQuestion
+            ])),
+            "{other}"
+        );
+    }
+    // An answer of this kind that differs from the question, one way each.
+    let refused = |edit: &dyn Fn(&mut Value), why: InnerSegmentsMismatch| {
+        let Err(NotTaken::AnotherQuestion(found)) = taken(&catalogue, at, &question, &answer(edit))
+        else {
+            panic!("{why:?}: taken, or refused otherwise");
+        };
+        assert!(found.contains(&why), "{why:?}: {found:?}");
+    };
+    refused(
+        &|p| p["whole"]["statement"]["transaction"] = "tx-q2".into(),
+        InnerSegmentsMismatch::AnswersAnotherQuestion,
+    );
+    refused(
+        &|p| p["whole"]["statement"]["node"] = "ledger-other".into(),
+        InnerSegmentsMismatch::OfAnotherNode,
+    );
+    refused(
+        &|p| p["whole"]["maker"] = "other-co".into(),
+        InnerSegmentsMismatch::AnsweredByAnotherProvider,
+    );
+    refused(
+        &|p| p["record"]["maker"] = "other-co".into(),
+        InnerSegmentsMismatch::RecordOfAnotherMaker,
+    );
+    refused(
+        &|p| p["record"]["statement"]["segments"][0]["transaction"] = "tx-not-asked".into(),
+        InnerSegmentsMismatch::SegmentNotAsked,
+    );
+}

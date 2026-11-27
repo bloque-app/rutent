@@ -250,7 +250,7 @@ impl Core {
                     operator: &operator,
                     core: &core,
                 };
-                if let rutent_core_orch::segments::Read::Answered(question, bytes) =
+                if let rutent_core_orch::segments::Read::Answered(question, bytes, _) =
                     segments.read_node_record(parts, &read)
                 {
                     answers.push((question, bytes));

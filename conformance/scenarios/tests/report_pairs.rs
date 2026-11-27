@@ -389,7 +389,19 @@ fn pairs_a_restart_dropped_reach_the_operator_through_the_schedule_and_are_recor
     };
     let raised = in_log(&core);
     assert_eq!(raised.len(), 3, "one raise for each pair: {raised:?}");
-    assert_eq!(core.raised().len(), 3, "and each reached the operator");
+    // The operator's notices also hold the unregistered holders the holding check raises (`T-020-67`): the pairs' are counted.
+    let pairs_raised = |core: &rutent_scenarios::assembly::Core| {
+        core.raised()
+            .iter()
+            .filter(|r| {
+                matches!(
+                    r.difference,
+                    rutent_contracts::core_internal::Difference::PairNotBuilt { .. }
+                )
+            })
+            .count()
+    };
+    assert_eq!(pairs_raised(&core), 3, "and each reached the operator");
     assert_eq!(core.tick().raised, 0, "not again");
     assert_eq!(in_log(&core).len(), 3);
     // A Core that reopens again finds them raised in the log and raises none.

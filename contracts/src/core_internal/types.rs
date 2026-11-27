@@ -822,6 +822,9 @@ pub enum Action {
         transaction: Id,
         /// The transactions the read is about: the segments whose record is asked for, at least one.
         about: Vec<Id>,
+        /// Who asked: a segment's grading, or the tick's read of the publishers' records, kept in the log so that a
+        /// reopened Core counts what each has asked (`T-020-67`).
+        by: ReadBy,
     },
     /// Reading a holding account's balance from the module that holds it (`REQ-AUD-15`, `REQ-AUZ-1`, `T-020-63`): Core's
     /// schedule asks each public node's wallet and each private node's publisher's module its balance, and the question
@@ -901,6 +904,17 @@ pub enum Action {
         /// (`outcome-confirmation-cites-verified-evidence`).
         transaction: Id,
     },
+}
+
+/// Who asked for a private node's record (`read_node_record`, `T-020-67`): the grading of a segment that passes the node,
+/// or the tick's read of the publishers' records for an order still unsettled at it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadBy {
+    /// A segment's grading, as it grades the segment.
+    Grading,
+    /// The tick's read of the publishers' records (`Job::PublishersRecords`).
+    Tick,
 }
 
 /// Why policy refused, as a stable class (`REQ-AUZ-1`, `REQ-AUZ-5`).
