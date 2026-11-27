@@ -10817,3 +10817,29 @@ log and the evidence store the log already reads. **Every caller of v0 behaviour
    and a test of `Landing::restore`'s `NotNow`. Owner: `T-024-21`'s follow-up (`F-024`), with this row's run in place.
 4. **The release acceptance in scenarios** (`T-020-49`'s gap 6) is unchanged: `accept_waiting_release` and the wallet's
    `accept_release` still accept through the fleet; not this row's run.
+
+### Rule-off (each rule switched off alone, its test run, the file restored; script `ruleoff.py`)
+
+| Rule switched off | Result |
+|---|---|
+| R1 the decision record held to the log's digest (`held_record`) | `decision_record_that_does_not_match_the_logs_digest_starts_nothing` red |
+| R2 Core's run runs a part with work left (`Job::Run`) | `accepted_order_runs_on_ticks_with_no_test_caller` red |
+| R3 a segment begun before Core stopped is carried on (item 8) | `segment_begun_before_core_stopped_is_carried_on_after_it_reopens` red |
+| R3b the same, over item 9's crash after an effect | `restart_after_the_provider_moved_and_before_its_answer_was_logged_moves_nothing_twice` red |
+| R4 `answered` rebuilt for a reopened flight with an outcome (seed 117) | `late_answer_to_a_segment_left_unanswered_before_core_restarts_is_taken_after_it` red |
+| R5 `Reversals.later` rebuilt from the log (item 6) | `late_answer_kept_before_a_restart_is_reported_after_it` red |
+| R6 Core's run recalculates a part whose route failed | `failed_deposits_recalculated_route_runs_on_ticks` red |
+| R7 a quote shown before a reopen rebuilt from the log (item 7) | `quote_held_before_a_restart_is_accepted_after_core_reopens_while_its_validity_stands` red |
+| R8 a route Core can't name leaves its part with no route (L7) | `part_whose_current_route_core_cannot_name_is_left_no_route_on_its_tick` red |
+| R9 a linked order built from the log, its authorisation registered | `linked_order_and_its_hand_on_run_on_cores_ticks` red |
+| R10 the hand-ons done on Core's run | `linked_order_and_its_hand_on_run_on_cores_ticks` red |
+| R11 the held gate in `Intake::request_of` | stays green: `Intake::started` and `hold_started` refuse a held order too (defence in depth); the held tests hold on those |
+| R12 the owed-reversal gate in Core's run | stays green: the scenario's owed reversal is a ramp's, which `recalc::evidenced` already holds in flight; the gate is for a failed deposit whose reversal Core recorded owed, which no scenario reaches |
+| R13 a reopened segment whose answer is logged isn't carried on | stays green: carried on, its status answer is the one the log holds and its grading still refuses to go on, so nothing moves twice either way; kept as defence in depth |
+
+### Local checks
+
+fmt (root); clippy `--workspace --all-targets -D warnings`; `rutent-core-orch --lib` (63) and `rutent-core-authz --lib` (171, the
+entry-point scan included); the whole `rutent-scenarios` suite once, then every binary it touched after the last changes, with
+`invariants`, `assembly`, `reopened` and `protocol_cutover` on `RUTENT_SCENARIO_SEEDS=11..15,113..119` (the pinned 101..119
+included); plan-check and tag-check `--strict` (0 findings). Stand-ins and the plain wallet built privately and deleted.
