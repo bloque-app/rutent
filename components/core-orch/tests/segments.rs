@@ -629,7 +629,8 @@ fn run_then_late(
         floor: None,
         record_entry: None,
     };
-    for catalogue in [&run_over] {
+    {
+        let catalogue = &run_over;
         let mut parts = Parts {
             clock: &*clock,
             catalogue,

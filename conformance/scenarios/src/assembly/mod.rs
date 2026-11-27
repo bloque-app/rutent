@@ -1730,11 +1730,15 @@ impl Core {
                     // The advertisement is judged by the cutovers the log held when it was received, not by those it
                     // holds now: a cutover moved earlier since doesn't void what was taken before (`REQ-PRT-4`,
                     // `T-020-54`, #143's blocker b).
-                    rutent_core_orch::settings::Settings::reopened(&entries[..place])
-                        .apply_cutovers(&mut rutent_core_orch::settings::Targets {
-                            catalogue: Some(&mut self.catalogue),
-                            ..rutent_core_orch::settings::Targets::default()
-                        });
+                    let held = rutent_core_orch::settings::Settings::reopened(&entries[..place]);
+                    held.apply_listings(&mut rutent_core_orch::settings::Targets {
+                        catalogue: Some(&mut self.catalogue),
+                        ..rutent_core_orch::settings::Targets::default()
+                    });
+                    held.apply_cutovers(&mut rutent_core_orch::settings::Targets {
+                        catalogue: Some(&mut self.catalogue),
+                        ..rutent_core_orch::settings::Targets::default()
+                    });
                     kit::join(&mut self.catalogue, &one, at);
                 }
                 continue;

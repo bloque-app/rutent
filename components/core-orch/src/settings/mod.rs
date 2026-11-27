@@ -577,6 +577,18 @@ impl Settings {
         )
     }
 
+    /// Puts only the operator's public-node listings into `targets`' catalogue: each node listed or taken off as the
+    /// operator set it. A reopened Core does it before it lists its providers again, so an advertisement is judged by the
+    /// public list it was judged by live: a private claim of a node the operator listed stays refused (`REQ-CAT-23`,
+    /// `T-020-49`).
+    pub fn apply_listings(&self, targets: &mut Targets<'_>) {
+        if let Some(catalogue) = targets.catalogue.as_deref_mut() {
+            for (node, set) in &self.public_nodes {
+                list(catalogue, node, set.listed);
+            }
+        }
+    }
+
     /// Puts only the cutovers into `targets`' catalogue and platform, as a reopened Core must before it lists its
     /// providers again or judges what its log holds: an advertisement or a result taken before its cutover is read by it
     /// still (`REQ-PRT-4`, `T-020-54`).

@@ -9665,3 +9665,12 @@ judge the drop), `decision-record-operation-citing-no-tuple` (the pattern `[tupl
 - **R3-2.** A mover flight doesn't survive a restart, so its `began` is taken again when it is made.
 - **R3-3.** `Began` for a segment of a Core that reopened with no log entry before its start (a segment begun with no settings
   set) is the catalogue's one version, as live.
+
+**#346's addition (reopen order).** `Core::relist` puts the operator's public-node listings back, as the log held them when each
+advertisement was received, together with the cutovers, before it joins that advertisement (`Settings::apply_listings`), so a
+reopened Core judges a private claim against the public list it was judged against live. Test
+`operator_listed_public_node_stays_public_across_a_reopen` (a node listed stays public, one taken off stays off, the provider
+is listed again). It does not go red with the listings applied after the relist, since the final apply puts the same list back:
+no scenario here has an advertisement claiming a node the operator listed (the catalogue refuses one at its join, and a refused
+advertisement is never in the log), so the ordering is by construction and by review, not by a test (gap R3-4).
+The rule text in the changelog was reworded where the guard now reads plain words (`fault`, `terms`).

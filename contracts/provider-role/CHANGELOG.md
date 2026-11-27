@@ -6,8 +6,8 @@
   unknown fields, so an older reader ignores a field a later version adds, as that version's entry says. The arrival
   question's schema says what a provider states of it and no more of Core's log (the review's Low). The contract guard
   holds an entry that says `Ignorable: yes` to the schema's older text: it refuses an entry that names a field added to
-  an object the older schema closes (`tools/contract-guard`), which is why three entries (the reserve's hold-request answer, a failed outcome's
-  fault and a fee's separate billing) now say `Ignorable: no`. One valid fixture reads a declaration with a field of a
+  an object the older schema closes (`tools/contract-guard`), which is why three entries (the reserve's hold-request answer, whose blame a failed outcome shows
+  and a fee's separate billing) now say `Ignorable: no`. One valid fixture reads a declaration with a field of a
   later version in the contract's test. Ignorable: yes. (DEC-4, DEC-20, REQ-PRT-2, T-020-54)
 - Breaking: the unreleased 3.1.0 is this major (finding 9 of `M3`'s milestone review of 2026-11-24, `T-020-45`).
   `check_context` matched the protocol version exactly, so 3.1.0's optional fields, under a new protocol version, made
@@ -77,7 +77,7 @@
   question or request and its answer); seventeen invalid, one per rule. Ignorable: no. (DEC-4, DEC-20, REQ-ORD-1,
   REQ-QTE-6, REQ-QTE-15, REQ-CAT-16, T-020-45)
 - Docs (the review's Low on this README's wording): the README and the schema descriptions say what a provider states,
-  and no more of Core's internal log, which core-internal's README says instead (`hold.schema.json`, `terms.schema.json`,
+  and no more of Core's internal log, which core-internal's README says instead (`hold.schema.json`,
   `arrival-notice`, `arrival-answer` and `inner-segments` among them). No shape or rule changed. Ignorable: yes.
   (DEC-4, DEC-20, T-020-45)
 - A deposit tuple says how it pays out (item `shared-movement-reading`, `T-020-39`): `ReserveTuple.payouts`, optional,

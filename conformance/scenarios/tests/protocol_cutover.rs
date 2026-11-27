@@ -96,3 +96,37 @@ fn old_version_provider_survives_its_cutover_and_a_reopen_by_the_version_its_seg
         "listed again"
     );
 }
+
+/// A public node the operator lists is public after a reopen too, and the reopen lists it before it judges the
+/// advertisements again, as it stood when each was received (`REQ-CAT-23`, `T-020-49`, #346's review): the settings the
+/// log holds are put back ahead of the relist, so a private claim of a node already listed is judged against the list it was
+/// judged against live.
+// verifies: REQ-AUZ-6
+#[test]
+fn operator_listed_public_node_stays_public_across_a_reopen() {
+    let scenario = Scenario::new("listing", "AC-5", given(&[RESERVE]));
+    let (mut core, _) = scenario.core(1, &mut Reference);
+    let listing = |node: &str, listed: bool| -> OperatorSetting {
+        serde_json::from_value(serde_json::json!({
+            "setting": "public_node", "node": { "network": node }, "listed": listed,
+        }))
+        .expect("a setting")
+    };
+    core.set_setting(&listing("ledger-z", true))
+        .expect("listed");
+    core.set_setting(&listing("ledger-y", true))
+        .expect("listed");
+    core.set_setting(&listing("ledger-y", false))
+        .expect("taken off");
+    assert!(core.catalogue().nodes().is_public("ledger-z"));
+    let core = scenario.reopen(core, 1, &mut Reference);
+    assert!(
+        core.catalogue().nodes().is_public("ledger-z"),
+        "the node the operator listed stays public"
+    );
+    assert!(
+        !core.catalogue().nodes().is_public("ledger-y"),
+        "the node the operator took off stays off"
+    );
+    assert!(core.catalogue().accepted_advertisement(RESERVE).is_some());
+}
