@@ -159,9 +159,9 @@
 
   Valid fixtures for each new shape and setting, an invalid one per rule broken, and admission cases for each new
   row and field. With `T-020-44`'s, `T-020-50`'s, `T-020-46`'s (five rounds), `T-021-16`'s, `T-020-51`'s, `T-020-52`'s,
-  `T-020-48`'s, `T-020-57`'s, `T-020-49`'s and `T-020-59`'s rounds, merged beside it: thirty schemas, 196 valid fixtures
-  and 212 invalid, 789 admission cases and 58 attribution cases (counted from the files); 120
-  relations and 5 closing ones, three stated. (DEC-4, DEC-20, DEC-28, REQ-QTE-10, REQ-AUZ-7, REQ-AUZ-6, REQ-AUZ-8, THR-3, GUA-1, REQ-ORD-20, T-020-45, T-020-59)
+  `T-020-48`'s, `T-020-57`'s, `T-020-49`'s, `T-020-58`'s and `T-020-59`'s rounds, merged beside it: thirty schemas, 197 valid fixtures
+  and 216 invalid, 789 admission cases and 58 attribution cases (counted from the files); 120
+  relations and 5 closing ones, three stated. (DEC-4, DEC-20, DEC-28, REQ-QTE-10, REQ-AUZ-7, REQ-AUZ-6, REQ-AUZ-8, THR-3, GUA-1, REQ-ORD-20, REQ-ORD-41, T-020-45, T-020-58, T-020-59)
 - The interfaces between `CMP-CORE-ORCH`, `CMP-CORE-AUTHZ` and `CMP-CORE-AUDIT`, settled as a sixth contract before the
   three parts are built side by side (`PLAN.md` §3, §4.4). From orchestration to policy: one decision call for every
   action that moves value, posts a route, changes the catalogue or moves a stuck order's value, answering permit, refuse

@@ -1568,7 +1568,7 @@ mod tests {
     fn every_value_moving_action_is_refused_when_policy_denies() {
         let denies = || Service::ruling(Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted)));
         let actions = every_decided_action();
-        assert_eq!(actions.len(), 28);
+        assert_eq!(actions.len(), 29);
         let requests: Vec<DecisionRequest> = actions.iter().cloned().map(request).collect();
         let mut policy = Engine::with_policy(
             Guarded::with_a_decision_record(),
@@ -1701,7 +1701,7 @@ mod tests {
         }
         assert_eq!(
             callers.len(),
-            3 * 28 + 2 * 3 + 3 + 3 + 3,
+            3 * 29 + 2 * 3 + 3 + 3 + 3,
             "the operator on every action, the user and Core on a move, Core on a reversal, a status or a read of a node's record asked"
         );
         let seen: Vec<Actor> = policy
