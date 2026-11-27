@@ -145,7 +145,7 @@ pub use ports::{
     Answered, Graded, Grading, Kept, Modules, NoProxy, ProvidersWord, RaiseDesk, RecordWanted,
     Short, ToGrade, ToKeep, Uses,
 };
-pub use records::RecordRead;
+pub use records::{Read, RecordRead};
 pub use reopen::Reopening;
 pub use sign::Unwritten;
 pub(crate) use sign::sign as sign_operation;

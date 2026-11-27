@@ -2480,10 +2480,13 @@ fn result_matches(result: &ResultBody, operation: &Operation) -> bool {
     ) else {
         return false;
     };
-    // A status answer is to the transaction it was asked about too, as to the one it was asked under.
+    // A status answer is to the transaction it was asked about too, as to the one it was asked under; an answer about a
+    // private node's record is of the node asked about (`T-020-58`). The question's own `about` (the transactions whose
+    // segments are asked for) is no field of its answer.
     result["kind"] == operation["kind"]
         && result["transaction"] == operation["transaction"]
-        && result["about"] == operation["about"]
+        && (operation["kind"] != "status_query" || result["about"] == operation["about"])
+        && (operation["kind"] != "inner_segments_query" || result["node"] == operation["node"])
 }
 
 fn unique() -> u64 {

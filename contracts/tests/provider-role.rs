@@ -254,6 +254,10 @@ fn schema_rule_fixtures() -> Vec<(&'static str, Vec<(&'static str, &'static str)
             vec![("/statement", "required")],
         ),
         (
+            "operation-inner-segments-query-without-the-transactions-asked-about",
+            vec![("/statement", "required")],
+        ),
+        (
             "result-status-query-without-the-transaction-asked-about",
             vec![("/statement", "required")],
         ),
@@ -904,6 +908,10 @@ fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
         (
             "answered-inner-segments-query-by-another-provider",
             record(InnerSegmentsMismatch::AnsweredByAnotherProvider),
+        ),
+        (
+            "answered-inner-segments-query-carrying-a-segment-not-asked",
+            record(InnerSegmentsMismatch::SegmentNotAsked),
         ),
         (
             "answered-inner-segments-query-by-an-answer-to-another-question",
@@ -2956,6 +2964,7 @@ fn private_node_record_is_answered_by_the_providers_own_record_of_the_node_asked
     }
     for name in [
         "operation-inner-segments-query-without-the-node-asked-about",
+        "operation-inner-segments-query-without-the-transactions-asked-about",
         "result-inner-segments-query-without-the-node-asked-about",
     ] {
         assert_schema_rejects(name);

@@ -1157,7 +1157,6 @@ mod tests {
             Action::PostRoute { .. }
                 | Action::ChangeCatalogue { .. }
                 | Action::EraseStatement { .. }
-                | Action::ReadNodeRecord { .. }
         ) {
             request.caller = actor("operator", "op-login-2", Role::Operator, ActorKind::Person);
         }
@@ -1639,7 +1638,7 @@ mod tests {
                 Action::AskReversal { .. } | Action::AskStatus { .. } => {
                     matches!(caller.role, Role::Core | Role::Operator)
                 }
-                Action::ReadNodeRecord { .. } => caller.role == Role::Operator,
+                Action::ReadNodeRecord { .. } => matches!(caller.role, Role::Core | Role::Operator),
                 _ => caller.role == Role::Operator,
             };
             if reaches {
@@ -1656,8 +1655,8 @@ mod tests {
         }
         assert_eq!(
             callers.len(),
-            3 * 26 + 2 * 3 + 3 + 3,
-            "the operator on every action, the user and Core on a move, Core on a reversal or a status asked"
+            3 * 26 + 2 * 3 + 3 + 3 + 3,
+            "the operator on every action, the user and Core on a move, Core on a reversal, a status or a read of a node's record asked"
         );
         let seen: Vec<Actor> = policy
             .policy

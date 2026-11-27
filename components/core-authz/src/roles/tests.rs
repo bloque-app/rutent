@@ -2631,12 +2631,13 @@ fn record_read_asked(caller: &Actor) -> DecisionRequest {
     request
 }
 
-/// The operator the register lists for it reads a private node's record; no one else does: not Core's own actors,
-/// carrying the order on, not the operator without the permission, and not the operator holding every other permission
-/// (`REQ-ORD-41`, `REQ-AUZ-1`, `T-020-58`).
+/// The operator the register lists for it reads a private node's record, and so does Core, which carries that standing
+/// permission onward: listed for it beside `CarryOnward`, both. Core with either alone is refused, as is the operator
+/// without the permission, and nobody else reads one, whatever the register lists for them (`REQ-ORD-41`, `REQ-AUZ-1`,
+/// `T-020-58`).
 // verifies: REQ-AUZ-1, REQ-ORD-41
 #[test]
-fn a_private_nodes_record_is_read_by_the_operator_alone() {
+fn a_private_nodes_record_is_read_by_core_carrying_the_operators_permission_onward() {
     let mut policy = engine(
         Kept::with_a_decision_record(),
         Register::holding(&operator(), &[Permission::ReadNodeRecord]).and_holding(
@@ -2644,15 +2645,26 @@ fn a_private_nodes_record_is_read_by_the_operator_alone() {
             &[Permission::CarryOnward, Permission::ReadNodeRecord],
         ),
     );
-    let decision = policy.decide(&record_read_asked(&operator())).unwrap();
-    assert_eq!(decision.outcome, Answer::Permit {});
-    assert_eq!(policy.log().entry_of(&decision).who, operator());
-    // Core, though the register lists the permission for it, and carrying the order on.
-    assert_eq!(
-        policy.decide(&record_read_asked(&core())).unwrap().outcome,
-        NOT_PERMITTED
-    );
-    // The operator without the permission, holding every other.
+    for caller in [operator(), core()] {
+        let decision = policy.decide(&record_read_asked(&caller)).unwrap();
+        assert_eq!(decision.outcome, Answer::Permit {}, "{caller:?}");
+        assert_eq!(policy.log().entry_of(&decision).who, caller);
+    }
+    // Core with one of the two alone, and the operator without the permission, holding every other.
+    for held in [
+        vec![Permission::CarryOnward],
+        vec![Permission::ReadNodeRecord],
+    ] {
+        let mut policy = engine(
+            Kept::with_a_decision_record(),
+            Register::holding(&core(), &held),
+        );
+        assert_eq!(
+            policy.decide(&record_read_asked(&core())).unwrap().outcome,
+            NOT_PERMITTED,
+            "{held:?}"
+        );
+    }
     let mut every_other: Vec<Permission> = every_permission(&operator())
         .into_iter()
         .map(|(p, _)| p)

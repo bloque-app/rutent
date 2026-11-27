@@ -302,11 +302,25 @@ impl<'a> Asked<'a> {
             && operation.get("kind").and_then(Value::as_str) == Some("inner_segments_query")
             && operation.get("provider").and_then(Value::as_str) == Some(self.provider)
             && operation.get("node").is_some()
-            && operation.get("node") == body.get("node");
+            && operation.get("node") == body.get("node")
+            && self.lists_only_segments_asked(body);
         if asked {
             Ok(())
         } else {
             Err(SigningError::NestedNotAsked)
+        }
+    }
+
+    /// Whether every segment of `body`, a record, is under a transaction the operation asks about (`about`): the
+    /// platform signs no segment the question didn't name, so a provider's whole book of a node never leaves signed.
+    fn lists_only_segments_asked(&self, body: &Value) -> bool {
+        let about = self.operation.get("about").and_then(Value::as_array);
+        let segments = body.get("segments").and_then(Value::as_array);
+        match (about, segments) {
+            (Some(about), Some(segments)) => segments
+                .iter()
+                .all(|s| s.get("transaction").is_some_and(|t| about.contains(t))),
+            _ => false,
         }
     }
 
@@ -1207,6 +1221,26 @@ mod tests {
                 "{field}"
             );
         }
+        // An answer naming the node asked about that nests a record of another node: judged by the signer's own clause, since
+        // the answer-level check finds nothing wrong with it.
+        let mut elsewhere_in_the_book = answered.clone();
+        elsewhere_in_the_book["statement"]["outcome"]["record"]["statement"]["node"] =
+            "acme-card-book".into();
+        assert_eq!(
+            sign_as(&elsewhere_in_the_book, maker, &asked, &private, &declared).err(),
+            Some(SigningError::NestedNotAsked),
+            "a record of another node"
+        );
+        // A record listing a segment the question didn't ask about: the provider's whole book never leaves signed.
+        let narrower = asking("operation-inner-segments-query", &[]);
+        let mut narrower_value = serde_json::to_value(&narrower).expect("JSON");
+        narrower_value["about"] = serde_json::json!(["tx-p1-s2"]);
+        let narrower: Operation = serde_json::from_value(narrower_value).expect("an operation");
+        assert_eq!(
+            sign_as(&answered, maker, &narrower, &private, &declared).err(),
+            Some(SigningError::NestedNotAsked),
+            "a segment not asked about"
+        );
         // A question put to another provider than the one that nests its record.
         let elsewhere = asking(
             "operation-inner-segments-query",

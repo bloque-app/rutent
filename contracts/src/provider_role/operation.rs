@@ -3,6 +3,7 @@
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
+use alloc::vec::Vec;
 
 use serde::{Deserialize, Serialize};
 
@@ -292,4 +293,8 @@ pub struct InnerSegmentsQuery {
     pub provider: String,
     /// The private node whose record is asked for.
     pub node: String,
+    /// The transactions the question is about: the segments whose record is asked for, at least one. The provider
+    /// answers with the segments it ran under these transactions alone, never its whole book of the node, so the answer
+    /// is the asker's own and bounded by what was asked ([`check_inner_segments_answer`](super::check_inner_segments_answer)).
+    pub about: Vec<String>,
 }

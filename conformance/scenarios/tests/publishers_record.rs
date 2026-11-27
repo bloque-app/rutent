@@ -489,22 +489,13 @@ fn private_node_record_is_asked_of_its_publisher_and_read_by_closing() {
     let found = replays(&core, &order);
     assert_eq!(found.len(), 1, "{found:?}");
     assert_eq!(found[0].2, ReplayFound::ConsistentWithTheExit {});
-    // The tick's job asks as well, over the nodes of the routes Core runs, and takes the same records.
+    // The order has settled, so no tick reads for it: its record was kept when it settled (`T-020-58`, M1).
     let before = core.publishers_asked().len();
-    let round = core.tick();
-    assert!(core.publishers_asked().len() > before, "the tick asked too");
-    let mut makers: Vec<&str> = round
-        .published_in(NODE)
-        .iter()
-        .map(|r| r.maker.as_str())
-        .collect();
-    makers.sort_unstable();
-    assert_eq!(makers, [EXCHANGE, IN, QUICK]);
-    assert!(
-        core.publishers_asked()
-            .iter()
-            .all(|(_, node, _)| node == NODE),
-        "the tick asks no node a route of Core's doesn't pass"
+    core.tick();
+    assert_eq!(
+        core.publishers_asked().len(),
+        before,
+        "a settled order is read by no tick"
     );
 }
 
@@ -516,7 +507,6 @@ fn a_provider_of_the_publisher_that_declares_no_node_is_never_asked_for_its_reco
     const CLERK: &str = "sim-join-cashier";
     let (mut core, session) = core_over(&[IN, EXCHANGE, QUICK, OUT, CLERK]);
     let (_, segments) = joined(&mut core, &session);
-    core.tick();
     let asked = core.publishers_asked();
     assert!(!asked.is_empty());
     assert!(
@@ -580,9 +570,20 @@ fn private_node_record_is_not_read_where_policy_denies_it() {
     );
 }
 
-/// The tick's question about a private node is decided and recorded, as closing's is: each question it puts is named by
-/// a `read_node_record` effect recorded before it, under the same transaction (`REQ-AUZ-1`, `REQ-ORD-41`, `T-020-58`);
-/// and where policy denies the read the tick asks nothing, takes no record and records no effect.
+/// An order across the joined providers whose conversion is left unknown: its withdrawal settled, its conversion not,
+/// so the order is still unsettled at the node. Its core, the order, and the segments that ran.
+fn unsettled_at_the_node(core: &mut Core, session: &Id, name: &str) -> (Id, Vec<Accounted>) {
+    use rutent_conformance::sim::{Act, Behaviour};
+    core.world()
+        .script_for(EXCHANGE, "conversion", Behaviour::act(Act::Unknown));
+    let (order, ran) = run(core, across(name, session));
+    (order, accounted(&ran).to_vec())
+}
+
+/// The read of the tick, `Job::PublishersRecords`: a read for an order still unsettled at the node, decided and recorded
+/// as closing's is: each question it puts is named by a `read_node_record` effect recorded before it, under the same
+/// transaction; and where policy denies the read the tick asks nothing, takes no record and records no effect
+/// (`REQ-AUZ-1`, `REQ-ORD-41`, `T-020-58`).
 // verifies: REQ-AUZ-1, REQ-ORD-41
 #[test]
 fn ticks_question_about_a_private_node_is_decided_and_recorded_and_a_denial_asks_nothing() {
@@ -600,7 +601,7 @@ fn ticks_question_about_a_private_node_is_decided_and_recorded_and_a_denial_asks
             .collect()
     };
     let (mut core, session) = core_over(&[IN, EXCHANGE, QUICK, OUT, RESERVE]);
-    joined(&mut core, &session);
+    let (_, segments) = unsettled_at_the_node(&mut core, &session, "req-open");
     let (effects_before, asked_before) = (
         read_transactions(&core).len(),
         core.publishers_asked().len(),
@@ -619,14 +620,32 @@ fn ticks_question_about_a_private_node_is_decided_and_recorded_and_a_denial_asks
             "the tick's question to {provider} about {node} has no effect recorded under {transaction}"
         );
     }
-    assert!(!round.published_in(NODE).is_empty());
+    // The provider that ran the withdrawal states it; the one whose conversion is unknown has nothing to state.
+    let published = round.published_in(NODE);
+    assert_eq!(
+        published
+            .iter()
+            .map(|r| r.maker.as_str())
+            .collect::<Vec<_>>(),
+        [IN]
+    );
+    assert_eq!(
+        published[0]
+            .statement
+            .segments
+            .iter()
+            .map(|s| s.transaction.as_str())
+            .collect::<Vec<_>>(),
+        [transaction(&segments[0]).as_str()],
+        "about the order's own segments alone"
+    );
 
-    // Denied: the tick asks nothing, whatever the closing did.
+    // Denied: the tick asks nothing, whatever closing did.
     let (mut core, session) = core_over(&[IN, EXCHANGE, QUICK, OUT, RESERVE]);
     core.registers()
         .permissions
         .retain(|(_, p)| *p != rutent_core_authz::roles::Permission::ReadNodeRecord);
-    joined(&mut core, &session);
+    unsettled_at_the_node(&mut core, &session, "req-open");
     let round = core.tick();
     assert!(core.publishers_asked().is_empty(), "nothing was asked");
     assert!(read_transactions(&core).is_empty(), "no read was recorded");
@@ -634,6 +653,105 @@ fn ticks_question_about_a_private_node_is_decided_and_recorded_and_a_denial_asks
         round.published_in(NODE).is_empty(),
         "and no record was taken"
     );
+}
+
+/// The tick's reads stay bounded: an order that has settled is read by no tick however many run, and orders still
+/// unsettled at a node are asked of each of its providers once a tick, not once an order. The job's default is hourly
+/// (`T-020-58`, the review's M1).
+// verifies: REQ-ORD-41
+#[test]
+fn ticks_reads_stay_bounded_over_many_ticks() {
+    use rutent_core_orch::schedule::Job;
+    assert_eq!(Job::PublishersRecords.default_seconds(), 3600);
+    // Settled: the log doesn't move however many ticks run, even at a cadence of every tick.
+    let (mut core, session) = core_over(&[IN, EXCHANGE, QUICK, OUT, RESERVE]);
+    joined(&mut core, &session);
+    core.set_cadence(Job::PublishersRecords, 0);
+    core.tick();
+    let (reads_before, asked_before) = (read_effects_of(&core), core.publishers_asked().len());
+    for _ in 0..10 {
+        core.tick();
+    }
+    assert_eq!(
+        core.publishers_asked().len(),
+        asked_before,
+        "no question for a settled order"
+    );
+    assert_eq!(
+        read_effects_of(&core),
+        reads_before,
+        "the log holds the reads closing took and no more"
+    );
+
+    // Two orders unsettled at the one node: each tick asks each of its three providers once, not once for each order.
+    let (mut core, session) = core_over(&[IN, EXCHANGE, QUICK, OUT, RESERVE]);
+    unsettled_at_the_node(&mut core, &session, "req-open-1");
+    unsettled_at_the_node(&mut core, &session, "req-open-2");
+    core.set_cadence(Job::PublishersRecords, 0);
+    let mut per_tick = Vec::new();
+    for _ in 0..5 {
+        let (before, effects) = (core.publishers_asked().len(), read_effects_of(&core));
+        core.tick();
+        per_tick.push((
+            core.publishers_asked().len() - before,
+            read_effects_of(&core) - effects,
+        ));
+    }
+    assert!(
+        per_tick
+            .iter()
+            .all(|&(asked, effects)| asked == 3 && effects == 3),
+        "{per_tick:?}"
+    );
+}
+
+/// How many `read_node_record` effects the log holds.
+fn read_effects_of(core: &Core) -> usize {
+    entries(core)
+        .into_iter()
+        .filter(|v| {
+            matches!(
+                &v.what,
+                What::Effect {
+                    action: rutent_contracts::core_internal::Action::ReadNodeRecord { .. },
+                    ..
+                }
+            )
+        })
+        .count()
+}
+
+/// Two orders through one node each keep their own records: the question is about the segments of one order, so the
+/// answer lists them alone, and each order's closing cites its own record (`REQ-ORD-41`, `REQ-AUD-9`, the review's M2).
+// verifies: REQ-ORD-41
+#[test]
+fn two_orders_through_one_node_each_keep_their_own_records() {
+    use rutent_contracts::core_internal::Entry;
+    let (mut core, session) = core_over(&[IN, EXCHANGE, QUICK, OUT, RESERVE]);
+    let (first, _) = joined(&mut core, &session);
+    let second = {
+        let (order, ran) = run(&mut core, across("req-join-2", &session));
+        assert_eq!(accounted(&ran).len(), 4);
+        order
+    };
+    let kept = |order: &Id| {
+        core.log()
+            .entries()
+            .iter()
+            .filter(|(_, e)| {
+                matches!(e, Entry::Stated(s)
+                    if s.what.statement.as_str() == rutent_contracts::provider_role::INNER_SEGMENTS_SHAPE
+                        && s.about.as_ref().and_then(|a| a.order.as_ref()) == Some(order))
+            })
+            .count()
+    };
+    assert!(kept(&first) > 0, "the first order kept its records");
+    assert_eq!(kept(&first), kept(&second), "and so did the second");
+    for order in [&first, &second] {
+        let found = replays(&core, order);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].2, ReplayFound::ConsistentWithTheExit {});
+    }
 }
 
 /// The production platform answers the question of a private node's record: `impl Modules for Platform` carries it
@@ -654,9 +772,9 @@ fn production_platform_answers_the_question_of_a_private_nodes_record() {
         .find_map(|(receipt, entry)| match entry {
             Entry::Verified(v) => match &v.what {
                 What::Effect {
-                    action: action @ Action::ReadNodeRecord { .. },
+                    action: action @ Action::ReadNodeRecord { provider, .. },
                     decision,
-                } => Some(Effect {
+                } if provider.as_str() == IN => Some(Effect {
                     action: action.clone(),
                     decision: decision.clone(),
                     receipt: receipt.clone(),
@@ -666,13 +784,24 @@ fn production_platform_answers_the_question_of_a_private_nodes_record() {
             Entry::Stated(_) => None,
         })
         .expect("closing recorded a read");
-    let Action::ReadNodeRecord { provider, node, .. } = &effect.action else {
+    let Action::ReadNodeRecord {
+        provider,
+        node,
+        about,
+        ..
+    } = &effect.action
+    else {
         unreachable!()
     };
     let (provider, node) = (provider.as_str().to_owned(), node.as_str().to_owned());
-    let Answered::Bytes(bytes) =
-        core.ask_record_of_the_platform(&effect, &provider, &node, "tx-production-question")
-    else {
+    let about: Vec<String> = about.iter().map(|t| t.as_str().to_owned()).collect();
+    let Answered::Bytes(bytes) = core.ask_record_of_the_platform(
+        &effect,
+        &provider,
+        &node,
+        "tx-production-question",
+        &about,
+    ) else {
         panic!("the production platform didn't answer");
     };
     let answer: Statement<ResultBody> = serde_json::from_slice(&bytes).expect("a result");
@@ -736,34 +865,27 @@ fn record_refused_for_one_provider_of_the_node_leaves_the_node_with_nothing_reco
     );
 }
 
-/// Core's schedule reads each publisher's signed record of its private node through the platform, held to its maker's
-/// advertisement and signature, and the replay's books are the records it read (`REQ-ORD-41`, `T-020-48`).
+/// Core's schedule reads each publisher's signed record of its private node through the platform for an order still
+/// unsettled at it, held to its maker's advertisement and signature (`REQ-ORD-41`, `T-020-48`, `T-020-58`).
 // verifies: REQ-ORD-41
 #[test]
-fn publishers_records_are_read_through_the_platform_for_a_replay() {
+fn publishers_records_are_read_through_the_platform_for_an_order_unsettled_at_the_node() {
+    use rutent_core_orch::schedule::Job;
     let (mut core, session) = core_over(&[IN, EXCHANGE, QUICK, OUT, RESERVE]);
-    let (_, segments) = joined(&mut core, &session);
-    let asked: Vec<Id> = segments[..3].iter().map(transaction).collect();
+    unsettled_at_the_node(&mut core, &session, "req-open");
+    core.set_cadence(Job::PublishersRecords, 0);
     let round = core.tick();
-    assert!(round.did(rutent_core_orch::schedule::Job::PublishersRecords));
-    let records = round.published_in(NODE);
-    assert_eq!(
-        records.iter().map(|r| r.maker.as_str()).collect::<Vec<_>>(),
-        [EXCHANGE, IN, QUICK],
-        "one record for each provider that served in the node, in name order, as Core asks them"
-    );
-    let books = core.books_for(NODE, &asked).expect("the node's books");
-    let stated: usize = records.iter().map(|r| r.statement.segments.len()).sum();
-    assert_eq!(books.len(), stated, "the replay reads what the round read");
-    // A record altered after it was signed is refused: it is not among those the round read.
-    core.forge_record_of(IN);
-    let round = core.tick();
+    assert!(round.did(Job::PublishersRecords));
     assert_eq!(
         round
             .published_in(NODE)
             .iter()
             .map(|r| r.maker.as_str())
             .collect::<Vec<_>>(),
-        [EXCHANGE, QUICK]
+        [IN]
     );
+    // A record altered after it was signed is refused: it is not among those the round read.
+    core.forge_record_of(IN);
+    let round = core.tick();
+    assert!(round.published_in(NODE).is_empty());
 }

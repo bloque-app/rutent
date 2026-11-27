@@ -1201,6 +1201,8 @@ impl Simulated {
         }
         let segments: Vec<RecordedInner> = recorded_segments(&self.spec, &self.context, &self.log)
             .into_iter()
+            // Only the segments the question is about: never the provider's whole book of its node (`T-020-58`, M2).
+            .filter(|s| question.about.contains(&s.transaction))
             .map(|s| RecordedInner {
                 transaction: s.transaction,
                 asset_in: s.asset_in,

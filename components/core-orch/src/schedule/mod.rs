@@ -137,11 +137,11 @@ impl Job {
     }
 
     /// The cadence a job has until the operator sets another, in seconds. A job whose work is only what has happened
-    /// since it last ran runs every tick (zero); a check of a balance, which asks a module, runs hourly. The status job runs every
+    /// since it last ran runs every tick (zero); a check of a balance, or of a private node's record, which ask a module, runs hourly. The status job runs every
     /// tick and holds each segment to its provider's cadence ([`Cadences::status_of`]).
     pub const fn default_seconds(self) -> u64 {
         match self {
-            Job::HoldingCheck => 3600,
+            Job::HoldingCheck | Job::PublishersRecords => 3600,
             _ => 0,
         }
     }

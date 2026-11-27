@@ -306,7 +306,8 @@ fn record_question(
 ) -> rutent_contracts::provider_role::Statement<rutent_contracts::provider_role::Operation> {
     let mut value = serde_json::to_value(withdrawal(provider, 1)).expect("JSON");
     value["statement"] = serde_json::json!({
-        "kind": "inner_segments_query", "transaction": transaction, "provider": provider, "node": node
+        "kind": "inner_segments_query", "transaction": transaction, "provider": provider, "node": node,
+        "about": ["tx-about"]
     });
     serde_json::from_value(value).expect("a question of a node's record")
 }

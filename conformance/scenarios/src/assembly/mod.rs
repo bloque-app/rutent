@@ -442,23 +442,18 @@ impl Modules for Running<'_> {
         provider: &Id,
         question: &Statement<Operation>,
     ) -> rutent_core_orch::segments::Answered {
-        let _permitted = effect;
         use rutent_core_orch::segments::Answered;
         self.platform.world.set_clock(self.clock.instant());
-        // The question moves nothing, and is no operation Core carries out: it is handed to the platform as any other
-        // question of the operator's is, and the answer comes back as the platform passed it on.
         if let Operation::InnerSegmentsQuery(q) = &question.statement {
             self.readings
                 .note_asked(provider.as_str(), &q.node, &q.transaction);
         }
-        match Platform::handle(self.platform, provider.as_str(), question) {
-            Handled::Answered(result) => serde_json::to_vec(&*result).map_or(
-                Answered::Refused(
-                    rutent_contracts::module_interface::PlatformRefusal::OutcomeUnknown,
-                ),
-                |bytes| Answered::Bytes(self.readings.tampered(provider.as_str(), bytes)),
-            ),
-            Handled::Refused(refusal) => Answered::Refused(refusal),
+        // The production platform carries it; only the fault a scenario planted on the answer's way to Core is added.
+        match Modules::ask_for_record(self.platform, effect, provider, question) {
+            Answered::Bytes(bytes) => {
+                Answered::Bytes(self.readings.tampered(provider.as_str(), bytes))
+            }
+            refused => refused,
         }
     }
 
@@ -901,9 +896,9 @@ impl Core {
                 r.list(&actor);
             }
             r.permit(&kit::core(), Permission::CarryOnward);
-            // The operator reads a private node's record from its publisher's provider where policy decides it
-            // (`REQ-ORD-41`, `T-020-58`); no one else does, and Core's own actors don't carry it onward.
-            r.permit(&kit::operator(), Permission::ReadNodeRecord);
+            // Core reads a private node's record from its publisher's provider where policy decides it, carrying the
+            // operator's standing permission onward, beside `CarryOnward` (`REQ-ORD-41`, `REQ-AUZ-1`, `T-020-58`).
+            r.permit(&kit::core(), Permission::ReadNodeRecord);
             for change in [
                 CatalogueChange::Grant,
                 CatalogueChange::Promote,
@@ -1199,6 +1194,14 @@ impl Core {
     /// it only as a record of the node asked about, so the replay finds nothing recorded.
     pub fn tamper_with_record_of(&mut self, provider: &str, how: Tamper) {
         self.readings.forge(provider, how);
+    }
+
+    /// The records of the private node `node` Core took of its providers, as closing's books hold them (`T-020-58`).
+    pub fn records_taken(
+        &self,
+        node: &str,
+    ) -> Vec<Statement<rutent_contracts::provider_role::InnerSegments>> {
+        self.readings.taken(node)
     }
 
     /// Every question of a private node's record Core put to a provider, as the platform carried it: the provider, the

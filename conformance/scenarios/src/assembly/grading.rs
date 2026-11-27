@@ -108,6 +108,17 @@ impl Readings {
         ));
     }
 
+    /// The records of the private node `node` Core took of its providers when it last read them, in the order the
+    /// providers are installed: what closing's books hold.
+    pub(crate) fn taken(&self, node: &str) -> Vec<Statement<InnerSegments>> {
+        let read = self.read.borrow();
+        self.movers
+            .iter()
+            .filter_map(|spec| read.records.get(&(spec.provider.clone(), node.to_owned())))
+            .cloned()
+            .collect()
+    }
+
     /// Every question of a node's record Core put: the provider, the node and the transaction, in the order put.
     pub(crate) fn asked(&self) -> Vec<(String, String, String)> {
         self.read.borrow().asked.clone()
@@ -209,17 +220,11 @@ impl PublicRecords for Readings {
 /// provider that serves in it, for the transactions asked, in the order the providers are installed and the
 /// transactions are asked, each segment as its record states it.
 impl Books for Readings {
-    fn took(&self, provider: &str, node: &str, record: Option<Statement<InnerSegments>>) {
-        let key = (provider.to_owned(), node.to_owned());
-        let mut read = self.read.borrow_mut();
-        match record {
-            Some(record) => {
-                read.records.insert(key, record);
-            }
-            None => {
-                read.records.remove(&key);
-            }
-        }
+    fn took(&self, provider: &str, node: &str, record: Statement<InnerSegments>) {
+        self.read
+            .borrow_mut()
+            .records
+            .insert((provider.to_owned(), node.to_owned()), record);
     }
 
     fn recorded(&self, node: &str, transactions: &[Id]) -> Option<Recorded> {

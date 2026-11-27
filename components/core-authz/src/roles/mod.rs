@@ -161,8 +161,8 @@ pub enum Permission {
     /// An operator's login asking a segment's provider for its late status (`REQ-ORD-1`, `T-021-09`). Core's own
     /// actors ask it through [`Permission::CarryOnward`].
     AskStatus,
-    /// The operator reading a private node's record from its publisher's provider (`REQ-ORD-41`, `T-020-58`): held by
-    /// the operator alone, never carried onward by Core's own actors, so no one else's call reads one.
+    /// An operator's login reading a private node's record from its publisher's provider (`REQ-ORD-41`, `T-020-58`), or
+    /// one of Core's own actors carrying that standing permission onward, which holds it beside [`Permission::CarryOnward`].
     ReadNodeRecord,
     /// An operator's login filing an arrival anew against the order it differed from (`REQ-ORD-23`, `T-020-52`),
     /// a permission of its own: the deployment operator's, by the register. A reserve files its own arrival by being
@@ -296,12 +296,28 @@ fn needs_of(asked: Asked<'_>) -> Option<Needs> {
                     | Role::Regulator
                     | Role::Checker => None,
                 },
-                // Reading a private node's record from its publisher's provider (`REQ-ORD-41`, `T-020-58`): the operator,
-                // as a permission of its own the register lists, and no one else; Core's own actors are not carried onward
-                // to it, and an unknown role fails closed. Which provider and node, the question's answer holds.
-                Action::ReadNodeRecord { .. } => {
-                    operator_holds(caller, Permission::ReadNodeRecord).map(Needs::from)
-                }
+                // Reading a private node's record from its publisher's provider (`REQ-ORD-41`, `T-020-58`): an operator's
+                // login the register lists for it, a permission of its own, or one of Core's own actors, which carries the
+                // operator's standing permission onward: Core's actor listed for `CarryOnward` and for this permission
+                // both, the one it is given beside the other, as every other decision Core starts is asked as Core. Nobody
+                // else, and an unknown role fails closed. Which provider and node, the question's answer holds.
+                Action::ReadNodeRecord { .. } => match caller.role {
+                    Role::Operator => {
+                        operator_holds(caller, Permission::ReadNodeRecord).map(Needs::from)
+                    }
+                    Role::Core => Some(
+                        vec![
+                            listed(caller, Permission::CarryOnward),
+                            listed(caller, Permission::ReadNodeRecord),
+                        ]
+                        .into(),
+                    ),
+                    Role::Customer
+                    | Role::Provider
+                    | Role::Verifier
+                    | Role::Regulator
+                    | Role::Checker => None,
+                },
                 // Asking a failed segment's provider to reverse it (`REQ-ORD-3`, `REQ-ORD-11`): an operator's login the
                 // register lists for it, a permission of its own, or one of Core's own actors carrying the order on.
                 // Which provider is asked, and that its segment owes the reversal, the log holds

@@ -906,47 +906,87 @@ impl Duties for Jobs<'_> {
         checked
     }
 
-    /// Each private node a started order's plan passes, as Core's own records of the orders it runs name it, asked of
-    /// each provider of the node's publisher that declares it (`REQ-ORD-41`, `REQ-AUZ-1`, `T-020-58`): each read is
-    /// decided by policy and recorded as an effect, as closing's is ([`Segments::read_node_record`]), and the answer
-    /// is taken as a record only as `closing::publishers::taken` allows. The deployment carries each question to the
-    /// platform and chooses neither node nor provider; where policy refuses a read nothing is asked.
+    /// Each private node an order Core started is still unsettled at, asked of each provider of the node's publisher
+    /// that declares it (`REQ-ORD-41`, `REQ-AUZ-1`, `T-020-58`): once for each node and provider in a run, about the
+    /// transactions of every such order's segments there, whatever the number of orders. An order whose segments at the
+    /// node have all settled (or had their reversal completed) is read no more: closing kept its record when it settled,
+    /// so the job's reads, and the log's entries for them, are bounded by the orders in flight and not by those ever
+    /// started. Each read is decided by policy and recorded as an effect, as closing's is
+    /// ([`Segments::read_node_record`]), and its answer is taken as a record only as `closing::publishers::taken` allows.
+    /// The deployment carries each question to the platform and chooses neither node, provider nor order; where policy
+    /// refuses a read nothing is asked.
     fn read_publishers(&mut self) -> Vec<Published> {
-        // (order, segment, node, bounds) for the first segment of each order's plan that passes each private node.
-        let mut places: Vec<(Id, Id, String, rutent_contracts::router_api::PolicyBounds)> =
-            Vec::new();
-        for (order, started) in self.ports.started() {
-            let Some(order) = id(order) else { continue };
-            for segment in started.plan.iter().flat_map(|part| part.segments.iter()) {
+        use rutent_contracts::state_machine::SegmentState;
+        use std::collections::BTreeMap;
+        type Place = (
+            Id,
+            Id,
+            rutent_contracts::router_api::PolicyBounds,
+            BTreeSet<String>,
+        );
+        // Per node: the first order unsettled there (its segment and bounds name the read) and the transactions of every
+        // such order's segments at the node.
+        let mut nodes: BTreeMap<String, Place> = BTreeMap::new();
+        for (order_name, started) in self.ports.started() {
+            let (Some(order), Some(followed)) = (
+                id(order_name),
+                id(order_name).and_then(|o| self.ports.segments().order(&o)),
+            ) else {
+                continue;
+            };
+            let mut here: BTreeMap<String, (Id, BTreeSet<String>, bool)> = BTreeMap::new();
+            for segment in followed.parts.iter().flat_map(|part| part.segments.iter()) {
+                let Some(segment_id) = id(segment.segment_id.as_str()) else {
+                    continue;
+                };
+                // Only a segment handed over has anything to ask about.
+                let Some(transaction) = self
+                    .ports
+                    .segments()
+                    .statement_of(&order, &segment_id)
+                    .and_then(|s| crate::closing::publishers::transaction_of(&s.statement))
+                else {
+                    continue;
+                };
+                let open = !matches!(
+                    segment.state,
+                    SegmentState::Settled | SegmentState::ReversalComplete
+                );
                 for end in [&segment.from.node, &segment.to.node] {
                     let name = match end {
                         rutent_contracts::provider_role::NodeRef::Inner(id) => id.as_str(),
                         rutent_contracts::provider_role::NodeRef::Outer(o) => o.network.as_str(),
                     };
-                    let private = self
+                    if self
                         .ports
                         .catalogue()
                         .publishers()
                         .publisher_of_node(name)
-                        .is_some();
-                    let seen = places.iter().any(|(o, _, n, _)| *o == order && n == name);
-                    if private
-                        && !seen
-                        && let Some(segment_id) = id(segment.segment_id.as_str())
+                        .is_none()
                     {
-                        places.push((
-                            order.clone(),
-                            segment_id,
-                            name.to_owned(),
-                            started.record.bounds.clone(),
-                        ));
+                        continue;
                     }
+                    let entry = here
+                        .entry(name.to_owned())
+                        .or_insert_with(|| (segment_id.clone(), BTreeSet::new(), false));
+                    entry.1.insert(transaction.clone());
+                    entry.2 |= open;
                 }
+            }
+            for (node, (segment, about, open)) in here {
+                if !open {
+                    continue;
+                }
+                nodes
+                    .entry(node)
+                    .and_modify(|place| place.3.extend(about.iter().cloned()))
+                    .or_insert((order.clone(), segment, started.record.bounds.clone(), about));
             }
         }
         let actors = self.ports.actors();
         let mut wanted = Vec::new();
-        for (order, segment, node, bounds) in places {
+        for (node, (order, segment, bounds, about)) in nodes {
+            let about: Vec<Id> = about.iter().filter_map(|t| id(t)).collect();
             for provider in crate::closing::publishers::serving(self.ports.catalogue(), &node) {
                 wanted.push((
                     order.clone(),
@@ -954,22 +994,26 @@ impl Duties for Jobs<'_> {
                     node.clone(),
                     provider,
                     bounds.clone(),
+                    about.clone(),
                 ));
             }
         }
         let mut answers = Vec::new();
         self.ports.with_segments(&mut |segments, parts| {
-            for (order, segment, node, provider, bounds) in &wanted {
+            for (order, segment, node, provider, bounds, about) in &wanted {
                 let read = crate::segments::RecordRead {
                     order,
                     segment,
                     node,
                     provider,
+                    about,
                     bounds,
                     operator: &actors.operator,
                     core: &actors.core,
                 };
-                if let Some((question, bytes)) = segments.read_node_record(parts, &read) {
+                if let crate::segments::Read::Answered(question, bytes) =
+                    segments.read_node_record(parts, &read)
+                {
                     answers.push((node.clone(), question, bytes));
                 }
             }

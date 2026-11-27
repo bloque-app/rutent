@@ -9183,3 +9183,52 @@ are in `Running::ask_for_record`, which both paths reach. Test
 |---|---|
 | the read is permitted to anyone (the roles' rule) | `ticks_question_about_a_private_node_is_decided_and_recorded_and_a_denial_asks_nothing` (and the closing test) |
 | the tick asks no node of a started plan | `ticks_question_about_a_private_node_is_decided_and_recorded_and_a_denial_asks_nothing` (and the tick's others) |
+
+### Round 4: the review of `4e8e04f0` (#340, CHANGES): M1, M2 and L1 to L7
+
+- **M2: the question is scoped.** `InnerSegmentsQuery {transaction, provider, node, about}`: `about` lists the transactions
+  whose segments are asked for (at least one). The provider answers with those segments alone; `check_inner_segments_answer`
+  refuses a record listing another (`SegmentNotAsked`) and the signer signs a nested record only if every segment is under a
+  transaction asked about (`lists_only_segments_asked`). `Action::ReadNodeRecord` names the same `about` (the decided
+  scope). The platform's `result_matches` compares a status answer's `about` and an inner-segments answer's `node`, no
+  longer `about` for every kind. Closing asks per segment, about the order's own transactions at the node (the entering
+  segment's, or `run_nodes`'); the simulated publisher filters its book to them. Fixtures: provider-role five valid and ten
+  invalid (counted from the files), core-internal one valid and two invalid, 133 schema rules. Test
+  `two_orders_through_one_node_each_keep_their_own_records`.
+- **M1: the tick's reads are bounded.** The job reads only for an order with a segment handed over at the node that has not
+  settled (or had its reversal completed), once for each node and provider in a run, about the transactions of every such
+  order's segments there (the action names the first order and its segment); an order whose segments there have all settled
+  is read by no tick (closing kept its record). The job's default cadence is 3600 s as the holding check's; the once-for-each-node-and-provider rule is held by `ticks_reads_stay_bounded_over_many_ticks` (three questions a tick for two orders) and was not switched off alone. Closing's
+  once-per-segment rule marks a read only once policy refused it or its record was taken: a failed read, or an answer that
+  was no record yet, is read again when the segment is graded again (`Grading::record_read` answers whether it was taken).
+  Tests `ticks_reads_stay_bounded_over_many_ticks` and `a_read_that_failed_is_tried_again_and_one_taken_or_refused_is_not`
+  (`core-orch/tests/segments.rs`). The tick's records go to its round only; the books are closing's.
+- **L1: Core decides.** A read is decided with `caller = Core`, as every other decision Core starts: `roles` takes Core's actor
+  listed for `CarryOnward` and for `ReadNodeRecord` both (the operator's standing permission, which the register gives Core
+  beside the other), the operator's login listed for it as before, and nobody else. As `ask_status` (Core: `CarryOnward`
+  alone) but for the second listing, which gives the "Core is refused" case a lever that leaves moves alone: the register
+  without `ReadNodeRecord` for Core. `T-021-15`'s model (a permission of the operator's, listed per login) is unchanged for
+  the operator. Test `a_private_nodes_record_is_read_by_core_carrying_the_operators_permission_onward`.
+- **L2:** `Running::ask_for_record` delegates to `impl Modules for Platform` and adds only the planted faults and the
+  noting of questions.
+- **L3:** the signer's node clause and its `about` clause each have a case that only they refuse
+  (`record_nested_in_an_inner_segments_answer_is_signed_only_for_the_node_asked`).
+- **L4:** the read's time for its result is read before anything is asked; an answer is handed back only once its result entry
+  is in the log, so a failed append or clock read can't leave an answer used with no result.
+- **L5:** `Books::took` takes a record, never nothing: a failed closing read leaves the record the books hold.
+- **L6:** the measure test compares the two logs after the ticks, leaving out the tick's reads (a decision, its effect and
+  its result, found by the effect's receipt).
+- **L7:** the docs say the tick reads too; the schema's comma is restored; this commit and later ones name their `DEC-20` paths.
+
+| Rule switched off | Red |
+|---|---|
+| the read marks its segment before it succeeds | `a_read_that_failed_is_tried_again_and_one_taken_or_refused_is_not` |
+| the tick reads for every order started | `ticks_reads_stay_bounded_over_many_ticks` |
+| the tick runs every tick by default (cadence 0) | `ticks_reads_stay_bounded_over_many_ticks` |
+| an answer is used without its result entry | `a_read_that_failed_is_tried_again_and_one_taken_or_refused_is_not` |
+| the sim answers its whole book | `two_orders_through_one_node_each_keep_their_own_records` (and the mismatching-record test) |
+| the signer's `about` clause | `record_nested_in_an_inner_segments_answer_is_signed_only_for_the_node_asked` |
+| the signer's node clause | the same |
+| the contract lets a record list a segment not asked | `private_node_record_is_answered_by_the_providers_own_record_of_the_node_asked_about` and the fixture sweep |
+| Core's second listing is not required | `a_private_nodes_record_is_read_by_core_carrying_the_operators_permission_onward` |
+

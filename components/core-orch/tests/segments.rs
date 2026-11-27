@@ -23,7 +23,8 @@ use rutent_contracts::provider_role::{Denomination, Operation, OuterNode, Public
 use rutent_contracts::router_api::{DecisionRecord, Id, Timestamp};
 use rutent_core_orch::rounds::{Fresh, Issued, OperatorKey};
 use rutent_core_orch::segments::{
-    Answered, Live, Modules, NoProxy, Parts, ProvidersWord, Ran, SegmentOutcome, Segments,
+    Answered, Graded, Grading, Live, Modules, NoProxy, Parts, ProvidersWord, Ran, RecordWanted,
+    SegmentOutcome, Segments, Short, ToGrade,
 };
 use rutent_core_orch::snapshot::{Clock, Exposures, Reading, RouteRefusal};
 use rutent_prov::catalogue::{Catalogue, Instant};
@@ -97,11 +98,23 @@ fn receipt(index: usize) -> Receipt {
     .unwrap()
 }
 
+/// The log's entries, and whether it refuses the result entry of a read of a private node's record.
 #[derive(Default)]
-struct KeptLog(Vec<Entry>);
+struct KeptLog(Vec<Entry>, bool);
 
 impl Log for KeptLog {
     fn append(&mut self, entry: &GeneralEntry) -> Result<Receipt, AppendFailure> {
+        if self.1
+            && let Entry::Verified(v) = entry.entry()
+            && let What::Result { effect } = &v.what
+            && self.0.iter().enumerate().any(|(i, e)| {
+                matches!(e, Entry::Verified(v) if matches!(&v.what, What::Effect {
+                    action: rutent_contracts::core_internal::Action::ReadNodeRecord { .. }, ..
+                })) && format!("{:?}", receipt(i)) == format!("{effect:?}")
+            })
+        {
+            return Err(AppendFailure::Unavailable);
+        }
         self.0.push(entry.entry().clone());
         Ok(receipt(self.0.len() - 1))
     }
@@ -156,6 +169,10 @@ struct Fake {
     answer: Option<Vec<u8>>,
     /// A withdrawal is answered as succeeded, signed by its provider, as the route's record states it.
     settles_the_withdrawal: bool,
+    /// How many questions of a private node's record were put, and whether the first is refused.
+    record_questions: usize,
+    /// The log refuses the result entry of a read of a private node's record.
+    refuse_read_results: bool,
 }
 
 impl Modules for Fake {
@@ -231,6 +248,16 @@ impl Modules for Fake {
         }
     }
 
+    fn ask_for_record(&mut self, _: &Effect, _: &Id, _: &Statement<Operation>) -> Answered {
+        self.record_questions += 1;
+        // The first is refused; the next come back.
+        if self.record_questions == 1 {
+            Answered::Refused(PlatformRefusal::Unavailable)
+        } else {
+            Answered::Bytes(b"{}".to_vec())
+        }
+    }
+
     fn take_events(&mut self) -> Events {
         Events::default()
     }
@@ -291,6 +318,8 @@ fn fake() -> Fake {
         moved: false,
         answer: None,
         settles_the_withdrawal: false,
+        record_questions: 0,
+        refuse_read_results: false,
     }
 }
 
@@ -484,11 +513,20 @@ fn run_over(modules: &mut Fake, catalogue: Catalogue) -> (Ran, KeptLog) {
 /// The part run once over each catalogue in turn, by one `Segments`, one log and one store: Core run again after the
 /// catalogue changed.
 fn run_over_each(modules: &mut Fake, catalogues: Vec<Catalogue>) -> (Vec<Ran>, KeptLog) {
+    run_over_each_with(modules, catalogues, &mut ProvidersWord, &mut Permitting(0))
+}
+
+/// [`run_over_each`] under `grading` and `policy`.
+fn run_over_each_with(
+    modules: &mut Fake,
+    catalogues: Vec<Catalogue>,
+    grading: &mut dyn Grading,
+    policy: &mut dyn Decisions,
+) -> (Vec<Ran>, KeptLog) {
     let record = record_naming_a_call();
     let clock = TestClock(Cell::new(Reading::at(1_794_200_000)));
-    let mut log = KeptLog::default();
+    let mut log = KeptLog(Vec::new(), modules.refuse_read_results);
     let mut store = Store::default();
-    let mut policy = Permitting(0);
     let mut key = TestKey(SigningKey::from_bytes(&[7; 32]));
     let mut ids = Ids::default();
     let issued = Issued::new();
@@ -537,10 +575,10 @@ fn run_over_each(modules: &mut Fake, catalogues: Vec<Catalogue>) -> (Vec<Ran>, K
             catalogue,
             log: &mut log,
             evidence: &mut store,
-            decisions: &mut policy,
+            decisions: &mut *policy,
             modules: &mut *modules,
             uses: &mut NoProxy,
-            grading: &mut ProvidersWord,
+            grading: &mut *grading,
             operator_key: &mut key,
             fresh: &mut ids,
             issued: &issued,
@@ -768,5 +806,131 @@ fn reserve_that_turns_batched_mid_route_is_refused_at_the_next_segment() {
         modules.judged.len(),
         1,
         "only the withdrawal was handed over"
+    );
+}
+
+/// A grading that reads one private node's record at each grading of a segment and holds the segment for the first two
+/// (so it is graded three times), taking an answer as a record where one came back.
+struct ReadsTwiceOver {
+    graded: usize,
+    reads: Vec<bool>,
+}
+
+impl Grading for ReadsTwiceOver {
+    fn records_wanted(&mut self, _: &ToGrade<'_>) -> Vec<RecordWanted> {
+        vec![RecordWanted {
+            node: "ledger-in".into(),
+            provider: "reserve-bank-co".into(),
+            about: vec!["tx-about".into()],
+        }]
+    }
+
+    fn record_read(
+        &mut self,
+        _: &RecordWanted,
+        answer: Option<(&Statement<Operation>, &[u8])>,
+    ) -> bool {
+        self.reads.push(answer.is_some());
+        answer.is_some()
+    }
+
+    fn grade(&mut self, settled: &ToGrade<'_>) -> Graded {
+        self.graded += 1;
+        if self.graded <= 2 {
+            return Graded::Waits(Short::Unreadable);
+        }
+        ProvidersWord.grade(settled)
+    }
+}
+
+/// Policy that refuses a read of a private node's record, counting how often it was asked, and permits everything else.
+struct RefusingReads {
+    permits: Permitting,
+    asked: usize,
+}
+
+impl Decisions for RefusingReads {
+    fn decide(&mut self, request: &DecisionRequest) -> Result<Decision, AppendFailure> {
+        if matches!(
+            request.action,
+            rutent_contracts::core_internal::Action::ReadNodeRecord { .. }
+        ) {
+            self.asked += 1;
+            return Ok(Decision {
+                request: request.request.clone(),
+                decision: id(&format!("refused-{}", self.asked)),
+                outcome: Answer::Refuse {
+                    class: rutent_contracts::core_internal::RefusalClass::NotPermitted,
+                },
+                receipt: receipt(20_000 + self.asked),
+            });
+        }
+        self.permits.decide(request)
+    }
+}
+
+/// A read of a private node's record that came to nothing is tried again when its segment is graded again, and one that
+/// was taken is not; a read policy refused is not asked again either (`REQ-ORD-41`, `T-020-58`, the review's M1).
+// verifies: REQ-ORD-41
+#[test]
+fn a_read_that_failed_is_tried_again_and_one_taken_or_refused_is_not() {
+    // The first question gets no answer, the second is taken: asked twice over three gradings, and no third time.
+    let mut modules = fake();
+    modules.settles_the_withdrawal = true;
+    let mut grading = ReadsTwiceOver {
+        graded: 0,
+        reads: Vec::new(),
+    };
+    run_over_each_with(
+        &mut modules,
+        vec![admitting(), admitting(), admitting()],
+        &mut grading,
+        &mut Permitting(0),
+    );
+    assert!(grading.graded >= 3, "the segment was graded again");
+    assert_eq!(modules.record_questions, 2, "retried once, then taken");
+    assert_eq!(grading.reads, [false, true]);
+
+    // Refused by policy: decided once, never asked, never decided again.
+    let mut modules = fake();
+    modules.settles_the_withdrawal = true;
+    let mut grading = ReadsTwiceOver {
+        graded: 0,
+        reads: Vec::new(),
+    };
+    let mut policy = RefusingReads {
+        permits: Permitting(0),
+        asked: 0,
+    };
+    run_over_each_with(
+        &mut modules,
+        vec![admitting(), admitting(), admitting()],
+        &mut grading,
+        &mut policy,
+    );
+    assert!(grading.graded >= 3);
+    assert_eq!(modules.record_questions, 0, "nothing was asked");
+    assert_eq!(policy.asked, 1, "decided once");
+
+    // A log that can't take the result of a read: the answer, though it came back, is not used (`T-020-58`, L4), and the
+    // read is tried again next time.
+    let mut modules = fake();
+    modules.settles_the_withdrawal = true;
+    modules.refuse_read_results = true;
+    let mut grading = ReadsTwiceOver {
+        graded: 0,
+        reads: Vec::new(),
+    };
+    run_over_each_with(
+        &mut modules,
+        vec![admitting(), admitting(), admitting()],
+        &mut grading,
+        &mut Permitting(0),
+    );
+    assert!(modules.record_questions >= 2, "asked again each time");
+    assert!(
+        grading.reads.iter().all(|taken| !taken),
+        "an answer is used only once its result is in the log: {:?}",
+        grading.reads
     );
 }

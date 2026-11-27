@@ -455,7 +455,14 @@ fn route_ending_inside_a_private_node_records_no_replay_check() {
 
     // What there is of it is its publisher's word: the reserve's record of the deposit, labelled so, which is replayed
     // against no exit.
-    let records = published(&mut core, RAIL);
+    // Closing reads no record of a node the route ends inside: Core reads it, decided, for the deposit's own segment.
+    let deposit_tx = transaction(&segments[3]);
+    let records = core.read_records_about(
+        &order,
+        &segments[3].segment,
+        RAIL,
+        std::slice::from_ref(&deposit_tx),
+    );
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].maker, OUT_PRIVATE);
     assert_eq!(records[0].statement.node, RAIL);
@@ -463,11 +470,25 @@ fn route_ending_inside_a_private_node_records_no_replay_check() {
         records[0].statement.standing,
         rutent_contracts::provider_role::Standing::PublishersWord
     );
-    let deposit = transaction(&segments[3]);
-    let held = core
-        .books_for(RAIL, std::slice::from_ref(&deposit))
-        .expect("the record holds the deposit");
-    assert_eq!(held, [recorded("USD", AMOUNT, "USD", AMOUNT, "0")]);
+    let held: Vec<_> = records[0]
+        .statement
+        .segments
+        .iter()
+        .map(|s| {
+            (
+                s.transaction.as_str(),
+                s.asset_in.as_str(),
+                s.amount_in.as_str(),
+                s.asset_out.as_str(),
+                s.amount_out.as_str(),
+                s.fee.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        held,
+        [(deposit_tx.as_str(), "USD", AMOUNT, "USD", AMOUNT, "0")]
+    );
     let net = core
         .world()
         .network(CHAIN)
@@ -477,7 +498,7 @@ fn route_ending_inside_a_private_node_records_no_replay_check() {
         replay_route(
             &[NodeRecord {
                 node: RAIL.to_owned(),
-                segments: held
+                segments: vec![recorded("USD", AMOUNT, "USD", AMOUNT, "0")]
             }],
             &RouteEnd::InsideNode,
             &net
@@ -972,14 +993,13 @@ fn route_across_two_private_nodes_closes_and_replays_each() {
     // What each replay read is its own publisher's record of the segments inside its node.
     let a = published(&mut core, NODE_A);
     let b = published(&mut core, NODE_B);
-    // In name order, as Core asks the providers of a node (`T-020-58`).
     assert_eq!(
         a.iter().map(|r| r.maker.as_str()).collect::<Vec<_>>(),
         [PAIR_IN, PAIR_RAMP_A]
     );
     assert_eq!(
         b.iter().map(|r| r.maker.as_str()).collect::<Vec<_>>(),
-        [PAIR_OUT, PAIR_RAMP_B]
+        [PAIR_RAMP_B, PAIR_OUT]
     );
     assert!(
         a.iter()

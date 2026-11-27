@@ -37,13 +37,21 @@ pub fn serving(catalogue: &Catalogue, node: &str) -> Vec<String> {
         .collect()
 }
 
-/// The question of `provider`'s record of `node`, under `transaction`.
-pub fn question(provider: &str, node: &str, transaction: &str) -> Operation {
+/// The question of `provider`'s record of `node`, under `transaction`, about the segments run under `about`.
+pub fn question(provider: &str, node: &str, transaction: &str, about: &[String]) -> Operation {
     Operation::InnerSegmentsQuery(InnerSegmentsQuery {
         transaction: transaction.to_owned(),
         provider: provider.to_owned(),
         node: node.to_owned(),
+        about: about.to_vec(),
     })
+}
+
+/// The transaction an operation names, if it names one.
+pub fn transaction_of(operation: &Operation) -> Option<String> {
+    serde_json::to_value(operation).ok()?["transaction"]
+        .as_str()
+        .map(str::to_owned)
 }
 
 /// Why an answer is not taken as a record of the private node asked about.

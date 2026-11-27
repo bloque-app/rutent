@@ -160,11 +160,11 @@ pub trait Books {
     fn recorded(&self, node: &str, transactions: &[Id]) -> Option<Recorded>;
 
     /// Hands the books what `provider`, a provider of `node`'s publisher, answered when Core asked it for its record of
-    /// the node, taken as one ([`publishers::taken`]): the record, or `None` where the answer wasn't a record of the
-    /// node, which leaves the books with nothing of that provider's. Core asks again each time it grades a segment, so
-    /// the books keep only the last answer for each provider and node and rebuild from the next asking after a restart
-    /// (`T-020-58`). Books that are given nothing (a fixed listing) ignore it.
-    fn took(&self, provider: &str, node: &str, record: Option<Statement<InnerSegments>>) {
+    /// the node, taken as one ([`publishers::taken`]). An answer that wasn't a record is handed over as nothing, so what
+    /// the books hold of that provider stays as it was. The books keep only the last record for each provider and node
+    /// and rebuild from the next asking after a restart (`T-020-58`). Books that are given nothing (a fixed listing)
+    /// ignore it.
+    fn took(&self, provider: &str, node: &str, record: Statement<InnerSegments>) {
         let _ = (provider, node, record);
     }
 }
@@ -491,12 +491,13 @@ impl Grading for Evidenced<'_> {
     fn records_wanted(&mut self, settled: &ToGrade<'_>) -> Vec<RecordWanted> {
         self.nodes_read(settled)
             .into_iter()
-            .flat_map(|node| {
+            .flat_map(|(node, about)| {
                 publishers::serving(self.catalogue, &node)
                     .into_iter()
                     .map(move |provider| RecordWanted {
                         node: node.clone(),
                         provider,
+                        about: about.clone(),
                     })
             })
             .collect()
@@ -507,14 +508,21 @@ impl Grading for Evidenced<'_> {
         &mut self,
         wanted: &RecordWanted,
         answer: Option<(&Statement<ProviderOperation>, &[u8])>,
-    ) {
-        // Judged at the time Core asked, which its question carries: Core's own clock then.
+    ) -> bool {
+        // Judged at the time Core asked, which its question carries: Core's own clock then. A read that came to nothing
+        // leaves what the books hold of the provider as it was (a record taken earlier stays), and is tried again.
         let record = answer.and_then(|(question, bytes)| {
             let asked_at = rutent_contracts::router_api::Timestamp::new(question.made_at.clone())?;
             let at = Instant(u64::try_from(asked_at.unix_nanos() / 1_000_000_000).ok()?);
             publishers::taken(self.catalogue, at, &question.statement, bytes).ok()
         });
-        self.books.took(&wanted.provider, &wanted.node, record);
+        match record {
+            Some(record) => {
+                self.books.took(&wanted.provider, &wanted.node, record);
+                true
+            }
+            None => false,
+        }
     }
 
     fn statements(&mut self, settled: &ToGrade<'_>) -> Vec<ToKeep> {
@@ -1158,7 +1166,7 @@ impl Evidenced<'_> {
 
     /// The private nodes this segment's closing reads the books of: the node a public segment enters, and the nodes
     /// the value leaves for a public one, which the route Core runs names (`REQ-ORD-41`).
-    fn nodes_read(&self, settled: &ToGrade<'_>) -> Vec<String> {
+    fn nodes_read(&self, settled: &ToGrade<'_>) -> Vec<(String, Vec<String>)> {
         let operations = settled.operations;
         let Some(operation) = operations.get(settled.place) else {
             return Vec::new();
@@ -1168,15 +1176,21 @@ impl Evidenced<'_> {
             && self.public(&operation.from.node)
             && self.private(&operation.to.node)
         {
-            nodes.push(node_name(&operation.to.node).to_owned());
+            nodes.push((
+                node_name(&operation.to.node).to_owned(),
+                vec![settled.transaction.as_str().to_owned()],
+            ));
         }
         if self.private(&operation.from.node)
             && !self.private(&operation.to.node)
             && self.public(&operation.to.node)
         {
-            for (node, _) in self.run_nodes(settled, operations) {
-                if !nodes.contains(&node) {
-                    nodes.push(node);
+            for (node, transactions) in self.run_nodes(settled, operations) {
+                if !nodes.iter().any(|(n, _)| *n == node) {
+                    nodes.push((
+                        node,
+                        transactions.iter().map(|t| t.as_str().to_owned()).collect(),
+                    ));
                 }
             }
         }

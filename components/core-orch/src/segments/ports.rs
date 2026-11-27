@@ -363,14 +363,16 @@ pub trait Grading {
         Vec::new()
     }
 
-    /// What came back of a record `wanted`: the question as put and the answer as received, or `None` where nothing was
-    /// asked (policy refused) or nothing came back.
+    /// What came back of a record `wanted`: the question as put and the answer as received, or `None` where nothing
+    /// came back. Whether the answer was taken as a record: where it wasn't, the read is tried again when the segment is
+    /// graded again, and a read that came to nothing changes nothing the grading holds.
     fn record_read(
         &mut self,
         wanted: &RecordWanted,
         answer: Option<(&Statement<Operation>, &[u8])>,
-    ) {
+    ) -> bool {
         let _ = (wanted, answer);
+        true
     }
 
     /// The statements the grading reads and will cite, for the segments to keep and append before they grade
@@ -420,6 +422,8 @@ pub struct RecordWanted {
     pub node: String,
     /// The provider asked.
     pub provider: String,
+    /// The transactions the question is about: the order's own segments that passed the node, at least one.
+    pub about: Vec<String>,
 }
 
 /// What a grading reaches to raise a difference: the log, Core's clock, a source of fresh identifiers, the

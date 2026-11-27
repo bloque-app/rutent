@@ -973,6 +973,8 @@ pub enum InnerSegmentsMismatch {
     OfAnotherNode,
     /// The record it carries was made by another provider than the one that answers.
     RecordOfAnotherMaker,
+    /// The record it carries lists a segment under a transaction the question didn't ask about.
+    SegmentNotAsked,
     /// The question isn't a question of a node's record, or the answer isn't an answer to one: an answer to another
     /// question is no record of a private node.
     NotAnInnerSegmentsQuestion,
@@ -1011,6 +1013,14 @@ pub fn check_inner_segments_answer(
     }
     if carried.is_some_and(|r| r.maker != answer.maker) {
         out.push(InnerSegmentsMismatch::RecordOfAnotherMaker);
+    }
+    if carried.is_some_and(|r| {
+        r.statement
+            .segments
+            .iter()
+            .any(|s| !asked.about.contains(&s.transaction))
+    }) {
+        out.push(InnerSegmentsMismatch::SegmentNotAsked);
     }
     if out.is_empty() { Ok(()) } else { Err(out) }
 }

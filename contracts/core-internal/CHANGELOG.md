@@ -4,12 +4,13 @@
 - The contract round for `M3`'s milestone review of 2026-11-24 (`T-020-45`), folded into this unreleased version
   while `develop` holds none of it:
   - `T-020-58` (the review of `T-020-48`'s first build, S3, `REQ-ORD-41`, `REQ-AUZ-1`): `Action::ReadNodeRecord {order,
-    segment, node, provider, transaction}` (`read_node_record`), Core's read of a private node's record from its publisher's
-    provider (provider-role's `inner_segments_query`) while a segment that passes the node is graded: a decided action,
+    segment, node, provider, transaction, about}` (`read_node_record`), Core's read of a private node's record from its publisher's
+    provider (provider-role's `inner_segments_query`) for the segments of an order that pass the node, taken by closing while
+    it grades a segment and by the tick for an order still unsettled at the node: a decided action,
     taken as an effect under a fresh transaction it names, appended before the question is put. Its transaction counts among
     those `status-is-asked-under-a-fresh-transaction` reads an entry as naming, so a late status is never asked under it. No
     relation of its own, so the relation count is unmoved. Fixtures: valid `decision-request-to-read-a-private-nodes-record`; invalid
-    `decision-request-to-read-a-private-nodes-record-without-its-node` (one schema rule more). Ignorable: no, it is a decided
+    `decision-request-to-read-a-private-nodes-record-without-its-node`, `--without-the-transactions-it-is-about` (two schema rules more). Ignorable: no, it is a decided
     action a reader that ignored would carry out undecided.
   - `T-020-48` (finding 4): `Difference::PairNotBuilt {order, segment, why}` (`pair_not_built`; `why`: `PairNotBuilt`,
     `no_sent_report {segment}`, `no_flight`, `not_an_amount`, `refused`), a segment's pair of reports that was never built, so

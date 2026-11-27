@@ -17,7 +17,11 @@
       "kind": "inner_segments_query",
       "transaction": "tx-inner-1",
       "provider": "other-co",
-      "node": "acme-ledger"
+      "node": "acme-ledger",
+      "about": [
+        "tx-p1-s2",
+        "tx-p1-s3"
+      ]
     }
   },
   "answer": {

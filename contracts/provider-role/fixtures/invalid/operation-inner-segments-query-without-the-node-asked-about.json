@@ -15,6 +15,10 @@
   "statement": {
     "kind": "inner_segments_query",
     "transaction": "tx-inner-1",
-    "provider": "acme-internal-rail"
+    "provider": "acme-internal-rail",
+    "about": [
+      "tx-p1-s2",
+      "tx-p1-s3"
+    ]
   }
 }

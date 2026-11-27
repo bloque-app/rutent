@@ -336,7 +336,7 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 132] = [
+const SCHEMA_RULES: [SchemaRule; 133] = [
     (
         "filing-inputs-without-its-objective",
         &[("", "required")],
@@ -391,6 +391,11 @@ const SCHEMA_RULES: [SchemaRule; 132] = [
         "decision-request-to-read-a-private-nodes-record-without-its-node",
         &[("/action", "required")],
         "missing field `node`",
+    ),
+    (
+        "decision-request-to-read-a-private-nodes-record-without-the-transactions-it-is-about",
+        &[("/action", "required")],
+        "missing field `about`",
     ),
     (
         "stated-entry-naming-a-node-for-a-result",
@@ -3317,6 +3322,9 @@ fn an_order_refused_for_an_input_policy_could_not_read_is_told_its_class() {
 fn request_to_read_a_private_nodes_record_names_its_node_and_provider() {
     assert_accepted_by_both("decision-request-to-read-a-private-nodes-record");
     assert_rejected("decision-request-to-read-a-private-nodes-record-without-its-node");
+    assert_rejected(
+        "decision-request-to-read-a-private-nodes-record-without-the-transactions-it-is-about",
+    );
 }
 
 // verifies: REQ-ORD-1, INV-4

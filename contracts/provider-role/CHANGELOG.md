@@ -11,26 +11,29 @@
   S3; `REQ-ORD-41`). No operation asked a provider for its record of the segments that ran inside a private node, so
   the record `CMP-EVIDENCE`'s replay reads, a statement since `T-020-18` (`InnerSegments`, `check_inner_segments`), was
   read by the deployment from the world it ran in. Now:
-  - `Operation::InnerSegmentsQuery(InnerSegmentsQuery {transaction, provider, node})`, `inner_segments_query`: the
+  - `Operation::InnerSegmentsQuery(InnerSegmentsQuery {transaction, provider, node, about})`, `inner_segments_query`: the
     operator's question, under a transaction of its own, of the record of `node`, asked of a provider whose module's
-    `handles` lists it. It is read-only and never a dry run, and it moves nothing.
+    `handles` lists it. `about` lists the transactions asked about, at least one: the provider answers with the segments it ran
+    under those transactions alone, never its whole book of the node, so a second order through a node asks for its own
+    segments and gets them (the review of `T-020-58`, M2). It is read-only and never a dry run, and it moves nothing.
     `ResultBody::InnerSegmentsQuery(InnerSegmentsQueryResult {transaction, node, outcome})`, its outcome `answered`
     (the provider's own `InnerSegments` for the node, whole, as a nested statement of the answer's maker),
     `not_known` (it has recorded no segment inside the node) or `refused`.
   - `check_inner_segments_answer(question, answer)` takes the question and the signed answer and holds the answer to the question
     (`InnerSegmentsMismatch {AnsweredByAnotherProvider, AnswersAnotherQuestion, OfAnotherNode, RecordOfAnotherMaker,
-    NotAnInnerSegmentsQuestion}`): an answer to another question, transaction, node or provider is no record of the node
+    SegmentNotAsked, NotAnInnerSegmentsQuestion}`): an answer to another question, transaction, node or provider is no record of the node
     asked about. That the record's key is one its maker's advertisement lists and that the node is one the maker
     declares for its publisher stay `check_inner_segments`'s, which the reader runs against the advertisement its
     catalogue accepted; that its figures add up stays the replay's.
   - `ResultBody::transaction()` names the question's transaction for it; a result of this kind nested in a status
     answer is `CarriesNoOperationsResult`, as a status answer and a hold are.
-  - Valid fixtures `operation-inner-segments-query`, `result-inner-segments-query-answered-with-the-providers-record`,
+  - Five valid fixtures and ten invalid, counted from the files: valid `operation-inner-segments-query`, `result-inner-segments-query-answered-with-the-providers-record`,
     `result-inner-segments-query-not-known`, `answered-inner-segments-query-by-the-providers-record` and
     `answered-inner-segments-query-not-known`; invalid fixtures `operation-inner-segments-query-without-the-node-asked-about`,
     `result-inner-segments-query-without-the-node-asked-about`, `result-inner-segments-query-carrying-another-makers-record`,
     `answered-inner-segments-query-under-another-transaction`, `-about-another-node`, `-carrying-a-record-of-another-node`,
-    `-by-another-provider` and `-by-an-answer-to-another-question`. Not ignorable: a reader that ignored the question
+    `-by-another-provider`, `-carrying-a-segment-not-asked` and `-by-an-answer-to-another-question`, and
+    `operation-inner-segments-query-without-the-transactions-asked-about`. Not ignorable: a reader that ignored the question
     would take a private node's record from where it can't be asked for, which is the seam this closes, and a module
     that doesn't handle it is never asked it. Ignorable: no. (DEC-4, DEC-20, REQ-ORD-41, REQ-ORD-3, T-020-58)
 - A reserve may declare that it answers hold requests (`T-020-56`, finding 4 of `M3`'s milestone review; `T-020-47`'s

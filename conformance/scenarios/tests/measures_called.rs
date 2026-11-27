@@ -294,21 +294,51 @@ fn a_measure_that_cannot_be_written_leaves_the_segments_outcome_unchanged() {
         format!("{b:?}"),
         "the segment's outcome is as without it"
     );
-    // Everything else the run left is the same entry for entry: the measure changed nothing. (Compared before the ticks:
-    // a tick's reads of a private node's record are decided at the time each Core's clock then reads, `T-020-58`.)
+    assert!(with.tick().measures > 0);
+    assert_eq!(without.tick().measures, 0, "nothing could be written");
+    assert!(records(&without).is_empty());
+
+    // Everything else the run and the ticks left is the same entry for entry: the measure changed nothing. The tick's
+    // reads of a private node's record are left out (a decision, its effect and its result): each is made at the time
+    // and under the fresh ids its Core's clock and draws then give, which the two Cores' differing measures move
+    // (`T-020-58`).
     // (Two Cores are two logs: the digests of their entries are left out, the entries' contents compared.)
     let others = |core: &Core| -> Vec<String> {
+        use rutent_contracts::core_internal::{Action, Entry};
+        let reads: Vec<String> = core
+            .log()
+            .entries()
+            .iter()
+            .filter_map(|(receipt, e)| match e {
+                Entry::Verified(v)
+                    if matches!(
+                        &v.what,
+                        What::Effect {
+                            action: Action::ReadNodeRecord { .. },
+                            ..
+                        }
+                    ) =>
+                {
+                    Some(format!("{receipt:?}"))
+                }
+                _ => None,
+            })
+            .collect();
         core.verified_whats()
             .into_iter()
-            .filter(|w| !matches!(w, What::Measure { .. }))
+            .filter(|w| match w {
+                What::Measure { .. } => false,
+                What::Decide { request, .. } => {
+                    !matches!(request.action, Action::ReadNodeRecord { .. })
+                }
+                What::Effect { action, .. } => !matches!(action, Action::ReadNodeRecord { .. }),
+                What::Result { effect } => !reads.contains(&format!("{effect:?}")),
+                _ => true,
+            })
             .map(|w| undigested(&format!("{w:?}")))
             .collect()
     };
     assert_eq!(others(&with), others(&without));
-
-    assert!(with.tick().measures > 0);
-    assert_eq!(without.tick().measures, 0, "nothing could be written");
-    assert!(records(&without).is_empty());
 
     // The log able to take them again, the caller's next call writes what waited, each once.
     without.refuse_log_appends("measure", 0);
