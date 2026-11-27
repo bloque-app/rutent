@@ -9703,6 +9703,171 @@ Branch `f-020/t-020-65`, from `2c86d6a9` (`origin/m3` with `T-020-49` merged), i
 |---|---|
 | a re-read record is kept again after a restart | `a_restart_while_a_segment_waits_keeps_its_record_once` |
 | the books keep an order after its segments settle | `closing_books_drop_an_orders_records_once_its_segments_have_settled` |
+## T-020-66: what the reviews of `T-020-65` left
+
+Branch `f-020/t-020-66`, from `f8bddbb4` (`origin/m3`), issue #344: the milestone reviewer's check of `T-020-65` at
+`ebf42c9c` and #342's review, with #337's round-2 Lows. Edits `components/core-orch/` (`segments/lifecycle.rs`,
+`segments/mod.rs`, `settings/`, `intake/`), `components/core-authz/` (the scan, a `DEC-20` path), `tools/licence-check/`
+(`artifact.rs`, a `DEC-20` path), and the `F-024` files the commit body names (the fleet's platform restart in
+`sim/fleet.rs`, the assembly's `mod.rs` and `releases.rs`, the scenario tests). No prov source changed: the platform
+already answers `is_accepted`.
+
+- **(1) A stale mark refused while a release is staged holds its provider no more.** `standing_of` completes a stale mark's
+  missing result `failed` where nothing is marked and a release is staged: the platform refuses a stale mark while a
+  release is staged, and one taken before the staging would have been recorded and restored with it. Test `stale mark
+  refused while a release is staged does not hold its provider after core restarts` (`module_scenarios.rs`): the
+  scenario fleet now restarts its platform on its record (`Fleet::restart_platform`, a `FleetRecord` that can break, and
+  every release asserted handed to it again), the assembly leaves a decided effect without its result
+  (`Core::effect_without_its_result`, the fault of Core stopping between the two), and Core reopens through the
+  assembly's restart, whose `reopen_lifecycle` appends the result `failed`; the operator's confirmation then confirms
+  the provider. Red first on the result missing.
+- **(2) The unlist rule counts what still waits.** `touches_node` counts every outcome but the final ones (`Settled`,
+  `NotPermitted`, `NotHandedOver`, `WithdrawalCancelled`): a `Failed` or `Refused` segment counts until its reversal
+  completes, and one waiting on a person, with no result or waiting for its evidence counts. It also counts every order
+  Core follows that hasn't ended (complete, ended without completing, failed, handed on) whose route names the node: a
+  segment still to begin, or a private run whose grading reads its public entry (`closing`'s `movement_into`, #342's
+  L2). Test `public node cannot be unlisted while a failed segment's reversal is owed there` (`simulated_faults.rs`), red
+  first; the in-flight test now asserts that policy was asked and no effect recorded.
+- **(3) The Lows.**
+  - *A stale mark of a version the platform holds no release of stays open* (`Releases::is_accepted`): neither the
+    reopening, which reads one platform for every provider in the log, nor a confirmation records it `failed`.
+  - *Grading reads a node's standing as it stood when the segment began.* By the rule: no unlist of a node that an
+    order Core follows names is permitted until that order ends, and a listing can't change a node an open order routes
+    through (a node a publisher declares private is refused a listing, and one not listed was left out of the route's
+    snapshot), so the standing a segment is graded on is the one it began under. No standing is stored beside a segment.
+  - *A withdrawal is never taken again at a confirmation*, and its missing result is never completed from the platform's
+    standing: a confirmation follows an unclean end, which drops every waiting release, so a release waiting then was
+    admitted after the withdrawal, under a digest the effect (which names a version) can't tell apart; and a withdrawal
+    the platform took is in its withdrawn set, recorded before it was taken. No contract field. Test `withdrawal is not
+    taken again for a release resubmitted under a new digest` (core-orch `tests/lifecycle.rs`; its first run picked up the
+    fix mid-build, so its red is the rule-off below).
+  - *Scan rule 4's reach* reads module-level `const` and `static` items as nodes, and a call is guarded only where the
+    function asks policy and keeps the permit it takes before that call (`let _ = ..permit()` and a bare
+    `..permit();` keep nothing). Its doc says what stays out of reach for v0: a carrier inside a `macro_rules!` body, and a
+    decision and a permit on unrelated values. Test `scan_rule_four_finds_function_pointers_and_unchecked_permits`.
+  - *`Settings::reopen` completes a missing result from what its targets answer*: applied again, `done` where taken,
+    `failed` where refused (a listing of a node a provider declared private), so a reopened Core never holds a refused
+    listing as the operator's. Test `listing the catalogue refused is not completed done on reopen` (`private_nodes.rs`,
+    through the assembly's reopen).
+  - *The later private claim through Core.* The rule now refuses an unlist while any open order names the node, and the
+    catalogue joins a private claim only once the node is unlisted (`T-020-65`'s `private_claim_of_a_node_is_joined_only_once_the_operator_unlisted_it`):
+    a claim can follow only an unlist Core permitted, which `public_node_cannot_be_unlisted_while_a_segment_or_holding_rests_there`
+    shows through Core.
+  - *The differing repeat over the real engine* (`assembly_intake.rs`): scoped, the agent is told the repeat conflicts;
+    unscoped, `ReadRefused`; the read checked and recorded each time.
+  - *`told_error`'s raw `Conflicting { order: None }`*: built in `open_inner` alone (test
+    `conflicting_with_no_order_comes_only_from_open`), and checked as any error about an order were it ever to come with
+    one named.
+  - *The licence check orders an `OR` expression's operands* before comparing (`canon`); one with `AND`, `WITH` or
+    parentheses compares as written. Test `or_operands_compare_in_any_order`.
+- **Defaults** (reversible, fail closed). (1) An unlist is refused while any order Core follows that hasn't ended names the
+  node. (2) A withdrawal with no result stays without one. (3) The fleet's restart re-asserts every release, waiting ones
+  included, as a deployment's start would.
+- **Red first.** The named tests' reds are their rules switched back to the code as it stood (R1, R2c, R3, R4 below): the
+  three scenario tests needed new assembly support (the fleet's restart, the effect left without its result, the unlist
+  helper) written in the same pass as the rules, and the withdrawal test's first run built the fix in with it.
+- **Rule-off table** (each alone unless said, its test run through the lock, the file restored from git; `ruleoff.py` in
+  the row's scratch folder; every red an assertion, no build failure).
+
+  | Rule switched off | Red |
+  |---|---|
+  | R1: nothing marked and a release staged completes `failed` | `stale_mark_refused_while_a_release_is_staged_does_not_hold_its_provider_after_core_restarts` |
+  | R2a: a failed segment counts until its reversal completes (alone) | green: the open order's route names the node too, which the route rule refuses alone; the outcome rule alone guards an order that ended with a reversal still owed |
+  | R2b: an open order's route counts | `public_node_cannot_be_unlisted_while_an_open_orders_route_names_it` |
+  | R2c: R2a and R2b together | `public_node_cannot_be_unlisted_while_a_failed_segments_reversal_is_owed_there` |
+  | R3: a setting's result completed from its target's answer | `listing_the_catalogue_refused_is_not_completed_done_on_reopen` |
+  | R4: a withdrawal is never taken again at a confirmation | `withdrawal_is_not_taken_again_for_a_release_resubmitted_under_a_new_digest` |
+  | R5: a version the platform holds no release of stays open | `stale_mark_of_a_version_the_platform_holds_no_release_of_stays_open` |
+  | R6: a module-level `const` is a node of rule 4's reach | `scan_rule_four_finds_function_pointers_and_unchecked_permits` |
+  | R7: a permit guards only a call after it | the same |
+  | R8: a discarded permit is not kept | the same |
+  | R9: an `OR` expression's operands are ordered | `or_operands_compare_in_any_order` |
+  | R10: one place builds `Conflicting` | `conflicting_with_no_order_comes_only_from_open` |
+- **Local checks** (through the lock, `contracts/src/lib.rs` touched first): `fmt --check` and workspace `clippy
+  --all-targets -D warnings` clean; core-orch, contracts and core-audit 763 passed with one transient failure,
+  core-audit's `store_whose_verified_entrys_statement_was_erased_still_opens` (`Unavailable` reopening its stores; this
+  row changes no core-audit file, and its binary passed three runs out of three after); core-authz `--lib` 167;
+  licence-check 46; prov (lib, `module_record`, `module_lifecycle`, `catalogue_snapshot`, `catalogue`) 146; scenarios
+  (lib and ten binaries) 168; `invariants` on seeds 11 to 15, 10; `plan-check --strict` 0 findings, `tag-check --strict`
+  2547 tests, 0 findings; the contract guard against `origin/develop`: no violations. No `cargo doc` locally.
+
+### T-020-66, review round 1 (#346's review at `6353bb87`)
+
+- **Design.**
+  - *M1: the platform admits no new release while its provider waits for confirmation* (`prov/src/module/platform.rs`, a
+    `DEC-20` path). `standing_of`'s staged arm reads "nothing marked and a release staged" as a stale mark refused for
+    that staging. The review showed the premise was false: a mark taken unrecorded (`TakenUnrecorded`), then the unclean
+    end, then a release accepted and staged while the provider waited, read the same, and the mark was completed
+    `failed`. Now admission refuses a release the record doesn't hold, under any version, while its provider waits
+    (`AdmissionPending`, reused: the provider's releases wait for the confirmation, as a waiting release waits for its
+    acceptance; no contract change). `accept_and_start` refuses too, so `Platform::accept` can't place one either. Once
+    the record takes no write after the unrecorded mark, nothing can be staged after it before the end. Re-admitting a
+    release the record holds is unchanged. `T-013-11`'s admitted-while-held test becomes
+    `a_release_published_while_its_provider_waits_for_confirmation_is_refused` (F-013's notes, item 3, say so).
+    The reviewer's probe is the scenario test `stale_mark_taken_unrecorded_is_taken_again_when_a_release_is_published_while_its_provider_waits`.
+    Its history: the mark is taken with the fleet's record broken in place (new test hooks `Fleet::with_record_broken` and
+    `Core::on_platform_with_its_record_broken`), then the unclean restart, then 1.2.0 refused under a staging policy.
+    Core reopens and the effect stays without its result. The confirmation takes the mark again, and 1.0.0 is stale.
+  - *L1: a failed or refused segment counts while its reversal is owed*, never for a deposit, whose reversal never
+    applies (`segments/mod.rs`). A refused final deposit stays `FailedReversalOwed` on its part for ever. Before this,
+    once its order was handed on, its nodes could never be unlisted again. The test
+    `refused_deposit_holds_no_node_once_its_order_is_handed_on` (`hand_on.rs`, over `segments_support`) hands the part
+    on, runs the linked order to `complete` and finds neither node held.
+  - *L1's other half, a test where the owed-reversal arm goes red alone, has no history to stand on.* A non-deposit
+    segment that failed keeps its order from ending (the log's rule on value in motion), so the route rule counts the
+    order. Every such segment's nodes are named by a neighbour on the route too: the segment before it settled into its
+    `from`, and the one after it, still to begin, leaves its `to`. A first segment's failure is `WithdrawalCancelled`,
+    which owes nothing, and the last is a deposit. I probed a route whose withdrawal fails first: `WithdrawalCancelled`.
+    So R2a alone stays green, and R2a with R2b goes red on the owed-reversal test. The arm stays as the defence in
+    depth that fails closed. I didn't narrow the route rule to make the arm testable alone: grading reads a settled
+    segment's nodes until its order closes.
+  - *L2: acceptance holds the route to the standing it was chosen on* (`intake/mod.rs`). Each inner node of the offered
+    route must still be on the operator's public list, or still the private node of its segment's provider's publisher,
+    as the catalogue's snapshot admits a tuple. If not, the acceptance is refused `no_route_right_now`. The quote shown
+    is dropped, nothing is recorded but the refusal, and the order can be quoted again on the standing that holds now:
+    the quote path's own refusal of a route it can't run. An acceptance carried on after a failed append is held to the
+    same check before its remaining entries are appended, and then ends `no_route_right_now`. An outer node's standing
+    is its publisher's declaration, which no unlist changes. Tests: `quote_whose_route_names_a_node_unlisted_since_is_not_accepted`
+    (`simulated_faults.rs`, the reviewer's probe) and `acceptance_carried_on_after_its_routes_node_was_unlisted_starts_nothing`
+    (core-orch `tests/intake.rs`).
+  - *L4: scan rule 4.* It reads an `impl` block's associated `const` as a node, as it reads a module-level one, so
+    `Self::F(..)` to a carrier is found. Its doc now says "takes a permit earlier in its body than that call", and it
+    names what a scan by name and position can't see. That is a permit bound to `_p` or put in a struct, passed on,
+    `.is_some();`, `if let Some(_)`, `drop`ped, taken in a closure never called, or with the carrier on its refused
+    branch. For those, review and the decided path's tests are the defence.
+- **Routed elsewhere** (the coordinator's ruling): L3 to #326; L6 to `T-020-54`; L5 accepted as it is (a withdrawal
+  with no result stays without one, default 2 above).
+- **Defaults** (reversible, fail closed). (4) The refusal for a release published while its provider waits is
+  `AdmissionPending`. A variant of its own would be a module-interface change. (5) The owed-reversal arm stays beside
+  the route rule. (6) An acceptance on a changed standing is refused `no_route_right_now`, not re-routed in the same
+  call: the customer's next quote routes on the standing that holds.
+- **Red first.** `a_release_published_while_its_provider_waits_for_confirmation_is_refused` and
+  `quote_whose_route_names_a_node_unlisted_since_is_not_accepted` were red before their fixes. The others' reds are
+  their rules switched off below. The M1 scenario test needed the record-breaking hooks first. The hand-on and
+  carried-on tests were written right after their rules, in the same pass.
+- **Rule-off table, round 1** (each file restored from a copy taken before the change, since the worktree held this
+  round's uncommitted work; `ruleoff.py` in the round's scratch folder `t-020-66r2`).
+
+  | Rule switched off | Red |
+  |---|---|
+  | R11: admission refuses a release the record doesn't hold while its provider waits | `a_release_published_while_its_provider_waits_for_confirmation_is_refused` (prov), and on its own run `stale_mark_taken_unrecorded_is_taken_again_when_a_release_is_published_while_its_provider_waits` (scenarios) |
+  | R12: `accept_and_start` refuses while the provider waits (alone) | green: with R11 in place no release waits for an acceptance while its provider is held (a waiting release is in no record, so an unclean end drops it), so this guard is defence in depth |
+  | R13: a failed or refused deposit owes no reversal | `refused_deposit_holds_no_node_once_its_order_is_handed_on` (the ledger held) |
+  | R2a: the owed-reversal arm (alone, rerun) | green, as in the row's table: the route rule covers it |
+  | R2b: the route rule (alone, rerun on the owed-reversal test) | green: the arm covers it |
+  | R2a and R2b together | `public_node_cannot_be_unlisted_while_a_failed_segments_reversal_is_owed_there` |
+  | R14: acceptance holds the route to its standing | `quote_whose_route_names_a_node_unlisted_since_is_not_accepted` (the carry-on check still ends the order, but only after the acceptance was built and its hold redeemed, so the quote shown stays) |
+  | R15: a carried-on acceptance holds the route to its standing | `acceptance_carried_on_after_its_routes_node_was_unlisted_starts_nothing` |
+  | R16: an associated `const` is a node of rule 4's reach | `scan_rule_four_finds_function_pointers_and_unchecked_permits` ("an associated const pointer") |
+- **Local checks, round 1** (through the lock, `contracts/src/lib.rs` touched first). Workspace `clippy --all-targets -D
+  warnings` was clean. `fmt --check` found two lines to wrap; `cargo fmt` wrapped them and `fmt --check` is clean.
+  core-orch, contracts and core-audit: 765 passed. core-authz `--lib`: 167. licence-check: 46. prov (lib,
+  `module_record`, `module_admission`, `module_admission_signed`, `module_lifecycle`, `module_lifecycle_properties`,
+  `catalogue`, `catalogue_snapshot`, `catalogue_properties`, `catalogue_snapshot_properties`): 173. scenarios (lib,
+  `module_scenarios`, `simulated_faults`, `hand_on`, `private_nodes`, `assembly_intake`, `acceptance`, `failure`,
+  `reversing`, `execution_routes`, `publishers_record`, `publishers_binding`): 128. `invariants` on seeds 11 to 15: 10.
+  `plan-check --strict`: 0 findings. `tag-check --strict`: 2551 tests, 0 findings. The contract guard against
+  `origin/develop` reports no violations. No `cargo doc` was run locally.
 
 ## T-020-59: the reader contract, and a public network listed with its reader service
 

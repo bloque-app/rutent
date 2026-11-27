@@ -1990,7 +1990,9 @@ restart Core and its platform mid-order and run the end-state checks on what the
 **What was built.**
 1. *The platform on a file record, restarted for real* (`src/sim/fleet.rs`). Every `Fleet` keeps its platform's carried-out
    record on a file of its own (`FileRecord`, in a fresh temp directory removed with the last platform on it) and opens its
-   platform with `Platform::open`. `Fleet::restarted` is the crash: the platform dropped (its processes and every module's
+   platform with `Platform::open`. `Fleet::restarted` (since the merge of `m3` at `8679337a`, `T-020-66`'s
+   `Fleet::restart_platform(unclean)`, which this row's file record now backs: its record broken before the drop where
+   unclean, so the close is never written, in place of cutting it) is the crash: the platform dropped (its processes and every module's
    process with it), the record cut where the crash fell (the clean close the drop writes is taken off, as a killed process
    never writes it), the record opened again, with a bounded retry on `WouldBlock` (250 x 20 ms, as `record.rs`'s test does
    since 9462a3a8: `flock` is shared by a forked child's copy until its `exec`), the platform opened on it, its settings set

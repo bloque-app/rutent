@@ -26,7 +26,7 @@ use rutent_prov::catalogue::{
     Bond, Catalogue, Category, Grant, GrantTerms, Instant, ReversalCapacity, tuples_of,
 };
 use rutent_prov::module::platform::{OperationClock, Platform};
-use rutent_prov::module::record::FileRecord;
+use rutent_prov::module::record::{FileRecord, Record};
 use rutent_prov::module::types::{Admitted, Envelope, Handled};
 use rutent_prov::module::wire::sha256;
 use serde_json::json;
@@ -212,10 +212,47 @@ impl OperationClock for ScenarioClock {
     }
 }
 
+/// The platform's record, on a file of its own (`T-013-10`, `T-024-21`), which a restart opens the platform on again
+/// ([`Fleet::restart_platform`]); it can be broken, as a disk that fills, so the platform ends with nothing of its closing
+/// written (`T-020-66`).
+struct FleetRecord {
+    inner: FileRecord,
+    broken: Arc<AtomicBool>,
+}
+
+impl Record for FleetRecord {
+    fn load(&mut self) -> std::io::Result<Vec<String>> {
+        self.inner.load()
+    }
+
+    fn append(&mut self, line: &str) -> std::io::Result<()> {
+        if self.broken.load(Ordering::SeqCst) {
+            return Err(std::io::Error::other("the record is broken"));
+        }
+        self.inner.append(line)
+    }
+
+    fn replace(&mut self, lines: &[String]) -> std::io::Result<()> {
+        self.inner.replace(lines)
+    }
+}
+
 /// A platform over a [`SimWorld`], with the catalogue that vouches for its releases.
 pub struct Fleet {
     /// The platform. Its world is the simulation's: [`SimWorld`].
     pub platform: Platform<SimWorld>,
+    /// The file its record is kept on, which a restart opens it on again.
+    record: RecordFile,
+    /// Whether the record the platform runs on is broken ([`Fleet::with_record_broken`]).
+    broken: Arc<AtomicBool>,
+    /// Every release asserted to the platform, in order, as received with its binaries: what a restarted platform is
+    /// handed again, as a deployment's start does.
+    admissions: Vec<(Vec<u8>, Parts<Vec<u8>>)>,
+    /// The operation deadline and the scenario clock's switch the platform runs under.
+    deadline: Duration,
+    wall_time: Arc<AtomicBool>,
+    /// The staging policy, the deployment's setting, set again on a restarted platform.
+    staging: Option<rutent_prov::module::lifecycle::Staging>,
     catalogue: Catalogue,
     listed: BTreeSet<String>,
     context: SuiteContext,
@@ -224,19 +261,9 @@ pub struct Fleet {
     seeds: BTreeMap<u8, String>,
     /// The transactions whose late answers the platform has taken ([`Fleet::late_answers`]), each once.
     late_taken: BTreeSet<String>,
-    /// Where the platform keeps its carried-out record: a file of its own, which a restarted platform opens again
-    /// (`T-013-10`, `T-024-21`).
-    record: RecordFile,
-    /// Every release admitted, in the order it was, as the deployment's store of releases keeps it: the assertion as
-    /// received and its two parts. A restarted platform holds no process, and each is admitted again from here
-    /// ([`Fleet::restarted`]).
-    admitted: Vec<(Vec<u8>, Parts<Vec<u8>>)>,
-    /// The platform's deadline on an operation, set again on a restarted platform.
-    deadline: Duration,
 }
 
-/// The file the platform's record is kept in, in a directory of its own, removed when the last platform on it is
-/// gone (`T-024-21`).
+/// The file the platform's record is kept in, in a directory of its own, removed with the fleet (`T-024-21`).
 struct RecordFile {
     dir: std::path::PathBuf,
 }
@@ -260,30 +287,6 @@ impl RecordFile {
 
     fn path(&self) -> std::path::PathBuf {
         self.dir.join("record")
-    }
-
-    /// The record as a crash of the platform's process leaves it: every entry it synced, and not the close a platform
-    /// dropped whole writes last. The next platform on it can't vouch for what this one decided, so it holds every
-    /// provider's releases until the operator confirms them (`T-013-11`).
-    fn crash(&self) {
-        let path = self.path();
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            return;
-        };
-        let mut lines: Vec<&str> = text.lines().collect();
-        let closed = lines.last().is_some_and(|line| {
-            serde_json::from_str::<serde_json::Value>(line).is_ok_and(|entry| {
-                matches!(entry["entry"].as_str(), Some("closed" | "closed_holding"))
-            })
-        });
-        if closed {
-            lines.pop();
-            let mut kept = lines.join("\n");
-            if !lines.is_empty() {
-                kept.push('\n');
-            }
-            std::fs::write(&path, kept).expect("the record, cut where the crash fell");
-        }
     }
 
     /// The record opened again. Its lock is `flock`'s, shared by every copy of the descriptor: a module process forked
@@ -312,19 +315,6 @@ impl Drop for RecordFile {
     }
 }
 
-/// The platform's settings every scenario runs it under, on a new platform or a restarted one: no staging until the
-/// deployment sets one, a start deadline no loaded machine misses, the scenario clock, `deadline` and the output
-/// limit.
-fn configure(platform: &mut Platform<SimWorld>, wall_time: Arc<AtomicBool>, deadline: Duration) {
-    platform.set_staging(None);
-    // Starting a simulated provider is the machine's work, which a stepped clock can't move: on a loaded machine
-    // it can pass the 10 s a production start is given, and no scenario is about start-up time.
-    platform.set_start_deadline(std::time::Duration::from_secs(120));
-    platform.set_operation_clock(Arc::new(ScenarioClock::new(wall_time)));
-    platform.set_deadline(deadline);
-    platform.set_output_limit(1 << 20);
-}
-
 impl Fleet {
     /// A platform with no provider, whose upgrades take effect at once and whose operations have the deadline
     /// `deadline`.
@@ -342,68 +332,44 @@ impl Fleet {
         world.wall_time = Some(wall_time.clone());
         // On a record of its own, on a file, which a restarted platform opens again (`T-024-21`).
         let (record, file) = RecordFile::create();
-        let mut platform = Platform::open(
-            disk::paths(),
+        let broken = Arc::new(AtomicBool::new(false));
+        let platform = Self::opened(
+            &context,
             world,
-            Envelope {
-                deployment: context.deployment.clone(),
-                protocol_version: context.protocol_version.clone(),
+            FleetRecord {
+                inner: file,
+                broken: broken.clone(),
             },
-            Box::new(file),
-        )
-        .expect("a platform");
-        configure(&mut platform, wall_time, deadline);
+            deadline,
+            &wall_time,
+            None,
+        );
         Self {
             platform,
+            record,
+            broken,
+            admissions: Vec::new(),
+            deadline,
+            wall_time,
+            staging: None,
             catalogue,
             listed: BTreeSet::new(),
             context,
             installed: BTreeMap::new(),
             seeds: BTreeMap::new(),
             late_taken: BTreeSet::new(),
-            record,
-            admitted: Vec::new(),
-            deadline,
         }
     }
 
-    /// The platform restarted after a crash (`T-024-21`; `NFR-6`, `INV-8`): its process gone, and every value it held
-    /// in memory with it, its modules' processes and what each held in its instance among them (a plain wallet's
-    /// record of its account). What survives is what a platform keeps beyond its memory: its carried-out record, on its
-    /// file, cut where the crash fell (with no close), and the releases the deployment admitted. The platform is opened
-    /// again on that record (`Platform::open`), its settings set again, `staging` among them, and each release
-    /// admitted again in the order it first was, which the record then accepts as it says. The world outside it, the
-    /// providers' books, rails and networks and the keys the deployment keeps, goes on as it stands; so does the
-    /// catalogue its admissions are judged against, the deployment's.
-    ///
-    /// A record that didn't end whole holds every provider with a release in force until the operator confirms it
-    /// (`Platform::confirm`, `T-013-11`): nothing of theirs runs until then.
-    ///
-    /// # Panics
-    ///
-    /// If the record can't be opened again or the platform refuses it.
-    #[must_use]
-    pub fn restarted(mut self, staging: Option<rutent_prov::module::lifecycle::Staging>) -> Self {
-        let mut world = std::mem::replace(&mut self.platform.world, SimWorld::new());
-        let Fleet {
-            platform,
-            mut catalogue,
-            listed,
-            context,
-            installed,
-            seeds,
-            late_taken,
-            record,
-            admitted,
-            deadline,
-        } = self;
-        // The crash: the process and its modules' processes gone.
-        drop(platform);
-        record.crash();
-        let wall_time = world
-            .wall_time
-            .get_or_insert_with(|| Arc::new(AtomicBool::new(false)))
-            .clone();
+    /// A platform over `world`, opened on `record`, set as every scenario's is.
+    fn opened(
+        context: &SuiteContext,
+        world: SimWorld,
+        record: FleetRecord,
+        deadline: Duration,
+        wall_time: &Arc<AtomicBool>,
+        staging: Option<rutent_prov::module::lifecycle::Staging>,
+    ) -> Platform<SimWorld> {
         let mut platform = Platform::open(
             disk::paths(),
             world,
@@ -411,26 +377,86 @@ impl Fleet {
                 deployment: context.deployment.clone(),
                 protocol_version: context.protocol_version.clone(),
             },
-            Box::new(record.open()),
+            Box::new(record),
         )
-        .unwrap_or_else(|e| panic!("the platform opens again on its record: {e}"));
-        configure(&mut platform, wall_time, deadline);
+        .expect("a platform");
         platform.set_staging(staging);
-        for (received, binaries) in &admitted {
-            let _ = platform.admit(received, binaries, &mut catalogue, ADMITTED_AT);
+        // Starting a simulated provider is the machine's work, which a stepped clock can't move: on a loaded machine
+        // it can pass the 10 s a production start is given, and no scenario is about start-up time.
+        platform.set_start_deadline(std::time::Duration::from_secs(120));
+        platform.set_operation_clock(Arc::new(ScenarioClock::new(wall_time.clone())));
+        platform.set_deadline(deadline);
+        platform.set_output_limit(1 << 20);
+        platform
+    }
+
+    /// Sets the deployment's staging policy (ADR-0014), which a restarted platform is set to again.
+    pub fn set_staging(&mut self, staging: Option<rutent_prov::module::lifecycle::Staging>) {
+        self.staging = staging;
+        self.platform.set_staging(staging);
+    }
+
+    /// The platform stops and opens again on its record, as a restart of its host does (`T-020-66`, `T-024-21`;
+    /// `NFR-6`, `INV-8`): its process gone, and every value it held in memory with it, its modules' processes and what
+    /// each held in its instance among them (a plain wallet's record of its account). Unclean where `unclean`, as a
+    /// crash: its record breaks first so nothing of its closing is written, and the providers it held releases of wait
+    /// for the operator's confirmation (`Platform::confirm`, `T-013-11`). What survives is what a platform keeps beyond
+    /// its memory: its carried-out record, on its file, opened again (`FleetRecord`, with a bounded retry on the lock),
+    /// and the releases the deployment admitted, each handed to it again in order, as a deployment's start does: a
+    /// release its record holds is put back as it stood, and a waiting one, which no record holds, waits again. The
+    /// world it reached, the providers' books, rails, networks and the keys the deployment keeps, stays, and so does
+    /// the catalogue its admissions are judged against, the deployment's; so do its settings, staging among them.
+    ///
+    /// # Panics
+    ///
+    /// If the record can't be opened again or the platform refuses it.
+    pub fn restart_platform(&mut self, unclean: bool) {
+        let world = std::mem::take(&mut self.platform.world);
+        if unclean {
+            self.broken.store(true, Ordering::SeqCst);
         }
-        Fleet {
-            platform,
-            catalogue,
-            listed,
-            context,
-            installed,
-            seeds,
-            late_taken,
-            record,
-            admitted,
-            deadline,
+        // The old platform goes first, its processes with it, its close refused by its broken record where unclean: its
+        // record's lock is free only once it is gone.
+        drop(std::mem::replace(
+            &mut self.platform,
+            Platform::new(
+                disk::paths(),
+                SimWorld::new(),
+                Envelope {
+                    deployment: self.context.deployment.clone(),
+                    protocol_version: self.context.protocol_version.clone(),
+                },
+            )
+            .expect("a placeholder platform"),
+        ));
+        self.broken = Arc::new(AtomicBool::new(false));
+        self.platform = Self::opened(
+            &self.context,
+            world,
+            FleetRecord {
+                inner: self.record.open(),
+                broken: self.broken.clone(),
+            },
+            self.deadline,
+            &self.wall_time,
+            self.staging,
+        );
+        for (received, binaries) in self.admissions.clone() {
+            let _ = self
+                .platform
+                .admit(&received, &binaries, &mut self.catalogue, ADMITTED_AT);
         }
+    }
+
+    /// The platform's record breaks in place, as a disk that fills, and the platform then takes `decide`: a
+    /// restrictive decision it takes now is taken in memory and answered `TakenUnrecorded`, and the platform can end
+    /// only unclean (`T-020-66`). The record stays broken until [`Fleet::restart_platform`].
+    pub fn with_record_broken<R>(
+        &mut self,
+        decide: impl FnOnce(&mut Platform<SimWorld>) -> R,
+    ) -> R {
+        self.broken.store(true, Ordering::SeqCst);
+        decide(&mut self.platform)
     }
 
     /// The context every statement is in.
@@ -704,7 +730,7 @@ impl Fleet {
     /// record didn't end whole, every one with a release in force.
     pub fn held(&self) -> Vec<(String, BTreeSet<String>)> {
         let mut seen = BTreeSet::new();
-        self.admitted
+        self.admissions
             .iter()
             .filter_map(|(received, _)| {
                 let assertion: serde_json::Value = serde_json::from_slice(received).ok()?;
@@ -727,12 +753,9 @@ impl Fleet {
         binaries: &Parts<Vec<u8>>,
     ) -> Admitted {
         let received = serde_json::to_vec(assertion).expect("an assertion is JSON");
-        let admitted = self
-            .platform
-            .admit(&received, binaries, &mut self.catalogue, ADMITTED_AT);
-        // Kept as the deployment keeps the releases it was sent, for a restarted platform to admit again.
-        self.admitted.push((received, binaries.clone()));
-        admitted
+        self.admissions.push((received.clone(), binaries.clone()));
+        self.platform
+            .admit(&received, binaries, &mut self.catalogue, ADMITTED_AT)
     }
 
     /// Gives a waiting release its fresh acceptance.

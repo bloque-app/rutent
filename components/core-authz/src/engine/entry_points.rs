@@ -25,9 +25,19 @@
 //!    lifecycle actions on the platform (`accept`, `withdraw`, `revoke`, `declare_exploited`, `mark_stale`,
 //!    `promote`, `roll_back`, `confirm`) is visible in the crate at most, or a method of a port's trait impl; and one
 //!    visible outside the crate that reaches one of the crate's carriers ([`CARRIERS`]: `carry_out_roll_back` and its
-//!    siblings), directly or through other functions of the crate, asks policy a decision itself and takes its permit:
-//!    so no caller outside `core-orch` reaches one but through the decided path, which asks policy, records the effect
-//!    and carries it out (`F-025`'s note on `carry_out_roll_back`, `T-020-49`, L1 of #337's review, `T-020-65`).
+//!    siblings), directly or through other functions of the crate or `const` and `static` items (module-level, or an
+//!    `impl` block's associated `const`), asks policy a decision itself and takes a permit earlier in its body than that
+//!    call (`.permit()`, not discarded by `let _ =` or as a statement of its own): so no caller outside `core-orch`
+//!    reaches one but through the decided path, which asks policy, records the effect and carries it out (`F-025`'s
+//!    note on `carry_out_roll_back`, `T-020-49`, L1 of #337's review, `T-020-65`, `T-020-66`). The guard is where the
+//!    permit is taken, by name and position, not where it flows: beyond a name-based scan, for v0, are a carrier named
+//!    inside a `macro_rules!` body (searched as tokens by the macro rule above only where a macro is invoked); a permit
+//!    and a decision on two unrelated values, which no syntax ties together; and a permit taken but never checked
+//!    before the carrier: bound to `_p` or put in a struct, passed to another function, tested with `.is_some();` as a
+//!    statement, `if let Some(_) = ..` with the carrier after it, `drop(..)`ped, taken in a closure never called, or
+//!    with the carrier on its refused branch (`if p.is_none() { carrier() }`). Each needs deliberate code in reviewed
+//!    core-orch, whose carriers are visible in the crate alone; review and the decided path's tests are the line of
+//!    defence there (#346's review, L4).
 //!
 //! The names the rules watch can't be renamed out of their sight: no `use .. as`, no type alias of a watched type, no
 //! import of a watched enum's variants (`use Answer::*`, `use Answer::Permit`). Nor can a file be mounted from
@@ -411,28 +421,36 @@ struct Reach {
     file: String,
     name: String,
     public: bool,
-    decided: bool,
-    callees: BTreeSet<String>,
-    carriers: Vec<String>,
+    /// Whether it asks policy a decision (`.decide(..)`).
+    decides: bool,
+    /// Where, in its body's order, it first takes a permit it keeps (`.permit()`, not discarded by `let _ =` or as a
+    /// statement of its own).
+    permit_at: Option<usize>,
+    /// Each name it calls or takes as a value, with where in its body's order.
+    calls: Vec<(String, usize)>,
 }
 
-/// The finding of rule 4's reach: a public function of core-orch that is no decided path, reaching one of the crate's
-/// carriers directly or through functions that are no decided path either, matched by name across the crate as the
-/// other rules match (it fails closed on a shared name).
+/// The finding of rule 4's reach: a public function of core-orch reaching one of the crate's carriers, directly or
+/// through functions, `const` and `static` items included, that reach one, where no decision guards the reaching
+/// call: a call is guarded only where the function asks policy and takes a permit earlier in its body than that call
+/// (`T-020-66`), by position, not data flow (the module's doc names what that leaves out). Matched by name across the
+/// crate as the other rules match, so it fails closed on a shared name.
 fn reach_findings(graph: &[Reach]) -> Vec<Finding> {
-    let mut reaching: std::collections::BTreeMap<String, String> =
-        std::collections::BTreeMap::new();
+    let guarded = |f: &Reach, at: usize| f.decides && f.permit_at.is_some_and(|p| p < at);
+    let mut reaching: std::collections::BTreeMap<String, String> = CARRIERS
+        .iter()
+        .map(|c| ((*c).to_string(), (*c).to_string()))
+        .collect();
     loop {
         let mut grew = false;
-        for f in graph.iter().filter(|f| !f.decided) {
+        for f in graph {
             if reaching.contains_key(&f.name) {
                 continue;
             }
             let reached = f
-                .carriers
-                .first()
-                .cloned()
-                .or_else(|| f.callees.iter().find_map(|c| reaching.get(c).cloned()));
+                .calls
+                .iter()
+                .find_map(|(c, at)| reaching.get(c).filter(|_| !guarded(f, *at)).cloned());
             if let Some(carrier) = reached {
                 reaching.insert(f.name.clone(), carrier);
                 grew = true;
@@ -443,12 +461,15 @@ fn reach_findings(graph: &[Reach]) -> Vec<Finding> {
         }
     }
     let mut found = Vec::new();
-    for f in graph.iter().filter(|f| f.public && !f.decided) {
-        let mut carriers: Vec<String> = f.carriers.clone();
-        if carriers.is_empty()
-            && let Some(carrier) = f.callees.iter().find_map(|c| reaching.get(c))
-        {
-            carriers.push(carrier.clone());
+    for f in graph.iter().filter(|f| f.public) {
+        let mut carriers: Vec<String> = Vec::new();
+        for (c, at) in &f.calls {
+            if let Some(carrier) = reaching.get(c)
+                && !guarded(f, *at)
+                && !carriers.contains(carrier)
+            {
+                carriers.push(carrier.clone());
+            }
         }
         for carrier in carriers {
             found.push(Finding {
@@ -469,8 +490,15 @@ struct Context {
     exposed: bool,
     /// Visible outside its crate, a trait impl's method included.
     public: bool,
-    /// The names it calls or takes as a value (rule 4's reach).
-    callees: BTreeSet<String>,
+    /// The names it calls or takes as a value (rule 4's reach), each with where in its body's order.
+    calls: Vec<(String, usize)>,
+    /// Where it first takes a permit it keeps (rule 4's reach).
+    permit_at: Option<usize>,
+    /// Whether what is visited now is discarded (`let _ = ..`, or a statement of its own): a permit taken there is not
+    /// kept.
+    discarding: bool,
+    /// The name rule 4's reach knows a module-level `const` or `static` by; its other findings name it `<module>`.
+    binding: Option<String>,
     holds_effect: bool,
     holds_permit: bool,
     takes_permit: bool,
@@ -500,6 +528,8 @@ struct Visitor<'a> {
     in_trait_impl: bool,
     stack: Vec<Context>,
     scan: &'a mut Scan,
+    /// The order of what is visited, which rule 4's reach compares a permit's place with.
+    seq: usize,
 }
 
 /// Whether `attrs` mark an item as test code only.
@@ -642,6 +672,18 @@ impl Visitor<'_> {
         self.judge(context);
     }
 
+    /// A module-level binding visited as rule 4's reach reads it: a node named `name`, no function and never public.
+    fn binding(&mut self, name: String, body: impl FnOnce(&mut Self)) {
+        self.stack.push(Context {
+            name: "<module>".to_string(),
+            binding: Some(name),
+            ..Context::default()
+        });
+        body(self);
+        let context = self.stack.pop().expect("its context");
+        self.judge(context);
+    }
+
     /// Rules 2 and 3, once a function's body is visited.
     fn judge(&mut self, context: Context) {
         let mut found = Vec::new();
@@ -658,14 +700,17 @@ impl Visitor<'_> {
                 ));
             }
         }
-        if self.krate == Crate::Orch && context.name != "<module>" {
+        if self.krate == Crate::Orch && (context.name != "<module>" || context.binding.is_some()) {
             self.scan.graph.push(Reach {
                 file: self.file.to_string(),
-                name: context.name.clone(),
+                name: context
+                    .binding
+                    .clone()
+                    .unwrap_or_else(|| context.name.clone()),
                 public: context.public,
-                decided: context.decides && context.takes_permit,
-                callees: context.callees.clone(),
-                carriers: context.reaches_carrier.clone(),
+                decides: context.decides,
+                permit_at: context.permit_at,
+                calls: context.calls.clone(),
             });
         }
         if context.records_effect > 0 {
@@ -802,6 +847,50 @@ impl<'ast> Visit<'ast> for Visitor<'_> {
         self.in_trait_impl = outer;
     }
 
+    // A module-level `const` or `static` binds a value, a function pointer to a carrier among them: rule 4's reach reads
+    // it as a node of its own, by its name, which a public function calling it reaches through (`T-020-66`).
+    fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
+        if is_test(&item.attrs) {
+            return;
+        }
+        self.binding(item.ident.to_string(), |v| visit::visit_item_const(v, item));
+    }
+
+    // An associated `const` in an `impl` block, `Self::F`, is a node as a module-level one is (#346's review, L4).
+    fn visit_impl_item_const(&mut self, item: &'ast syn::ImplItemConst) {
+        self.binding(item.ident.to_string(), |v| {
+            visit::visit_impl_item_const(v, item)
+        });
+    }
+
+    fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
+        if is_test(&item.attrs) {
+            return;
+        }
+        self.binding(item.ident.to_string(), |v| {
+            visit::visit_item_static(v, item)
+        });
+    }
+
+    // A value discarded, `let _ = ..`: a permit taken in it is not kept.
+    fn visit_local(&mut self, local: &'ast syn::Local) {
+        let discarded = matches!(local.pat, syn::Pat::Wild(_));
+        let outer = std::mem::replace(&mut self.context().discarding, discarded);
+        visit::visit_local(self, local);
+        self.context().discarding = outer;
+    }
+
+    // An expression statement whose value is dropped, `x.permit();`: a permit taken there is not kept.
+    fn visit_stmt(&mut self, stmt: &'ast syn::Stmt) {
+        let discarded = matches!(stmt, syn::Stmt::Expr(syn::Expr::MethodCall(call), Some(_)) if call.method == "permit");
+        let outer = self.context().discarding;
+        if discarded {
+            self.context().discarding = true;
+        }
+        visit::visit_stmt(self, stmt);
+        self.context().discarding = outer;
+    }
+
     fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
         if is_test(&item.attrs) {
             return;
@@ -846,7 +935,9 @@ impl<'ast> Visit<'ast> for Visitor<'_> {
             if CARRIERS.contains(&name.as_str()) {
                 self.context().reaches_carrier.push(name.clone());
             }
-            self.context().callees.insert(name);
+            self.seq += 1;
+            let at = self.seq;
+            self.context().calls.push((name, at));
         }
         // `Platform::handle`, called or taken as a value to call later.
         if expr.path.segments.len() > 1
@@ -859,13 +950,19 @@ impl<'ast> Visit<'ast> for Visitor<'_> {
 
     fn visit_expr_method_call(&mut self, expr: &'ast syn::ExprMethodCall) {
         let method = expr.method.to_string();
+        self.seq += 1;
+        let at = self.seq;
         if method == "permit" {
             self.context().takes_permit = true;
+            let context = self.context();
+            if !context.discarding && context.permit_at.is_none() {
+                context.permit_at = Some(at);
+            }
         }
         if method == "decide" {
             self.context().decides = true;
         }
-        self.context().callees.insert(method.clone());
+        self.context().calls.push((method.clone(), at));
         self.carry_out(&method);
         visit::visit_expr_method_call(self, expr);
     }
@@ -950,6 +1047,7 @@ pub(super) fn scan_source(krate: Crate, file: &str, engine: bool, source: &str, 
             ..Context::default()
         }],
         scan,
+        seq: 0,
     };
     visitor.visit_file(&parsed);
     let module = visitor.stack.pop().expect("the module's context");
@@ -1579,6 +1677,81 @@ pub(super) fn public_wrappers_reaching_a_carrier_indirectly_are_found() {
                 "fn helper(m: &mut M, effect: &Effect) {{ {carrier}(m, effect); }} \
                  pub fn decided(&mut self, d: &mut dyn Decisions, r: &DecisionRequest, effect: &Effect) {{ \
                  let Some(p) = d.decide(r).permit() else {{ return }}; helper(self.m, effect); }}"
+            )),
+            Vec::<String>::new(),
+            "the decided path"
+        );
+    }
+}
+
+/// Rule 4's reach from #342's review (`T-020-66`): a module-level `const` or `static` function pointer to a carrier, an
+/// associated `const` one (#346's review, L4), a permit taken and discarded, and a permit taken only after the carrier
+/// is reached are each found; a permit taken earlier in the body than the carrier is not.
+pub(super) fn pointers_and_unchecked_permits_are_found() {
+    let orch = |source: &str| {
+        let mut scan = Scan::default();
+        scan_source(Crate::Orch, "planted.rs", false, source, &mut scan);
+        scan.findings
+            .into_iter()
+            .map(|f| format!("{}: {}", f.function, f.what))
+            .collect::<Vec<_>>()
+    };
+    for carrier in CARRIERS {
+        let found = |function: &str| {
+            vec![format!(
+                "{function}: reaches `{carrier}` from a public function that asks no decision"
+            )]
+        };
+        assert_eq!(
+            orch(&format!(
+                "const F: fn(&mut M, &Effect) = {carrier}; pub fn wrap(m: &mut M, e: &Effect) {{ F(m, e); }}"
+            )),
+            found("wrap"),
+            "a const pointer"
+        );
+        assert_eq!(
+            orch(&format!(
+                "static G: fn(&mut M, &Effect) = {carrier}; pub fn wrap(m: &mut M, e: &Effect) {{ (G)(m, e); }}"
+            )),
+            found("wrap"),
+            "a static pointer"
+        );
+        assert_eq!(
+            orch(&format!(
+                "impl X {{ const F: fn(&mut M, &Effect) = {carrier}; \
+                 pub fn wrap(m: &mut M, e: &Effect) {{ Self::F(m, e); }} }}"
+            )),
+            found("wrap"),
+            "an associated const pointer"
+        );
+        assert_eq!(
+            orch(&format!(
+                "pub fn discards(&mut self, d: &mut dyn Decisions, r: &DecisionRequest, e: &Effect) {{ \
+                 let _ = d.decide(r).permit(); {carrier}(self.m, e); }}"
+            )),
+            found("discards"),
+            "a permit taken and dropped"
+        );
+        assert_eq!(
+            orch(&format!(
+                "pub fn drops(&mut self, d: &mut dyn Decisions, r: &DecisionRequest, e: &Effect) {{ \
+                 d.decide(r).permit(); {carrier}(self.m, e); }}"
+            )),
+            found("drops"),
+            "a permit taken as a statement of its own"
+        );
+        assert_eq!(
+            orch(&format!(
+                "pub fn late(&mut self, d: &mut dyn Decisions, r: &DecisionRequest, e: &Effect) {{ \
+                 {carrier}(self.m, e); let Some(p) = d.decide(r).permit() else {{ return }}; }}"
+            )),
+            found("late"),
+            "a permit taken after the carrier"
+        );
+        assert_eq!(
+            orch(&format!(
+                "pub fn decided(&mut self, d: &mut dyn Decisions, r: &DecisionRequest, e: &Effect) {{ \
+                 let Some(p) = d.decide(r).permit() else {{ return }}; {carrier}(self.m, e); }}"
             )),
             Vec::<String>::new(),
             "the decided path"

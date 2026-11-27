@@ -331,11 +331,35 @@ fn agent_its_party_scoped_to_read_is_told_its_refused_requests_class_over_the_re
         assert_eq!(reads.len(), 1, "scoped {scoped}: {reads:?}");
         assert_eq!(reads[0].1, scoped, "the check is recorded: {reads:?}");
         assert_eq!(reads[0].0.reader, agent);
+        // A repeat that differs from the refused request, over the real engine (`T-020-66`): scoped, the agent is told
+        // that it conflicts with a request that opened no order; unscoped, no more than `ReadRefused`. Either way the read
+        // is checked again and recorded.
+        let mut differing = request.clone();
+        differing.route.amount =
+            rutent_contracts::router_api::PositiveAmount::new("123").expect("an amount");
+        let repeat = core.request(differing);
+        if scoped {
+            assert!(
+                matches!(
+                    repeat,
+                    Err(StepError::Intake(IntakeError::Conflicting { order: None }))
+                ),
+                "a scoped agent is told the repeat conflicts: {repeat:?}"
+            );
+        } else {
+            assert!(
+                matches!(repeat, Err(StepError::Intake(IntakeError::ReadRefused))),
+                "an unscoped agent is told no more: {repeat:?}"
+            );
+        }
+        let reads = recorded_reads(&core);
+        assert_eq!(reads.len(), 2, "the repeat's read is checked: {reads:?}");
+        assert_eq!(reads[1].1, scoped);
         // Its person is told the class as ever, with no check.
         let mut theirs = request;
         theirs.caller = kit::customer();
         assert!(matches!(core.request(theirs), Ok(Told::Refused { .. })));
-        assert_eq!(recorded_reads(&core).len(), 1, "a person's isn't checked");
+        assert_eq!(recorded_reads(&core).len(), 2, "a person's isn't checked");
     }
 }
 
