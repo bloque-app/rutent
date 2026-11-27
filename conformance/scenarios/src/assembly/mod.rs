@@ -1916,6 +1916,9 @@ impl Core {
             })
             .collect();
         let decider = kit::operator_login();
+        // Each installed provider the log holds an advertisement of, and whether the log committed to the installed
+        // advertisement's own bytes in one of its stated entries (`REQ-AUD-2`).
+        let mut committed: BTreeMap<String, bool> = BTreeMap::new();
         for (receipt, entry) in &entries {
             let Entry::Verified(v) = entry else {
                 if let Entry::Stated(s) = entry
@@ -1924,6 +1927,13 @@ impl Core {
                         one.advertisement.statement().maker == s.attribution.maker().acts.as_str()
                     })
                 {
+                    let these = kept
+                        .iter()
+                        .find(|k| k.kept.commitment == s.commitment)
+                        .and_then(|k| rutent_core_audit::receipts::store::bearing_out(&k.kept));
+                    *committed
+                        .entry(s.attribution.maker().acts.as_str().to_owned())
+                        .or_default() |= these.as_deref() == Some(one.advertisement.bytes());
                     // The advertisement the log's key register accepted last for the provider is what Core lists again,
                     // as the register took it in (`T-024-21`): a re-advertisement it accepted after the installed one
                     // is listed as such, and a stated entry it refused, or one it accepted and then saw replaced, is
@@ -2026,6 +2036,15 @@ impl Core {
             terms.id = format!("grant-{}-{}", provider.as_str(), u64::from(receipt.index));
             terms.tuples = vec![tuple];
             kit::grant(&mut self.catalogue, &one, terms);
+        }
+        // An installed advertisement the log committed to in none of its stated entries is no advertisement this Core
+        // ever recorded: tampered with, or never received. The reopening is refused (`REQ-AUD-2`), whatever the register
+        // accepted since; a re-advertisement the register accepted after the installed one leaves the installed one
+        // committed to.
+        if let Some((maker, _)) = committed.iter().find(|(_, committed)| !**committed) {
+            return Err(AssemblyError::Listing(format!(
+                "the advertisement installed for {maker} isn't one the log committed to: no commitment's bytes are its"
+            )));
         }
         Ok(())
     }
@@ -3092,11 +3111,39 @@ mod tests {
         );
     }
 
-    /// A Core opened again joins an advertisement only where the bytes the evidence store kept under the log's
-    /// commitment are the installed provider's: the same statement in other bytes refuses the reopening.
+    /// A Core opened again joins only an advertisement its log committed to (`REQ-AUD-2`, `T-024-21`): the one the
+    /// log's key register accepted, read from the bytes the evidence store keeps under that entry's commitment, never
+    /// the installed bytes. Opened with the installed advertisement intact, the catalogue holds the committed statement;
+    /// the same statement in other bytes, one the log committed to in no entry, refuses the reopening.
     // verifies: REQ-AUD-2, REQ-CAT-6
     #[test]
     fn reopened_core_joins_only_the_advertisement_its_log_committed_to() {
+        let (mut core, config) = alone();
+        let provider = core.installed[0].spec.provider.clone();
+        let committed = core
+            .log()
+            .accepted_advertisement(&provider)
+            .expect("the register accepted the advertisement")
+            .commitment;
+        let kept = core
+            .kept_bytes(&committed)
+            .expect("the evidence store keeps what the log committed to");
+        let reopened = core
+            .reopened(&config, &mut machine::Reference)
+            .expect("reopened on the advertisement the log committed to");
+        let joined = reopened
+            .catalogue
+            .accepted_advertisement(&provider)
+            .expect("joined again")
+            .clone();
+        let kept: rutent_contracts::provider_role::Statement<
+            rutent_contracts::provider_role::Advertisement,
+        > = serde_json::from_slice(&kept).expect("an advertisement");
+        assert_eq!(
+            joined, kept,
+            "the catalogue holds the statement the log committed to"
+        );
+
         let (mut core, config) = alone();
         let mut bytes = core.installed[0].advertisement.bytes().to_vec();
         bytes.push(b' ');
@@ -3104,7 +3151,7 @@ mod tests {
             rutent_conformance::role::Received::from_bytes(bytes).expect("the same statement");
         let reopened = core.reopened(&config, &mut machine::Reference);
         assert!(
-            matches!(&reopened, Err(AssemblyError::Listing(why)) if why.contains("commitment")),
+            matches!(&reopened, Err(AssemblyError::Listing(why)) if why.contains("committed to")),
             "{:?}",
             reopened.err()
         );

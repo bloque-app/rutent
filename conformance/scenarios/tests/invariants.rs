@@ -1322,8 +1322,8 @@ fn no_recalculation_changes_destination_or_to_asset() {
 
 /// `NFR-6` over the runs Core and its platform were restarted in mid-order (`T-024-21`): every order the customer had
 /// accepted before the restart is one the restarted Core knows, opened in its log, followed by it for its customer, held
-/// by the state machine's host restarted on its journal as the log's own inputs say, and none started before a restart
-/// is left without its route carried on.
+/// by the state machine's host restarted on its journal as the log's own inputs say; each one the crash caught is
+/// carried on by a step of its own after the restart, and each ends as its run's kind says (`Sim::expected_end`).
 // verifies: NFR-6
 #[test]
 fn core_and_the_platform_restarted_mid_order_lose_no_order() {
@@ -1369,11 +1369,15 @@ fn core_and_the_platform_restarted_mid_order_lose_no_order() {
             });
             if chosen.is_some_and(|at| at < restart) {
                 started_before += 1;
-                // A step of its own after the restart's last confirmation, not the confirmation's result.
+            }
+            // An order the crash caught mid-run has a step of its own after the restart's last confirmation, not the
+            // confirmation's result: the restarted Core carried it on. One that ended before the restart has nothing
+            // left to carry on, and one stuck when the run restarted is the operator's.
+            if carried_by_the_restart(sim, o) {
                 let after = last_confirmation(&log).unwrap_or(restart);
                 if !carried_on_after(&log, o, after) {
                     bad.push(format!(
-                        "{o}: started before the restart, and nothing of it after"
+                        "{o}: caught by the crash, and nothing of it after the restart"
                     ));
                 }
             }
@@ -1419,6 +1423,12 @@ fn carried_on_after(log: &[Value], order: &str, at: usize) -> bool {
                     .and_then(|i| log.get(usize::try_from(i).ok()?))
                     .is_some_and(of_order))
     })
+}
+
+/// Whether `order` is one the restarted Core must carry on: a crash caught it mid-run. An order stuck when a
+/// `RestartWhileStuck` run restarted is the operator's, and stays as it was.
+fn carried_by_the_restart(sim: &Sim, order: &str) -> bool {
+    sim.plan.kind != Kind::RestartWhileStuck && sim.caught.iter().any(|o| o == order)
 }
 
 /// Where the log holds the last of the confirmations a restart made, or `None` where it holds none.
@@ -1555,7 +1565,7 @@ fn platform_restarted_mid_run_holds_its_releases_until_the_operator_confirms() {
             confirmations(&log).first().map(|(at, _)| *at),
             last_confirmation(&log),
         ) {
-            for order in &sim.caught {
+            for order in sim.caught.iter().filter(|o| carried_by_the_restart(sim, o)) {
                 let between = log[first..last].iter().any(|e| {
                     e["kind"] == "verified"
                         && e["what"]["call"] == "effect"

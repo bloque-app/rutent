@@ -2111,6 +2111,13 @@ re-advertises), the bounded `WouldBlock` retry (it only shows as a flake).
   cut it down before), whether the wallet still held the value or lacked some. Test 5 passes on the rebuilt state, its
   `attributions() == held` now a check of the rebuild. `Scenario::reopen` (Core alone, the platform going on) still carries
   them, as `T-020-46` set.
+- *H3, `REQ-AUD-2` kept on the new relisting path.* `relist` joins the advertisement the log's key register accepted, from
+  the bytes the evidence store keeps under that entry's commitment (held to it by `bearing_out`), never the installed
+  bytes; and it refuses the reopening where the installed advertisement is one the log committed to in none of its
+  stated entries (tampered with, or never received), whatever the register accepted since. A re-advertisement the
+  register accepted after the installed one leaves the installed one committed to, so it reopens. The unit test
+  `reopened core joins only the advertisement its log committed to` checks both halves: intact, the catalogue holds the
+  statement the log committed to; the same statement in other bytes refuses the reopening.
 - *H2:* `report_process_as` is listed in `CARRIES_OUT_NOTHING` (`components/core-authz/src/engine/entry_points.rs`, a
   `DEC-20` path); `cargo test -p rutent-core-authz --lib` is green.
 - *M1:* the orders a crash caught are recorded (`Sim::caught`), and only those of the kinds `stuck_until_t020_61` marks
@@ -2120,7 +2127,9 @@ re-advertises), the bounded `WouldBlock` retry (it only shows as a flake).
   to it, so an unexpected stuck order is red. When `T-020-61` lands (it carries such a segment on), emptying
   `stuck_until_t020_61` is the whole change here.
 - *M2:* the `NFR-6` test's carry-on is bound to the order (`carried_on_after`: an effect or input of the order, or a result
-  of an effect of it, after the restart's last confirmation), each order ends as `expected_end` says, and at least two
+  of an effect of it, after the restart's last confirmation), asked of each order the crash caught (one that ended before
+  the restart has nothing to carry on, and one stuck when a `RestartWhileStuck` run restarted is the operator's), each
+  order ends as `expected_end` says, and at least two
   orders started before a restart complete after it. The restarted `INV-1` test holds each order to complete to a
   delivered deposit, and the hold test holds each caught order to nothing of its own between the restart and the
   confirmations and a step of its own after them.
@@ -2146,8 +2155,9 @@ re-advertises), the bounded `WouldBlock` retry (it only shows as a flake).
 
 | Switched off | Red |
 |---|---|
-| no carry-on `run` after a restart (the `None =>` branch's loop) | RO1_RESULT |
-| `stuck_until_t020_61` marks no kind | RO2_RESULT |
-| the reserve's other sessions (`in_session` reads its own session only) | RO3_RESULT |
+| no carry-on `run` after a restart (the `None =>` branch's loop) | `core and the platform restarted mid order lose no order`, `value in equals ... across restarted runs`, `every segment of a restarted run ends ...`, `platform restarted mid run holds its releases ...`, and `every segment ends ...`, `repeated transaction identifiers ... across restarts ...` |
+| `stuck_until_t020_61` marks no kind (the caught orders are not timed out) | `every segment of a restarted run ends ...`, `core and the platform restarted mid order lose no order`, the hold test, `value in equals ... across restarted runs`, `every segment ends ...` |
+| the reserve's other sessions (`in_session` reads its own session only) | `order in a second session of a long run is quoted` |
+| the refusal of an installed advertisement the log committed to in no entry (`relist`) | `reopened core joins only the advertisement its log committed to` (the tampered installed advertisement reopens) |
 
 **Run id.** Pending: CI's run on this row's pull request goes here.
