@@ -235,6 +235,9 @@ struct Carried {
     free_at: Option<u64>,
     /// The version of the provider that carried it out: a question about it later runs on that one (`T-013-11`).
     version: Option<String>,
+    /// Whether its answer came late, after the platform handed the operation over and had none, and its taker hasn't
+    /// said it kept it ([`Platform::late_answers`], [`Platform::late_kept`], `T-020-63`). Kept in the record.
+    late: bool,
 }
 
 impl Carried {
@@ -247,6 +250,7 @@ impl Carried {
             answer: self.answer.as_deref().cloned(),
             free_at: self.free_at,
             version: self.version.clone(),
+            late: self.late,
         }
     }
 }
@@ -705,6 +709,7 @@ impl<W: World> Platform<W> {
                             answer: None,
                             free_at: None,
                             version: None,
+                            late: false,
                         });
                 }
             }
@@ -820,6 +825,7 @@ impl<W: World> Platform<W> {
                 answer: carried.answer.map(Box::new),
                 free_at: carried.free_at,
                 version: carried.version,
+                late: carried.late,
             },
         );
     }
@@ -1007,7 +1013,7 @@ impl<W: World> Platform<W> {
                     && !scopes.is_empty()
                     && scopes
                         .values()
-                        .all(|carried| carried.free_at.is_some_and(|at| at <= now))
+                        .all(|carried| !carried.late && carried.free_at.is_some_and(|at| at <= now))
             })
             .map(|(transaction, _)| transaction.clone())
             .collect();
@@ -3151,6 +3157,7 @@ impl<W: World> Platform<W> {
                         answer,
                         free_at,
                         version: Some(version.clone()),
+                        late: false,
                     };
                     kept = Some(Box::new(first.entry(&transaction, &scope)));
                     carried.insert(scope, first);
@@ -3216,6 +3223,91 @@ impl<W: World> Platform<W> {
             return None;
         }
         first.answer.clone().map(Handled::Answered)
+    }
+
+    /// The late answers to the operations of `transactions`: its provider, its transaction and the answer's bytes, each
+    /// handed over again every time this is asked until [`Platform::late_kept`] says it was kept (`AC-5`, `NFR-6`,
+    /// `T-020-63`). A late answer is a provider's answer to an operation the platform handed over and got none to, a first
+    /// run the platform ended at its deadline: it comes by the provider's repeat of the same operation, which only a
+    /// provider that declares a repeat safe is asked, the module run again as [`Platform::handle`] runs it
+    /// (`REQ-CAT-10`). The answer is held in the platform's record as late until it is acknowledged, so a platform
+    /// restarted on the record hands it over again, and it is never freed while it waits. An operation of other scope, one
+    /// that has an answer of its own, or one whose repeat gives none, is no late answer.
+    pub fn late_answers(
+        &mut self,
+        transactions: &BTreeSet<String>,
+    ) -> Vec<(String, String, Vec<u8>)> {
+        self.restart_ended();
+        self.free_spent();
+        let unanswered: Vec<(String, String, Statement<Operation>)> = transactions
+            .iter()
+            .filter_map(|transaction| {
+                let carried = self.carried.get(transaction)?.get(TOP_LEVEL)?;
+                carried.answer.is_none().then(|| {
+                    (
+                        transaction.clone(),
+                        carried.provider.clone(),
+                        carried.operation.clone(),
+                    )
+                })
+            })
+            .collect();
+        for (transaction, provider, operation) in unanswered {
+            if !matches!(self.handle(&provider, &operation), Handled::Answered(_)) {
+                continue;
+            }
+            if let Some(carried) = self
+                .carried
+                .get_mut(&transaction)
+                .and_then(|scopes| scopes.get_mut(TOP_LEVEL))
+                && carried.answer.is_some()
+            {
+                carried.late = true;
+                let entry = Entry::Carried(Box::new(carried.entry(&transaction, TOP_LEVEL)));
+                // Held late in memory whether or not the record took it: handed over now, and again, and a restart that
+                // lost the mark would hold the answer as an ordinary one.
+                let _ = self.write(&entry);
+            }
+        }
+        transactions
+            .iter()
+            .filter_map(|transaction| {
+                let carried = self.carried.get(transaction)?.get(TOP_LEVEL)?;
+                let answer = carried.answer.as_deref().filter(|_| carried.late)?;
+                Some((
+                    carried.provider.clone(),
+                    transaction.clone(),
+                    serde_json::to_vec(answer).ok()?,
+                ))
+            })
+            .collect()
+    }
+
+    /// That the late answer to `transaction` was kept: [`Platform::late_answers`] hands it over no more, a restart
+    /// included. Whether it was one waiting; `false`, and it stays, where the record can't hold the acknowledgement, so
+    /// the answer is handed over again rather than lost (`T-020-63`).
+    pub fn late_kept(&mut self, transaction: &str) -> bool {
+        let Some(carried) = self
+            .carried
+            .get_mut(transaction)
+            .and_then(|scopes| scopes.get_mut(TOP_LEVEL))
+            .filter(|carried| carried.late)
+        else {
+            return false;
+        };
+        carried.late = false;
+        let entry = Entry::Carried(Box::new(carried.entry(transaction, TOP_LEVEL)));
+        if self.write(&entry).is_err() {
+            if let Some(carried) = self
+                .carried
+                .get_mut(transaction)
+                .and_then(|scopes| scopes.get_mut(TOP_LEVEL))
+            {
+                carried.late = true;
+            }
+            return false;
+        }
+        true
     }
 
     /// How many operations the provider's module ran, on any of its versions: its process took the operation and

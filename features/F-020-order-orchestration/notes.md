@@ -9332,8 +9332,8 @@ scenario tests.
 
 The milestone reviewer's check of `T-020-48` at `e7418a53` (its Mediums and Lows), and the carry-over of `T-020-58` (the
 holding balance's read). Edits `components/core-orch/` (`schedule/`, `segments/` for the read, `stuck/timing.rs`),
-`components/prov/src/catalogue/nodes.rs` (one accessor), `contracts/core-internal/` and `components/core-authz/` (both
-`DEC-20` paths, below), and the assembly (`F-024` files: `conformance/scenarios/src/assembly/`, `sim/fleet.rs`) with the tests
+`components/prov/src/catalogue/nodes.rs` (one accessor), `components/prov/src/module/platform.rs` and `record.rs` (the late
+answers; `platform.rs` is a `DEC-20` path), `contracts/core-internal/` and `components/core-authz/` (both `DEC-20` paths, below), and the assembly (`F-024` files: `conformance/scenarios/src/assembly/`, `sim/fleet.rs`) with the tests
 beside them. Built on `m3` at `2c86d6a9`; `T-020-58` (#340) is still in review, so its `ReadNodeRecord` is not in this tree and
 this row's decided read is built beside it, in the same pattern, in its own files (`segments/balances.rs`), with
 core-internal's and core-authz's additions made apart from its. When #340 merges, the two meet at the same lines of
@@ -9376,8 +9376,8 @@ and `engine/entry_points.rs`, and the CHANGELOG's 1.0.0 list: each takes both.
   an account unread or unchecked, a comparison, a notice or a checkpoint that failed, a late answer not kept, a status
   question that didn't go out, is due again on the next tick, not after its cadence. `note_asked` runs only where the question
   went out (`asked` is `Ok`), in the tick and in the assembly's step.
-- **A late answer the log could not record is not dropped.** The platform holds a late answer until Core says it kept it
-  (`Ports::late_kept`, and `Fleet::late_kept` in the simulated platform): kept, or refused for good, it is acknowledged; one
+- **A late answer the log could not record is not dropped.** The production platform holds a late answer until Core says it
+  kept it (`Platform::late_answers` and `Platform::late_kept`, durable in its record; `Ports::late_kept` reaches them): kept, or refused for good, it is acknowledged; one
   that failed for want of the log (`Append(Unavailable)`) or of the segment's own answer (`NotAnswered`) is not, and the
   platform hands it over again on the next tick, a restart included. The first build's "each once" lost it for good.
 
@@ -9401,7 +9401,8 @@ rule-off of their own. The contract fixtures' tests were written after the types
 | `public_nodes_balance_is_checked_against_what_cores_segments_rest_there` | `INV-1`, `REQ-AUD-15` | `conformance/scenarios/tests/assembly_real_wallet.rs` |
 | `owed_reversal_at_a_never_settling_tuple_goes_stuck_on_cores_tick` | `INV-3`, `REQ-ORD-29` | `conformance/scenarios/tests/simulated_faults.rs` |
 | `first_tick_after_a_restart_keeps_each_providers_ask_cadence` | `NFR-6` | `simulated_faults.rs` |
-| `late_answer_the_log_could_not_record_is_kept_for_the_next_tick` | `NFR-6` | `simulated_faults.rs` |
+| `late_answer_the_log_could_not_record_is_kept_for_the_next_tick` | `NFR-6` | `simulated_faults.rs`, over the real `Platform` |
+| `late_answer_is_held_until_it_is_acknowledged_across_a_restart` | `AC-5`, `NFR-6` | `components/prov/tests/module_record.rs`, a real `Platform` restarted on its record |
 | `account_the_clock_cannot_time_is_raised_as_not_read` | `INV-1` | `components/core-orch/src/schedule/jobs.rs` |
 | `holding_balance_is_read_on_a_decision_and_recorded_before_the_module_is_asked`, `..._policy_refuses_is_asked_of_no_module`, `..._whose_effect_the_log_cannot_take_is_asked_of_no_module`, `..._with_no_answer_or_no_record_of_its_result_hands_back_none` | `REQ-AUZ-1`, `INV-7`, `REQ-AUD-15` | `components/core-orch/tests/holding_reads.rs` |
 | `holding_balance_is_read_on_a_decision_and_refused_where_policy_refuses` | `REQ-AUZ-1`, `REQ-AUD-15` | `private_nodes.rs`, over the assembled Core |
@@ -9454,9 +9455,13 @@ now the second comparison, is what each test's earlier raises are about).
    its provider's cadence, as this row's test shows (it is tried), and the question isn't put. With the late answer's
    acknowledgement, such an answer is handed over again every tick until `T-020-61` closes it, each time `NotAnswered`: fails
    closed, noisy.
-2. **The platform must hold a late answer until Core acknowledges it** (`F-030`'s production assembly and `F-013`'s platform).
-   No production platform call hands over late answers yet; `Ports::late_answers` and `late_kept` are the contract the simulated
-   fleet keeps. A platform that hands each over once loses what Core couldn't record.
+2. *Closed in the production platform (the coordinator's ruling).* `Platform::late_answers` and `Platform::late_kept`
+   (`components/prov/src/module/platform.rs`, `record.rs`, `DEC-20` paths) hold each late answer until Core acknowledges it, in the
+   platform's record (`CarriedEntry.late`), so a restart holds it too; the simulated fleet delegates to them. A late answer is
+   the answer of a provider that declares a repeat safe to an operation the platform handed over and got none to: the platform
+   runs the same operation again, as `handle` does, and keeps the answer as late until `late_kept`. It is never freed while it
+   waits. Gap: a record that can't take the late mark leaves it in memory only, so a restart before the acknowledgement holds
+   the answer as an ordinary one (the platform's record failing is already the unclean end `T-013-11` holds releases for).
 3. **A job's own last run is not rebuilt on reopening.** Each job runs on a reopened Core's first tick (safe: a job done twice
    is done once). Only each segment's last ask is rebuilt. `T-020-49` rebuilds the cadences themselves.
 4. **The holding check's per-account retry** (default 4): a failed account makes the whole job due again.
@@ -9490,6 +9495,7 @@ each run), over the tests named; a script of this row's wrote each run, so the t
 | a holder the register doesn't name is left out | `holder_the_register_does_not_name_is_raised_as_not_read` |
 | every holder the register doesn't name is raised, value resting there or none (default 1's alternative) | `value_settled_at_a_public_node_held_by_a_holding_account_lands_in_it` (the hourly check, always failing, is asked again each tick) |
 | the public readings' decimals are a constant of the schedule's, not the register's | `public_nodes_reading_is_stated_in_the_decimals_the_register_gives_its_asset` |
+| `late_kept` clears nothing: an acknowledged late answer is handed over again | `late_answer_is_held_until_it_is_acknowledged_across_a_restart` |
 | Core reads a balance on the operator's permission alone, not carrying it onward with `CarryOnward` | `a_holding_balance_is_read_by_core_carrying_the_operators_permission_onward` (core-authz) |
 
 Not switched off: the order of the decided read (effect, then the question, then the result), which is the shape of

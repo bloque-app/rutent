@@ -219,8 +219,6 @@ pub struct Fleet {
     installed: BTreeMap<String, Installed>,
     /// The placeholder-key seeds in use, each with the provider that holds it.
     seeds: BTreeMap<u8, String>,
-    /// The transactions whose late answers the platform has taken ([`Fleet::late_answers`]), each once.
-    late_taken: BTreeSet<String>,
 }
 
 impl Fleet {
@@ -261,7 +259,6 @@ impl Fleet {
             context,
             installed: BTreeMap::new(),
             seeds: BTreeMap::new(),
-            late_taken: BTreeSet::new(),
         }
     }
 
@@ -557,10 +554,10 @@ impl Fleet {
         )
     }
 
-    /// That Core has done with the late answer to `transaction`: kept, or refused for good. [`Fleet::late_answers`] hands
-    /// it over no more.
+    /// That Core has done with the late answer to `transaction`: kept, or refused for good. The platform hands it over no
+    /// more ([`Platform::late_kept`]).
     pub fn late_kept(&mut self, transaction: &str) {
-        self.late_taken.insert(transaction.to_owned());
+        let _ = self.platform.late_kept(transaction);
     }
 
     /// The platform's releases as Core's decided lifecycle actions reach them (`T-020-49`): the platform, with the
@@ -572,42 +569,15 @@ impl Fleet {
         }
     }
 
-    /// The answers simulated providers give past their deadline, for the operations named by `transactions`
-    /// (`T-024-23`, `AC-5`): each provider whose books hold an operation it answered late, one it took effect on and
-    /// never answered within its deadline, answers it now, as the module that served it signs it. The platform ends a
-    /// call at its deadline and kills the process, so an answer that comes after is the provider's own repeat of what it
-    /// did, which the platform takes: provider, transaction and the signed answer. It hands each over again, every time it
-    /// is asked, until Core says it kept it ([`Fleet::late_kept`], `T-020-63`): an answer Core couldn't record now (its log
-    /// down) is never lost, and a restart of Core loses none.
+    /// The late answers the production platform holds for the operations named by `transactions` (`T-024-23`, `AC-5`,
+    /// `T-020-63`): [`Platform::late_answers`], each handed over again every time it is asked until Core says it kept it
+    /// ([`Fleet::late_kept`]). Nothing here holds one: a simulated provider's late answer is the platform's own, the
+    /// provider's repeat of an operation the platform handed over and got no answer to.
     pub fn late_answers(
         &mut self,
         transactions: &BTreeSet<String>,
     ) -> Vec<(String, String, Vec<u8>)> {
-        let providers: Vec<String> = self.installed.keys().cloned().collect();
-        let mut answers = Vec::new();
-        for provider in providers {
-            let owed: Vec<(String, Statement<Operation>)> = self
-                .platform
-                .world
-                .journal(&provider)
-                .iter()
-                .filter(|entry| entry.behaviour.late)
-                .filter_map(|entry| {
-                    let transaction =
-                        rutent_conformance::sim::transaction_of(&entry.operation.statement)?;
-                    (transactions.contains(&transaction) && !self.late_taken.contains(&transaction))
-                        .then(|| (transaction, entry.operation.clone()))
-                })
-                .collect();
-            for (transaction, operation) in owed {
-                if let Handled::Answered(result) = self.platform.handle(&provider, &operation)
-                    && let Ok(bytes) = serde_json::to_vec(&*result)
-                {
-                    answers.push((provider.clone(), transaction, bytes));
-                }
-            }
-        }
-        answers
+        self.platform.late_answers(transactions)
     }
 
     /// Hands one operation to `provider`'s module.
