@@ -152,6 +152,10 @@ pub trait Releases {
     /// The provider's version in force, if one is (`Lifecycle::in_force`).
     fn in_force(&self, provider: &Id) -> Option<String>;
 
+    /// Whether the platform holds the provider's `version` as an accepted release (`Lifecycle::is_accepted`): what it
+    /// can say anything of. A provider this platform doesn't host has none.
+    fn is_accepted(&self, provider: &Id, version: &Id) -> bool;
+
     /// Ends the provider's staging, the version in force kept (`Platform::roll_back`): the version whose staging ended.
     ///
     /// # Errors
@@ -289,6 +293,12 @@ impl<W: World> Releases for Judged<'_, W> {
             .lifecycle()
             .in_force(provider.as_str())
             .map(str::to_owned)
+    }
+
+    fn is_accepted(&self, provider: &Id, version: &Id) -> bool {
+        self.platform
+            .lifecycle()
+            .is_accepted(provider.as_str(), version.as_str())
     }
 
     fn roll_back(
@@ -632,20 +642,29 @@ fn standing_of(releases: &dyn Releases, effect: &Effect) -> Option<Outcome> {
         CatalogueChange::MarkStale => match (mark, releases.in_force(provider)) {
             // Marked already, however: marking it stale holds nothing more.
             (Some(_), _) => Some(Outcome::Done {}),
+            // A version this platform holds no release of: it can't tell, so it stays open (`T-020-66`, L1 of #342's
+            // review), and the reopening asks each provider's own platform.
+            (None, _) if !releases.is_accepted(provider, version) => None,
+            // Nothing marked and a release staged: the platform refuses a stale mark while a release is staged, and one
+            // taken before the staging would have been recorded and restored with it, so it never took effect
+            // (`T-020-66`, the milestone reviewer's Medium). One taken unrecorded leaves the platform's record taking
+            // no write, so nothing is staged after it before the unclean end, and while the provider then waits for
+            // the confirmation the platform admits no new release (#346's review, M1).
+            (None, _) if releases.staged(provider).is_some() => Some(Outcome::Failed {}),
             // Nothing newer in force to move its segments to: the platform refuses a stale mark there, so it never
             // took effect.
             (None, None) => Some(Outcome::Failed {}),
             (None, Some(in_force)) if in_force == version.as_str() => Some(Outcome::Failed {}),
             (None, Some(_)) => None,
         },
-        // The staging, or the waiting release, it ends is gone: no such release runs or waits.
+        // The staging it ends is gone: no such release runs.
         CatalogueChange::RollBack => (releases.staged(provider).as_deref()
             != Some(version.as_str()))
         .then_some(Outcome::Done {}),
-        CatalogueChange::WithdrawRelease => releases
-            .waiting(provider)
-            .is_none_or(|w| w.version != version.as_str())
-            .then_some(Outcome::Done {}),
+        // A withdrawal names a version, not the release's digest, and a waiting release is in no platform record: what
+        // waits after an unclean end was admitted after it, so the platform's standing tells nothing of the withdrawal,
+        // which stays open and is never taken again (`T-020-66`, L3 of #342's review).
+        CatalogueChange::WithdrawRelease => None,
         _ => None,
     }
 }
@@ -765,12 +784,11 @@ pub(crate) fn retake_restriction(
                 .or_else(held),
             _ => Ok(()),
         },
-        CatalogueChange::WithdrawRelease => match releases.waiting(provider) {
-            Some(waiting) if waiting.version == version.as_str() => releases
-                .withdraw(effect, provider, &waiting.digest, by, at)
-                .or_else(held),
-            _ => Ok(()),
-        },
+        // Never taken again: a confirmation follows an unclean end, which drops every waiting release, so a release
+        // waiting now was admitted after the withdrawal, under a digest the withdrawal can't name (the effect carries no
+        // digest), and one withdrawn and recorded is in the platform's withdrawn set, never admitted again
+        // (`T-020-66`, L3 of #342's review).
+        CatalogueChange::WithdrawRelease => Ok(()),
         _ => Ok(()),
     }
 }

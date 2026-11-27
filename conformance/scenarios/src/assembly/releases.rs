@@ -205,4 +205,25 @@ impl Core {
     ) -> Result<Changed, ReleaseRefused> {
         self.change_release_as(&crate::kit::operator_login(), provider, change)
     }
+
+    /// Sets the deployment's staging policy (ADR-0014) on the platform, which keeps it across its restarts.
+    pub fn set_staging(&mut self, staging: Option<rutent_prov::module::lifecycle::Staging>) {
+        self.fleet.set_staging(staging);
+    }
+
+    /// The platform's host restarts it on its record (`Fleet::restart_platform`, `T-020-66`), unclean where `unclean`:
+    /// then every provider it held a release of waits for the operator's confirmation. Core goes on as it was.
+    pub fn restart_platform(&mut self, unclean: bool) {
+        self.fleet.restart_platform(unclean);
+    }
+
+    /// The platform takes `decide` with its record broken in place (`Fleet::with_record_broken`, `T-020-66`): a
+    /// carrying out of an effect Core decided, which the platform takes unrecorded, before Core stops short of its
+    /// result. Core's log is not touched.
+    pub fn on_platform_with_its_record_broken<R>(
+        &mut self,
+        decide: impl FnOnce(&mut rutent_prov::module::platform::Platform<crate::sim::SimWorld>) -> R,
+    ) -> R {
+        self.fleet.with_record_broken(decide)
+    }
 }

@@ -1322,3 +1322,58 @@ fn listing_a_node_the_catalogue_refuses_is_recorded_failed() {
         "no setting of the operator's"
     );
 }
+
+/// A listing the catalogue refused is not completed `done` on reopen (`T-020-66`, the milestone reviewer's Low on
+/// `Settings::reopen`): the operator's listing of the publishers' private node is decided and its effect appended, and
+/// Core stops before its result. The reopened Core completes the result from what the catalogue answers, which refuses
+/// to list a node a provider declared private: `failed`, the node private, and no setting of the operator's.
+// verifies: NFR-6
+#[test]
+fn listing_the_catalogue_refused_is_not_completed_done_on_reopen() {
+    use rutent_contracts::core_internal::{
+        Action, CatalogueChange, Entry, OperatorSetting, Outcome, What,
+    };
+    let scenario = rutent_scenarios::harness::Scenario::new(
+        "private nodes",
+        "AC-29",
+        given(&[IN, EXCHANGE, RAMP, OUT]),
+    );
+    let (core, _) = scenario.core(1, &mut rutent_scenarios::assembly::machine::Reference);
+    let mut core = core;
+    let listed: OperatorSetting = serde_json::from_value(serde_json::json!({
+        "setting": "public_node", "node": { "network": NODE }, "listed": true,
+    }))
+    .expect("a setting");
+    let effect = core
+        .effect_without_its_result(Action::ChangeCatalogue {
+            change: CatalogueChange::SetSetting,
+            provider: rutent_scenarios::kit::operator_login().party,
+            version: None,
+            tuple: None,
+            class: None,
+            advertising_keys: Vec::new(),
+            statement_key: None,
+            setting: Some(Box::new(listed)),
+            versions: Vec::new(),
+            public_network: None,
+        })
+        .expect("decided, its effect appended");
+    let core = scenario.reopen(core, 1, &mut rutent_scenarios::assembly::machine::Reference);
+    let completed = core.log().entries().iter().find_map(|(_, e)| match e {
+        Entry::Verified(v) => match &v.what {
+            What::Result { effect: e } if *e == effect => Some(v.outcome),
+            _ => None,
+        },
+        Entry::Stated(_) => None,
+    });
+    assert_eq!(
+        completed,
+        Some(Outcome::Failed {}),
+        "completed from the catalogue's refusal"
+    );
+    assert!(!core.catalogue().nodes().is_public(NODE), "still private");
+    assert!(
+        core.settings().public_node(NODE).is_none(),
+        "no setting of the operator's"
+    );
+}
