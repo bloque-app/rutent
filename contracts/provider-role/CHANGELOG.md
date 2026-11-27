@@ -13,7 +13,7 @@
   read by the deployment from the world it ran in. Now:
   - `Operation::InnerSegmentsQuery(InnerSegmentsQuery {transaction, provider, node, about})`, `inner_segments_query`: the
     operator's question, under a transaction of its own, of the record of `node`, asked of a provider whose module's
-    `handles` lists it. `about` lists the transactions asked about, at least one: the provider answers with the segments it ran
+    `handles` lists it. `about` lists the transactions asked about, at least one, each once (the schema and `asks_about_each_once` hold it, and an answer to a question that doesn't is `AboutNotAList`): the provider answers with the segments it ran
     under those transactions alone, never its whole book of the node, so a second order through a node asks for its own
     segments and gets them (the review of `T-020-58`, M2). It is read-only and never a dry run, and it moves nothing.
     `ResultBody::InnerSegmentsQuery(InnerSegmentsQueryResult {transaction, node, outcome})`, its outcome `answered`
@@ -21,7 +21,7 @@
     `not_known` (it has recorded no segment inside the node) or `refused`.
   - `check_inner_segments_answer(question, answer)` takes the question and the signed answer and holds the answer to the question
     (`InnerSegmentsMismatch {AnsweredByAnotherProvider, AnswersAnotherQuestion, OfAnotherNode, RecordOfAnotherMaker,
-    SegmentNotAsked, NotAnInnerSegmentsQuestion}`): an answer to another question, transaction, node or provider is no record of the node
+    SegmentNotAsked, AboutNotAList, NotAnInnerSegmentsQuestion}`): an answer to another question, transaction, node or provider is no record of the node
     asked about. That the record's key is one its maker's advertisement lists and that the node is one the maker
     declares for its publisher stay `check_inner_segments`'s, which the reader runs against the advertisement its
     catalogue accepted; that its figures add up stays the replay's.

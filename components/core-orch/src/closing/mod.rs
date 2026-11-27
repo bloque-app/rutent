@@ -160,12 +160,13 @@ pub trait Books {
     fn recorded(&self, node: &str, transactions: &[Id]) -> Option<Recorded>;
 
     /// Hands the books what `provider`, a provider of `node`'s publisher, answered when Core asked it for its record of
-    /// the node, taken as one ([`publishers::taken`]). An answer that wasn't a record is handed over as nothing, so what
-    /// the books hold of that provider stays as it was. The books keep only the last record for each provider and node
-    /// and rebuild from the next asking after a restart (`T-020-58`). Books that are given nothing (a fixed listing)
-    /// ignore it.
-    fn took(&self, provider: &str, node: &str, record: Statement<InnerSegments>) {
-        let _ = (provider, node, record);
+    /// the node for `order`'s segments, taken as one ([`publishers::taken`]). Each answer covers one order's
+    /// transactions, so the books keep a record for each provider, node and order, whole as the provider signed it (what
+    /// closing cites), the last for each: one order's read never drops another's, and a segment that waits keeps the
+    /// record it took (`T-020-58`, the review's M3). Books rebuild from the next asking after a restart. Books that are
+    /// given nothing (a fixed listing) ignore it.
+    fn took(&self, provider: &str, node: &str, order: &str, record: Statement<InnerSegments>) {
+        let _ = (provider, node, order, record);
     }
 }
 
@@ -506,6 +507,7 @@ impl Grading for Evidenced<'_> {
     /// Takes what a provider answered as a record of its node, or as nothing, and hands the books the result.
     fn record_read(
         &mut self,
+        order: &Id,
         wanted: &RecordWanted,
         answer: Option<(&Statement<ProviderOperation>, &[u8])>,
     ) -> bool {
@@ -518,7 +520,8 @@ impl Grading for Evidenced<'_> {
         });
         match record {
             Some(record) => {
-                self.books.took(&wanted.provider, &wanted.node, record);
+                self.books
+                    .took(&wanted.provider, &wanted.node, order.as_str(), record);
                 true
             }
             None => false,

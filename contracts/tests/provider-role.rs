@@ -2955,6 +2955,23 @@ fn private_node_record_is_answered_by_the_providers_own_record_of_the_node_asked
         provider_role::check_inner_segments_answer(&answered.question.statement, &other),
         Err(vec![InnerSegmentsMismatch::RecordOfAnotherMaker])
     );
+    // A question about nothing, or twice about one transaction, is none Rust holds an answer to, as the schemas hold.
+    for about in [vec![], vec!["tx-p1-s2".to_owned(), "tx-p1-s2".to_owned()]] {
+        let mut asked = answered.question.statement.clone();
+        if let Operation::InnerSegmentsQuery(q) = &mut asked {
+            q.about = about;
+        }
+        let Err(found) = provider_role::check_inner_segments_answer(&asked, &answered.answer)
+        else {
+            panic!(
+                "an answer to a question that asks about no transaction, or one twice, was held"
+            );
+        };
+        assert!(
+            found.contains(&InnerSegmentsMismatch::AboutNotAList),
+            "{found:?}"
+        );
+    }
     for (name, rule) in rust_rule_fixtures() {
         if name.starts_with("answered-inner-segments-query-")
             || name == "result-inner-segments-query-carrying-another-makers-record"

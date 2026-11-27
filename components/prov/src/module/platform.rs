@@ -3727,6 +3727,31 @@ mod tests {
         assert!(!super::result_matches(&body(&other), &question.statement));
     }
 
+    /// An answer about a private node's record is a result of the question only if it is of the node asked about, as well
+    /// as of the question's own transaction; the question's `about` (the segments asked for) is no field of its answer
+    /// (`T-020-58`).
+    // verifies: REQ-ORD-41
+    #[test]
+    fn an_answer_about_another_node_is_no_result_of_the_question_of_a_nodes_record() {
+        let fixture = |name: &str| -> serde_json::Value {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../contracts/provider-role/fixtures/valid")
+                .join(format!("{name}.json"));
+            serde_json::from_slice(&std::fs::read(path).expect("the fixture")).expect("JSON")
+        };
+        let question: rutent_contracts::provider_role::Statement<
+            rutent_contracts::provider_role::Operation,
+        > = serde_json::from_value(fixture("operation-inner-segments-query")).expect("a question");
+        let answer = fixture("result-inner-segments-query-not-known");
+        let body = |value: &serde_json::Value| -> rutent_contracts::provider_role::ResultBody {
+            serde_json::from_value(value["statement"].clone()).expect("a result")
+        };
+        assert!(super::result_matches(&body(&answer), &question.statement));
+        let mut other = answer.clone();
+        other["statement"]["node"] = "another-node".into();
+        assert!(!super::result_matches(&body(&other), &question.statement));
+    }
+
     /// A result that can't be signed although its key was checked before the module ran nests a statement the
     /// operation didn't ask for: malformed output, never `Unavailable`, which would say no module runs. A key that
     /// doesn't sign is the key's misconfiguration (`REQ-MDL-12`, `THR-4`).

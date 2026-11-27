@@ -232,6 +232,8 @@ pub struct HoldingChecked {
 /// A publisher's signed record of the segments inside one of its private nodes, as Core read it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Published {
+    /// The order whose segments the record is about.
+    pub order: Id,
     /// The private node.
     pub node: String,
     /// The record, held to its maker's advertisement and its signature.

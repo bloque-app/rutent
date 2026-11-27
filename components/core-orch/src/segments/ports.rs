@@ -368,10 +368,11 @@ pub trait Grading {
     /// graded again, and a read that came to nothing changes nothing the grading holds.
     fn record_read(
         &mut self,
+        order: &Id,
         wanted: &RecordWanted,
         answer: Option<(&Statement<Operation>, &[u8])>,
     ) -> bool {
-        let _ = (wanted, answer);
+        let _ = (order, wanted, answer);
         true
     }
 

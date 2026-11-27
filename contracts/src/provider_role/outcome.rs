@@ -975,6 +975,9 @@ pub enum InnerSegmentsMismatch {
     RecordOfAnotherMaker,
     /// The record it carries lists a segment under a transaction the question didn't ask about.
     SegmentNotAsked,
+    /// The question names no transaction it is about, or one twice: it asks for nothing, or the same thing twice, and
+    /// no answer to it is held.
+    AboutNotAList,
     /// The question isn't a question of a node's record, or the answer isn't an answer to one: an answer to another
     /// question is no record of a private node.
     NotAnInnerSegmentsQuestion,
@@ -998,6 +1001,9 @@ pub fn check_inner_segments_answer(
         ]);
     };
     let mut out = Vec::new();
+    if !asked.asks_about_each_once() {
+        out.push(InnerSegmentsMismatch::AboutNotAList);
+    }
     if answer.maker != asked.provider {
         out.push(InnerSegmentsMismatch::AnsweredByAnotherProvider);
     }

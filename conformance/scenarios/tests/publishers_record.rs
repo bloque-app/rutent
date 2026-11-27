@@ -655,8 +655,8 @@ fn ticks_question_about_a_private_node_is_decided_and_recorded_and_a_denial_asks
     );
 }
 
-/// The tick's reads stay bounded: an order that has settled is read by no tick however many run, and orders still
-/// unsettled at a node are asked of each of its providers once a tick, not once an order. The job's default is hourly
+/// The tick's reads stay bounded: an order that has settled is read by no tick however many run, and an order still
+/// unsettled at a node is asked of each of its providers once a tick, about its own segments, under its own name. The job's default is hourly
 /// (`T-020-58`, the review's M1).
 // verifies: REQ-ORD-41
 #[test]
@@ -683,10 +683,11 @@ fn ticks_reads_stay_bounded_over_many_ticks() {
         "the log holds the reads closing took and no more"
     );
 
-    // Two orders unsettled at the one node: each tick asks each of its three providers once, not once for each order.
+    // Two orders unsettled at the one node: each tick asks each of its three providers once for each order, about its
+    // own segments and under its own name, and no more however many ticks run.
     let (mut core, session) = core_over(&[IN, EXCHANGE, QUICK, OUT, RESERVE]);
-    unsettled_at_the_node(&mut core, &session, "req-open-1");
-    unsettled_at_the_node(&mut core, &session, "req-open-2");
+    let (first, first_segments) = unsettled_at_the_node(&mut core, &session, "req-open-1");
+    let (second, second_segments) = unsettled_at_the_node(&mut core, &session, "req-open-2");
     core.set_cadence(Job::PublishersRecords, 0);
     let mut per_tick = Vec::new();
     for _ in 0..5 {
@@ -700,9 +701,45 @@ fn ticks_reads_stay_bounded_over_many_ticks() {
     assert!(
         per_tick
             .iter()
-            .all(|&(asked, effects)| asked == 3 && effects == 3),
+            .all(|&(asked, effects)| asked == 6 && effects == 6),
         "{per_tick:?}"
     );
+    // Each read names the order it is about, and asks about that order's own segments alone.
+    let own = |order: &Id, segments: &[Accounted]| -> Vec<String> {
+        let mut own: Vec<String> = segments[..2]
+            .iter()
+            .map(|s| transaction(s).as_str().to_owned())
+            .collect();
+        own.sort();
+        let _ = order;
+        own
+    };
+    let reads: Vec<(Id, Vec<String>)> = entries(&core)
+        .into_iter()
+        .filter_map(|v| match v.what {
+            What::Effect {
+                action:
+                    rutent_contracts::core_internal::Action::ReadNodeRecord { order, about, .. },
+                ..
+            } => {
+                let mut about: Vec<String> =
+                    about.iter().map(|t| t.as_str().to_owned()).collect();
+                about.sort();
+                Some((order, about))
+            }
+            _ => None,
+        })
+        .collect();
+    for (order, segments) in [(&first, &first_segments), (&second, &second_segments)] {
+        let own = own(order, segments);
+        let mine: Vec<_> = reads.iter().filter(|(o, _)| o == order).collect();
+        assert!(!mine.is_empty(), "{order:?} was read");
+        assert!(
+            mine.iter()
+                .all(|(_, about)| about.iter().all(|t| own.contains(t))),
+            "a read names an order and asks about that order's segments alone"
+        );
+    }
 }
 
 /// How many `read_node_record` effects the log holds.
@@ -752,6 +789,79 @@ fn two_orders_through_one_node_each_keep_their_own_records() {
         assert_eq!(found.len(), 1, "{found:?}");
         assert_eq!(found[0].2, ReplayFound::ConsistentWithTheExit {});
     }
+}
+
+/// A segment that waits keeps the record it took when another order reads the same node: the books are kept for each
+/// order, since each answer covers one order's transactions alone. Order A's deposit waits for its public record after its
+/// closing took the node's record; order B runs whole through the same node; the movement of A's deposit then reaches the
+/// bank's record and A closes on the record it took, replayed against the exit (`REQ-ORD-41`, `REQ-AUD-9`, the review's
+/// M3).
+// verifies: REQ-ORD-41
+#[test]
+fn a_waiting_segments_record_survives_another_orders_read_of_the_same_node() {
+    use rutent_conformance::sim::Behaviour;
+    const LEDGER: &str = "sim-reserve-b-ledger";
+    let (mut core, session) = core_over(&[IN, EXCHANGE, QUICK, OUT, RESERVE]);
+    core.world().script_for(
+        RESERVE,
+        "deposit",
+        Behaviour {
+            unrecorded: true,
+            ..Behaviour::default()
+        },
+    );
+    let (a, ran) = run(&mut core, within("req-a", &session, AMOUNT, RESERVE, OTHER));
+    let waiting = accounted(&ran).to_vec();
+    assert_eq!(waiting.len(), 2, "{waiting:?}");
+    assert!(
+        !matches!(waiting[1].outcome, SegmentOutcome::Settled { .. }),
+        "the deposit waits for its public record: {:?}",
+        waiting[1].outcome
+    );
+    let a_txs: Vec<Id> = waiting.iter().map(transaction).collect();
+    assert!(
+        core.books_for(LEDGER, &a_txs).is_some(),
+        "A's closing took the node's record"
+    );
+    // Another order runs whole through the same node.
+    let (b, ran_b) = run(&mut core, within("req-b", &session, AMOUNT, RESERVE, OTHER));
+    assert_eq!(accounted(&ran_b).len(), 2);
+    assert!(
+        core.books_for(LEDGER, &a_txs).is_some(),
+        "and A's books hold"
+    );
+    assert!(!replays(&core, &b).is_empty());
+    // A's deposit reaches the bank's public record, and A closes on the record it took.
+    let deposit = transaction(&waiting[1]);
+    let amount = core.world().journal(RESERVE).iter().find_map(|e| {
+        let value = serde_json::to_value(&e.operation.statement).ok()?;
+        (value["transaction"] == deposit.as_str())
+            .then(|| value["amount"].as_str().map(str::to_owned))?
+    });
+    core.world()
+        .network_mut(&format!("{RESERVE}-bank"))
+        .expect("the bank's network")
+        .record(
+            rutent_evidence::MovementId::new(deposit.as_str()).expect("an id"),
+            rutent_evidence::Movement {
+                destination: OTHER.to_owned(),
+                asset: "COP".to_owned(),
+                amount: amount.expect("the deposit's amount"),
+            },
+        )
+        .expect("recorded");
+    core.run(&a).expect("A runs again");
+    assert_eq!(
+        state(&mut core, &a),
+        rutent_contracts::state_machine::OrderState::Complete
+    );
+    let found = replays(&core, &a);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(
+        found[0].2,
+        ReplayFound::ConsistentWithTheExit {},
+        "{found:?}"
+    );
 }
 
 /// The production platform answers the question of a private node's record: `impl Modules for Platform` carries it

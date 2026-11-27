@@ -86,10 +86,12 @@ impl Segments {
             };
             let done = match self.read_node_record(parts, &read) {
                 Read::Denied => true,
-                Read::Failed => parts.grading.record_read(&wanted, None) && false,
-                Read::Answered(question, bytes) => parts
-                    .grading
-                    .record_read(&wanted, Some((&question, bytes.as_slice()))),
+                Read::Failed => parts.grading.record_read(live.order, &wanted, None) && false,
+                Read::Answered(question, bytes) => parts.grading.record_read(
+                    live.order,
+                    &wanted,
+                    Some((&question, bytes.as_slice())),
+                ),
             };
             if done {
                 self.records_read.insert(asked);

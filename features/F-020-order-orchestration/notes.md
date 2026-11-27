@@ -9516,3 +9516,39 @@ scenario tests.
   `gross_charged`, `audit_scenarios`, `charge_check`, `holds`) 203; `invariants` on seeds 11 to 15, 10; `plan-check
   --strict` 0 findings, `tag-check --strict` 2520 tests, 0 findings; the contract guard against `origin/develop`: no
   violations. The doc check is CI's (core-orch's `rustdoc` passes 2 GB locally).
+
+### Round 5: the second review of `45600ac8` (#340): M3, L-a, L-b, L-c
+
+- **M3: the books are kept for each order.** An answer covers one order's transactions, so a record for each provider and
+  node would be replaced by another order's read. `Books::took(provider, node, order, record)` keeps one for each provider,
+  node and order, whole as the provider signed it, so what closing cites stays exact and one order's read never drops
+  another's; `Books::recorded` reads every order's records of the node, an order's transactions being listed in its own
+  alone. `Grading::record_read` takes the order. A segment that waits keeps the record it took. The books grow by one
+  record for each order that read a node until the Core restarts (they rebuild from the next asking); an order's records
+  are small, and pruning them when its part closes is a gap (owner: `T-020-61`'s order run). Test, written first and seen
+  red: `a_waiting_segments_record_survives_another_orders_read_of_the_same_node` (order A's deposit waits, order B runs
+  whole through the same ledger, A's movement reaches the bank's record, A closes on the record it took).
+- **L-a: the tick reads for each order.** `Job::PublishersRecords` asks, for each order unsettled at a node, once in a run,
+  about that order's own segments, and the read names that order and one of its segments: the log's effect says what it asks
+  about. The records go to `Round::published` (now with their `order`) and no further: they are what the publishers state,
+  now, of the orders in flight, for the operator's view; closing's books are closing's, read by closing for each segment
+  it grades. The log's entries for the tick are bounded by the orders in flight (three for each provider, node and
+  unsettled order a run). `ticks_reads_stay_bounded_over_many_ticks` holds six questions a tick for two orders and that each
+  read asks about its own order's segments.
+- **L-b: Rust refuses an empty or repeated `about`, as the schemas do.** `InnerSegmentsQuery::asks_about_each_once`;
+  `check_inner_segments_answer` gives `AboutNotAList`; `Action::check` refuses a `ReadNodeRecord` that names none or one twice
+  (fixtures `--naming-no-transactions`, `--naming-a-transaction-twice`, held by the schema and Rust both); the signer signs
+  nothing for a question that names a transaction twice, and never a record of no segment (a question about nothing signs
+  nothing as well, since no segment is under none, so that clause is no rule of its own).
+- **L-c:** `an_answer_about_another_node_is_no_result_of_the_question_of_a_nodes_record` (`platform.rs`) fails without
+  `result_matches`' node clause.
+
+| Rule switched off | Red |
+|---|---|
+| the books are not kept for each order | `a_waiting_segments_record_survives_another_orders_read_of_the_same_node` |
+| Rust holds a question about nothing or twice | `private_node_record_is_answered_by_the_providers_own_record_of_the_node_asked_about` |
+| Rust holds a read about nothing or twice | core-internal's fixture test (`request_to_read_a_private_nodes_record_names_its_node_and_provider`) |
+| the signer signs a record of no segment | `record_nested_in_an_inner_segments_answer_is_signed_only_for_the_node_asked` |
+| the signer signs a question that names a transaction twice | the same (not switched off alone) |
+| `result_matches` doesn't compare the node | `an_answer_about_another_node_is_no_result_of_the_question_of_a_nodes_record` |
+

@@ -316,10 +316,20 @@ impl<'a> Asked<'a> {
     fn lists_only_segments_asked(&self, body: &Value) -> bool {
         let about = self.operation.get("about").and_then(Value::as_array);
         let segments = body.get("segments").and_then(Value::as_array);
+        // A question about nothing, or twice about one thing, is none the platform answers, and a record of no segment is
+        // none it signs (`all` over nothing is true): the record says something, and only of what was asked.
         match (about, segments) {
-            (Some(about), Some(segments)) => segments
-                .iter()
-                .all(|s| s.get("transaction").is_some_and(|t| about.contains(t))),
+            (Some(about), Some(segments)) => {
+                // A question about nothing signs nothing too: no segment is under none.
+                about
+                    .iter()
+                    .enumerate()
+                    .all(|(i, t)| !about[..i].contains(t))
+                    && !segments.is_empty()
+                    && segments
+                        .iter()
+                        .all(|s| s.get("transaction").is_some_and(|t| about.contains(t)))
+            }
             _ => false,
         }
     }
@@ -1241,6 +1251,34 @@ mod tests {
             Some(SigningError::NestedNotAsked),
             "a segment not asked about"
         );
+        // Each alone refuses: a question about nothing, one that names a transaction twice, and a record of no segment.
+        let with_about = |about: Value| -> Operation {
+            let mut question = serde_json::to_value(&asked).expect("JSON");
+            question["about"] = about;
+            serde_json::from_value(question).expect("an operation")
+        };
+        let mut empty_record = answered.clone();
+        empty_record["statement"]["outcome"]["record"]["statement"]["segments"] =
+            serde_json::json!([]);
+        for (result, question, why) in [
+            (
+                &answered,
+                with_about(serde_json::json!([])),
+                "asks about nothing",
+            ),
+            (
+                &answered,
+                with_about(serde_json::json!(["tx-p1-s2", "tx-p1-s2", "tx-p1-s3"])),
+                "names a transaction twice",
+            ),
+            (&empty_record, asked.clone(), "a record of no segment"),
+        ] {
+            assert_eq!(
+                sign_as(result, maker, &question, &private, &declared).err(),
+                Some(SigningError::NestedNotAsked),
+                "{why}"
+            );
+        }
         // A question put to another provider than the one that nests its record.
         let elsewhere = asking(
             "operation-inner-segments-query",

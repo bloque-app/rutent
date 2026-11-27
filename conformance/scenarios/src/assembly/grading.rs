@@ -25,7 +25,7 @@ struct Read {
     networks: BTreeMap<String, SimulatedNetwork>,
     /// What each provider of a private node answered when Core last asked it for its record of the node, taken as one,
     /// by provider and node (`T-020-58`).
-    records: BTreeMap<(String, String), Statement<InnerSegments>>,
+    records: BTreeMap<(String, String, String), Statement<InnerSegments>>,
     /// Each question of a node's record Core put, as the platform carried it: the provider, the node and the
     /// transaction.
     asked: Vec<(String, String, String)>,
@@ -114,8 +114,12 @@ impl Readings {
         let read = self.read.borrow();
         self.movers
             .iter()
-            .filter_map(|spec| read.records.get(&(spec.provider.clone(), node.to_owned())))
-            .cloned()
+            .flat_map(|spec| {
+                read.records
+                    .iter()
+                    .filter(|((provider, at, _), _)| *provider == spec.provider && at == node)
+                    .map(|(_, record)| record.clone())
+            })
             .collect()
     }
 
@@ -220,22 +224,17 @@ impl PublicRecords for Readings {
 /// provider that serves in it, for the transactions asked, in the order the providers are installed and the
 /// transactions are asked, each segment as its record states it.
 impl Books for Readings {
-    fn took(&self, provider: &str, node: &str, record: Statement<InnerSegments>) {
-        self.read
-            .borrow_mut()
-            .records
-            .insert((provider.to_owned(), node.to_owned()), record);
+    fn took(&self, provider: &str, node: &str, order: &str, record: Statement<InnerSegments>) {
+        self.read.borrow_mut().records.insert(
+            (provider.to_owned(), node.to_owned(), order.to_owned()),
+            record,
+        );
     }
 
     fn recorded(&self, node: &str, transactions: &[Id]) -> Option<Recorded> {
-        let records: Vec<Statement<InnerSegments>> = {
-            let read = self.read.borrow();
-            self.movers
-                .iter()
-                .filter_map(|spec| read.records.get(&(spec.provider.clone(), node.to_owned())))
-                .cloned()
-                .collect()
-        };
+        // Every order's record of the node, each provider's together, in the order the providers are installed: an order's
+        // transactions are listed in its own records alone, so an order reads its own.
+        let records = self.taken(node);
         let mut segments = Vec::new();
         let mut read: Vec<Statement<InnerSegments>> = Vec::new();
         for transaction in transactions {

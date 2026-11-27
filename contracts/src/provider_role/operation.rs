@@ -298,3 +298,16 @@ pub struct InnerSegmentsQuery {
     /// is the asker's own and bounded by what was asked ([`check_inner_segments_answer`](super::check_inner_segments_answer)).
     pub about: Vec<String>,
 }
+
+impl InnerSegmentsQuery {
+    /// Whether the question names the transactions it is about as the schema holds it: at least one, each once. A reader
+    /// that took one that didn't would ask for no segment, or ask twice for one.
+    pub fn asks_about_each_once(&self) -> bool {
+        !self.about.is_empty()
+            && self
+                .about
+                .iter()
+                .enumerate()
+                .all(|(i, t)| !self.about[..i].contains(t))
+    }
+}

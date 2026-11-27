@@ -348,7 +348,7 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 134] = [
+const SCHEMA_RULES: [SchemaRule; 136] = [
     (
         "decision-request-to-confirm-releases-naming-a-version-twice",
         &[("/action/versions", "uniqueItems")],
@@ -408,6 +408,16 @@ const SCHEMA_RULES: [SchemaRule; 134] = [
         "decision-request-to-read-a-private-nodes-record-without-its-node",
         &[("/action", "required")],
         "missing field `node`",
+    ),
+    (
+        "decision-request-to-read-a-private-nodes-record-naming-no-transactions",
+        &[("/action/about", "minItems")],
+        "a read of a private node's record names the transactions it is about, at least one, each once",
+    ),
+    (
+        "decision-request-to-read-a-private-nodes-record-naming-a-transaction-twice",
+        &[("/action/about", "uniqueItems")],
+        "a read of a private node's record names the transactions it is about, at least one, each once",
     ),
     (
         "decision-request-to-read-a-private-nodes-record-without-the-transactions-it-is-about",
@@ -3340,9 +3350,13 @@ fn an_order_refused_for_an_input_policy_could_not_read_is_told_its_class() {
 fn request_to_read_a_private_nodes_record_names_its_node_and_provider() {
     assert_accepted_by_both("decision-request-to-read-a-private-nodes-record");
     assert_rejected("decision-request-to-read-a-private-nodes-record-without-its-node");
-    assert_rejected(
+    for name in [
         "decision-request-to-read-a-private-nodes-record-without-the-transactions-it-is-about",
-    );
+        "decision-request-to-read-a-private-nodes-record-naming-no-transactions",
+        "decision-request-to-read-a-private-nodes-record-naming-a-transaction-twice",
+    ] {
+        assert_rejected(name);
+    }
 }
 
 // verifies: REQ-ORD-1, INV-4

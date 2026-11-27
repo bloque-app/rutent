@@ -827,6 +827,7 @@ impl Grading for ReadsTwiceOver {
 
     fn record_read(
         &mut self,
+        _: &Id,
         _: &RecordWanted,
         answer: Option<(&Statement<Operation>, &[u8])>,
     ) -> bool {

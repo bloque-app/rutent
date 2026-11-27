@@ -10,7 +10,7 @@
     taken as an effect under a fresh transaction it names, appended before the question is put. Its transaction counts among
     those `status-is-asked-under-a-fresh-transaction` reads an entry as naming, so a late status is never asked under it. No
     relation of its own, so the relation count is unmoved. Fixtures: valid `decision-request-to-read-a-private-nodes-record`; invalid
-    `decision-request-to-read-a-private-nodes-record-without-its-node`, `--without-the-transactions-it-is-about` (two schema rules more). Ignorable: no, it is a decided
+    `decision-request-to-read-a-private-nodes-record-without-its-node`, `--without-the-transactions-it-is-about`, `--naming-no-transactions` and `--naming-a-transaction-twice` (four schema rules more, the last two held by `Action::check` too). Ignorable: no, it is a decided
     action a reader that ignored would carry out undecided.
   - `T-020-48` (finding 4): `Difference::PairNotBuilt {order, segment, why}` (`pair_not_built`; `why`: `PairNotBuilt`,
     `no_sent_report {segment}`, `no_flight`, `not_an_amount`, `refused`), a segment's pair of reports that was never built, so
