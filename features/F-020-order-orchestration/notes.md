@@ -9414,3 +9414,11 @@ boundary-check's `boundary` suite:
 | boundary: nothing depends on the reader host, the assembly included | the same |
 | boundary: the reader host names `rutent_prov` only through `egress` | the same |
 | boundary: the reader host never names the contract | the same |
+
+### Local checks
+
+Through the lock, `contracts/src/lib.rs` touched first, at `54cf9064`: `cargo fmt --all -- --check` and
+`cargo clippy --workspace --all-targets -- -D warnings` clean; `rutent-contracts`, every suite, all passed (`reader` 8,
+`core-internal` 100); `rutent-core-authz --lib` 166; the boundary-check's `boundary` 22 and `graph` 2 (its `docs` test
+runs `cargo doc`, so it is CI's); `plan-check --strict` 0 findings; `tag-check --strict` 2532 tests, 0 findings; the
+contract guard against `origin/develop`: no violations. `cargo doc` is CI's.
