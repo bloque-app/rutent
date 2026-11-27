@@ -811,10 +811,7 @@ fn segment_begun_before_core_stopped_is_carried_on_after_it_reopens() {
                 }))
             })
             .count();
-        assert_eq!(
-            repeats, 1,
-            "seed {seed}: handed again once, as a decided effect"
-        );
+        assert_eq!(repeats, 0, "seed {seed}: never handed again");
         let moved = restarted.movements();
         assert!(moved.values().all(|n| *n == 1), "seed {seed}: {moved:?}");
     }

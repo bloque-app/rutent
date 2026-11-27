@@ -257,9 +257,23 @@ impl Segments {
     /// again would ask again on every tick for nothing new. A route all of whose segments settled has nothing left.
     pub fn work_left(&self, order: &Id, part: &Id, segments: &[Id]) -> bool {
         use super::SegmentOutcome;
-        if self.stuck(order, part)
-            || self.ended_by_resolution(order, part)
-            || self.ended(order, part)
+        // A stuck part, or one its resolution ended, hands nothing over; what a segment of it carried out still gives back
+        // is still taken (its grading waits for its evidence, say), as `run_part` takes it.
+        if self.stuck(order, part) || self.ended_by_resolution(order, part) {
+            return segments.iter().any(|segment| {
+                self.flights
+                    .get(&(order.as_str().to_owned(), segment.as_str().to_owned()))
+                    .is_some_and(|f| {
+                        f.carried
+                            && f.answered.is_some()
+                            && matches!(
+                                f.outcome,
+                                None | Some(super::SegmentOutcome::AwaitsEvidence(_))
+                            )
+                    })
+            });
+        }
+        if self.ended(order, part)
             || self.waiting(order, part).is_some()
             || self
                 .refused

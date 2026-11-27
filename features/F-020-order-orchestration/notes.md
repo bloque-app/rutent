@@ -10789,7 +10789,7 @@ log and the evidence store the log already reads. **Every caller of v0 behaviour
 2. **One step of a part a tick.** A part runs, or, with nothing left to run and its route failed, is recalculated; the new
    route runs on the next tick; a hand-on recorded on a tick starts its linked order on the next. Each step's entries are in the
    log before the next step reads it.
-3. **Item 8: the platform's record decides whether a move may be handed again.** Past the plan's two ways (a status question,
+3. **(Withdrawn by round 1's M1; kept for the record.) Item 8: the platform's record decides whether a move may be handed again.** Past the plan's two ways (a status question,
    a safe repeat), an operation is handed again under its own transaction through a decided `repeat_operation` effect at any
    provider: the platform carries it out only where its record never held the transaction and refuses one it did
    (`DuplicateTransaction`). So the plan's "operation repeated at a provider that declares a safe repeat" is read as "at a
@@ -10858,6 +10858,36 @@ fmt (root); clippy `--workspace --all-targets -D warnings`; `rutent-core-orch --
 entry-point scan included); the whole `rutent-scenarios` suite once, then every binary it touched after the last changes, with
 `invariants`, `assembly`, `reopened` and `protocol_cutover` on `RUTENT_SCENARIO_SEEDS=11..15,113..119` (the pinned 101..119
 included); plan-check and tag-check `--strict` (0 findings). Stand-ins and the plain wallet built privately and deleted.
+
+### T-020-61, review round 1 (#355, CHANGES at `2c96f5b6`), and item (10): first pass
+
+Merged `origin/m3` at `605a6c92` (T-020-67, the plan's item 10); the only conflict was these notes (both sides kept). The tests
+T-020-67 landed that still called the assembly's `run` move onto ticks.
+
+- **H3, done.** `draw_order`'s doc no longer links the private `REQUEST_NAME`.
+- **M1, done: item 8 reverted to `T-020-63`'s design.** A reopened segment is asked its status where its provider answers
+  status queries; its operation is repeated (`Modules::repeat_operation`, never `handle`) only at a provider that declares a
+  safe repeat and no status query; otherwise, and once carried on, it waits for the stuck check. The platform's record is a
+  guard, not the rule. Default 3 above is withdrawn. So a crash after the log took an effect and before the platform carried
+  it out ends stuck for the operator again (`RestartAfterRecord`, marked `stuck_for_the_operator`), and
+  `segment_begun_before_core_stopped_is_carried_on_after_it_reopens` now crashes after the platform carried the deposit out,
+  the reserve's status giving its result. `no_value_moves_twice_after_core_reopens` asserts nothing is handed again in each
+  case, and that a segment whose answer is the log's is not carried on at all: that is R13's test now. L4 is moot: no `handle`
+  under `repeat_operation` is left.
+- **M2, first half.** `plan_of`'s remap and seed 116's pin to the ramp are gone: the joined route's `RestartAfterEffect(1)` falls
+  at the exchange again, ends stuck under `stuck_for_the_operator`, and the item-9 test asserts each caught order's end by its
+  kind, `INV-8`, and that nothing is repeated. The decided read of the platform's recorded answer (core-internal and the
+  platform, `DEC-20`) and its test `answer the platform recorded before core lost it is read back and nothing is sent again`
+  are **not built yet**.
+- **M4, done.** `decide_stuck` takes the part Core holds stuck, any part of a split order. No split-order test yet.
+- **L5, done.** `Recalculations::recalculate`'s doc says the second-recalculation rule is Core's run's.
+- **Not built yet in this pass, each owned by this row:** H1 (the reversal of a failed segment as a job of Core's run, and
+  `end`, `show_fault`, `accept_fault`, `dispute`, `returned` as Core entry points; then R12's gate is live and tested); H2 (the
+  linked order accepted by Core, its inputs logged and its authorisation under the customer's floor; test `linked order is
+  accepted by core with the customer's inputs logged`); M3 (open orders at a reserve, the reliance declarations, release
+  acceptance through Core's decided path); M2's decided read; L1 (item 9's four Lows); L2 (item 7's: the owed-reversal refusal
+  test, a lapsed quote's hold released); L3 (`reserve_yes` recorded on the quote); L6 (the stuck tests reached through Core's
+  run).
 
 ## T-020-67: what the checks of `T-020-58` and `T-020-54` left
 
