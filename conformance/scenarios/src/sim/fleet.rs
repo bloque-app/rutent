@@ -26,6 +26,7 @@ use rutent_prov::catalogue::{
     Bond, Catalogue, Category, Grant, GrantTerms, Instant, ReversalCapacity, tuples_of,
 };
 use rutent_prov::module::platform::{OperationClock, Platform};
+use rutent_prov::module::record::FileRecord;
 use rutent_prov::module::types::{Admitted, Envelope, Handled};
 use rutent_prov::module::wire::sha256;
 use serde_json::json;
@@ -221,6 +222,105 @@ pub struct Fleet {
     seeds: BTreeMap<u8, String>,
     /// The transactions whose late answers the platform has taken ([`Fleet::late_answers`]), each once.
     late_taken: BTreeSet<String>,
+    /// Where the platform keeps its carried-out record: a file of its own, which a restarted platform opens again
+    /// (`T-013-10`, `T-024-21`).
+    record: RecordFile,
+    /// Every release admitted, in the order it was, as the deployment's store of releases keeps it: the assertion as
+    /// received and its two parts. A restarted platform holds no process, and each is admitted again from here
+    /// ([`Fleet::restarted`]).
+    admitted: Vec<(Vec<u8>, Parts<Vec<u8>>)>,
+    /// The platform's deadline on an operation, set again on a restarted platform.
+    deadline: Duration,
+}
+
+/// The file the platform's record is kept in, in a directory of its own, removed when the last platform on it is
+/// gone (`T-024-21`).
+struct RecordFile {
+    dir: std::path::PathBuf,
+}
+
+impl RecordFile {
+    /// A new, empty record in a fresh directory.
+    fn create() -> (Self, FileRecord) {
+        use std::sync::atomic::AtomicU64;
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "rutent-scenarios-record-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a directory for the platform's record");
+        let file = RecordFile { dir };
+        let record = FileRecord::create(file.path()).expect("the platform's record is created");
+        (file, record)
+    }
+
+    fn path(&self) -> std::path::PathBuf {
+        self.dir.join("record")
+    }
+
+    /// The record as a crash of the platform's process leaves it: every entry it synced, and not the close a platform
+    /// dropped whole writes last. The next platform on it can't vouch for what this one decided, so it holds every
+    /// provider's releases until the operator confirms them (`T-013-11`).
+    fn crash(&self) {
+        let path = self.path();
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let mut lines: Vec<&str> = text.lines().collect();
+        let closed = lines.last().is_some_and(|line| {
+            serde_json::from_str::<serde_json::Value>(line).is_ok_and(|entry| {
+                matches!(entry["entry"].as_str(), Some("closed" | "closed_holding"))
+            })
+        });
+        if closed {
+            lines.pop();
+            let mut kept = lines.join("\n");
+            if !lines.is_empty() {
+                kept.push('\n');
+            }
+            std::fs::write(&path, kept).expect("the record, cut where the crash fell");
+        }
+    }
+
+    /// The record opened again. Its lock is `flock`'s, shared by every copy of the descriptor: a module process forked
+    /// while the last platform held it keeps a copy until its `exec`, so the lock comes free a moment after that
+    /// platform drops, not at it. Asked again on `WouldBlock`, a bounded number of times, as `record.rs`'s own test
+    /// does (`T-013-10`, 9462a3a8); a lock that stays held still fails.
+    fn open(&self) -> FileRecord {
+        let path = self.path();
+        let mut opened = FileRecord::open(&path);
+        for _ in 0..250 {
+            match &opened {
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(20));
+                    opened = FileRecord::open(&path);
+                }
+                _ => break,
+            }
+        }
+        opened.unwrap_or_else(|e| panic!("the platform's record opens again: {e}"))
+    }
+}
+
+impl Drop for RecordFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// The platform's settings every scenario runs it under, on a new platform or a restarted one: no staging until the
+/// deployment sets one, a start deadline no loaded machine misses, the scenario clock, `deadline` and the output
+/// limit.
+fn configure(platform: &mut Platform<SimWorld>, wall_time: Arc<AtomicBool>, deadline: Duration) {
+    platform.set_staging(None);
+    // Starting a simulated provider is the machine's work, which a stepped clock can't move: on a loaded machine
+    // it can pass the 10 s a production start is given, and no scenario is about start-up time.
+    platform.set_start_deadline(std::time::Duration::from_secs(120));
+    platform.set_operation_clock(Arc::new(ScenarioClock::new(wall_time)));
+    platform.set_deadline(deadline);
+    platform.set_output_limit(1 << 20);
 }
 
 impl Fleet {
@@ -238,22 +338,19 @@ impl Fleet {
         let wall_time = Arc::new(AtomicBool::new(false));
         let mut world = SimWorld::new();
         world.wall_time = Some(wall_time.clone());
-        let mut platform = Platform::new(
+        // On a record of its own, on a file, which a restarted platform opens again (`T-024-21`).
+        let (record, file) = RecordFile::create();
+        let mut platform = Platform::open(
             disk::paths(),
             world,
             Envelope {
                 deployment: context.deployment.clone(),
                 protocol_version: context.protocol_version.clone(),
             },
+            Box::new(file),
         )
         .expect("a platform");
-        platform.set_staging(None);
-        // Starting a simulated provider is the machine's work, which a stepped clock can't move: on a loaded machine
-        // it can pass the 10 s a production start is given, and no scenario is about start-up time.
-        platform.set_start_deadline(std::time::Duration::from_secs(120));
-        platform.set_operation_clock(Arc::new(ScenarioClock::new(wall_time)));
-        platform.set_deadline(deadline);
-        platform.set_output_limit(1 << 20);
+        configure(&mut platform, wall_time, deadline);
         Self {
             platform,
             catalogue,
@@ -262,6 +359,75 @@ impl Fleet {
             installed: BTreeMap::new(),
             seeds: BTreeMap::new(),
             late_taken: BTreeSet::new(),
+            record,
+            admitted: Vec::new(),
+            deadline,
+        }
+    }
+
+    /// The platform restarted after a crash (`T-024-21`; `NFR-6`, `INV-8`): its process gone, and every value it held
+    /// in memory with it, its modules' processes and what each held in its instance among them (a plain wallet's
+    /// record of its account). What survives is what a platform keeps beyond its memory: its carried-out record, on its
+    /// file, cut where the crash fell (with no close), and the releases the deployment admitted. The platform is opened
+    /// again on that record (`Platform::open`), its settings set again, `staging` among them, and each release
+    /// admitted again in the order it first was, which the record then accepts as it says. The world outside it, the
+    /// providers' books, rails and networks and the keys the deployment keeps, goes on as it stands; so does the
+    /// catalogue its admissions are judged against, the deployment's.
+    ///
+    /// A record that didn't end whole holds every provider with a release in force until the operator confirms it
+    /// (`Platform::confirm`, `T-013-11`): nothing of theirs runs until then.
+    ///
+    /// # Panics
+    ///
+    /// If the record can't be opened again or the platform refuses it.
+    #[must_use]
+    pub fn restarted(mut self, staging: Option<rutent_prov::module::lifecycle::Staging>) -> Self {
+        let mut world = std::mem::replace(&mut self.platform.world, SimWorld::new());
+        let Fleet {
+            platform,
+            mut catalogue,
+            listed,
+            context,
+            installed,
+            seeds,
+            late_taken,
+            record,
+            admitted,
+            deadline,
+        } = self;
+        // The crash: the process and its modules' processes gone.
+        drop(platform);
+        record.crash();
+        let wall_time = world
+            .wall_time
+            .get_or_insert_with(|| Arc::new(AtomicBool::new(false)))
+            .clone();
+        let mut platform = Platform::open(
+            disk::paths(),
+            world,
+            Envelope {
+                deployment: context.deployment.clone(),
+                protocol_version: context.protocol_version.clone(),
+            },
+            Box::new(record.open()),
+        )
+        .unwrap_or_else(|e| panic!("the platform opens again on its record: {e}"));
+        configure(&mut platform, wall_time, deadline);
+        platform.set_staging(staging);
+        for (received, binaries) in &admitted {
+            let _ = platform.admit(received, binaries, &mut catalogue, ADMITTED_AT);
+        }
+        Fleet {
+            platform,
+            catalogue,
+            listed,
+            context,
+            installed,
+            seeds,
+            late_taken,
+            record,
+            admitted,
+            deadline,
         }
     }
 
@@ -531,6 +697,27 @@ impl Fleet {
         );
     }
 
+    /// The providers whose releases the platform holds until the operator confirms them, each with the versions it
+    /// holds them at, in the order their releases were first admitted (`T-013-11`, `T-024-21`): after a restart whose
+    /// record didn't end whole, every one with a release in force.
+    pub fn held(&self) -> Vec<(String, BTreeSet<String>)> {
+        let mut seen = BTreeSet::new();
+        self.admitted
+            .iter()
+            .filter_map(|(received, _)| {
+                let assertion: serde_json::Value = serde_json::from_slice(received).ok()?;
+                let provider = assertion["statement"]["declaration"]["provider"]
+                    .as_str()?
+                    .to_owned();
+                if !seen.insert(provider.clone()) {
+                    return None;
+                }
+                let versions = self.platform.awaiting_confirmation(&provider)?;
+                Some((provider, versions))
+            })
+            .collect()
+    }
+
     /// Admits one release.
     pub fn admit(
         &mut self,
@@ -538,8 +725,12 @@ impl Fleet {
         binaries: &Parts<Vec<u8>>,
     ) -> Admitted {
         let received = serde_json::to_vec(assertion).expect("an assertion is JSON");
-        self.platform
-            .admit(&received, binaries, &mut self.catalogue, ADMITTED_AT)
+        let admitted = self
+            .platform
+            .admit(&received, binaries, &mut self.catalogue, ADMITTED_AT);
+        // Kept as the deployment keeps the releases it was sent, for a restarted platform to admit again.
+        self.admitted.push((received, binaries.clone()));
+        admitted
     }
 
     /// Gives a waiting release its fresh acceptance.

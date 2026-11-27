@@ -597,6 +597,10 @@ struct Carried {
     holding_accounts: BTreeMap<String, String>,
     /// The same register's private nodes' accounts, which go on with it (`T-020-48`, the review's S1).
     publisher_accounts: BTreeMap<String, rutent_core_orch::schedule::PublisherAccount>,
+    /// How many times Core was restarted with its platform before this one ([`Core::restarted`]), and, where the
+    /// platform restarted with it, whether the operator confirms the releases it holds as Core opens (`T-024-21`).
+    restarts: usize,
+    confirm: Option<bool>,
 }
 
 /// Core, put together.
@@ -605,6 +609,8 @@ pub struct Core {
     pub clock: SharedClock,
     /// What survives a crash: the log's store and the evidence store's shelf.
     pub(crate) disk: Disk,
+    /// How many times Core and its platform were restarted after a crash in this run ([`Core::restarted`]).
+    restarts: usize,
     log: Rc<RefCell<CoreLog>>,
     general: GeneralHandle<CoreLog>,
     bound: BoundStore<LogDisk, LogsRead>,
@@ -807,8 +813,116 @@ impl Core {
             holdings: std::mem::take(&mut *self.holdings.borrow_mut()),
             holding_accounts: self.deployed.registers.borrow().holding_accounts.clone(),
             publisher_accounts: self.deployed.registers.borrow().publisher_accounts.clone(),
+            restarts: self.restarts,
+            confirm: None,
         };
         Self::assemble_with(config, environment, self.disk, Some(carried))
+    }
+
+    /// Core and its platform restarted after a crash mid-order (`T-024-21`; `NFR-6`, `INV-8`): every value either held
+    /// in memory dropped, and both opened again from their disks. The platform is opened on its carried-out record, its
+    /// releases admitted again ([`Fleet::restarted`]); the state machine's host on its journal
+    /// ([`Feed::restarted`]); Core on its log and its evidence store, its own state rebuilt from the log as
+    /// [`Core::reopened`] rebuilds it, with fresh identifiers drawn from a source of its own, never the one the Core
+    /// that stopped drew from. What goes on is what is outside both: the providers' world, the clock, the operator's
+    /// key, the deployment's registers and the host's holding accounts, whose wallets' records went with their
+    /// modules' processes.
+    ///
+    /// A platform whose record didn't end whole holds every provider's releases until the operator confirms them; the
+    /// operator's login confirms each provider's, through Core's decided path ([`Core::confirm_releases`]), as Core
+    /// opens and before anything of an order is asked of a provider.
+    ///
+    /// # Errors
+    ///
+    /// If Core can't be put together again, the host can't be opened on its journal, or a confirmation is refused.
+    pub fn restarted(
+        self,
+        config: &Config,
+        environment: &mut dyn Environment,
+    ) -> Result<Self, AssemblyError> {
+        self.restart(config, environment, true)
+    }
+
+    /// [`Core::restarted`], with the platform's releases left held: nothing of a provider runs until the operator
+    /// confirms it ([`Core::confirm_releases`]), for a test that reads what the platform does before then.
+    ///
+    /// # Errors
+    ///
+    /// As [`Core::restarted`].
+    pub fn restarted_holding(
+        self,
+        config: &Config,
+        environment: &mut dyn Environment,
+    ) -> Result<Self, AssemblyError> {
+        self.restart(config, environment, false)
+    }
+
+    fn restart(
+        mut self,
+        config: &Config,
+        environment: &mut dyn Environment,
+        confirm: bool,
+    ) -> Result<Self, AssemblyError> {
+        let restarts = self.restarts + 1;
+        // What the scenario counted of the platform's seam, which is the scenario's, not Core's.
+        let (delivered_twice, swap_failed) =
+            (self.faults.delivered_twice, self.faults.swap_failed.take());
+        let fleet = self.fleet.restarted(config.staging.policy());
+        self.feed
+            .restarted(environment)
+            .map_err(AssemblyError::Host)?;
+        let carried = Carried {
+            fleet,
+            installed: self.installed,
+            clock: self.clock,
+            feed: self.feed,
+            // Core's fresh identifiers come from a source of the restarted Core's own: a Core that drew the stopped one's
+            // sequence again would draw identifiers the log already holds.
+            fresh: Seeded::new(config.seed ^ 0x7e57_a27e_d000_0000 ^ (restarts as u64)),
+            ties: self.readings.ties(),
+            holdings: std::mem::take(&mut *self.holdings.borrow_mut()),
+            holding_accounts: self.deployed.registers.borrow().holding_accounts.clone(),
+            publisher_accounts: self.deployed.registers.borrow().publisher_accounts.clone(),
+            restarts,
+            confirm: Some(confirm),
+        };
+        let mut core = Self::assemble_with(config, environment, self.disk, Some(carried))?;
+        core.faults.delivered_twice = delivered_twice;
+        core.faults.swap_failed = swap_failed;
+        Ok(core)
+    }
+
+    /// The operator's login confirms the releases the platform holds after a restart whose record didn't end whole,
+    /// provider by provider, at the versions the platform holds them at, through Core's decided path
+    /// (`Core::change_release`, `ReleaseChange::Confirm`; `T-013-11`, `T-020-49`): policy decides, the effect is
+    /// recorded before the platform is asked and its result after. Then what the segments owe the holding accounts is
+    /// asked of them again, now that their wallets run. Answers the providers confirmed.
+    ///
+    /// # Errors
+    ///
+    /// If a confirmation is refused.
+    pub fn confirm_releases(&mut self) -> Result<Vec<String>, AssemblyError> {
+        let mut confirmed = Vec::new();
+        for (provider, versions) in self.fleet.held() {
+            let versions: Vec<Id> = versions.iter().filter_map(Id::new).collect();
+            self.change_release(
+                &provider,
+                rutent_core_orch::segments::lifecycle::ReleaseChange::Confirm {
+                    versions: &versions,
+                },
+            )
+            .map_err(|e| {
+                AssemblyError::Listing(format!("{provider}'s releases weren't confirmed: {e:?}"))
+            })?;
+            confirmed.push(provider);
+        }
+        self.reconcile_landings();
+        Ok(confirmed)
+    }
+
+    /// How many times Core and its platform were restarted in this run ([`Core::restarted`]).
+    pub fn restarts(&self) -> usize {
+        self.restarts
     }
 
     fn assemble_with(
@@ -832,6 +946,8 @@ impl Core {
             .as_mut()
             .map(|c| std::mem::take(&mut c.publisher_accounts))
             .unwrap_or_default();
+        let restarts = carried.as_ref().map_or(0, |c| c.restarts);
+        let confirm = carried.as_ref().and_then(|c| c.confirm);
         let (fleet, installed, clock, carried_feed, carried_fresh, ties) = match carried {
             Some(c) => (
                 c.fleet,
@@ -1005,6 +1121,7 @@ impl Core {
             log,
             clock,
             disk,
+            restarts,
             bound,
             keeper,
             policy,
@@ -1083,6 +1200,11 @@ impl Core {
             core.relist_holdings();
             core.relist_publisher_accounts();
             core.relist()?;
+            // A platform restarted beside Core holds its releases until the operator confirms them, which the operator's
+            // login does through Core's decided path before anything is asked of a provider (`T-024-21`).
+            if confirm == Some(true) {
+                core.confirm_releases()?;
+            }
             // Core's own state, rebuilt from the log (`T-020-46`), the proven starts of `T-020-26` among it.
             core.rebuild_from_log();
             // The operator's settings, rebuilt from the log, a setting's missing result completed, and put back where they
@@ -1303,6 +1425,12 @@ impl Core {
     /// The platform with the simulated providers, to read.
     pub fn fleet(&self) -> &Fleet {
         &self.fleet
+    }
+
+    /// The platform with the simulated providers, for a test that hands it an operation itself or reads what it reports
+    /// under a hook of its own (`T-024-21`): nothing of Core's is asked.
+    pub fn fleet_mut(&mut self) -> &mut Fleet {
+        &mut self.fleet
     }
 
     /// The simulated world, to script what a provider does next or to read what it did: its scripts, its books and
@@ -1688,17 +1816,32 @@ impl Core {
                         one.advertisement.statement().maker == s.attribution.maker().acts.as_str()
                     })
                 {
-                    let one = one.clone();
-                    let bytes = kept
+                    // The advertisement the log's key register accepted last for the provider is what Core lists again,
+                    // as the register took it in (`T-024-21`): a re-advertisement it accepted after the installed one
+                    // is listed as such, and a stated entry it refused, or one it accepted and then saw replaced, is
+                    // not listed at all. Only the entry that brought the accepted one is replayed.
+                    let maker = s.attribution.maker().acts.as_str().to_owned();
+                    let Some(accepted) = self.log.borrow().accepted_advertisement(&maker) else {
+                        continue;
+                    };
+                    if accepted.commitment != s.commitment {
+                        continue;
+                    }
+                    let Some(bytes) = kept
                         .iter()
                         .find(|k| k.kept.commitment == s.commitment)
-                        .and_then(|k| rutent_core_audit::receipts::store::bearing_out(&k.kept));
-                    if bytes.as_deref() != Some(one.advertisement.bytes()) {
+                        .and_then(|k| rutent_core_audit::receipts::store::bearing_out(&k.kept))
+                    else {
                         return Err(AssemblyError::Listing(format!(
-                            "the advertisement the log holds for {} isn't the installed one: its commitment's bytes differ",
-                            s.attribution.maker().acts.as_str()
+                            "the advertisement the log's register accepted for {maker} isn't kept: its bytes can't be read"
                         )));
-                    }
+                    };
+                    let mut one = one.clone();
+                    one.advertisement = rutent_conformance::role::Received::from_bytes(bytes).map_err(|e| {
+                        AssemblyError::Listing(format!(
+                            "the advertisement the log's register accepted for {maker} doesn't read: {e}"
+                        ))
+                    })?;
                     let at = rutent_core_authz::session::instant(&s.received_at);
                     self.grant_verifier(&one);
                     kit::join(&mut self.catalogue, &one, at);
@@ -1724,6 +1867,11 @@ impl Core {
             }
             // An operator's setting is Core's to rebuild, from the log, apart (`Settings::reopened`, `T-020-49`).
             if *change == CatalogueChange::SetSetting {
+                continue;
+            }
+            // The operator's confirmation of a provider's releases held after a platform's restart is the platform's to
+            // hold, in its own record (`T-013-11`): Core's catalogue lists nothing for it (`T-024-21`).
+            if *change == CatalogueChange::ConfirmReleases {
                 continue;
             }
             // A verifier's class grant has no tuple to rebuild: the category grant is made where its advertisement is
@@ -1893,9 +2041,36 @@ impl Core {
     }
 
     /// Opens `holder`'s session on its account through policy, and hands it to the catalogue's register.
+    ///
+    /// A session policy's register holds open for the holder on the deployment's account is the one answered, a Core
+    /// restarted since included, since its register is rebuilt from the log (`T-021-17`); none is asked for again. A
+    /// new one is asked under an id of its own: the deployment's session id for the first, then that id with the count
+    /// of sessions the register issued, so a run longer than a session's life opens another and never asks again under
+    /// an id the register issued, which it refuses (`T-024-21`).
     pub fn open_session(&mut self, holder: &Actor) -> Result<Id, StepError> {
         let context = context();
         let now = self.clock.peek();
+        let (open, issued) = {
+            let engine = self.policy.engine().borrow();
+            let sessions = engine.register().sessions();
+            let open = sessions
+                .iter()
+                .find(|s| {
+                    s.holder == holder.party
+                        && s.account.as_str() == context.account
+                        && s.expires_at.unix_nanos() > i128::try_from(now).unwrap_or(i128::MAX)
+                })
+                .map(|s| s.session.clone());
+            (open, sessions.len())
+        };
+        if let Some(session) = open {
+            return Ok(session);
+        }
+        let id = if issued == 0 {
+            context.session.clone()
+        } else {
+            format!("{}-{issued}", context.session)
+        };
         let until = rutent_contracts::router_api::Timestamp::new(
             rutent_prov::catalogue::Instant(
                 u64::try_from(now / 1_000_000_000).unwrap_or(0) + LONGEST_SESSION_SECS - 60,
@@ -1905,7 +2080,7 @@ impl Core {
         )
         .ok_or(StepError::NotNow("a session's end"))?;
         let request = SessionRequest {
-            request: kit::id(&context.session),
+            request: kit::id(&id),
             account: kit::id(&context.account),
             holder: holder.party.clone(),
             requester: holder.clone(),

@@ -1266,7 +1266,8 @@ deliveries, rewrites...) and fails if they reached less, so a green test is neve
 - **CI's seeded step runs `--test assembly` only** (`.github/workflows/ci.yml`, "Scenarios, seeded"). For the invariants to run
   under CI's seeds as the row says, it needs `cargo test -p rutent-scenarios --test invariants` beside it; the full `cargo test`
   already runs them under the default seeds. I did not edit the workflow. Owner: the lead (one line).
-- **Crash runs are not restarted** (`F-030`), and a restart's carrying on from the log is not tested here.
+- **Crash runs are not restarted** (`F-030`), and a restart's carrying on from the log is not tested here. **Closed by `T-024-21`:**
+  the restarting kinds restart Core and its platform and carry on from the log, and their end states are checked.
 
 **Run id.** Not available locally; the CI run on this branch's pull request is the one the row's "Done when" cites, and its id
 goes here when the lead has it.
@@ -1980,3 +1981,120 @@ moved twice, the reason Core gives for each), not that the order is stuck. Owner
 | the fleet takes no late answer (`Fleet::late_answers`) | `late_answer_the_platform_receives_moves_nothing_twice` |
 
 The exchange's own `Unknown` undo (same edit as the ramp's) is not reached by a scenario: the tests fail the ramp.
+
+## T-024-21: a real restart mid-order in the invariant runs (finding 3 of the milestone review of 2026-11-24)
+
+Branch `f-024/t-024-21`, from `m3` at `a45e302b`. Closes `T-024-08`'s gap "crash runs are not restarted": the seeded runs now
+restart Core and its platform mid-order and run the end-state checks on what the restarted pair goes on to write.
+
+**What was built.**
+1. *The platform on a file record, restarted for real* (`src/sim/fleet.rs`). Every `Fleet` keeps its platform's carried-out
+   record on a file of its own (`FileRecord`, in a fresh temp directory removed with the last platform on it) and opens its
+   platform with `Platform::open`. `Fleet::restarted` is the crash: the platform dropped (its processes and every module's
+   process with it), the record cut where the crash fell (the clean close the drop writes is taken off, as a killed process
+   never writes it), the record opened again, with a bounded retry on `WouldBlock` (250 x 20 ms, as `record.rs`'s test does
+   since 9462a3a8: `flock` is shared by a forked child's copy until its `exec`), the platform opened on it, its settings set
+   again (staging among them) and every release the deployment admitted admitted again in its first order, which the record
+   then accepts as it says. The providers' world goes on as it stands.
+2. *Core and the platform restarted together* (`Core::restarted`, `src/assembly/mod.rs`): the fleet restarted, the state
+   machine's host restarted on its journal (`Feed::restarted`: exported from its store, imported into a fresh host of the same
+   environment, resumed, every input fed again from the first, which the host records once), and Core assembled on its disk as
+   `Core::reopened` assembles it, with fresh identifiers from a source of the restarted Core's own (`seed ^ k ^ restarts`, so a
+   restarted Core never draws the stopped one's sequence again). `Step::Restart` is now this restart; `Scenario::reopen` (Core
+   alone, the platform going on) stays for the tests that want it, and `Scenario::restart`/`restart_holding` drive it from a test.
+3. *The hold until the operator confirms* (carry-over 1). A record that didn't end whole holds every provider with a release in
+   force (`T-013-11`). The restarted Core confirms each through its decided path (`Core::confirm_releases`:
+   `change_release(ReleaseChange::Confirm { versions })` by the operator's login, policy's permit, the effect and its result), as
+   it opens and before it rebuilds anything that asks a provider; `restarted_holding` leaves them held for a test, which confirms
+   later. `relist` skips a `confirm_releases` effect: it is the platform's to hold, in its record.
+4. *A per-start identifier* (carry-over 7; `components/prov`): `ProviderProcess` carries a `StartId` minted at each spawn
+   (`start-<nonce>-<n>`: a counter of the platform process's starts behind a nonce drawn once from its pid, the time and an
+   address), `Platform::start_of` reports it, and `WalletHolding` keeps the start it last saw, not the pid: `restarted()` and
+   `Holdings::restore_transaction` read it. `Platform::report_process_as`, behind `rutent-prov`'s new `test-support` feature
+   (turned on by `rutent-scenarios` only), makes the platform report a pid of a test's choosing.
+5. *Sessions* (carry-over 3): `Core::open_session` answers a session policy's register holds open for the holder on the
+   deployment's account, a restarted Core's included (the register is rebuilt from the log), and asks a new one under
+   `{session}-{n}`, `n` the sessions the register issued, the first keeping the deployment's id: a run longer than a session's
+   life opens another and never asks again under an issued id.
+6. *Relisting from the register* (carry-over 5): `relist` lists, for each provider, the advertisement the log's key register
+   accepted last (`AuditLog::accepted_advertisement`), from the stated entry that brought it, and skips every other; it no longer
+   refuses to reopen because the log holds bytes other than the installed advertisement's.
+7. *A late contradicting answer* (carry-over 4): `INV-4`'s count of result statements per segment tells a repeat of a body kept
+   before (a violation) from a body that differs (a contradiction, kept as a further statement), and holds a contradiction to
+   having moved nothing: one `result` for the segment's effect, its transaction moved at most once. The count is not dropped.
+8. *A restore asked of a module that runs no process* answers `NotNow`, not `Unconfirmed` (`Landing::restore`): nothing was
+   asked, so nothing took effect; a held wallet is asked again once it runs (`confirm_releases` reconciles the landings after it
+   confirms).
+
+**The restarted runs** (`tests/invariants_support`). Four kinds, each `Kind::restarts`: `RestartAfterRecord(n)` (the crash right
+after the log took the `n`th effect), `RestartBeforeEffect(n)` (right before the platform carries out the `n`th effect),
+`RestartAfterAnswer(n)` (right after the log took the `n`th result statement of the first order's run, the provider having moved),
+and `RestartWhileStuck` (the base route's silent final deposit, the part declared stuck, then the crash). Where the crash falls the
+run restarts Core and its platform (`Driving::guarded`), carries every order accepted so far on from the log (`run` again), and the
+next order is asked in the session the restarted Core's policy holds. A crash that never fell is taken back
+(`harness::unplant_crashes`) and the pair restarted after the orders ran. A segment whose effect the stopped Core took and whose
+outcome nobody recorded is never handed over again by the restarted one (`AlreadyActed`; its value may be in motion, `INV-8`), so
+every order of a restarted run is timed past twice its time and watched: such an order ends stuck, for the operator. Pinned
+seeds 113 to 119 hold each kind on the routes it means something on (19 pinned runs now); a drawn crash is followed by a restart
+two times in three (`Kind::drawn`), so CI's seeds draw restarts too.
+
+**Tests** (each tagged as the row names it).
+- `tests/invariants.rs`: `repeated transaction identifiers move nothing twice across restarts of core and the platform` (`INV-8`:
+  the `INV-8` checks over the restarted runs, each restart's confirmations in the log, and segments handed over before a restart
+  and ended after it); `core and the platform restarted mid order lose no order` (`NFR-6`: each accepted order opened in the log,
+  held by the restarted host as the log's own inputs say, followed by the restarted Core, and one started before the restart
+  carried on after it); `value in equals value delivered plus fees remainder and value held across restarted runs` (`INV-1`,
+  `NFR-5`: `INV-1`'s counts over the restarted runs, and no book movement without its effect); `every segment of a restarted run
+  ends settled reversed in full or its order stuck` (`INV-3` over the restarted runs, which are no crashed runs read as they
+  stand); `platform restarted mid run holds its releases until the operator confirms` (`NFR-6`: a restart with the releases left
+  held refuses an operation and nothing reaches the module, the operator's confirmation is decided and done in the log, the same
+  operation is then answered and the stopped order completes; and in every restarted run each restart confirmed each provider of
+  the run).
+- `tests/assembly_real_wallet.rs`: `stuck order is handed on after the holding account restarts mid run` (`REQ-ORD-43`: Core and
+  its platform restarted with a stuck order's value at the wallet's node; the wallet's module started anew, its release
+  confirmed, its own per-order answer the log's figure, at least the order's value and not a unit more, the host's attribution once;
+  the hand-on decided on the restarted Core and done once, and the wallet's answer then holds nothing for the order); `module
+  restarted under the same process id is seen as restarted` (`REQ-ORD-43`, `INV-1`: the wallet's module restarted and reported
+  under its old pid; the host sees it restarted, a restore goes under a new transaction, and Core reopened lands again what the
+  wallet lost, once).
+- The existing `INV-*` tests now run over the restarted runs too; `T-024-08`'s ten all pass over them.
+
+**Defaults taken** (reversible, fail closed).
+- The platform's crash always drops its clean close, so every restart holds every provider until the operator confirms; a
+  restart after a clean stop isn't modelled (it would hold only the providers still held).
+- The restarted Core confirms as it opens, by the operator's login (the decided path, policy permits it as any lifecycle change);
+  a deployment's operator might confirm later, which `restarted_holding` shows.
+- The fleet's catalogue (the judge of admissions) and its store of admitted releases go on across the platform's restart: they
+  are the deployment's, not the platform process's memory. So do the host's holding accounts (`T-020-46`) and the deployment's
+  registers' holding and publisher accounts; the registers' listed actors don't (a test lists its staff again after a restart).
+- The state machine's host restarts in the environment the run was opened in.
+- The `RestartAfterAnswer` crash is planted as the first order runs, so the answers counted are its segments', not a quote's.
+- CI's seeded step already runs `--test invariants` beside `--test assembly` (`T-024-18` added it), so `.github/workflows/ci.yml`
+  is not edited by this row: carry-over 8 needed no change.
+
+**Gaps (with owners).**
+- *A segment whose effect a stopped Core took is held, never followed up.* After a restart it ends stuck once timed; Core never
+  asks the provider its status for it (`Modules::status` exists). Owner: `F-020` (segments, `T-020-46`'s successor).
+- *Carry-over 5 has no test of its own:* no scenario re-advertises a provider before a restart. The rule is exercised on every
+  restart (each provider's accepted advertisement is the installed one), not on a successor. Owner: `T-020-55`'s successor.
+- *The `NotNow` of a held wallet's restore* is reached only with `restarted_holding` and a wallet, which no test combines.
+
+- *A second session's order finds no route.* With the reuse of an open session switched off (rule-off R5), the order asked
+  after a restart in a fresh session (`{session}-1`) is quoted `NoRouteRightNow`; the simulated reserve's dry run seems to
+  answer only in the deployment's session. Not followed further here: reusing the open session is the default, and a run
+  longer than a session's life opens no order after its first session ends. Owner: `F-024` (the stand-ins' sessions).
+
+**Rule-off table** (each switched off alone with a temporary edit, the file restored, the tests green first).
+
+| Switched off | Red |
+|---|---|
+| R1: the wallet's `restarted()` reads the process id again, not the start | `module restarted under the same process id is seen as restarted` |
+| R2: the platform's crash keeps its clean close (`RecordFile::crash` not called) | `platform restarted mid run holds its releases until the operator confirms` (the restarted platform holds nothing) |
+| R3: the restarted Core doesn't confirm the held releases | every test over the runs (seed 113's next order is quoted `NoRouteRightNow`: the reserve is held) and the hold test |
+| R4: a contradicting late answer counted as a violation | none: no run plants a late answer whose body differs, so the rule is written for the day one does |
+| R5: an open session asked for again under a fresh id, not reused | every test over the runs (seed 113's next order is quoted `NoRouteRightNow`) |
+
+Not switched off: `Landing::restore`'s `NotNow` (no test reaches it, gaps above), `relist`'s accepted advertisement (no test
+re-advertises), the bounded `WouldBlock` retry (it only shows as a flake).
+
+**Run id.** Pending: CI's run on this row's pull request goes here.

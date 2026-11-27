@@ -21,13 +21,31 @@ use rutent_contracts::state_machine::{Observed, SegmentState};
 use serde_json::Value;
 
 /// Collects what each run says is wrong, named by the run.
-fn violations(mut check: impl FnMut(&Sim) -> Vec<String>) -> Vec<String> {
+fn violations(check: impl FnMut(&Sim) -> Vec<String>) -> Vec<String> {
+    violations_in(every, check)
+}
+
+/// [`violations`], over the runs `which` takes.
+fn violations_in(
+    which: fn(&Sim) -> bool,
+    mut check: impl FnMut(&Sim) -> Vec<String>,
+) -> Vec<String> {
     let mut all = Vec::new();
-    for sim in runs() {
+    for sim in runs().iter().filter(|sim| which(sim)) {
         let name = sim.name();
         all.extend(check(sim).into_iter().map(|v| format!("{name}: {v}")));
     }
     all
+}
+
+/// Every run.
+fn every(_: &Sim) -> bool {
+    true
+}
+
+/// The runs Core and its platform were restarted in, mid-order, and went on from (`T-024-21`).
+fn restarted(sim: &Sim) -> bool {
+    sim.run.restarts > 0 && !sim.run.crashed
 }
 
 fn none(found: &[String]) {
@@ -37,6 +55,19 @@ fn none(found: &[String]) {
         found.len(),
         found.join("\n")
     );
+}
+
+/// The body of the statement the evidence store keeps behind `commitment`, as a stated entry names it: its
+/// `statement`, without the envelope a later answer is made and signed in. `None` where none is kept.
+fn body_of(run: &rutent_scenarios::harness::Run, commitment: &Value) -> Option<Value> {
+    let value = commitment["value"].as_str()?;
+    let kept = run
+        .kept
+        .iter()
+        .find(|k| k.commitment.value.as_str() == value)?;
+    let bytes = rutent_core_audit::log::kept::from_base64url(kept.bytes.as_str())?;
+    let statement: Value = serde_json::from_slice(&bytes).ok()?;
+    Some(statement["statement"].clone())
 }
 
 /// The fees the log's `fee` entries record for each order's segments paid to a provider.
@@ -78,10 +109,50 @@ fn flow(net: &mut BTreeMap<(String, String), i128>, op: &Value, amount_in: u128,
 // verifies: INV-1
 #[test]
 fn value_in_equals_value_delivered_plus_fees_remainder_and_value_held_across_every_run() {
+    let (orders_balanced, nodes_compared, in_flight) = value_balances(every);
+    assert!(
+        orders_balanced >= 10,
+        "only {orders_balanced} orders reached a settled segment"
+    );
+    assert!(
+        nodes_compared >= 5,
+        "only {nodes_compared} node balances compared"
+    );
+    assert!(
+        in_flight >= 1,
+        "no run left value in motion with its outcome unsettled"
+    );
+}
+
+/// `INV-1` over the runs Core and its platform were restarted in mid-order (`T-024-21`): what each order took in is
+/// what it delivered, its fees and what rests at its last node, counted from the log the restarted Core went on
+/// writing, its statements and the providers' books, which the restart left as they were; and, `NFR-5`, no provider
+/// acted on anything the log holds no record of, before the restart or after it.
+// verifies: INV-1, NFR-5
+#[test]
+fn value_in_equals_value_delivered_plus_fees_remainder_and_value_held_across_restarted_runs() {
+    let (orders_balanced, nodes_compared, _) = value_balances(restarted);
+    let found = violations_in(restarted, |sim| sim.run.effects_without_record());
+    none(&found);
+    let runs = runs().iter().filter(|sim| restarted(sim)).count();
+    assert!(runs >= 5, "only {runs} restarted runs");
+    assert!(
+        orders_balanced >= 4,
+        "only {orders_balanced} orders of restarted runs reached a settled segment"
+    );
+    assert!(
+        nodes_compared >= 3,
+        "only {nodes_compared} node balances of restarted runs compared"
+    );
+}
+
+/// The `INV-1` counts over the runs `which` takes, each violation failing the test: how many orders balanced, node
+/// balances were compared and transactions were in motion.
+fn value_balances(which: fn(&Sim) -> bool) -> (usize, usize, usize) {
     let mut orders_balanced = 0;
     let mut nodes_compared = 0;
     let mut in_flight = 0;
-    let found = violations(|sim| {
+    let found = violations_in(which, |sim| {
         let mut bad = Vec::new();
         let book = book_segments(sim);
         let fees_logged = logged_fees(sim);
@@ -212,18 +283,7 @@ fn value_in_equals_value_delivered_plus_fees_remainder_and_value_held_across_eve
         bad
     });
     none(&found);
-    assert!(
-        orders_balanced >= 10,
-        "only {orders_balanced} orders reached a settled segment"
-    );
-    assert!(
-        nodes_compared >= 5,
-        "only {nodes_compared} node balances compared"
-    );
-    assert!(
-        in_flight >= 1,
-        "no run left value in motion with its outcome unsettled"
-    );
+    (orders_balanced, nodes_compared, in_flight)
 }
 
 // verifies: INV-2
@@ -315,8 +375,31 @@ fn every_failure_path_leaves_the_value_at_its_origin_in_full() {
 // verifies: INV-3
 #[test]
 fn every_segment_ends_settled_reversed_in_full_or_its_order_stuck() {
+    let (complete, stuck, open) = segment_ends(every);
+    assert!(
+        complete >= 5 && stuck >= 1 && open >= 1,
+        "ends reached: {complete} complete, {stuck} stuck, {open} open"
+    );
+}
+
+/// `INV-3` over the runs Core and its platform were restarted in mid-order (`T-024-21`): a restarted run is no crashed
+/// one read as it stands, so its end-state checks run, on the state machine's journal the restarted host holds and the
+/// log the restarted Core went on writing.
+// verifies: INV-3
+#[test]
+fn every_segment_of_a_restarted_run_ends_settled_reversed_in_full_or_its_order_stuck() {
+    let (complete, stuck, _) = segment_ends(restarted);
+    assert!(
+        complete >= 3 && stuck >= 1,
+        "ends reached by restarted runs: {complete} complete, {stuck} stuck"
+    );
+}
+
+/// The `INV-3` checks over the runs `which` takes, each violation failing the test: how many parts ended complete,
+/// stuck and open.
+fn segment_ends(which: fn(&Sim) -> bool) -> (usize, usize, usize) {
     let (mut complete, mut stuck, mut open) = (0, 0, 0);
-    let found = violations(|sim| {
+    let found = violations_in(which, |sim| {
         let mut bad = Vec::new();
         let states = sim.run.replayed_states();
         for (order, state) in &states {
@@ -392,16 +475,13 @@ fn every_segment_ends_settled_reversed_in_full_or_its_order_stuck() {
         bad
     });
     none(&found);
-    assert!(
-        complete >= 5 && stuck >= 1 && open >= 1,
-        "ends reached: {complete} complete, {stuck} stuck, {open} open"
-    );
+    (complete, stuck, open)
 }
 
 // verifies: INV-4
 #[test]
 fn silence_and_late_delivery_never_move_one_value_from_two_places() {
-    let (mut moves_checked, mut late) = (0, 0);
+    let (mut moves_checked, mut late, mut contradictions) = (0, 0, 0);
     let found = violations(|sim| {
         let mut bad = Vec::new();
         let all = segments(&sim.run);
@@ -474,9 +554,13 @@ fn silence_and_late_delivery_never_move_one_value_from_two_places() {
                 .filter(|(_, c)| **c > 1)
                 .map(|(t, c)| format!("{t} moved {c} times")),
         );
-        // A late answer is kept once: no more result statements for a segment than it was ever given.
+        // A late answer is kept once: no more result statements for a segment than it was ever given. A later answer
+        // whose body differs from the one kept is a contradiction, kept as a further statement that moves nothing
+        // (`T-024-21`): told from a second result by its body, and held to having moved nothing, the log ending the
+        // segment's effect once and no book moving its transaction twice. The count is never dropped.
+        let log = entries(&sim.run);
         for s in &all {
-            let results = entries(&sim.run)
+            let stated: Vec<&Value> = log
                 .iter()
                 .filter(|e| {
                     e["kind"] == "stated"
@@ -485,9 +569,45 @@ fn silence_and_late_delivery_never_move_one_value_from_two_places() {
                             .as_str()
                             .is_some_and(|x| x.ends_with("result"))
                 })
-                .count();
-            if results > 1 {
-                bad.push(format!("{}: {results} result statements", s.segment));
+                .collect();
+            let bodies: Vec<Option<Value>> = stated
+                .iter()
+                .map(|e| body_of(&sim.run, &e["commitment"]))
+                .collect();
+            let mut distinct: Vec<&Option<Value>> = Vec::new();
+            for body in &bodies {
+                if !distinct.contains(&body) {
+                    distinct.push(body);
+                }
+            }
+            if bodies.len() > distinct.len() || distinct.iter().any(|b| b.is_none()) {
+                bad.push(format!(
+                    "{}: {} result statements, {} of them a body kept before",
+                    s.segment,
+                    bodies.len(),
+                    bodies.len() - distinct.len()
+                ));
+            }
+            if distinct.len() > 1 {
+                contradictions += 1;
+                let ended = log
+                    .iter()
+                    .filter(|e| {
+                        e["kind"] == "verified"
+                            && e["what"]["call"] == "result"
+                            && e["what"]["effect"]["index"].as_u64() == Some(s.effect as u64)
+                    })
+                    .count();
+                let moved = s
+                    .transaction()
+                    .and_then(|t| sim.run.movements().get(&t).copied())
+                    .unwrap_or(0);
+                if ended > 1 || moved > 1 {
+                    bad.push(format!(
+                        "{}: a contradicting answer moved something: {ended} results, moved {moved} times",
+                        s.segment
+                    ));
+                }
             }
             if s.result.as_deref() == Some("unanswered") {
                 late += 1;
@@ -497,6 +617,8 @@ fn silence_and_late_delivery_never_move_one_value_from_two_places() {
     });
     none(&found);
     assert!(moves_checked >= 20, "{moves_checked} moves checked");
+    // Not a floor: how many segments a contradicting answer reached, which the runs may or may not plant.
+    let _ = contradictions;
     assert!(
         late >= 1,
         "no run left a segment whose effect the log ended unanswered, whose late delivery could be tried"
@@ -805,11 +927,82 @@ fn no_action_takes_effect_without_its_record_under_injected_faults() {
 fn repeated_transaction_identifiers_move_nothing_twice() {
     let (mut twice, mut reruns) = (0, 0);
     let found = violations(|sim| {
-        let mut bad = Vec::new();
         twice += sim.run.delivered_twice;
         if sim.plan.kind == Kind::Rerun {
             reruns += 1;
         }
+        moved_once(sim)
+    });
+    none(&found);
+    assert!(
+        twice >= 2,
+        "{twice} operations delivered twice across the runs"
+    );
+    assert!(reruns >= 1, "no run ran its route again");
+}
+
+/// `INV-8` across restarts of Core and the platform (`T-024-21`): Core restarted draws its transactions afresh and
+/// reads the ones it asked under from the log, and the platform restarted reads what it carried out under each from
+/// its record, so an operation stated before the restart is never stated again after it, none moves twice in a book,
+/// and each segment is handed over once; and segments whose effect the log took before a restart and whose result
+/// after it are among them.
+// verifies: INV-8
+#[test]
+fn repeated_transaction_identifiers_move_nothing_twice_across_restarts_of_core_and_the_platform() {
+    let mut across = 0;
+    let found = violations_in(restarted, |sim| {
+        let mut bad = moved_once(sim);
+        let log = entries(&sim.run);
+        let restarts = confirmations(&log);
+        if restarts.is_empty() {
+            bad.push(
+                "restarted, and the log holds no confirmation of the platform's releases"
+                    .to_owned(),
+            );
+        }
+        for s in segments(&sim.run) {
+            if let Some(at) = s.result_at
+                && restarts.iter().any(|(r, _)| s.effect < *r && *r < at)
+            {
+                across += 1;
+            }
+        }
+        bad
+    });
+    none(&found);
+    assert!(
+        across >= 2,
+        "only {across} segments were handed over before a restart and ended after it"
+    );
+}
+
+/// Where the log holds each confirmation of a provider's releases a restarted platform held, and whose: the first
+/// thing a restarted Core does (`T-024-21`).
+fn confirmations(log: &[Value]) -> Vec<(usize, String)> {
+    log.iter()
+        .enumerate()
+        .filter(|(_, e)| {
+            e["kind"] == "verified"
+                && e["what"]["call"] == "effect"
+                && e["what"]["action"]["kind"] == "change_catalogue"
+                && e["what"]["action"]["change"] == "confirm_releases"
+        })
+        .map(|(at, e)| {
+            (
+                at,
+                e["what"]["action"]["provider"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+            )
+        })
+        .collect()
+}
+
+/// The `INV-8` checks over one run.
+fn moved_once(sim: &Sim) -> Vec<String> {
+    {
+        let mut bad = Vec::new();
         // A transaction identifier is one operation's: no two operations the operator stated share one.
         let mut ids = BTreeMap::new();
         for st in &sim.run.statements {
@@ -863,13 +1056,7 @@ fn repeated_transaction_identifiers_move_nothing_twice() {
                 .map(|t| format!("{t} moved with no effect")),
         );
         bad
-    });
-    none(&found);
-    assert!(
-        twice >= 2,
-        "{twice} operations delivered twice across the runs"
-    );
-    assert!(reruns >= 1, "no run ran its route again");
+    }
 }
 
 // verifies: INV-9, GUA-4
@@ -1090,4 +1277,241 @@ fn no_recalculation_changes_destination_or_to_asset() {
         "only {recalculated} recalculations across the runs"
     );
     assert!(compared >= 60, "{compared} route ends compared");
+}
+
+/// `NFR-6` over the runs Core and its platform were restarted in mid-order (`T-024-21`): every order the customer had
+/// accepted before the restart is one the restarted Core knows, opened in its log, followed by it for its customer, held
+/// by the state machine's host restarted on its journal as the log's own inputs say, and none started before a restart
+/// is left without its route carried on.
+// verifies: NFR-6
+#[test]
+fn core_and_the_platform_restarted_mid_order_lose_no_order() {
+    let (mut kept, mut started_before) = (0, 0);
+    let found = violations_in(restarted, |sim| {
+        let mut bad = Vec::new();
+        let log = entries(&sim.run);
+        let restart = confirmations(&log).first().map_or(log.len(), |(at, _)| *at);
+        let replayed = sim.run.replayed_states();
+        for order in &sim.run.orders {
+            let o = order.as_str();
+            kept += 1;
+            let opened = log.iter().any(|e| {
+                e["kind"] == "verified"
+                    && e["what"]["call"] == "order_opened"
+                    && e["what"]["order"] == o
+            });
+            if !opened {
+                bad.push(format!("{o}: accepted, and no order_opened in the log"));
+            }
+            if !sim.run.hosted.iter().any(|h| h == o) {
+                bad.push(format!("{o}: the restarted host doesn't hold it"));
+            }
+            if !sim.run.followed.contains_key(o) {
+                bad.push(format!(
+                    "{o}: the restarted Core doesn't follow it for its customer"
+                ));
+            }
+            if sim.run.states.get(o) != replayed.get(o) {
+                bad.push(format!(
+                    "{o}: the restarted host holds {:?}, the log's inputs {:?}",
+                    sim.run.states.get(o).map(|s| s.as_ref().map(|s| s.state)),
+                    replayed.get(o).map(|s| s.as_ref().map(|s| s.state))
+                ));
+            }
+            // Started before the restart: its route was carried on after it, by an effect or a result the restarted
+            // Core wrote.
+            let chosen = log.iter().position(|e| {
+                e["kind"] == "verified"
+                    && e["what"]["call"] == "input"
+                    && e["what"]["input"]["observed"]["kind"] == "route_chosen"
+                    && e["what"]["input"]["subject"]["order"] == o
+            });
+            if chosen.is_some_and(|at| at < restart) {
+                started_before += 1;
+                let carried_on = log[restart..].iter().any(|e| {
+                    e["kind"] == "verified"
+                        && (e["what"]["action"]["order"] == o
+                            || e["what"]["input"]["subject"]["order"] == o
+                            || e["what"]["call"] == "result")
+                });
+                if !carried_on {
+                    bad.push(format!(
+                        "{o}: started before the restart, and nothing of it after"
+                    ));
+                }
+            }
+        }
+        bad
+    });
+    none(&found);
+    assert!(kept >= 6, "only {kept} orders of restarted runs read");
+    assert!(
+        started_before >= 4,
+        "only {started_before} orders were started before a restart"
+    );
+}
+
+/// The platform restarted mid-run, its record not ending whole, holds every provider's releases until the operator
+/// confirms them (`NFR-6`, `T-013-11`, `T-024-21`). A Core and platform restarted with the releases left held: the
+/// platform says the reserve's are held, and an operation handed to it reaches no module; the operator's login
+/// confirms through Core's decided path, policy's permit, the effect and its result `done` in the log; the same kind
+/// of operation is then answered, and the order the crash stopped is carried on to its end. And in every restarted
+/// run, each restart's confirmation of each provider of the run is in the log, decided and done.
+// verifies: NFR-6
+#[test]
+fn platform_restarted_mid_run_holds_its_releases_until_the_operator_confirms() {
+    use rutent_contracts::provider_role::Statement;
+    use rutent_prov::module::types::Handled;
+    use rutent_scenarios::assembly::machine::Reference;
+    use rutent_scenarios::assembly::{Staged, context};
+    use rutent_scenarios::harness::{Fault, Given, Scenario, Step, plant};
+    use rutent_scenarios::kit::{self, AMOUNT, RESERVE};
+
+    let probe = |transaction: &str| -> Statement<rutent_contracts::provider_role::Operation> {
+        rutent_conformance::sim::operation(
+            &context(),
+            serde_json::json!({
+                "kind": "balance_verification",
+                "transaction": transaction,
+                "provider": RESERVE,
+                "session": context().session,
+                "account": context().account,
+                "asset": "COP",
+                "amount": "1",
+            }),
+        )
+    };
+    for seed in [1, 7] {
+        let scenario = Scenario::new("held releases", "AC-28", Given::one_reserve(Staged::AtOnce))
+            .when(Step::Order {
+                request: "req-held".to_owned(),
+                amount: AMOUNT.to_owned(),
+            });
+        let (mut core, orders) = scenario.core(seed, &mut Reference);
+        let order = orders[0].clone();
+        // Right after the log took the reserve's answer to the withdrawal, which moved: before Core acted on it.
+        plant(
+            &mut core,
+            &Fault::CrashAfterRecord {
+                call: rutent_contracts::provider_role::RESULT_SHAPE,
+                nth: 0,
+            },
+        );
+        let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| core.run(&order)));
+        assert!(crashed.is_err(), "seed {seed}: the crash stopped Core");
+        let mut core = scenario.restart_holding(core, seed, &mut Reference);
+        assert!(
+            core.fleet()
+                .platform
+                .awaiting_confirmation(RESERVE)
+                .is_some(),
+            "seed {seed}: the restarted platform holds the reserve's releases"
+        );
+        let book = core.world().journal(RESERVE).len();
+        let held = core.fleet_mut().handle(RESERVE, &probe("probe-held"));
+        assert!(
+            matches!(held, Handled::Refused(_)),
+            "seed {seed}: an operation handed to a held provider is refused: {held:?}"
+        );
+        assert_eq!(
+            core.world().journal(RESERVE).len(),
+            book,
+            "seed {seed}: nothing reached the reserve's module"
+        );
+        let before: Vec<Value> = core
+            .log()
+            .entries()
+            .iter()
+            .map(|(_, e)| serde_json::to_value(e).expect("JSON"))
+            .collect();
+        assert!(
+            confirmations(&before).is_empty(),
+            "seed {seed}: nothing confirmed yet"
+        );
+        let confirmed = core.confirm_releases().expect("the operator confirms");
+        assert_eq!(confirmed, [RESERVE.to_owned()], "seed {seed}");
+        assert!(
+            core.fleet()
+                .platform
+                .awaiting_confirmation(RESERVE)
+                .is_none()
+        );
+        let after: Vec<Value> = core
+            .log()
+            .entries()
+            .iter()
+            .map(|(_, e)| serde_json::to_value(e).expect("JSON"))
+            .collect();
+        let decided = confirmation_decided(&after);
+        assert_eq!(
+            decided,
+            [RESERVE.to_owned()],
+            "seed {seed}: decided and done in the log"
+        );
+        let answered = core.fleet_mut().handle(RESERVE, &probe("probe-confirmed"));
+        assert!(
+            matches!(answered, Handled::Answered(_)),
+            "seed {seed}: answered once confirmed: {answered:?}"
+        );
+        core.run(&order).expect("the stopped order carries on");
+        core.flush()
+            .expect("the state machine takes what the log did");
+        let state = core.status(&kit::customer(), &order).expect("followed");
+        assert_eq!(
+            serde_json::to_value(state.state).expect("JSON"),
+            "complete",
+            "seed {seed}: the stopped order completes"
+        );
+    }
+    // In every restarted run: each restart confirmed each provider of the run, decided and done.
+    let found = violations_in(restarted, |sim| {
+        let log = entries(&sim.run);
+        let mut want: Vec<String> = specs_of(sim.plan.shape)
+            .into_iter()
+            .map(|s| s.provider)
+            .collect();
+        want.sort();
+        let mut decided = confirmation_decided(&log);
+        decided.sort();
+        let mut expected = Vec::new();
+        for _ in 0..sim.run.restarts {
+            expected.extend(want.iter().cloned());
+        }
+        expected.sort();
+        if decided == expected {
+            Vec::new()
+        } else {
+            vec![format!(
+                "{} restart(s), confirmations decided and done for {decided:?}, not {want:?} each",
+                sim.run.restarts
+            )]
+        }
+    });
+    none(&found);
+}
+
+/// The providers whose releases the log's confirmations confirmed, each with policy's permit before its effect and its
+/// result `done` after: one per confirmation decided and done.
+fn confirmation_decided(log: &[Value]) -> Vec<String> {
+    confirmations(log)
+        .into_iter()
+        .filter(|(at, _)| {
+            let effect = &log[*at];
+            let permit = &effect["what"]["decision"];
+            let permitted = log[..*at].iter().any(|p| {
+                p["kind"] == "verified"
+                    && p["outcome"]["status"] == "permitted"
+                    && (p["what"]["decision"] == permit["decision"]
+                        || p["what"]["request"]["request"] == permit["request"])
+            });
+            let done = log[*at..].iter().any(|r| {
+                r["kind"] == "verified"
+                    && r["what"]["call"] == "result"
+                    && r["what"]["effect"]["index"].as_u64() == Some(*at as u64)
+                    && r["outcome"]["status"] == "done"
+            });
+            permitted && done
+        })
+        .map(|(_, provider)| provider)
+        .collect()
 }

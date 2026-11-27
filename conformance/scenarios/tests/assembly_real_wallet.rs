@@ -872,6 +872,165 @@ fn stuck_order_is_handed_on_after_the_holding_accounts_module_restarts() {
     handed_on_once(&mut stuck, &linked, &bob, &decided);
 }
 
+/// A stuck order's value rests in the wallet's account, its linked order accepted, when Core and its platform crash
+/// and restart mid-run (`T-024-21`): the platform restarted on its record restarts every module, the wallet's with
+/// its record of the account, and holds its releases until the operator confirms them through Core's decided path.
+/// The restarted Core finds the wallet's module started anew, asks it what it holds for the order the log settled at
+/// its node and lands again only what it lacks: the wallet's own per-order answer is then the log's figure, at least
+/// the order's value and not a unit more, and the host attributes it once. The operator decides the hand-on on the
+/// restarted Core, and the order is handed on once, after which the wallet's own answer, asked again, holds nothing for
+/// the order, as the log's withdrawal says (`REQ-ORD-43`).
+// verifies: REQ-ORD-43
+#[test]
+fn stuck_order_is_handed_on_after_the_holding_account_restarts_mid_run() {
+    let names = [CHAIN_IN, RAMP_B, OUT_B];
+    let scenario = || Scenario::new("execution", "AC-6", given(&names));
+    let mut stuck = stuck_at_the_public_node();
+    let wallet = stuck.wallet.clone();
+    let order = stuck.order.as_str().to_owned();
+    stuck
+        .core
+        .accept_release(&wallet)
+        .expect("the release is accepted");
+    let linked = stuck
+        .core
+        .accept_linked(&linked_order(&stuck))
+        .expect("the linked order is accepted");
+    let held = stuck.core.holdings().attributions();
+    let start = stuck.core.fleet().platform.start_of(&wallet.provider);
+    stuck.core = scenario().restart(stuck.core, 1, &mut Reference);
+    assert_eq!(stuck.core.restarts(), 1);
+    assert_ne!(
+        stuck.core.fleet().platform.start_of(&wallet.provider),
+        start,
+        "the wallet's module started anew with its platform"
+    );
+    assert!(
+        stuck
+            .core
+            .fleet()
+            .platform
+            .awaiting_confirmation(&wallet.provider)
+            .is_none(),
+        "the operator confirmed the wallet's release as Core opened"
+    );
+    // What the log settled at the node for the order, against the wallet's own answer for it.
+    let settled: u128 = AMOUNT.parse().expect("an amount");
+    assert!(
+        wallet_holds_at_least(
+            &mut stuck.core,
+            &wallet,
+            &order,
+            "ask-1",
+            &settled.to_string()
+        ),
+        "the wallet holds the log's figure for the order again"
+    );
+    assert!(
+        !wallet_holds_at_least(
+            &mut stuck.core,
+            &wallet,
+            &order,
+            "ask-2",
+            &(settled + 1).to_string()
+        ),
+        "and not a unit more"
+    );
+    assert_eq!(
+        stuck.core.holdings().attributions(),
+        held,
+        "the host attributes it once"
+    );
+    let (bob, decision) = operator_decides(&mut stuck, &linked, &wallet.provider);
+    let decision = decision.expect("asked");
+    assert_eq!(decision.outcome, Answer::Permit {}, "{decision:?}");
+    let decided = Decided {
+        request: decision.request.clone(),
+        decision: decision.decision.clone(),
+    };
+    // One withdrawal in the log, and the host's attribution of the order gone with it.
+    handed_on_once(&mut stuck, &linked, &bob, &decided);
+    assert!(
+        !wallet_holds_at_least(&mut stuck.core, &wallet, &order, "ask-3", "1"),
+        "the wallet holds nothing for the handed-on order"
+    );
+}
+
+/// The wallet's module restarts and the operating system gives its new process the id the old one had (the platform's
+/// test hook reports it so): the host still sees the module restarted, since it reads the start the platform minted,
+/// not the process id, and a restore goes under a transaction the earlier start never took. Core, opened again, lands
+/// again what the log holds for the order and the wallet lost: the wallet holds the order's value once, and the host
+/// attributes it once (`REQ-ORD-43`, `INV-1`, `T-024-21`).
+// verifies: REQ-ORD-43, INV-1
+#[test]
+fn module_restarted_under_the_same_process_id_is_seen_as_restarted() {
+    let names = [CHAIN_IN, RAMP_B, OUT_B];
+    let scenario = || Scenario::new("execution", "AC-6", given(&names));
+    let mut stuck = stuck_at_the_public_node();
+    let wallet = stuck.wallet.clone();
+    let order = stuck.order.as_str().to_owned();
+    stuck
+        .core
+        .accept_release(&wallet)
+        .expect("the release is accepted");
+    let held = stuck.core.holdings().attributions();
+    let pid = stuck
+        .core
+        .fleet()
+        .platform
+        .process(&wallet.provider)
+        .expect("the wallet runs");
+    let start = stuck.core.fleet().platform.start_of(&wallet.provider);
+    let restore = stuck.core.restore_transaction(NODE, &order);
+    assert!(
+        !stuck.core.holding_account_restarted(NODE),
+        "not restarted yet"
+    );
+    assert!(stuck.core.restart_module(&wallet.provider));
+    stuck
+        .core
+        .fleet_mut()
+        .platform
+        .report_process_as(&wallet.provider, pid);
+    assert_eq!(
+        stuck.core.fleet().platform.process(&wallet.provider),
+        Some(pid),
+        "the restarted module's process has the id the old one had"
+    );
+    assert_ne!(
+        stuck.core.fleet().platform.start_of(&wallet.provider),
+        start,
+        "another start"
+    );
+    assert!(
+        stuck.core.holding_account_restarted(NODE),
+        "seen as restarted under the same process id"
+    );
+    assert!(
+        restore.is_some() && stuck.core.restore_transaction(NODE, &order) != restore,
+        "a restore goes under a transaction the earlier start never took"
+    );
+    assert!(
+        !wallet_holds(&mut stuck.core, &wallet, &order, "ask-1"),
+        "the wallet's record is gone"
+    );
+    stuck.core = scenario().reopen(stuck.core, 1, &mut Reference);
+    assert!(
+        wallet_holds(&mut stuck.core, &wallet, &order, "ask-2"),
+        "re-landed from the log"
+    );
+    let twice = (2 * AMOUNT.parse::<u128>().unwrap()).to_string();
+    assert!(
+        !wallet_holds_at_least(&mut stuck.core, &wallet, &order, "ask-3", &twice),
+        "the wallet holds the log's amount once, never twice"
+    );
+    assert_eq!(
+        stuck.core.holdings().attributions(),
+        held,
+        "attributed once"
+    );
+}
+
 /// How many inputs of `kind` the log holds about `order`.
 fn inputs_of(
     core: &Core,

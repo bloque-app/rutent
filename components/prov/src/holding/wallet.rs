@@ -37,7 +37,7 @@ use crate::holding::{
     BalanceSource, HeldForOrder, HoldingAccount as _, HoldingError, HoldingReading, OrderLedger,
 };
 use crate::module::platform::{Platform, World};
-use crate::module::types::{Handled, PlatformRefusal, ProcessId};
+use crate::module::types::{Handled, PlatformRefusal, StartId};
 
 /// The name of the input that carries the order a movement is for.
 pub const ORDER_INPUT: &str = "order";
@@ -123,9 +123,10 @@ pub struct WalletHolding {
     provider: String,
     ledger: OrderLedger,
     sent: u64,
-    /// The process the wallet's module ran in when it last confirmed a movement: another one since means its
-    /// module restarted, and with it the wallet's own record (`REQ-ORD-43`, `T-020-46`).
-    process: Option<ProcessId>,
+    /// The start of the wallet's module, as the platform minted it, when it last confirmed a movement: another one
+    /// since means its module restarted, and with it the wallet's own record (`REQ-ORD-43`, `T-020-46`). Never the
+    /// operating system's process id, which a restarted module may be given again (`T-024-21`).
+    start: Option<StartId>,
 }
 
 impl WalletHolding {
@@ -139,7 +140,7 @@ impl WalletHolding {
             provider: provider.into(),
             ledger: OrderLedger::new(node, asset),
             sent: 0,
-            process: None,
+            start: None,
         }
     }
 
@@ -172,16 +173,18 @@ impl WalletHolding {
         let (next, ..) =
             self.movement(platform, operator, true, node, asset, order, amount, None)?;
         self.ledger = next;
-        self.process = platform.process(&self.provider);
+        self.start = platform.start_of(&self.provider);
         Ok(())
     }
 
-    /// Whether the wallet's module restarted since it last confirmed a movement, as the platform reports its process:
-    /// its own record is then gone, and what the host attributes may no longer rest in the wallet's record
-    /// (`REQ-ORD-43`, `T-020-46`). False where it confirmed none yet.
+    /// Whether the wallet's module restarted since it last confirmed a movement, as the platform reports its start
+    /// ([`Platform::start_of`]), never its process id, which a restart may reuse (`T-024-21`): its own record is then
+    /// gone, and what the host attributes may no longer rest in the wallet's record (`REQ-ORD-43`, `T-020-46`). A
+    /// module that runs no process now restarted too. False where it confirmed none yet.
     pub fn restarted<W: World>(&self, platform: &Platform<W>) -> bool {
-        self.process
-            .is_some_and(|seen| platform.process(&self.provider) != Some(seen))
+        self.start
+            .as_ref()
+            .is_some_and(|seen| platform.start_of(&self.provider).as_ref() != Some(seen))
     }
 
     /// What the wallet itself holds for `order`, by its own answers, up to `amount`: the most it says the order's
@@ -250,7 +253,7 @@ impl WalletHolding {
         let units = parse_amount(amount)?;
         let held = self.held_by_wallet(platform, operator, order, units, transaction)?;
         if held >= units {
-            self.process = platform.process(&self.provider);
+            self.start = platform.start_of(&self.provider);
             return Ok(0);
         }
         let short = units - held;
@@ -273,7 +276,7 @@ impl WalletHolding {
             next.release(order, attributed - units)?;
         }
         self.ledger = next;
-        self.process = platform.process(&self.provider);
+        self.start = platform.start_of(&self.provider);
         Ok(short)
     }
 
@@ -290,7 +293,7 @@ impl WalletHolding {
         let (next, ..) =
             self.movement(platform, operator, false, node, asset, order, amount, None)?;
         self.ledger = next;
-        self.process = platform.process(&self.provider);
+        self.start = platform.start_of(&self.provider);
         Ok(())
     }
 
@@ -558,11 +561,12 @@ impl Holdings {
     }
 
     /// The transaction a restore at `node`'s holding account for `order` goes under (`T-020-46`): derived from the
-    /// node, the order and the process the account's wallet module runs in now, as the platform reports it, so a
-    /// restore after the module restarted goes under a transaction no earlier process of it took, whichever Core
-    /// process asks, and a retry in the same process asks under the same one, which the platform answers as a repeat.
-    /// Its balance questions are derived from it in turn. Nothing of it is in the log, and nothing of it needs to be:
-    /// no fresh identifier of Core's is ever drawn for it. `None` where the module runs in no process.
+    /// node, the order and the start of the account's wallet module now, as the platform mints it
+    /// ([`Platform::start_of`], `T-024-21`), so a restore after the module restarted goes under a transaction no
+    /// earlier start of it took, whichever Core process asks and whatever process id the module was given, and a retry
+    /// in the same start asks under the same one, which the platform answers as a repeat. Its balance questions are
+    /// derived from it in turn. Nothing of it is in the log, and nothing of it needs to be: no fresh identifier of
+    /// Core's is ever drawn for it. `None` where the module runs in no process.
     pub fn restore_transaction<W: World>(
         &self,
         platform: &Platform<W>,
@@ -570,9 +574,9 @@ impl Holdings {
         order: &str,
     ) -> Option<String> {
         let account = self.accounts.get(node)?;
-        let process = platform.process(&account.provider)?;
+        let start = platform.start_of(&account.provider)?;
         let digest =
-            crate::module::wire::sha256(format!("{node}\u{0}{order}\u{0}{process}").as_bytes());
+            crate::module::wire::sha256(format!("{node}\u{0}{order}\u{0}{start}").as_bytes());
         Some(format!("restore-{}", &digest[..32]))
     }
 

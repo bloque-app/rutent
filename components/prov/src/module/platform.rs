@@ -53,7 +53,7 @@ use crate::module::record::{
 };
 use crate::module::types::{
     AdmissionRefusal, Admitted, Endpoint, Envelope, Events, Handled, LimitEvent, LookupEvent,
-    LookupOutcome, PlatformRefusal, ProcessId, StateEvent, UnknownOutcome,
+    LookupOutcome, PlatformRefusal, ProcessId, StartId, StateEvent, UnknownOutcome,
 };
 use crate::module::wire::{
     FromProvider, OUTPUT_TOO_LARGE, Reply, ToProvider, WireHeader, sha256, unhex,
@@ -558,6 +558,10 @@ pub struct Platform<W: World> {
     unconfirmed: BTreeSet<String>,
     /// The question [`Platform::status`] is putting to a module, while it does.
     status_run: Option<StatusRun>,
+    /// The process ids [`Platform::process`] reports in place of the real ones (the `test-support` hook,
+    /// [`Platform::report_process_as`]).
+    #[cfg(feature = "test-support")]
+    reported_as: BTreeMap<String, ProcessId>,
 }
 
 /// What a status question needs beyond the question itself while the module answers it.
@@ -611,6 +615,8 @@ impl<W: World> Platform<W> {
             acceptances: BTreeMap::new(),
             unconfirmed: BTreeSet::new(),
             status_run: None,
+            #[cfg(feature = "test-support")]
+            reported_as: BTreeMap::new(),
         })
     }
 
@@ -2860,7 +2866,29 @@ impl<W: World> Platform<W> {
     /// a top-level operation has none until the platform's next call starts it again.
     pub fn process(&self, provider: &str) -> Option<ProcessId> {
         let slot = self.providers.get(provider)?;
-        slot.process.as_ref().map(|p| ProcessId::from(p.pid()))
+        let process = slot.process.as_ref()?;
+        #[cfg(feature = "test-support")]
+        if let Some(pid) = self.reported_as.get(provider) {
+            return Some(*pid);
+        }
+        Some(ProcessId::from(process.pid()))
+    }
+
+    /// The start of the provider's module now running, if it runs: minted when its process started, another at every
+    /// start since, never the operating system's process id, which a later start may be given again (`T-024-21`,
+    /// `REQ-ORD-43`). What a caller saw at one start and finds at another is a module that restarted in between, its
+    /// state in its instance gone; the same start is the same process. `None` where it runs no process.
+    pub fn start_of(&self, provider: &str) -> Option<StartId> {
+        let slot = self.providers.get(provider)?;
+        slot.process.as_ref().map(|p| p.start().clone())
+    }
+
+    /// A test hook (`T-024-21`, the `test-support` feature only): from now on [`Platform::process`] reports `pid` as
+    /// the provider's process, whatever process it runs in, as an operating system that gave a restarted module the
+    /// process id it had before would report it. Nothing else changes: its starts are still each its own.
+    #[cfg(feature = "test-support")]
+    pub fn report_process_as(&mut self, provider: &str, pid: ProcessId) {
+        self.reported_as.insert(provider.to_owned(), pid);
     }
 
     /// Restarts the provider's process, and no other. False if it has none.
