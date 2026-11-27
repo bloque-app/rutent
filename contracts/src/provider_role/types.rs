@@ -621,9 +621,10 @@ pub enum Unbounded {
     Unbounded,
 }
 
-/// What a reserve declares at publishing (`urn:rutent:provider-role:reserve-declaration`, `REQ-CAT-6`).
+/// What a reserve declares at publishing (`urn:rutent:provider-role:reserve-declaration`, `REQ-CAT-6`). Unlike the
+/// contract's other shapes it reads a field it doesn't know and ignores it: a later version's optional field is one an
+/// older reader ignores, as that version's changelog entry says (`REQ-PRT-2`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ReserveDeclaration {
     /// Whether the reserve can require that the user initiate the withdrawal themselves.
     pub can_require_user_initiated_withdrawal: bool,

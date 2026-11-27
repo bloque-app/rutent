@@ -492,12 +492,10 @@ impl<'a, const FLAW: u8> Search<'a, FLAW> {
     }
 
     fn statement_is_void(&self, figure: &Figure) -> bool {
-        // One version in force, the bounds', judged at the snapshot's time (provider-role 4.0.0).
+        // The versions in force under the bounds, judged at the snapshot's time (provider-role 4.0.0, `REQ-PRT-4`).
         let (deployment, versions, at) = (
             &self.bounds.deployment,
-            rutent_contracts::provider_role::ProtocolVersions::only(
-                self.bounds.protocol_version.as_str(),
-            ),
+            self.bounds.protocol_versions(),
             self.snapshot.taken_at.as_str(),
         );
         match &figure.value {

@@ -174,6 +174,10 @@ fn flight(segment: &str, outcome: SegmentOutcome) -> InFlight {
             role: Role::Operator,
             kind: ActorKind::Component,
         },
+        began: crate::segments::Began {
+            at: rutent_prov::catalogue::Instant(0),
+            versions: rutent_contracts::provider_role::ProtocolVersions::only("2.0.1"),
+        },
         statement,
         effect: None,
         begun: true,

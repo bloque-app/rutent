@@ -141,6 +141,8 @@ pub struct Catalogue {
     advertising_seen: HashSet<PublicKey>,
     statements_seen: HashSet<PublicKey>,
     context: Option<(Deployment, String)>,
+    /// Each older protocol version still in force, with its cutover date (`T-020-54`).
+    older: BTreeMap<String, String>,
     skew_secs: Option<u64>,
     nodes: NodeBook,
     floors: HashMap<TupleKey, EvidenceGrade>,

@@ -56,8 +56,8 @@ use std::rc::Rc;
 
 use rutent_contracts::core_internal::calls::{AppendFailure, StatementKeys};
 use rutent_contracts::core_internal::{
-    Action, CatalogueChange, Entry, History, Outcome, Receipt, SignedWith, StatedEntry,
-    VerifiedEntry, Violation, What, granted_advertising_keys,
+    Action, CatalogueChange, Entry, History, OperatorSetting, Outcome, Receipt, SignedWith,
+    StatedEntry, VerifiedEntry, Violation, What, granted_advertising_keys,
 };
 use rutent_contracts::provider_role::{
     ADVERTISEMENT_SHAPE, Advertisement, Deployment, KeyPurpose, PublicKey, Statement, canonicalize,
@@ -203,6 +203,10 @@ pub(super) struct Register {
     released: BTreeSet<String>,
     /// The publisher each private node an accepted advertisement declares is on record for.
     nodes: BTreeMap<String, String>,
+    /// The cutovers the operator's permitted `set_setting` effects set, each with its effect's index in the log, its
+    /// older protocol version and its date, in the order they were recorded: counted from the effect, undone by a
+    /// `failed` result, the later of two for one version standing (`REQ-PRT-4`, `T-020-54`).
+    cutovers: Vec<(u64, String, String)>,
 }
 
 /// A grant done or a revocation counting: its effect's time, whether it granted, and its effect's index in the log.
@@ -353,6 +357,9 @@ impl Register {
                 outcome: Outcome::Failed {},
                 ..
             }) => {
+                // A cutover whose result failed is no cutover.
+                self.cutovers
+                    .retain(|(index, ..)| *index != effect.index.get());
                 let Some(VerifiedEntry {
                     what:
                         What::Effect {
@@ -426,6 +433,29 @@ impl Register {
                         self.released.insert(provider.as_str().to_owned());
                     }
                     _ => {}
+                }
+            }
+            // An operator's cutover counts from its admitted effect, as a revocation does: a protocol version going out
+            // of force voids statements, which fails closed, until a `failed` result undoes it (`T-020-54`).
+            Entry::Verified(VerifiedEntry {
+                what:
+                    What::Effect {
+                        action:
+                            Action::ChangeCatalogue {
+                                change: CatalogueChange::SetSetting,
+                                setting: Some(setting),
+                                ..
+                            },
+                        ..
+                    },
+                ..
+            }) if matches!(**setting, OperatorSetting::Cutover { .. }) => {
+                if let OperatorSetting::Cutover { version, cutover } = &**setting {
+                    self.cutovers.push((
+                        history.len() as u64,
+                        version.as_str().to_owned(),
+                        cutover.as_str().to_owned(),
+                    ));
                 }
             }
             Entry::Stated(StatedEntry {
@@ -551,6 +581,25 @@ impl Register {
             })
     }
 
+    /// The protocol versions in force: the deployment's own, and each older one the operator's permitted settings put in
+    /// force with its cutover date (`REQ-PRT-4`).
+    fn protocol_versions(
+        &self,
+        settings: &Settings,
+    ) -> rutent_contracts::provider_role::ProtocolVersions {
+        // The later effect for a version stands.
+        let mut latest: BTreeMap<&str, &str> = BTreeMap::new();
+        for (_, version, cutover) in &self.cutovers {
+            latest.insert(version, cutover);
+        }
+        latest.into_iter().fold(
+            rutent_contracts::provider_role::ProtocolVersions::only(
+                settings.protocol_version.as_str(),
+            ),
+            |versions, (version, cutover)| versions.with_older(version, cutover),
+        )
+    }
+
     /// Accepts the advertisement `received`, received at `received_at`, or says nothing about why not: a refusal changes
     /// nothing.
     fn join(
@@ -567,12 +616,11 @@ impl Register {
         statement.check_shape().ok()?;
         statement
             // Judged at the time the log received it, never the maker's own `made_at`, so a statement can't be dated
-            // back past a cutover (provider-role 4.0.0; one version in force here).
+            // back past a cutover (provider-role 4.0.0): the versions in force are the deployment's, and each older one
+            // with the date the operator's permitted setting gave it.
             .check_context(
                 &settings.deployment,
-                &rutent_contracts::provider_role::ProtocolVersions::only(
-                    settings.protocol_version.as_str(),
-                ),
+                &self.protocol_versions(settings),
                 received_at.as_str(),
             )
             .ok()?;

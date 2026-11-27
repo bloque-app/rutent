@@ -3986,3 +3986,99 @@ fn a_report_pair_on_the_log_rests_only_on_its_partys_results_about_its_own_segme
         );
     }
 }
+
+/// `provider`'s advertisement under protocol `version`, signed with its advertising key.
+fn advertised_under(version: &str, provider: &str) -> Vec<u8> {
+    let mut ad: Value =
+        serde_json::from_slice(&advertised(provider, &advertising_key(provider), provider))
+            .unwrap();
+    ad["protocol_version"] = version.into();
+    sign_value(&mut ad, &advertising_key(provider));
+    serde_json::to_vec(&ad).unwrap()
+}
+
+/// The cutover action of `version` to `date`, by the operator.
+fn cutover_to(version: &str, date: &str) -> Value {
+    json!({
+        "kind": "change_catalogue", "change": "set_setting", "provider": "operator",
+        "setting": {"setting": "cutover", "version": version, "cutover": date},
+    })
+}
+
+/// The log reads the protocol versions in force from the cutovers its own permitted effects record (`REQ-PRT-4`,
+/// `THR-64`, `T-020-54`): before the date it takes an advertisement under either version, from the date on a holdout's
+/// under the old one is refused, judged at the time it received it and never the maker's own `made_at`; a cutover whose
+/// result failed is not in force, and one the log holds no effect of never is.
+// verifies: REQ-PRT-4, THR-64
+#[test]
+fn log_takes_an_advertisement_under_an_older_version_only_before_its_cutover() {
+    let mut run = Run::new(MemoryStore::new());
+    for p in ["kyc-check", "fx-desk", "us-bank", "bank-co"] {
+        run.grant(p, GRANTED_AT);
+    }
+    let taken = |run: &Run<MemoryStore>, p: &str| run.log.accepted_advertisement(p).is_some();
+    // No cutover is held: the old version is no version in force.
+    run.advertise_at(
+        "kyc-check",
+        &advertised_under("3.0.0", "kyc-check"),
+        "2026-11-11T09:00:00Z",
+    )
+    .unwrap();
+    assert!(!taken(&run, "kyc-check"), "no cutover is held");
+
+    run.carry_out(
+        cutover_to("3.0.0", "2026-12-01T00:00:00Z"),
+        "2026-11-10T09:30:00Z",
+    );
+    // Both versions are taken before the date.
+    run.advertise_at(
+        "fx-desk",
+        &advertised_under("3.0.0", "fx-desk"),
+        "2026-11-30T23:59:59Z",
+    )
+    .unwrap();
+    run.advertise_at(
+        "us-bank",
+        &advertised_under(VERSION, "us-bank"),
+        "2026-11-30T23:59:59Z",
+    )
+    .unwrap();
+    assert!(taken(&run, "fx-desk") && taken(&run, "us-bank"));
+    // From the date on, a holdout's is refused, the current version's taken.
+    run.advertise_at(
+        "kyc-check",
+        &advertised_under("3.0.0", "kyc-check"),
+        "2026-12-01T00:00:00Z",
+    )
+    .unwrap();
+    assert!(!taken(&run, "kyc-check"), "a holdout after the cutover");
+    run.advertise_at(
+        "bank-co",
+        &advertised_under(VERSION, "bank-co"),
+        "2026-12-01T00:00:01Z",
+    )
+    .unwrap();
+    assert!(taken(&run, "bank-co"));
+
+    // A cutover whose result failed is not in force.
+    let mut run = Run::new(MemoryStore::new());
+    run.grant("kyc-check", GRANTED_AT);
+    set_now("2026-11-10T09:30:00Z");
+    let effect = run
+        .try_change(
+            cutover_to("3.0.0", "2026-12-01T00:00:00Z"),
+            "2026-11-10T09:30:00Z",
+        )
+        .unwrap();
+    run.end(&effect, "failed", "2026-11-10T09:30:00Z");
+    run.advertise_at(
+        "kyc-check",
+        &advertised_under("3.0.0", "kyc-check"),
+        "2026-11-20T09:00:00Z",
+    )
+    .unwrap();
+    assert!(
+        !taken(&run, "kyc-check"),
+        "a failed cutover is no version in force"
+    );
+}

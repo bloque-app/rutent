@@ -508,3 +508,65 @@ fn assertion_dated_before_its_cutover_but_admitted_after_it_is_refused() {
         "admitted before the cutover, it is read"
     );
 }
+
+/// The platform admits a release assertion by the protocol versions in force (`REQ-PRT-4`, `THR-64`, `T-020-54`): with
+/// 3.0.0 put in force until a date, a release assertion under it is read before the date and void from it, judged at the
+/// clock the release is admitted at; one that no cutover names is void whenever, and one under the current version is
+/// read always. Without the operator's cutover reaching the platform, a holdout's release would never be refused by date.
+// verifies: REQ-PRT-4, THR-64
+#[test]
+fn platform_admits_a_release_assertion_under_an_older_version_only_before_its_cutover() {
+    let (declaration, binaries) = release(RESERVE, "1.0.0", &["withdrawal"]);
+    let key = signed::catalogue_support::advertising_key(RESERVE);
+    let under = |version: &str| {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&signed::assertion(&declaration, &binaries, &key))
+                .expect("JSON");
+        value["protocol_version"] = version.into();
+        signed::catalogue_support::sign_json(value, &key)
+    };
+    let old = under("3.0.0");
+    let cutover = Instant(signed::AT.0 + 100);
+    let void =
+        |admitted: Admitted| matches!(admitted, Admitted::Unverified(Unverified::WrongContext(_)));
+    // No cutover names 3.0.0: it is no version in force.
+    let mut s = Signed::new();
+    assert!(void(s.platform.admit(
+        &old,
+        &binaries,
+        &mut s.catalogue,
+        signed::AT
+    )));
+    // In force until the date: read before it, void from it.
+    let mut s = Signed::new();
+    let date = cutover.rfc3339().expect("a time");
+    // The operator's decided cutover reaches the platform and the catalogue alike.
+    s.platform.set_cutover("3.0.0", &date);
+    s.catalogue.set_cutover("3.0.0", &date);
+    assert!(matches!(
+        s.platform
+            .admit(&old, &binaries, &mut s.catalogue, signed::AT),
+        Admitted::Artefact(_)
+    ));
+    let mut s = Signed::new();
+    let date = cutover.rfc3339().expect("a time");
+    // The operator's decided cutover reaches the platform and the catalogue alike.
+    s.platform.set_cutover("3.0.0", &date);
+    s.catalogue.set_cutover("3.0.0", &date);
+    assert!(void(s.platform.admit(
+        &old,
+        &binaries,
+        &mut s.catalogue,
+        cutover
+    )));
+    // The current version is read after the date too.
+    assert!(matches!(
+        s.platform.admit(
+            &under(rutent_contracts::provider_role::VERSION),
+            &binaries,
+            &mut s.catalogue,
+            Instant(cutover.0 + 1)
+        ),
+        Admitted::Artefact(_)
+    ));
+}

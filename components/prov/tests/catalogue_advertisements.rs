@@ -823,3 +823,200 @@ fn accepted_advertisements_are_kept_for_the_whole_history() {
     let _: &Advertisement = &history[0].statement;
     assert!(catalogue.advertisement_history("nobody").is_empty());
 }
+
+/// `bytes` re-signed with `signer` under protocol `version`: a provider that has not moved to the current one.
+fn under(version: &str, bytes: &[u8], signer: &SigningKey) -> Vec<u8> {
+    let mut value: serde_json::Value = serde_json::from_slice(bytes).expect("a statement");
+    value["protocol_version"] = version.into();
+    sign_json(value, signer)
+}
+
+/// The catalogue, with 3.0.0 in force until 5 000.
+fn cutting_over() -> Catalogue {
+    let mut catalogue = first_accepted();
+    catalogue.set_cutover("3.0.0", &Instant(5_000).rfc3339().unwrap());
+    catalogue
+}
+
+fn result_under(version: &str, made_at: u64) -> Vec<u8> {
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&made_by("bridge-pay", made_at, &stm(1), RESULT_SHAPE)).unwrap();
+    value["protocol_version"] = version.into();
+    sign_json(value, &stm(1))
+}
+
+/// A provider that has not moved to the current protocol version by its cutover date is a holdout: what it says under
+/// the old version is void from the date on, judged at the reader's clock and never at its own `made_at`, so dating it
+/// back doesn't bring it in (`REQ-PRT-4`, `THR-64`).
+// verifies: REQ-PRT-4, THR-64
+#[test]
+fn a_holdout_at_a_cutover_is_refused_after_its_date() {
+    let ad = under(
+        "3.0.0",
+        &bytes(keys_of_bridge_pay(), 2_001, &advertising_key("bridge-pay")),
+        &advertising_key("bridge-pay"),
+    );
+    for at in [5_000, 5_001, 90_000] {
+        let mut catalogue = trusting();
+        catalogue.set_cutover("3.0.0", &Instant(5_000).rfc3339().unwrap());
+        assert!(
+            matches!(
+                catalogue.join(&ad, Instant(at)),
+                Err(JoinRefusal::WrongContext(
+                    rutent_contracts::provider_role::ContextMismatch::PastCutover { .. }
+                ))
+            ),
+            "joined at {at}"
+        );
+    }
+    // A statement of a provider already known, under the old version, once the date has passed.
+    let catalogue = cutting_over();
+    for at in [5_000, 5_001] {
+        assert_eq!(
+            catalogue.verify_statement(&result_under("3.0.0", 2_500), Instant(at)),
+            Err(StatementRefusal::WrongContext),
+            "verified at {at}"
+        );
+    }
+    // A version nobody put in force is refused whatever the date.
+    assert!(matches!(
+        trusting().join(&under("2.0.0", &ad, &advertising_key("bridge-pay")), NOW),
+        Err(JoinRefusal::WrongContext(_))
+    ));
+}
+
+/// Until the cutover date a provider is read under either version, so it re-signs under the current one at its own
+/// pace (`REQ-PRT-4`).
+// verifies: REQ-PRT-4
+#[test]
+fn providers_statements_under_both_versions_are_taken_before_the_cutover_date() {
+    let ad = under(
+        "3.0.0",
+        &bytes(keys_of_bridge_pay(), 2_001, &advertising_key("bridge-pay")),
+        &advertising_key("bridge-pay"),
+    );
+    let mut catalogue = trusting();
+    catalogue.set_cutover("3.0.0", &Instant(5_000).rfc3339().unwrap());
+    assert_eq!(catalogue.join(&ad, Instant(4_999)), Ok(()));
+    let catalogue = cutting_over();
+    for version in ["3.0.0", VERSION] {
+        assert_eq!(
+            catalogue.verify_statement(&result_under(version, 2_500), Instant(4_999)),
+            Ok(()),
+            "under {version}"
+        );
+    }
+    // The current version is taken after the date too, and a cutover date for it changes nothing.
+    let mut catalogue = cutting_over();
+    catalogue.set_cutover(VERSION, &Instant(1).rfc3339().unwrap());
+    assert_eq!(
+        catalogue.verify_statement(&result_under(VERSION, 2_500), Instant(9_000)),
+        Ok(())
+    );
+    // A provider that re-signs under the current version before the date joins at once.
+    let mut catalogue = trusting();
+    catalogue.set_cutover("3.0.0", &Instant(5_000).rfc3339().unwrap());
+    assert_eq!(
+        catalogue.join(
+            &bytes(keys_of_bridge_pay(), 2_001, &advertising_key("bridge-pay")),
+            Instant(9_000)
+        ),
+        Ok(())
+    );
+}
+
+/// A change the protocol's changelog marks not ignorable (one that adds a protection) binds every provider from its
+/// cutover: the date is the deployment's, not a provider's, so each provider that has not moved to the version carrying
+/// the change is void from it, whichever provider and whatever it says; each that has moved is taken (`REQ-PRT-2`,
+/// `THR-64`).
+// verifies: REQ-PRT-2, THR-64
+#[test]
+fn change_adding_a_protection_binds_every_provider_from_its_cutover() {
+    let reserve = reserve_advertisement();
+    let mut catalogue = trusting();
+    catalogue
+        .grant(grant(
+            "g-2",
+            &reserve.provider,
+            rutent_prov::catalogue::tuples_of(&reserve),
+            100_000,
+        ))
+        .unwrap();
+    catalogue
+        .trust_advertising_key("g-2", public_key(&advertising_key(&reserve.provider)))
+        .unwrap();
+    catalogue.set_cutover("3.0.0", &Instant(5_000).rfc3339().unwrap());
+    let ramp_key = advertising_key("bridge-pay");
+    let reserve_key = advertising_key(&reserve.provider);
+    let ramp_old = under(
+        "3.0.0",
+        &bytes(keys_of_bridge_pay(), 2_001, &ramp_key),
+        &ramp_key,
+    );
+    let reserve_old = under(
+        "3.0.0",
+        &advertisement_bytes(&reserve, None, Instant(2_001), &reserve_key),
+        &reserve_key,
+    );
+    let reserve_new = advertisement_bytes(&reserve, None, Instant(2_001), &reserve_key);
+    // Until the date each provider on 3.0.0 is taken, so the change binds from the date and no earlier.
+    for holdout in [&ramp_old, &reserve_old] {
+        assert_eq!(catalogue.clone().join(holdout, Instant(4_999)), Ok(()));
+    }
+    let at = Instant(5_000);
+    for holdout in [&ramp_old, &reserve_old] {
+        assert!(
+            matches!(
+                catalogue.clone().join(holdout, at),
+                Err(JoinRefusal::WrongContext(_))
+            ),
+            "every provider still on 3.0.0 is void from the date"
+        );
+    }
+    assert_eq!(catalogue.join(&reserve_new, at), Ok(()));
+    assert!(
+        catalogue
+            .accepted_advertisement(&reserve.provider)
+            .is_some()
+    );
+    assert!(catalogue.accepted_advertisement("bridge-pay").is_none());
+}
+
+/// A segment's result is read by the protocol version in force when the segment began: one begun before a cutover
+/// resolves the same whether its result lands before or after the date, and one begun at or after it takes no statement
+/// under the old version at all, whenever it lands (`REQ-PRT-2`, `REQ-PRT-4`, `T-020-54`).
+// verifies: REQ-PRT-2, REQ-PRT-4
+#[test]
+fn segment_begun_before_a_cutover_resolves_the_same_whether_its_result_lands_before_or_after_it() {
+    let catalogue = cutting_over();
+    let old = result_under("3.0.0", 2_500);
+    let current = result_under(VERSION, 2_500);
+    // Begun at 4 000, before the date of 5 000: landing before, at and long after the date, the old version's result
+    // and the current's are taken alike.
+    for lands in [4_100, 4_999, 5_000, 5_001, 90_000] {
+        for (what, bytes) in [("old", &old), ("current", &current)] {
+            assert_eq!(
+                catalogue.verify_statement_begun(bytes, Instant(lands), Instant(4_000)),
+                Ok(()),
+                "{what} result of a segment begun before the cutover, landing at {lands}"
+            );
+        }
+    }
+    // Begun at or after the date, the old version is void whenever it lands, the current one taken.
+    for began in [5_000, 5_001, 6_000] {
+        assert_eq!(
+            catalogue.verify_statement_begun(&old, Instant(9_000), Instant(began)),
+            Err(StatementRefusal::WrongContext),
+            "begun at {began}"
+        );
+        assert_eq!(
+            catalogue.verify_statement_begun(&current, Instant(9_000), Instant(began)),
+            Ok(())
+        );
+    }
+    // A statement with no segment is judged where it lands, as before.
+    assert_eq!(
+        catalogue.verify_statement(&old, Instant(5_000)),
+        Err(StatementRefusal::WrongContext)
+    );
+}
