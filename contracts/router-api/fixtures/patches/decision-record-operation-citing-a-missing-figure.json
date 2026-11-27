@@ -118,8 +118,8 @@
           }
         ],
         "dropped": {
-          "reason": "stale_figure",
-          "figure": "f-ex-a-quote-old"
+          "reason": "outranked",
+          "by": "c1"
         }
       }
     }

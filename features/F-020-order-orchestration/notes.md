@@ -9550,7 +9550,7 @@ chosen candidate takes a drop reason that carries no condition of its own). Eigh
 return the check's result are `broke(..)`: below floor, no positive outcome, excluded by policy, outranked, and both fees
 above an amount in): their fixtures break only their rule. `UNSWITCHABLE` is now 7 and `ALSO_BREAK` 17.
 
-Why each remaining fixture can't be mended or switched, by fixture:
+Why each remaining fixture can't be mended or switched, by fixture (superseded by round 3's table below, which re-reads each reason against the second rule the test pins):
 
 | Fixture | Why |
 |---|---|
@@ -9587,3 +9587,81 @@ re-deriving its decision record so the second rule's premise no longer holds.
 | a result is judged at its landing, not its segment's beginning | `segment_begun_before_a_cutover_resolves_the_same_whether_its_result_lands_before_or_after_it` |
 | the bounds name no older version | `bounds_name_the_protocol_versions_in_force_and_their_cutovers`, `a_cutover_the_operator_sets_is_the_catalogues_older_version_in_force` |
 | an unswitched rule is pinned though it can be switched | `each_router_api_invalid_fixture_breaks_only_the_rule_it_names` (it names the fixture to unpin) |
+
+### T-020-54, round 3: the review of #345 at `b2187aa1`
+
+`origin/m3` (`f8bddbb4`) is merged (conflicts kept both sides: `Targets` holds `segments` and `platform`; the three
+`Targets` sites keep `platform:`, `..Targets::default()` at `reapply_catalogue_settings` among them, L5). Edits the `DEC-20`
+paths `tools/contract-guard/` and `contracts/`, and `components/prov/src/module/platform.rs` (round 2's first commit,
+`090e23b9`, didn't flag that file; this note and the round's commit body do).
+
+- **M2, a segment's version is recorded.** `segments::Began {at, versions}`: the instant the segment began and the protocol
+  versions in force then, each older one with the cutover the operator had set by then. Live it is taken from the
+  catalogue as the segment starts (`InFlight.began`); after a reopen it is derived from the log's settings up to the
+  segment's start effect (`Began::from_log`, `Settings::reopened` over `history[..start]`), so a restarted Core reads what the
+  live one read. `Catalogue::verify_statement_under(received, at, versions, begun)` judges a statement by it. Read by the result
+  judge, the late answer, the reopen's re-judgement, both judges of the stuck mover and its hand-on take (`Flight.began`,
+  `HandFlight.began`, taken when the move is made), and the provider reversals (`Segments::began_of(transaction)`,
+  `began_of_order(order)`; a statement about no segment Core holds is read by the catalogue's table, as before). No
+  core-internal shape changed: the signed operation's `made_at` is the instant, and the log's own settings entries are the
+  record of the versions. Moving a cutover earlier changes nothing for a segment begun, live or after a reopen.
+- **H1 (#143's blocker b).** `Core::relist` judges each advertisement by the cutovers the log held when it was received
+  (`Settings::reopened(&entries[..place]).apply_cutovers`, the cutovers only), then puts every cutover into the catalogue and
+  the platform before `rebuild_from_log` judges the log's results again. `Settings::apply_cutovers` is new.
+- **M1 and the tests.** `conformance/scenarios/tests/protocol_cutover.rs` runs a holdout fleet (`Config.holdout`,
+  `Scenario::holdout`: the fleet speaks the old version and takes the current one's operations through
+  `SuiteContext.older_versions`; the operator's cutover is set before it is listed) across its cutover: an old-version
+  advertisement taken before the date and listed again by a reopen, a settled withdrawal read again after the cutover was moved
+  to before it began, and a late answer taken. In core-orch's `tests/segments.rs`: `result_of_a_segment_begun_before_a_cutover_counts_whenever_it_lands`
+  (the result site, before, at and after the date, and a segment begun after it) and
+  `late_answer_of_a_segment_begun_before_a_cutover_is_taken_whatever_the_cutovers_say_since` (the late-answer site, the
+  cutover moved either side).
+- **Lows.** L1: the fold rule reads headings as semantic versions (`4.0.00` is `4.0.0`, released). L2: `is_release_base`: without
+  `develop` the base is a release base, whatever `main` says. L3: the ignorable rule reads a field named in plain words, and
+  a closed object with no `properties` key admits nothing. L4: the mover's hand-on take and the reversals read the segment's
+  version. L6: `decision-record-candidate-id-twice`, `--operation-citing-a-missing-figure` and
+  `--choosing-an-unconfirmed-candidate` are mended (the dropped candidate each adds takes an `outranked` reason of no
+  condition of its own); `ALSO_BREAK` is 14, `UNSWITCHABLE` 7. L8: core-audit's `reopen` tests open a store through
+  `settled`, a bounded retry (the pattern of `prov/src/module/record.rs`'s `reopen`).
+
+Pinned fixtures, each reason re-read against the second rule the test holds it to:
+
+| Fixture | Its second rule | Why it stays |
+|---|---|---|
+| `decision-record-batched-payout-naming-an-operation-before-the-last` | a batched-payout reason names a deposit at a batching reserve | a deposit at a batching reserve is last by construction; an operation before the last isn't a deposit |
+| `candidate-with-a-gap-between-operations` | each operation takes in what the one before delivered | a gap between two operations is that fact from both ends |
+| `decision-record-void-reason-naming-a-statement-valid-here`, `--quote-voided-by-a-condition-it-does-not-name`, `--quote-voided-by-an-unchanged-amount` | a stale, void or voided statement drops a candidate only where no usable answer covers its operation | their own rule is that the named statement isn't void: the drop's premise is false, and a usable answer then covers the operation. Same fault, two rules |
+| `decision-record-drop-reason-naming-a-figure-its-candidate-does-not-cite` | a drop reason's figure supports the drop | the figure not cited is the figure that can't support it |
+| `decision-record-operation-citing-another-providers-tuple` | every operation cites a tuple with its own two ends | a tuple of another provider is a tuple with other ends |
+| `decision-record-operation-citing-a-tuple-with-other-ends` | every other figure an operation cites names the operation's own tuple | the cited tuple stops being the one the other figures name |
+| `decision-record-over-a-ceiling-at-other-decimals`, `--the-bounds-lack` | an over-ceiling reason names a ceiling the candidate passes | a ceiling the bounds don't hold is one no candidate passes |
+| `decision-record-refused-dry-run-moved-to-the-deposit` | every dry run an operation cites is for its amount in | a dry run for another operation's amount |
+| `decision-record-no-price-naming-an-operation-before-the-last` | a no-price reason names an operation whose tuple has no price and which cites none | the earlier operation cites the price the reason says is missing |
+| `decision-record-confirmed-by-an-answer-made-before-the-shortlist` | the choice round chooses only a candidate whose every operation is confirmed | an answer made before the shortlist is no confirmation: one fact |
+| `decision-record-refining-a-shortlist-taken-after-its-snapshot` | a confirming answer is made at or after the shortlist it refines | moving the shortlist's time moves what its answers are judged against |
+
+`UNSWITCHABLE` (7), where the check can't go on past the refusal: `held-quote-of-a-record-choosing-nothing` (nothing is chosen to
+compare), `decision-record-naming-a-call-without-its-calls-figure` and `--citing-a-calls-figure-and-naming-no-call` (the match arm
+yields the declared calls the rest counts), `catalogue-snapshot-price-for-a-missing-figure` and `--price-of-a-price` (the lookup
+yields the tuple figure the price's rules read), `decision-record-stale-reason-naming-a-missing-figure` (the figure is read to
+judge the drop), `decision-record-operation-citing-no-tuple` (the pattern `[tuple]` is the one tuple the other rules read).
+
+**Rule-off, round 3.** Each was switched off once (an edit, reverted):
+
+| Rule switched off | Red |
+|---|---|
+| the result judge reads the segment's beginning (the landing time instead) | `result_of_a_segment_begun_before_a_cutover_counts_whenever_it_lands` |
+| the late answer reads the segment's beginning | `late_answer_of_a_segment_begun_before_a_cutover_is_taken_whatever_the_cutovers_say_since` |
+| the reopen derives the segment's table from the whole log, not up to its start | `old_version_provider_survives_its_cutover_and_a_reopen_by_the_version_its_segment_began_under` |
+| the relist judges an advertisement by the cutovers the log holds now | the same scenario (`kit::join` refuses it) |
+| the fold rule reads headings as strings; no `develop` isn't a release base; plain words and closed objects with no `properties` aren't read | `a_differently_spelled_heading_of_a_released_version_is_still_released`, `a_base_with_no_develop_is_a_release_base`, `ignorable_field_check_reads_plain_words_and_closed_objects_with_no_properties` |
+
+**Gaps, round 3.**
+- **R3-1.** The stuck mover's judges and its hand-on take, and the reversals' `show_fault` and `after`, read `began` (set when the move is
+  made; `Segments::began_of`), and no test of theirs lands an old-version answer after a cutover: swapping `began` for the landing
+  time there goes unseen. The scenario's late answer goes through the reversals' `after`, and passes with the swap too (its
+  statements are judged by the earlier sites first). Owner: a follow-up row of `F-020` with the mover's and the reversals'
+  harnesses.
+- **R3-2.** A mover flight doesn't survive a restart, so its `began` is taken again when it is made.
+- **R3-3.** `Began` for a segment of a Core that reopened with no log entry before its start (a segment begun with no settings
+  set) is the catalogue's one version, as live.
