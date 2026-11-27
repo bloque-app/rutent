@@ -20,6 +20,29 @@
     invalid `raise-of-a-holding-not-read-naming-a-balance`, `--for-a-reason-it-has-no-name-for`; admission
     `--its-accounts-check`, `--never-read`, `--missing`, `--account`, `--node`, `--provider`. 120 relations, with
     `T-020-52`'s merged beside it.
+  - `T-020-59` (`DEC-28`, ADR-0007 as amended): `CatalogueChange::ListPublicNetwork` (`list_public_network`) and
+    `CatalogueChange::DelistPublicNetwork` (`delist_public_network`), a public network listed with the reader service
+    that reads it, and delisted, each a permission of its own (`is_about_a_public_network`), with
+    `Action::ChangeCatalogue.public_network` (`PublicNetwork {network, listing}`), named exactly by the two; only a
+    listing names its `NetworkListing`: the network's identity (reader's `NetworkIdentity`, a genesis hash or a chain
+    id), the reader's endpoint (`ReaderEndpoint {host_setting, reader}`), its identity (`ReaderIdentity {ca,
+    subject_name, statement_key}`: the SHA-256 digest of the operator's CA certificate, the host's subject name, a
+    `SubjectName` with no wildcard, and the reader's statement key, never the host's leaf certificate), its version and
+    its trust rule (reader's `TrustRule`, held to its rules by `Action::check` too). The change's provider is the
+    caller's own party (the deployment operator's, or a desk's). The identity is paired with the trust rule, a chain id
+    read from an RPC pool and a genesis hash by a light client (the reader's `check_pairing`, in `Action::check`, and
+    the listing's `allOf`), and the subject name is never an IP literal (#343's review, M1 and L1). This contract's
+    schemas now name the reader contract's URNs (`REFERRED`). Fixtures: valid
+    `decision-request-to-list-a-public-network-read-by-a-light-client`, `--read-from-an-rpc-pool`,
+    `decision-request-to-delist-a-public-network`; invalid `decision-request-to-list-a-public-network-pinning-the-hosts-leaf-certificate`,
+    `--pinning-a-leaf-certificate-in-place-of-its-ca`, `--under-a-wildcard-subject-name`, `--without-its-identity`,
+    `--without-its-host-setting`, `--without-its-readers-statement-key`, `--without-its-readers-version`,
+    `--without-its-trust-rule`, `--from-an-rpc-pool-with-a-quorum-of-one`, `--naming-no-listing`,
+    `decision-request-to-list-naming-no-public-network`, `decision-request-to-delist-a-public-network-naming-a-listing`,
+    `decision-request-to-promote-naming-a-public-network`, `decision-request-to-list-a-public-network-of-a-chain-id-read-by-a-light-client`,
+    `--of-a-genesis-hash-read-from-an-rpc-pool`, `--under-an-ip-literal-subject-name`,
+    `--under-a-hexadecimal-ip-subject-name` (#343's round 2, L8: a subject's last label starts with a letter). 120
+    relations, unchanged.
   - `T-020-49` (5): `CatalogueChange::ConfirmReleases` (`confirm_releases`, `CONFIRM_RELEASES`), the platform's
     confirmation of a provider's releases after an unclean end (`T-013-11`), a sixth lifecycle action, with
     `Action::ChangeCatalogue.versions`, the provider's versions it puts back in force, at least one, each once, named
@@ -127,9 +150,9 @@
 
   Valid fixtures for each new shape and setting, an invalid one per rule broken, and admission cases for each new
   row and field. With `T-020-44`'s, `T-020-50`'s, `T-020-46`'s (five rounds), `T-021-16`'s, `T-020-51`'s, `T-020-52`'s,
-  `T-020-48`'s, `T-020-57`'s and `T-020-49`'s rounds, merged beside it: thirty schemas, 193 valid fixtures and 195 invalid,
-  789 admission cases and 58 attribution cases (counted from the files); 120
-  relations and 5 closing ones, three stated. (DEC-4, DEC-20, REQ-QTE-10, REQ-AUZ-7, REQ-AUZ-6, REQ-AUZ-8, THR-3, GUA-1, REQ-ORD-20, T-020-45)
+  `T-020-48`'s, `T-020-57`'s, `T-020-49`'s and `T-020-59`'s rounds, merged beside it: thirty schemas, 196 valid fixtures
+  and 212 invalid, 789 admission cases and 58 attribution cases (counted from the files); 120
+  relations and 5 closing ones, three stated. (DEC-4, DEC-20, DEC-28, REQ-QTE-10, REQ-AUZ-7, REQ-AUZ-6, REQ-AUZ-8, THR-3, GUA-1, REQ-ORD-20, T-020-45, T-020-59)
 - The interfaces between `CMP-CORE-ORCH`, `CMP-CORE-AUTHZ` and `CMP-CORE-AUDIT`, settled as a sixth contract before the
   three parts are built side by side (`PLAN.md` §3, §4.4). From orchestration to policy: one decision call for every
   action that moves value, posts a route, changes the catalogue or moves a stuck order's value, answering permit, refuse

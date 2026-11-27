@@ -1,0 +1,19 @@
+{
+  "request": "req-137",
+  "caller": {
+    "party": "operator",
+    "acts": "op-login-2",
+    "role": "operator",
+    "kind": "person"
+  },
+  "action": {
+    "kind": "change_catalogue",
+    "change": "promote",
+    "provider": "operator",
+    "version": "2.2.0",
+    "public_network": {
+      "network": "kreivo"
+    }
+  },
+  "at": "2026-11-27T09:00:00Z"
+}

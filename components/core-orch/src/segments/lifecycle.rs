@@ -407,6 +407,7 @@ impl ReleaseChange<'_> {
             statement_key,
             setting: None,
             versions,
+            public_network: None,
         }
     }
 }
