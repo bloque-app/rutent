@@ -785,6 +785,7 @@ fn stale_mark_taken_unrecorded_is_taken_again_when_a_release_is_published_while_
             statement_key: None,
             setting: None,
             versions: Vec::new(),
+            public_network: None,
         })
         .expect("decided, its effect appended");
     let taken = core.on_platform_with_its_record_broken(|platform| {
@@ -879,6 +880,7 @@ fn stale_mark_refused_while_a_release_is_staged_does_not_hold_its_provider_after
             statement_key: None,
             setting: None,
             versions: Vec::new(),
+            public_network: None,
         })
         .expect("decided, its effect appended");
 

@@ -1328,6 +1328,7 @@ fn listing_the_catalogue_refused_is_not_completed_done_on_reopen() {
             statement_key: None,
             setting: Some(Box::new(listed)),
             versions: Vec::new(),
+            public_network: None,
         })
         .expect("decided, its effect appended");
     let core = scenario.reopen(core, 1, &mut rutent_scenarios::assembly::machine::Reference);
