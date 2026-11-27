@@ -3082,3 +3082,28 @@ fn statement_dated_before_its_cutover_but_received_after_it_is_void() {
         Ok(())
     );
 }
+
+/// A reserve declaration admits the optional fields a later version adds, so an older reader ignores them as the entry
+/// that adds one says (`REQ-PRT-2`, the milestone reviewer's Low of 2026-11-26): the schema admits an unknown field
+/// beside the three declared, and the Rust type reads the declaration without it. The contract guard holds a changelog
+/// entry that says a party may ignore a field to the older schema's own text (`tools/contract-guard`).
+// verifies: REQ-PRT-2
+#[test]
+fn reserve_declaration_admits_a_field_a_later_version_adds() {
+    let mut value = fixture("valid", "advertisement-reserve-answering-hold-requests");
+    let declaration = value
+        .pointer_mut("/statement/offers/reserve/declaration")
+        .expect("the fixture's reserve declares");
+    declaration["a_later_versions_optional_field"] = true.into();
+    assert_eq!(shape_errors("advertisement", &value), Vec::new());
+    let statement: Statement<Advertisement> =
+        serde_json::from_value(value).expect("an older reader ignores the field");
+    assert!(
+        statement
+            .statement
+            .offers
+            .reserve
+            .as_ref()
+            .is_some_and(|reserve| reserve.declaration.answers_hold_requests())
+    );
+}

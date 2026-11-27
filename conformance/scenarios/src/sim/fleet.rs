@@ -11,7 +11,8 @@ use rutent_conformance::role::{
 };
 use rutent_conformance::signing::{Signing, public_key, real, sign_statement};
 use rutent_conformance::sim::{
-    BEGIN, BOOK, CHAIN, CREDENTIAL, DEPLOYMENT_KEY, SETTLE, Spec, Standin, chain_host, rail_host,
+    BEGIN, BOOK, CHAIN, CREDENTIAL, DEPLOYMENT_KEY, PROTOCOL_KEY, SETTLE, Spec, Standin,
+    chain_host, rail_host,
 };
 use rutent_contracts::module_interface::{
     AdmissionArtefact, BinaryFormat, BinaryPart, Declaration, Digest, DigestAlgorithm, DigestValue,
@@ -574,6 +575,18 @@ impl Fleet {
             DEPLOYMENT_KEY,
             &serde_json::to_string(&self.context.deployment).expect("a deployment is JSON"),
         );
+        // A holdout fleet's providers sign under the version it speaks, and take the versions it names as older.
+        if self.context.protocol_version != rutent_contracts::provider_role::VERSION {
+            self.platform.world.seed_state(
+                &spec.provider,
+                PROTOCOL_KEY,
+                &serde_json::to_string(&(
+                    &self.context.protocol_version,
+                    &self.context.older_versions,
+                ))
+                .expect("versions are JSON"),
+            );
+        }
         if let Some(opening) = spec.opening {
             self.platform.world.seed_state(
                 &spec.provider,

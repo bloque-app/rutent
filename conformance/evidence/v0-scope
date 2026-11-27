@@ -177,9 +177,9 @@ REQ-ORD-43 | m3
 
 # REQ-PRT
 REQ-PRT-1 | m3
-REQ-PRT-2 | m4 | F-030 7.1:REQ-PRT | production cutovers
+REQ-PRT-2 | m3
 REQ-PRT-3 | deferred | DEC-17 | the protocol's specification is published in v1 (F-052)
-REQ-PRT-4 | m4 | F-030 7.1:REQ-PRT | production cutovers
+REQ-PRT-4 | m3
 REQ-PRT-5 | m3
 
 # REQ-QTE

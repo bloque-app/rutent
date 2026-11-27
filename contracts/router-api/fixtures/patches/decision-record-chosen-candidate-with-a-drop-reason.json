@@ -5,7 +5,8 @@
       "op": "add",
       "path": "/statement/candidates/0/dropped",
       "value": {
-        "reason": "below_floor"
+        "reason": "outranked",
+        "by": "c2"
       }
     }
   ]

@@ -2,9 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:rutent:provider-role:reserve-declaration",
   "title": "Reserve declaration",
-  "description": "What a reserve declares at publishing, attributable to its maker. A later version that changes either answer is a new declaration, with a new declared_in_version. REQ-CAT-6, REQ-ORD-13, REQ-AUZ-9.",
+  "description": "What a reserve declares at publishing, attributable to its maker. A later version that changes either answer is a new declaration, with a new declared_in_version. The declaration admits the optional fields a later version adds, which an older reader ignores, as that version's changelog entry says (REQ-PRT-2). REQ-CAT-6, REQ-ORD-13, REQ-AUZ-9.",
   "type": "object",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "required": [
     "can_require_user_initiated_withdrawal",
     "starts_routes_on_automatic_deposits",

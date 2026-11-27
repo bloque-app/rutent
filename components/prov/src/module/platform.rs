@@ -504,6 +504,8 @@ pub struct Platform<W: World> {
     workdir: PathBuf,
     output_limit: usize,
     envelope: Envelope,
+    /// The older protocol versions still in force, each with its cutover date (`REQ-PRT-4`, `T-020-54`).
+    older_versions: BTreeMap<String, String>,
     /// What the platform reaches beyond its providers' processes.
     pub world: W,
     /// The calls the routes in flight name, by transaction: a cross-module call is made only where one does
@@ -589,6 +591,7 @@ impl<W: World> Platform<W> {
             workdir,
             output_limit: 0,
             envelope,
+            older_versions: BTreeMap::new(),
             world,
             routes: RouteCalls::default(),
             operations_received: BTreeMap::new(),
@@ -618,6 +621,24 @@ impl<W: World> Platform<W> {
             #[cfg(feature = "test-support")]
             reported_as: BTreeMap::new(),
         })
+    }
+
+    /// Puts an older protocol version in force until `cutover` (an RFC 3339 UTC time in the contract's form): a release
+    /// assertion under it is taken before then and void from then on, judged at the platform's clock when it admits
+    /// the release (`REQ-PRT-4`, `THR-64`, `T-020-54`). The operator's decided setting reaches here.
+    pub fn set_cutover(&mut self, version: &str, cutover: &str) {
+        self.older_versions
+            .insert(version.to_owned(), cutover.to_owned());
+    }
+
+    /// The protocol versions in force: the envelope's, and each older one before its cutover date.
+    pub fn protocol_versions(&self) -> rutent_contracts::provider_role::ProtocolVersions {
+        self.older_versions.iter().fold(
+            rutent_contracts::provider_role::ProtocolVersions::only(
+                self.envelope.protocol_version.as_str(),
+            ),
+            |versions, (version, cutover)| versions.with_older(version.as_str(), cutover.as_str()),
+        )
     }
 
     /// A platform as [`Platform::new`] makes it, on `record`, which holds what an earlier platform carried out
@@ -2576,9 +2597,7 @@ impl<W: World> Platform<W> {
             return Admitted::ClockOutOfRange;
         };
         // Judged at the platform's clock, never the assertion's own `made_at` (provider-role 4.0.0).
-        let versions = rutent_contracts::provider_role::ProtocolVersions::only(
-            self.envelope.protocol_version.as_str(),
-        );
+        let versions = self.protocol_versions();
         let assertion = match admission::read(
             received_assertion,
             &self.envelope.deployment,

@@ -169,6 +169,14 @@ struct Fake {
     answer: Option<Vec<u8>>,
     /// A withdrawal is answered as succeeded, signed by its provider, as the route's record states it.
     settles_the_withdrawal: bool,
+    /// Core's clock, which the run reads: the answer's time moves it where `answers_at` says.
+    clock: std::rc::Rc<TestClock>,
+    /// Where Core's clock stands when the platform hands the answer back, in seconds, where set.
+    answers_at: Option<u64>,
+    /// The protocol version the settled answer is made under, where it isn't the current one.
+    answers_under: Option<String>,
+    /// The platform hands back nothing, and the operation ended with its outcome unknown.
+    unknown: bool,
     /// How many questions of a private node's record were put, and whether the first is refused.
     record_questions: usize,
     /// The log refuses the result entry of a read of a private node's record.
@@ -231,16 +239,26 @@ impl Modules for Fake {
             });
             let body =
                 json!({ "kind": "withdrawal", "transaction": transaction, "outcome": outcome });
+            let mut envelope = snapshot_support::envelope(
+                &snapshot_support::deployment(),
+                rutent_contracts::provider_role::RESULT_SHAPE,
+                "reserve-bank-co",
+                1_794_200_000,
+                body,
+            );
+            if let Some(version) = &self.answers_under {
+                envelope["protocol_version"] = version.as_str().into();
+            }
+            if let Some(at) = self.answers_at {
+                self.clock.0.set(Reading::at(at));
+            }
             return Answered::Bytes(snapshot_support::sign(
-                snapshot_support::envelope(
-                    &snapshot_support::deployment(),
-                    rutent_contracts::provider_role::RESULT_SHAPE,
-                    "reserve-bank-co",
-                    1_794_200_000,
-                    body,
-                ),
+                envelope,
                 &snapshot_support::statements_key("reserve-bank-co", 1),
             ));
+        }
+        if self.unknown {
+            return Answered::Refused(PlatformRefusal::OutcomeUnknown);
         }
         match &self.answer {
             Some(bytes) => Answered::Bytes(bytes.clone()),
@@ -318,6 +336,10 @@ fn fake() -> Fake {
         moved: false,
         answer: None,
         settles_the_withdrawal: false,
+        clock: std::rc::Rc::new(TestClock(Cell::new(Reading::at(1_794_200_000)))),
+        answers_at: None,
+        answers_under: None,
+        unknown: false,
         record_questions: 0,
         refuse_read_results: false,
     }
@@ -524,7 +546,7 @@ fn run_over_each_with(
     policy: &mut dyn Decisions,
 ) -> (Vec<Ran>, KeptLog) {
     let record = record_naming_a_call();
-    let clock = TestClock(Cell::new(Reading::at(1_794_200_000)));
+    let clock = std::rc::Rc::clone(&modules.clock);
     let mut log = KeptLog(Vec::new(), modules.refuse_read_results);
     let mut store = Store::default();
     let mut key = TestKey(SigningKey::from_bytes(&[7; 32]));
@@ -571,7 +593,7 @@ fn run_over_each_with(
     let mut ran = Vec::new();
     for catalogue in &catalogues {
         let mut parts = Parts {
-            clock: &clock,
+            clock: &*clock,
             catalogue,
             log: &mut log,
             evidence: &mut store,
@@ -588,6 +610,100 @@ fn run_over_each_with(
         ran.push(segments.run_part(&mut parts, &live).unwrap());
     }
     (ran, log)
+}
+
+/// The part run over `run_over`, its first segment left with no outcome known, then a later statement about it judged over
+/// `late_over` with the clock at `lands_at`: Core's late answer, after the catalogue changed.
+fn run_then_late(
+    modules: &mut Fake,
+    run_over: Catalogue,
+    late_over: Catalogue,
+    late: impl FnOnce(&Fake) -> Vec<u8>,
+    lands_at: u64,
+) -> Result<rutent_core_orch::segments::Late, rutent_core_orch::segments::LateRefused> {
+    let record = record_naming_a_call();
+    let clock = std::rc::Rc::clone(&modules.clock);
+    let mut log = KeptLog(Vec::new(), modules.refuse_read_results);
+    let mut store = Store::default();
+    let mut policy = Permitting(0);
+    let mut key = TestKey(SigningKey::from_bytes(&[7; 32]));
+    let mut ids = Ids::default();
+    let issued = Issued::new();
+    let mut exposures = Exposures::new();
+    let mut segments = Segments::new();
+    let (order, part, auth, origin) = (id("ord-1"), id("p1"), id("auth-1"), id("reserve-bank-co"));
+    let plan = [id("p1-s1"), id("p1-s2"), id("p1-s3")];
+    let end = RouteEnd {
+        destination: Destination {
+            reserve: id("reserve-wallet"),
+            node: OuterNode {
+                network: "polygon".into(),
+            },
+            account: id("acct-2"),
+        },
+        to_asset: Denomination {
+            id: "USDC".into(),
+            decimals: 6,
+        },
+        delivers: rutent_contracts::router_api::Amount::new("1").unwrap(),
+    };
+    let (caller, core_actor, operator_actor) = (core(), core(), operator());
+    let session = id("session-1");
+    let inputs = BTreeMap::new();
+    let live = Live {
+        order: &order,
+        part: &part,
+        segments: &plan,
+        record: &record,
+        at: 0,
+        authorisation: &auth,
+        origin_reserve: &origin,
+        route: &end,
+        caller: &caller,
+        core: &core_actor,
+        operator: &operator_actor,
+        session: Some(&session),
+        inputs: &inputs,
+        floor: None,
+        record_entry: None,
+    };
+    {
+        let catalogue = &run_over;
+        let mut parts = Parts {
+            clock: &*clock,
+            catalogue,
+            log: &mut log,
+            evidence: &mut store,
+            decisions: &mut policy,
+            modules: &mut *modules,
+            uses: &mut NoProxy,
+            grading: &mut ProvidersWord,
+            operator_key: &mut key,
+            fresh: &mut ids,
+            issued: &issued,
+            exposures: &mut exposures,
+            channel: &mut rutent_core_orch::notice::Unbuilt,
+        };
+        segments.run_part(&mut parts, &live).unwrap();
+    }
+    clock.0.set(Reading::at(lands_at));
+    let late = late(modules);
+    let mut parts = Parts {
+        clock: &*clock,
+        catalogue: &late_over,
+        log: &mut log,
+        evidence: &mut store,
+        decisions: &mut policy,
+        modules: &mut *modules,
+        uses: &mut NoProxy,
+        grading: &mut ProvidersWord,
+        operator_key: &mut key,
+        fresh: &mut ids,
+        issued: &issued,
+        exposures: &mut exposures,
+        channel: &mut rutent_core_orch::notice::Unbuilt,
+    };
+    segments.late_statement(&mut parts, &live, &plan[0], &late)
 }
 
 /// The live withdrawal names its call to the exchange's conversion and no other: the route check lets that one
@@ -934,4 +1050,96 @@ fn a_read_that_failed_is_tried_again_and_one_taken_or_refused_is_not() {
         "an answer is used only once its result is in the log: {:?}",
         grading.reads
     );
+}
+
+/// How many withdrawals the log records as done: a result that counted.
+fn done_results(log: &KeptLog) -> usize {
+    log.0
+        .iter()
+        .filter(|entry| {
+            matches!(entry, Entry::Verified(v)
+                if matches!(v.what, What::Result { .. }) && v.outcome == rutent_contracts::core_internal::Outcome::Done {})
+        })
+        .count()
+}
+
+/// A segment begun before a cutover resolves the same whether its answer lands before or after the date, and one begun
+/// at or after it takes no statement under the old version (`REQ-PRT-2`, `REQ-PRT-4`, `T-020-54`): the withdrawal begins
+/// at 1 794 200 000 under 3.0.0 in force until 100 seconds later, and its answer lands at the platform's hand-back, the
+/// clock then where the case says. The result judge reads the version recorded when the segment began.
+// verifies: REQ-PRT-2, REQ-PRT-4
+#[test]
+fn result_of_a_segment_begun_before_a_cutover_counts_whenever_it_lands() {
+    let results = |cutover: u64, lands: u64| {
+        let mut modules = fake();
+        modules.settles_the_withdrawal = true;
+        modules.answers_under = Some("3.0.0".into());
+        modules.answers_at = Some(lands);
+        let mut catalogue = admitting();
+        catalogue.set_cutover("3.0.0", &Instant(cutover).rfc3339().unwrap());
+        let (_, log) = run_over(&mut modules, catalogue);
+        done_results(&log)
+    };
+    // Begun at 1 794 200 000, the date at 1 794 200 100: the answer lands before it, at it and long after.
+    for lands in [1_794_200_050, 1_794_200_100, 1_794_209_999] {
+        assert!(results(1_794_200_100, lands) > 0, "landing at {lands}");
+    }
+    // The date was already past when the segment began: the old version's answer counts for nothing, wherever it lands.
+    for lands in [1_794_200_000, 1_794_209_999] {
+        assert_eq!(results(1_794_199_000, lands), 0, "landing at {lands}");
+    }
+}
+
+/// A later answer to a segment whose outcome is unknown is taken by the version the segment began under, not by the
+/// cutovers as they stand when it lands (`REQ-PRT-2`, `T-020-54`): begun before the date, the old version's answer is
+/// taken after it, and the date moved to before the segment began since changes nothing; a segment begun after the date
+/// takes no old-version answer.
+// verifies: REQ-PRT-2, REQ-PRT-4
+#[test]
+fn late_answer_of_a_segment_begun_before_a_cutover_is_taken_whatever_the_cutovers_say_since() {
+    let late_for = |began_cutover: u64, now_cutover: u64, lands: u64| {
+        let mut modules = fake();
+        // The platform hands back no answer: the outcome of the withdrawal is not known.
+        modules.unknown = true;
+        let mut run_catalogue = admitting();
+        run_catalogue.set_cutover("3.0.0", &Instant(began_cutover).rfc3339().unwrap());
+        let mut late_catalogue = admitting();
+        late_catalogue.set_cutover("3.0.0", &Instant(now_cutover).rfc3339().unwrap());
+        run_then_late(
+            &mut modules,
+            run_catalogue,
+            late_catalogue,
+            |modules| {
+                // The provider's own answer, under 3.0.0, to the withdrawal it was handed.
+                let transaction = modules.judged[0].0.clone();
+                let outcome = json!({
+                    "status": "succeeded", "amount_in": "100000000", "amount_out": "99900000",
+                    "fee": { "asset": "COP", "amount": "100000" },
+                    "evidence": [{ "grade": 3, "reference": "reserve-bank-co:book-1", "by": "reserve-bank-co" }],
+                });
+                let body =
+                    json!({ "kind": "withdrawal", "transaction": transaction, "outcome": outcome });
+                let mut envelope = snapshot_support::envelope(
+                    &snapshot_support::deployment(),
+                    rutent_contracts::provider_role::RESULT_SHAPE,
+                    "reserve-bank-co",
+                    1_794_200_000,
+                    body,
+                );
+                envelope["protocol_version"] = "3.0.0".into();
+                snapshot_support::sign(
+                    envelope,
+                    &snapshot_support::statements_key("reserve-bank-co", 1),
+                )
+            },
+            lands,
+        )
+    };
+    // Begun at 1 794 200 000 with the date at 1 794 200 100; it lands after, and the date has since moved before the
+    // beginning: taken.
+    assert!(late_for(1_794_200_100, 1_794_200_100, 1_794_200_500).is_ok());
+    assert!(late_for(1_794_200_100, 1_794_199_000, 1_794_200_500).is_ok());
+    // Begun after the date: refused, wherever it lands and whatever the cutover says since.
+    assert!(late_for(1_794_199_000, 1_794_200_100, 1_794_200_500).is_err());
+    assert!(late_for(1_794_199_000, 1_794_999_999, 1_794_200_500).is_err());
 }

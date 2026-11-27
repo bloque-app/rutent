@@ -139,7 +139,7 @@ pub(crate) use journal::stated_entry;
 pub use journal::{APPEND_TRIES, Unappended};
 /// What a segment that keeps its asset hands on, as the judge counts it: the quote shown reads it too (`T-020-07`).
 pub(crate) use judge::handed_on;
-pub use judge::{Counted, NotCounted, Quoted, Units, judge};
+pub use judge::{Began, Counted, NotCounted, Quoted, Units, begun, judge};
 pub use landing::{Landed, Landings};
 pub use pairs::{Unbuilt, UnbuiltPair};
 pub use ports::{
@@ -616,6 +616,9 @@ struct InFlight {
     /// (`outcome-report-rests-on-its-move`).
     caller: Actor,
     statement: Statement<ProviderOperation>,
+    /// What it began under: the instant and the protocol versions in force then, kept with the segment so a cutover moved
+    /// since changes nothing for it (`REQ-PRT-2`, `T-020-54`).
+    began: Began,
     effect: Option<Effect>,
     begun: bool,
     carried: bool,
@@ -2504,6 +2507,16 @@ impl Segments {
                 },
             );
         }
+        let started = parts.clock.now().floor();
+        let began = Began::of(
+            &statement.made_at,
+            parts.catalogue.protocol_versions().unwrap_or_else(|| {
+                rutent_contracts::provider_role::ProtocolVersions::only(
+                    statement.protocol_version.as_str(),
+                )
+            }),
+            started,
+        );
         self.flights.insert(
             at.clone(),
             InFlight {
@@ -2511,6 +2524,7 @@ impl Segments {
                 transaction,
                 provider: operation.provider.clone(),
                 caller: live.caller.clone(),
+                began,
                 statement,
                 effect: None,
                 begun: false,
@@ -2775,9 +2789,11 @@ impl Segments {
         let counted = match &self.flight(at)?.verdict {
             Some(verdict) => verdict.clone(),
             None => {
+                let judged_at = parts.clock.now().floor();
+                let began = self.flight(at)?.began.clone();
                 let verdict = judge(
                     parts.catalogue,
-                    parts.clock.now().floor(),
+                    (judged_at, &began),
                     &provider,
                     &self.flight(at)?.statement.statement,
                     cited.terms,
@@ -3129,19 +3145,20 @@ impl Segments {
             return Err(LateRefused::NotUnknown);
         }
         let at = (live.order.as_str().to_owned(), segment.as_str().to_owned());
-        let (provider, place, transaction, statement) = {
+        let (provider, place, transaction, statement, began) = {
             let flight = self.flights.get(&at).ok_or(LateRefused::NotUnknown)?;
             (
                 flight.provider.clone(),
                 flight.place,
                 flight.transaction.clone(),
                 flight.statement.statement.clone(),
+                flight.began.clone(),
             )
         };
         let at_instant = parts.clock.now().floor();
         parts
             .catalogue
-            .verify_statement(bytes, at_instant)
+            .verify_statement_under(bytes, at_instant, &began.versions, began.at)
             .map_err(|_| LateRefused::Unattributable)?;
         let body: serde_json::Value =
             serde_json::from_slice(bytes).map_err(|_| LateRefused::Unreadable)?;
@@ -3159,7 +3176,7 @@ impl Segments {
             let cited = sign::cited(live.record, operation).ok_or(LateRefused::NotCounted)?;
             match judge(
                 parts.catalogue,
-                at_instant,
+                (at_instant, &began),
                 &provider,
                 &statement,
                 cited.terms,
@@ -3459,6 +3476,25 @@ impl Segments {
             self.acted.insert(key(&effect.receipt));
         }
         promoted
+    }
+
+    /// What the segment of `transaction` began under, as it recorded when it began (`T-020-54`).
+    pub fn began_of(&self, transaction: &Id) -> Option<Began> {
+        self.flights
+            .values()
+            .find(|f| &f.transaction == transaction)
+            .map(|f| f.began.clone())
+    }
+
+    /// What the earliest segment of `order` began under: a statement about the order after it ended is read by the
+    /// versions that segment began under.
+    pub fn began_of_order(&self, order: &Id) -> Option<Began> {
+        self.flights
+            .iter()
+            .filter(|((o, _), _)| o == order.as_str())
+            .map(|(_, f)| &f.began)
+            .min_by_key(|b| b.at.0)
+            .cloned()
     }
 
     fn flight(&self, at: &(String, String)) -> Result<&InFlight, SegmentsError> {

@@ -166,6 +166,7 @@ pub struct Scenario {
     /// Its steps.
     pub when: Vec<Step>,
     then: Vec<(&'static str, Then)>,
+    holdout: Option<(String, String)>,
 }
 
 impl Scenario {
@@ -185,7 +186,16 @@ impl Scenario {
             given,
             when: Vec::new(),
             then: Vec::new(),
+            holdout: None,
         }
+    }
+
+    /// The simulated providers still speak protocol `version`, whose cutover date the operator sets to `cutover` (an RFC
+    /// 3339 UTC time) before they are listed (`REQ-PRT-4`, `T-020-54`).
+    #[must_use]
+    pub fn holdout(mut self, version: &str, cutover: &str) -> Self {
+        self.holdout = Some((version.to_owned(), cutover.to_owned()));
+        self
     }
 
     /// Adds a step.
@@ -337,6 +347,7 @@ impl Scenario {
             deadline: self.given.deadline,
             providers: self.given.providers.clone(),
             delivery: self.given.delivery,
+            holdout: self.holdout.clone(),
         }
     }
 

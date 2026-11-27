@@ -13,4 +13,5 @@ pub mod module_interface;
 pub mod provider_role;
 pub mod reader;
 pub mod router_api;
+pub mod rule_switch;
 pub mod state_machine;

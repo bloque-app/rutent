@@ -300,7 +300,12 @@ pub fn tuple(reserve: &str, from: Value, to: Value) -> TupleKey {
 
 /// The bounds the router runs under in `context`: four hops, one part, no ceiling, no fee.
 pub fn bounds(context: &SuiteContext) -> PolicyBounds {
-    serde_json::from_value(json!({
+    let older: Vec<_> = context
+        .older_versions
+        .iter()
+        .map(|(version, cutover)| json!({ "version": version, "cutover": cutover }))
+        .collect();
+    let mut bounds = json!({
         "deployment": context.deployment,
         "protocol_version": context.protocol_version,
         "policy_version": "policy-1",
@@ -312,8 +317,12 @@ pub fn bounds(context: &SuiteContext) -> PolicyBounds {
         "publisher_ceilings": [],
         "operator_fee": { "flat": "0", "proportional": { "numerator": "0", "denominator": "1" } },
         "slippage_limits": [],
-    }))
-    .expect("bounds")
+    });
+    // The older protocol versions still in force, each with its cutover (`REQ-PRT-4`).
+    if !older.is_empty() {
+        bounds["older_protocol_versions"] = older.into();
+    }
+    serde_json::from_value(bounds).expect("bounds")
 }
 
 /// [`bounds`], with the operator's slippage limit, 50 basis points, on each exchange tuple the providers serve, which

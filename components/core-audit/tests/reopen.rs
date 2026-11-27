@@ -265,10 +265,10 @@ impl Run {
     fn new(name: &str) -> Self {
         let dir = TempDir::new(name);
         let now = Rc::new(Cell::new(nanos(RECEIVED_AT)));
-        let evidence = EvidenceStore::open(dir.evidence()).unwrap();
+        let evidence = settled(|| EvidenceStore::open(dir.evidence()));
         let log = AuditLog::open(
             settings(&now),
-            FileStore::open(dir.history()).unwrap(),
+            settled(|| FileStore::open(dir.history())),
             evidence.for_the_log(),
         )
         .unwrap();
@@ -418,13 +418,29 @@ impl Run {
     }
 }
 
+/// Opens a store a moment after its last holder was dropped. The files' locks are `flock`'s, shared by every copy of a
+/// descriptor: the `tool_*` tests spawn `audit-check`, and a child forked while a store was open holds a copy until its
+/// `exec` closes it, so a lock is free a moment after the drop, not at it. Bounded, so a lock that stays held still
+/// fails the test (the pattern of `prov/src/module/record.rs`'s `reopen`).
+fn settled<T, E: std::fmt::Debug>(mut open: impl FnMut() -> Result<T, E>) -> T {
+    let mut opened = open();
+    for _ in 0..100 {
+        if opened.is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        opened = open();
+    }
+    opened.unwrap()
+}
+
 /// The log reopened from the files in `dir`, as a restart opens it, or why it didn't open.
 fn reopen(dir: &TempDir) -> Result<AuditLog<FileStore, LogsRead>, NotOpened> {
     let now = Rc::new(Cell::new(nanos(RECEIVED_AT)));
-    let evidence = EvidenceStore::open(dir.evidence()).unwrap();
+    let evidence = settled(|| EvidenceStore::open(dir.evidence()));
     AuditLog::open_naming(
         settings(&now),
-        FileStore::open(dir.history()).unwrap(),
+        settled(|| FileStore::open(dir.history())),
         evidence.for_the_log(),
     )
 }
@@ -432,10 +448,10 @@ fn reopen(dir: &TempDir) -> Result<AuditLog<FileStore, LogsRead>, NotOpened> {
 /// The same, through the plain opening, which answers as every other call of the log does.
 fn reopen_plain(dir: &TempDir) -> Result<(), AppendFailure> {
     let now = Rc::new(Cell::new(nanos(RECEIVED_AT)));
-    let evidence = EvidenceStore::open(dir.evidence()).unwrap();
+    let evidence = settled(|| EvidenceStore::open(dir.evidence()));
     AuditLog::open(
         settings(&now),
-        FileStore::open(dir.history()).unwrap(),
+        settled(|| FileStore::open(dir.history())),
         evidence.for_the_log(),
     )
     .map(|_| ())
@@ -591,10 +607,10 @@ fn store_holding_a_verified_entry_no_kept_statement_bears_out_is_refused_on_open
         }
     }
     let now = Rc::new(Cell::new(nanos(RECEIVED_AT)));
-    let evidence = EvidenceStore::open(dir.evidence()).unwrap();
+    let evidence = settled(|| EvidenceStore::open(dir.evidence()));
     let opened = AuditLog::open_naming(
         settings(&now),
-        FileStore::open(dir.history()).unwrap(),
+        settled(|| FileStore::open(dir.history())),
         Swapped(evidence.for_the_log(), quote_commitment.clone()),
     );
     assert_eq!(
@@ -648,7 +664,7 @@ fn store_holding_a_verified_entry_whose_kept_statement_names_another_maker_is_re
             receipt_at(records.len(), &signed_by_another_maker),
             signed_by_another_maker.clone(),
         ));
-        let evidence = EvidenceStore::open(dir.evidence()).unwrap();
+        let evidence = settled(|| EvidenceStore::open(dir.evidence()));
         let mut kept = evidence.for_the_log();
         let found =
             rutent_core_audit::statements::unproven(&history, &mut kept, &deployment()).unwrap();
@@ -697,10 +713,10 @@ fn store_whose_verified_entries_are_all_borne_out_opens_as_before() {
 
     // It appends on, attributing as before.
     let now = Rc::new(Cell::new(nanos(RECEIVED_AT)));
-    let evidence = EvidenceStore::open(dir.evidence()).unwrap();
+    let evidence = settled(|| EvidenceStore::open(dir.evidence()));
     let mut log = AuditLog::open(
         settings(&now),
-        FileStore::open(dir.history()).unwrap(),
+        settled(|| FileStore::open(dir.history())),
         evidence.for_the_log(),
     )
     .unwrap();
@@ -743,7 +759,7 @@ fn store_whose_verified_entrys_statement_was_erased_still_opens() {
         Entry::Stated(s) if matches!(s.attribution, Attribution::Verified { .. })
     ));
     drop(reopened);
-    let evidence = EvidenceStore::open(dir.evidence()).unwrap();
+    let evidence = settled(|| EvidenceStore::open(dir.evidence()));
     assert_eq!(evidence.for_the_log().kept(&stated.commitment), Ok(None));
 }
 
@@ -769,10 +785,10 @@ fn evidence_store_that_cant_be_read_fails_the_opening() {
     let now = Rc::new(Cell::new(nanos(RECEIVED_AT)));
     // The two advertisements' bytes are read back first, for the register (which today's opening already does); the
     // read after those can't be made.
-    let evidence = EvidenceStore::open(dir.evidence()).unwrap();
+    let evidence = settled(|| EvidenceStore::open(dir.evidence()));
     let opened = AuditLog::open_naming(
         settings(&now),
-        FileStore::open(dir.history()).unwrap(),
+        settled(|| FileStore::open(dir.history())),
         Failing(evidence.for_the_log(), Cell::new(2)),
     );
     assert_eq!(
@@ -883,7 +899,7 @@ fn audit_check_without_the_evidence_says_it_did_not_read_it_and_finds_what_it_di
     let schedule = Schedule::new(&Timestamp::new(FIRST).unwrap(), EVERY).unwrap();
     let mut checkpointer = Checkpointer::new(
         Rc::clone(&run.log),
-        FileStore::open(run.dir.checkpoints()).unwrap(),
+        settled(|| FileStore::open(run.dir.checkpoints())),
         log_key(),
         schedule,
     )

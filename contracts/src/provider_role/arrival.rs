@@ -148,8 +148,9 @@ pub const ARRIVAL_QUESTION_SHAPE: &str = "urn:rutent:provider-role:arrival-quest
 pub const ARRIVAL_ANSWER_SHAPE: &str = "urn:rutent:provider-role:arrival-answer";
 
 /// The operator's question to a reserve of what arrived at one of its accounts for an order (`REQ-ORD-23`): the body
-/// of a statement of shape [`ARRIVAL_QUESTION_SHAPE`], signed with the deployment's operator key. It names no order:
-/// Core's log binds it to the order it is asked for, as it binds every operation. The reserve answers with an
+/// of a statement of shape [`ARRIVAL_QUESTION_SHAPE`], signed with the deployment's operator key. It names no order,
+/// and a provider reads none from it: which order the operator asked it for is the operator's own record, which
+/// core-internal's README states. The reserve answers with an
 /// [`ArrivalAnswer`] naming this question's transaction ([`check_answer`]). Schema:
 /// `urn:rutent:provider-role:arrival-question#/$defs/question`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
