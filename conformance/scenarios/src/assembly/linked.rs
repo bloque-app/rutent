@@ -10,28 +10,27 @@
 //! and the log's relations read: the quote shown and the customer's acceptance, on the yes of the provider the route
 //! starts with, which is its answer to the dry run the rounds asked it. It keeps the route the order was accepted on
 //! ([`Core::accepted_linked`]), for the mover to hold a hand-on's route to. It starts nothing: the order's
-//! `route_chosen` is the hand-on's, recorded once the value is handed on ([`Core::hand_on`]).
+//! `route_chosen` is the hand-on's, recorded by Core's run once the value is handed on (`T-020-61`).
 //!
 //! The route is the router's, from the node: its first segment is a tuple's provider's, never the node's holding
 //! account's, since a wallet advertises no tuple and no segment kind runs from a node to itself.
 
 use std::collections::BTreeMap;
 
-use rutent_contracts::core_internal::calls::{AppendFailure, Authorisations, GeneralEntry, Log};
+use rutent_contracts::core_internal::calls::{AppendFailure, GeneralEntry, Log};
 use rutent_contracts::core_internal::{
-    AcceptanceBasis, Actor, Attribution, Authorisation, Entry, Outcome, PartYes, Parties, Receipt,
-    ShownAs, TimeSource, VerifiedEntry, VerifiedKind, What, When,
+    AcceptanceBasis, Actor, Attribution, Entry, Outcome, PartYes, Parties, Receipt, ShownAs,
+    TimeSource, VerifiedEntry, VerifiedKind, What, When,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::NodeRef;
 use rutent_contracts::router_api::{Id, Request};
 use rutent_contracts::state_machine::{self as stm, PartPlan, SegmentPlan};
 use rutent_core_orch::rounds::{self, Fresh, History, Offer, Presence, Routing};
-use rutent_core_orch::segments::Ran;
 use rutent_core_orch::stuck::AcceptedRoute;
 use rutent_router::RouteFinder;
 
-use super::{Asking, Core, Started, StepError};
+use super::{Asking, Core, StepError};
 use crate::kit;
 
 /// A linked order the customer accepts: the value of `from`, resting at the node its route starts at, in the account
@@ -78,13 +77,16 @@ impl Core {
     ///
     /// If the rounds offer no route from the node, the wallet doesn't answer, or the log refuses a step.
     pub fn accept_linked(&mut self, linked: &LinkedOrder) -> Result<AcceptedLinked, StepError> {
-        let order = self.fresh.id();
+        // Every order Core opens draws its identifier through intake's draw, which refuses a request's name (#339's
+        // review, `T-020-61`).
+        let order = rutent_core_orch::intake::draw_order(&mut self.fresh)
+            .ok_or(StepError::NotNow("a fresh order identifier"))?;
         // The route continues the original order's, from where its value rests: a recalculation's request, which the
         // rounds ask no reserve's yes for (`T-020-10`), as the value is already in a holding account's book.
         let mut route = linked.route.clone();
         route.follows = Some(
-            self.started
-                .get(linked.from.as_str())
+            self.intake
+                .started(&linked.from)
                 .ok_or(StepError::NotNow("the order handed on started"))?
                 .record
                 .request
@@ -176,7 +178,8 @@ impl Core {
         let mut segments = Vec::new();
         for (place, operation) in only.operations.iter().enumerate() {
             segments.push(SegmentPlan {
-                segment_id: segment_id(&part_id, place)?,
+                segment_id: rutent_core_orch::hand_on::linked_segment_id(&part_id, place)
+                    .ok_or(StepError::NotNow("a segment identifier"))?,
                 provider: stm::Id::new(operation.provider.as_str())
                     .ok_or(StepError::NotNow("a provider is an identifier"))?,
                 kind: operation.kind,
@@ -270,98 +273,6 @@ impl Core {
         })
     }
 
-    /// Runs the first move of the linked order `accepted`, handed on from `from` once its start is proven
-    /// ([`Core::hand_on`]) (`T-020-33`, `T-020-36`'s item 4): the customer's authorisation of it, as policy registers it
-    /// (the original order's destination, the holding account as its origin reserve), and then its route, each segment
-    /// by the provider its plan names, which needn't be the holding account.
-    ///
-    /// # Errors
-    ///
-    /// If the order handed on from didn't start, policy doesn't permit the authorisation, or a step stops.
-    pub fn run_linked(
-        &mut self,
-        from: &Id,
-        linked: &LinkedOrder,
-        accepted: &AcceptedLinked,
-    ) -> Result<Vec<Ran>, StepError> {
-        let original = self
-            .started
-            .get(from.as_str())
-            .cloned()
-            .ok_or(StepError::NotNow("the order handed on from started"))?;
-        let authorisation_id = self
-            .verified_whats()
-            .into_iter()
-            .find_map(|what| match what {
-                What::Acceptance {
-                    order,
-                    authorisation,
-                    ..
-                } if order == accepted.order => Some(authorisation),
-                _ => None,
-            })
-            .ok_or(StepError::NotNow(
-                "the log holds the linked order's acceptance",
-            ))?;
-        let first = accepted
-            .route
-            .plan
-            .first()
-            .and_then(|part| part.segments.first())
-            .ok_or(StepError::NotNow("the linked route has a first segment"))?;
-        let authorisation = Authorisation {
-            authorisation: authorisation_id.clone(),
-            order: accepted.order.clone(),
-            origin_reserve: linked.holder.clone(),
-            origin_account: None,
-            destination: original.route.destination.clone(),
-            to_asset: original.route.to_asset.clone(),
-            floor: None,
-            parts: None,
-            given_by: linked.customer.clone(),
-            at: self.clock.timestamp(),
-        };
-        // Policy's sources read the linked order's requester and origin from its acceptance in the log (`T-020-55`).
-        let decision = Authorisations::authorise(&mut self.policy, &authorisation)
-            .map_err(|_| StepError::NotNow("policy takes the linked order's authorisation"))?;
-        if decision.permit().is_none() {
-            return Err(StepError::NotNow(
-                "policy permits the linked order's authorisation",
-            ));
-        }
-        let record = self.record_of(&accepted.order, &accepted.route.decision_record)?;
-        self.started.insert(
-            accepted.order.as_str().to_owned(),
-            Started {
-                record,
-                plan: accepted.route.plan.clone(),
-                authorisation: authorisation_id,
-                origin: kit::id(first.provider.as_str()),
-                route: original.route.clone(),
-                session: Some(linked.session.clone()),
-                inputs: linked.inputs.clone(),
-                floor: None,
-            },
-        );
-        // The linked order's request, as Core holds it for a recalculation of its part (`T-020-57`): the customer's
-        // ask from the node, its parties as its acceptance names them, the holding account its origin reserve.
-        let parties = self.parties_of(&accepted.order)?;
-        self.requests
-            .entry(accepted.order.as_str().to_owned())
-            .or_insert_with(|| rutent_core_orch::intake::OrderRequest {
-                request: linked.route.request_id.clone(),
-                caller: linked.customer.clone(),
-                parties,
-                origin_reserve: linked.holder.clone(),
-                session: linked.session.clone(),
-                destination: original.route.destination.clone(),
-                route: linked.route.clone(),
-                inputs: linked.inputs.clone(),
-                needs: Vec::new(),
-            });
-        self.run(&accepted.order)
-    }
-
     /// The parties of `order`'s acceptance, as the log holds them: the original customer, kept as the linked
     /// order's requester (`REQ-ORD-13`).
     fn parties_of(&self, order: &Id) -> Result<Parties, StepError> {
@@ -405,10 +316,4 @@ fn rounds_digest(order: &Id, route: &Request) -> Result<Digest, StepError> {
         "value": rutent_prov::module::wire::sha256(&canonical),
     }))
     .map_err(|_| StepError::NotNow("a quote's digest"))
-}
-
-/// The identifier of the segment at `place` in the linked order's part `part`, as [`Core::accept_linked`] names it.
-pub(super) fn segment_id(part: &stm::Id, place: usize) -> Result<stm::Id, StepError> {
-    stm::Id::new(format!("{}-s{}", part.as_str(), place + 1))
-        .ok_or(StepError::NotNow("a segment identifier"))
 }

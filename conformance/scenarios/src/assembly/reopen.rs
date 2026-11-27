@@ -50,6 +50,11 @@ impl Reopening for Reading<'_> {
         let kept = KeptStatements::kept(self.kept, commitment).ok()??;
         rutent_core_audit::receipts::store::bearing_out(&kept)
     }
+
+    fn in_force(&mut self, order: &Id, authorisation: &Id) -> Option<Authorisation> {
+        let logged: Vec<Entry> = self.entries.iter().map(|(_, e)| e.clone()).collect();
+        authorised(&logged, order, authorisation)
+    }
 }
 
 /// The decision record `id` Core's key signed, held to the digest the log names it by.
@@ -296,6 +301,12 @@ impl Core {
         // The landings the segments owed: asked of the holding accounts, never made blind (`INV-1`).
         self.reconcile_landings();
         self.stuck = Stuck::reopened(&self.segments, &self.clock, &history, &mut self.exposures);
+        // The statements kept about each segment after its answer, from the log and the evidence store (`T-020-61`, item 6).
+        self.life.reversals =
+            rutent_core_orch::reversal::Reversals::reopened(&history, &mut |commitment| {
+                let kept = KeptStatements::kept(&mut self.kept, commitment).ok()??;
+                rutent_core_audit::receipts::store::bearing_out(&kept)
+            });
         // A resolution done whose part's `stuck_resolved` the log doesn't hold is finished, as a Core that ran on
         // would have (`T-020-46`).
         {
@@ -310,44 +321,12 @@ impl Core {
             let _ = self.stuck.finish_reopened(&mut parts, &kit::core());
         }
         let _ = self.feed();
-        self.restart_orders(&history);
+        // What each started order runs on, rebuilt by Core's own resume from the log, the held gate Core's (`T-020-61`):
+        // intake rebuilt its own orders' above; the filed and linked ones, and any intake couldn't, are built here.
+        rutent_core_orch::schedule::resume(&mut super::schedule::Due(self));
         self.reaccept_linked(&history);
         // The erasures decided and done that the log holds no record of, settled (`Unsettled::settle`'s resume).
         self.settle_reopened_erasures();
-    }
-
-    /// What each order the log started needs to run on, from the log and the records Core's key signed.
-    fn restart_orders(&mut self, history: &[(Receipt, Entry)]) {
-        let logged: Vec<Entry> = history.iter().map(|(_, e)| e.clone()).collect();
-        for (_, entry) in history {
-            let Entry::Verified(VerifiedEntry {
-                what: What::Input { input },
-                ..
-            }) = entry
-            else {
-                continue;
-            };
-            let Observed::RouteChosen {
-                decision_record,
-                parts,
-                handed_on_from,
-            } = &input.observed
-            else {
-                continue;
-            };
-            let Some(order) = Id::new(input.subject.order.as_str()) else {
-                continue;
-            };
-            let started = match handed_on_from {
-                None => self.restarted_order(history, &logged, &order, decision_record, parts),
-                Some(from) => {
-                    self.restarted_linked(history, &logged, &order, from, decision_record, parts)
-                }
-            };
-            if let Some(started) = started {
-                self.started.insert(order.as_str().to_owned(), started);
-            }
-        }
     }
 
     /// The routes the linked orders were accepted on, rebuilt from the log (`Core::accepted_in_the_log`): every
@@ -374,142 +353,17 @@ impl Core {
             })
             .collect();
         for order in linked {
-            if let Some(route) = self.accepted_in_the_log(history, &order) {
+            let route = rutent_core_orch::hand_on::accepted_in_the_log(
+                history,
+                &mut |commitment| {
+                    let kept = KeptStatements::kept(&mut self.kept, commitment).ok()??;
+                    rutent_core_audit::receipts::store::bearing_out(&kept)
+                },
+                &order,
+            );
+            if let Some(route) = route {
                 self.linked.insert(order.as_str().to_owned(), route);
             }
         }
-    }
-
-    /// What a linked order the log started needs to run on (`T-020-46`): its record and plan, its acceptance's
-    /// authorisation as policy registered it (the first order's destination and to asset), the holding account the
-    /// route starts at, the first order's route end, the acceptance's session, and the destination's account as the
-    /// deposit's input. Policy's sources hold its parties and origin, as its acceptance names them. `None` where the log
-    /// holds no authorisation of it yet: the linked order hasn't run, and its caller starts it.
-    fn restarted_linked(
-        &mut self,
-        history: &[(Receipt, Entry)],
-        logged: &[Entry],
-        order: &Id,
-        from: &rutent_contracts::state_machine::Id,
-        decision_record: &rutent_contracts::state_machine::Id,
-        plan: &[PartPlan],
-    ) -> Option<Started> {
-        let record = held_record(
-            &self.signer.records,
-            history,
-            &Id::new(decision_record.as_str())?,
-        )?;
-        let (authorisation, session) = logged.iter().find_map(|e| match e {
-            Entry::Verified(VerifiedEntry {
-                what:
-                    What::Acceptance {
-                        order: o,
-                        authorisation,
-                        session,
-                        ..
-                    },
-                ..
-            }) if o == order => Some((authorisation.clone(), session.clone())),
-            _ => None,
-        })?;
-        let authorised = authorised(logged, order, &authorisation)?;
-        let original = self.started.get(from.as_str())?.route.clone();
-        let first = plan.first()?.segments.first()?;
-        let mut inputs = BTreeMap::new();
-        inputs.insert(
-            DESTINATION_INPUT.to_owned(),
-            authorised.destination.account.as_str().to_owned(),
-        );
-        Some(Started {
-            record,
-            plan: plan.to_vec(),
-            authorisation,
-            origin: Id::new(first.provider.as_str())?,
-            route: original,
-            session,
-            inputs,
-            floor: None,
-        })
-    }
-
-    fn restarted_order(
-        &self,
-        history: &[(Receipt, Entry)],
-        logged: &[Entry],
-        order: &Id,
-        decision_record: &rutent_contracts::state_machine::Id,
-        plan: &[PartPlan],
-    ) -> Option<Started> {
-        let record = held_record(
-            &self.signer.records,
-            history,
-            &Id::new(decision_record.as_str())?,
-        )?;
-        let whats = || {
-            logged.iter().filter_map(|e| match e {
-                Entry::Verified(v) => Some(&v.what),
-                Entry::Stated(_) => None,
-            })
-        };
-        let authorisation = whats().find_map(|w| match w {
-            What::Acceptance {
-                order: o,
-                authorisation,
-                ..
-            } if o == order => Some(authorisation.clone()),
-            _ => None,
-        })?;
-        let authorised = authorised(logged, order, &authorisation)?;
-        let (origin, session, destination) = whats().find_map(|w| match w {
-            What::OrderOpened {
-                order: o,
-                origin_reserve,
-                session,
-                destination,
-                ..
-            } if o == order => Some((origin_reserve.clone(), session.clone(), destination.clone())),
-            _ => None,
-        })?;
-        // What the route delivers: as its moves name it, or as the quote shown priced it from the record.
-        let delivers = whats()
-            .find_map(|w| match w {
-                What::Effect {
-                    action:
-                        Action::MoveValue {
-                            order: o, route, ..
-                        },
-                    ..
-                } if o == order => Some(route.delivers.clone()),
-                _ => None,
-            })
-            .or_else(|| {
-                let candidate = record.chosen()?;
-                let floor = authorised.floor.as_ref().map(|f| f.amount().clone());
-                rutent_core_orch::quote::show(&record, candidate, floor.as_ref())
-                    .ok()
-                    .map(|shown| shown.arrives)
-            })?;
-        // The order's inputs, as intake read them back from the operator's statement of them (`T-020-46`), the
-        // destination's account among them.
-        // Failing closed: an order whose inputs can't be read back isn't restarted (`Intake::held`).
-        let mut inputs = self.intake.request_of(order)?.inputs.clone();
-        inputs.insert(
-            DESTINATION_INPUT.to_owned(),
-            destination.account.as_str().to_owned(),
-        );
-        Some(Started {
-            record,
-            plan: plan.to_vec(),
-            authorisation,
-            origin,
-            route: RouteEnd {
-                destination: authorised.destination.clone(),
-                to_asset: authorised.to_asset.clone(),
-                delivers,
-            },
-            session: Some(session),
-            inputs,
-            floor: authorised.floor.clone(),
-        })
     }
 }

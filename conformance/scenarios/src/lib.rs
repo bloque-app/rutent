@@ -61,6 +61,7 @@ pub mod assembly;
 pub mod checks;
 pub mod harness;
 pub mod kit;
+pub mod on_tick;
 pub mod secrets;
 pub mod sim;
 

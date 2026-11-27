@@ -4,39 +4,35 @@
 //! operator.
 //!
 //! Each method hands Core's own record (`Recalculations`, `Stuck`, `Reversals`, `Notices`) the parts it reaches, as
-//! [`Core::run`] hands the segments theirs: Core's clock, log, catalogue, policy, evidence store, exposures and the
+//! Core's run hands the segments theirs (`rutent_core_orch::schedule::run`, `T-020-61`): Core's clock, log, catalogue, policy, evidence store, exposures and the
 //! platform with the simulated providers. This module decides nothing and checks nothing: every rule is Core's own,
 //! in `rutent_core_orch`. What a scenario can't reach honestly is named in `F-024`'s notes.
 
 use std::collections::BTreeMap;
 
 use rutent_contracts::core_internal::calls::Operator as _;
-use rutent_contracts::core_internal::{Actor, Entry, What};
+use rutent_contracts::core_internal::{Actor, Entry};
 use rutent_contracts::provider_role::{Operation, Statement};
 use rutent_contracts::router_api::{DecisionRecord, Id};
 use rutent_core_orch::notice::{About, Channel, Notice, NoticeError, Receiver};
-use rutent_core_orch::recalc::{self, Ask, Recalculated, Recalculation, Recalculations};
+use rutent_core_orch::recalc::{Recalculation, Recalculations};
 use rutent_core_orch::reversal::{
     self, Afterward, Asked, Asking as ReversalAsking, At, Confirmation, Moving as ReversalMoving,
     Owing, Reversals,
 };
-use rutent_core_orch::rounds::{self, History, Presence};
-use rutent_core_orch::segments::{Live, Ran, StatusError};
+use rutent_core_orch::segments::StatusError;
 use rutent_core_orch::stuck::{NoRouteLeft, NoRouteRecorded, Watch, Watching};
-use rutent_router::RouteFinder;
 use serde_json::Value;
 
-use super::{Asking, Core, Running, StepError, authorised};
+use super::{Asking, Core, Running, StepError};
 use crate::kit;
 
 /// Core's own records of what goes wrong with an order, kept beside the segments': the assembly holds them as the
 /// production assembly will (`F-030`).
 #[derive(Debug, Default)]
 pub struct Lifecycle {
-    recalculations: Recalculations,
-    histories: BTreeMap<String, History>,
-    /// The route each order's part runs now, once recalculated: its record and its segments.
-    pub(super) routes: BTreeMap<String, (DecisionRecord, Vec<Id>)>,
+    /// Core's recalculations, which its run lends ([`rutent_core_orch::schedule::Ports::with_recalculations`]).
+    pub(super) recalculations: Recalculations,
     pub(super) reversals: Reversals,
     /// What Core's status question of each segment it left unknown came to, by order and segment (`T-020-47`).
     pub(super) status_asks:
@@ -51,26 +47,53 @@ impl Lifecycle {
 }
 
 impl Core {
-    /// What `order` runs under: the record of its route and the segments of its one part, as recalculated last.
+    /// What `order` runs under now, as Core's own record holds it: the record of the route its one part runs on and that
+    /// route's segments, the last recalculated (`Segments::routes_ran`, its record held by intake) or the first.
     fn current_route(&self, order: &Id) -> Result<(DecisionRecord, Vec<Id>), StepError> {
-        if let Some(route) = self.life.routes.get(order.as_str()) {
-            return Ok(route.clone());
-        }
         let started = self
-            .started
-            .get(order.as_str())
+            .intake
+            .started(order)
             .ok_or(StepError::NotNow("the order started"))?;
-        let part = started
-            .plan
+        let first = started
             .first()
             .ok_or(StepError::NotNow("an order has a part"))?;
-        Ok((
-            started.record.clone(),
-            part.segments
-                .iter()
-                .map(|s| kit::id(s.segment_id.as_str()))
-                .collect(),
-        ))
+        let last = self
+            .segments
+            .routes_ran(order)
+            .and_then(|(_, later)| later.iter().rev().find(|r| r.part == first.part).cloned());
+        let Some(last) = last else {
+            return Ok((started.record.clone(), first.segments.clone()));
+        };
+        let record =
+            self.intake
+                .decision_record(&last.record)
+                .cloned()
+                .ok_or(StepError::NotNow(
+                    "Core holds the recalculated route's record",
+                ))?;
+        let segments = self
+            .segments
+            .order(order)
+            .and_then(|o| {
+                o.parts
+                    .iter()
+                    .find(|p| p.part_id.as_str() == first.part.as_str())
+            })
+            .map(|p| {
+                p.segments
+                    .iter()
+                    .skip(last.settled_before)
+                    .map(|s| kit::id(s.segment_id.as_str()))
+                    .collect()
+            })
+            .ok_or(StepError::NotNow("Core follows the order's part"))?;
+        Ok((record, segments))
+    }
+
+    /// From now on Core holds no decision record `id` of a recalculated route: a fault a scenario plants (#316's round-3 L7),
+    /// as a Core whose evidence store no longer gives the record back would hold it.
+    pub fn forget_decision_record(&mut self, id: &Id) {
+        self.intake.forget_record(id);
     }
 
     /// The destination `order` was requested to be delivered at.
@@ -86,8 +109,8 @@ impl Core {
     /// The id of `order`'s one part.
     pub fn part_of(&self, order: &Id) -> Result<Id, StepError> {
         let started = self
-            .started
-            .get(order.as_str())
+            .intake
+            .started(order)
             .ok_or(StepError::NotNow("the order started"))?;
         started
             .plan
@@ -123,165 +146,6 @@ impl Core {
                 max_counted,
                 window_secs: 86_400,
             });
-    }
-
-    // Recalculation ----------------------------------------------------------------------------------------------
-
-    /// Recalculates `order`'s part from where its value is evidenced, at the user's cost, over Core's own rounds.
-    ///
-    /// # Errors
-    ///
-    /// If the order didn't start, or the recalculation couldn't be tried.
-    pub fn recalculate(&mut self, order: &Id) -> Result<Recalculation, StepError> {
-        let started = self
-            .started
-            .get(order.as_str())
-            .cloned()
-            .ok_or(StepError::NotNow("the order started"))?;
-        let part = self.part_of(order)?;
-        let request = self
-            .requests
-            .get(order.as_str())
-            .cloned()
-            .ok_or(StepError::NotNow("an order has its request"))?;
-        let entries: Vec<(rutent_contracts::core_internal::Receipt, Entry)> =
-            self.log.borrow().entries().to_vec();
-        let logged: Vec<Entry> = entries.iter().map(|(_, e)| e.clone()).collect();
-        let authorisation = authorised(&logged, order, &started.authorisation).ok_or(
-            StepError::NotNow("an acceptance rests on its authorisation"),
-        )?;
-        self.life
-            .recalculations
-            .follow(order, &started.record.request.request_id);
-        if !self.life.histories.contains_key(order.as_str()) {
-            let previous = entries
-                .iter()
-                .rev()
-                .find(|(_, e)| {
-                    matches!(e, Entry::Verified(v)
-                        if matches!(&v.what, What::DecisionRecord { order: o, .. } if o == order))
-                })
-                .map(|(r, _)| r.clone())
-                .ok_or(StepError::NotNow(
-                    "the log holds the order's decision record",
-                ))?;
-            self.life.histories.insert(
-                order.as_str().to_owned(),
-                History::recorded(previous, Vec::new()),
-            );
-        }
-        let session = started
-            .session
-            .clone()
-            .ok_or(StepError::NotNow("a user is present"))?;
-        let routed = rounds::Order {
-            order: order.clone(),
-            caller: kit::core(),
-            origin_reserve: started.origin.clone(),
-            presence: Presence::User { session },
-            inputs: started.inputs.clone(),
-            needs: Vec::new(),
-        };
-        let (core, operator) = (kit::core(), kit::operator());
-        let mut charges = self.policy.clone();
-        let mut persons = self.policy.clone();
-        let mut asking = Asking {
-            fleet: &mut self.fleet,
-            clock: &self.clock,
-        };
-        let log = std::rc::Rc::clone(&self.log);
-        let recorded = super::LogNow(&log);
-        let mut kept = super::Reading {
-            kept: &mut self.kept,
-            through: self.kept_through.as_deref_mut(),
-        };
-        let mut parts = recalc::Parts {
-            catalogue: &mut self.catalogue,
-            clock: &self.clock,
-            exposures: &mut self.exposures,
-            releases: &self.releases,
-            log: &mut self.general,
-            evidence: &mut self.keeper,
-            charges: &mut charges,
-            persons: &mut persons,
-            providers: &mut asking,
-            operator_key: &mut self.signer,
-            fresh: &mut self.fresh,
-            issued: &mut self.issued,
-            segments: &mut self.segments,
-            kept: &mut kept,
-            recorded: &recorded,
-        };
-        let history = self
-            .life
-            .histories
-            .get_mut(order.as_str())
-            .ok_or(StepError::NotNow("an order has its history"))?;
-        let done = self
-            .life
-            .recalculations
-            .recalculate::<RouteFinder>(
-                &mut parts,
-                Ask {
-                    order: &routed,
-                    part: &part,
-                    authorisation: &authorisation,
-                    objective: &request.route.objective,
-                    bounds: &self.bounds,
-                    prices: &self.prices,
-                    core: &core,
-                    operator: &operator,
-                },
-                history,
-            )
-            .map_err(StepError::Recalc);
-        self.feed()?;
-        let done = done?;
-        if let Recalculation::Recalculated(recalculated) = &done {
-            self.life.routes.insert(
-                order.as_str().to_owned(),
-                (recalculated.record.clone(), recalculated.segments.clone()),
-            );
-        }
-        Ok(done)
-    }
-
-    /// Runs the part of `order` on the route a recalculation recorded, as the segments run any part.
-    ///
-    /// # Errors
-    ///
-    /// If the order didn't start or its segments can't run.
-    pub fn run_recalculated(
-        &mut self,
-        order: &Id,
-        recalculated: &Recalculated,
-    ) -> Result<Ran, StepError> {
-        let started = self
-            .started
-            .get(order.as_str())
-            .cloned()
-            .ok_or(StepError::NotNow("the order started"))?;
-        let part = self.part_of(order)?;
-        let (core, operator) = (kit::core(), kit::operator());
-        let record_entry = self.record_entry_of(&recalculated.record);
-        let live = Live {
-            order,
-            part: &part,
-            segments: &recalculated.segments,
-            record: &recalculated.record,
-            at: 0,
-            authorisation: &started.authorisation,
-            origin_reserve: &started.origin,
-            route: &recalculated.route,
-            caller: &core,
-            core: &core,
-            operator: &operator,
-            session: started.session.as_ref(),
-            inputs: &started.inputs,
-            floor: started.floor.as_ref(),
-            record_entry: record_entry.as_ref(),
-        };
-        self.run_live(&live)
     }
 
     // Stuck orders -----------------------------------------------------------------------------------------------
@@ -791,68 +655,6 @@ impl Core {
         })?;
         self.feed()?;
         done.map_err(StepError::Reversal)
-    }
-
-    /// Core's step after a run of a part: for each segment of it left unknown at a provider that declares a status
-    /// query, asks the provider where it stands, once, under a transaction of Core's own (`REQ-ORD-1`, `T-020-47`).
-    /// What the provider answers is kept as its statement and moves nothing (`INV-4`); a question policy refuses or the
-    /// log can't take now is kept in [`Core::status_asks`] for a reader, and the run goes on.
-    pub(super) fn ask_unknown_status(&mut self, live: &Live<'_>) {
-        self.ask_unknown_among(live.order, live.part, live.segments);
-    }
-
-    /// Core's step over `order`'s own part, as after a run of it (also what a Core that reopened takes up).
-    ///
-    /// # Errors
-    ///
-    /// If the order didn't start.
-    pub fn ask_unknown_statuses(&mut self, order: &Id) -> Result<(), StepError> {
-        let part = self.part_of(order)?;
-        let (_, segments) = self.current_route(order)?;
-        self.ask_unknown_among(order, &part, &segments);
-        Ok(())
-    }
-
-    /// Asks where each of `segments` stands that Core holds unknown, once, as the run's step does; Core's schedule
-    /// asks again at its provider's cadence (`T-020-48`).
-    pub(super) fn ask_unknown_among(&mut self, order: &Id, part: &Id, segments: &[Id]) {
-        for segment in segments {
-            let Some(unknown) = self.segments.unknown_move(order, segment) else {
-                continue;
-            };
-            let done = self.reversing(order, |reversals, parts, _, moving| {
-                let at = At {
-                    order,
-                    part,
-                    segment,
-                };
-                reversals.ask_unknown_status(parts, moving, at)
-            });
-            let asked = match done {
-                Ok(Ok(Some(asked))) => Ok(asked),
-                Ok(Ok(None)) => continue,
-                Ok(Err(refused)) => Err(StepError::Reversal(refused)),
-                Err(other) => Err(other),
-            };
-            let _ = self.feed();
-            // The step that left the segment unknown asked once, where the question went out: the schedule's cadence
-            // counts from it. A question that didn't is asked again on the next tick (`T-020-63`).
-            if asked.is_ok() {
-                let now = self.clock_seconds();
-                self.schedule.note_asked(
-                    &rutent_core_orch::schedule::Unknown {
-                        order: order.clone(),
-                        segment: segment.clone(),
-                        provider: unknown.provider.as_str().to_owned(),
-                    },
-                    now,
-                );
-            }
-            self.life.status_asks.insert(
-                (order.as_str().to_owned(), segment.as_str().to_owned()),
-                asked.map_err(|why| format!("{why:?}")),
-            );
-        }
     }
 
     /// Whether `segment` of `order` is a move whose outcome Core holds unknown.

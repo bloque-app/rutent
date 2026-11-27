@@ -8,17 +8,16 @@
 
 use std::collections::BTreeSet;
 
-use rutent_contracts::core_internal::What;
 use rutent_contracts::provider_role::NodeRef;
-use rutent_contracts::router_api::{Amount, Id};
-use rutent_contracts::state_machine::{Observed, RecordedInput};
+use rutent_contracts::router_api::Id;
+use rutent_contracts::state_machine::Observed;
 use rutent_core_orch::arrival::{
     Arrivals, Arrived, Filed, FiledOrders, Filing, OpenOrder, OpenOrders, Report,
 };
-use rutent_core_orch::intake::{DESTINATION_INPUT, Desk, OrderRecord};
+use rutent_core_orch::intake::{Desk, OrderRecord};
 use rutent_router::RouteFinder;
 
-use super::{Begun, Core, StepError, authorised, context};
+use super::{Core, StepError, context};
 use crate::kit;
 
 /// Core's sources' records of the orders a filing opens before the log holds them, as the filing hands them over
@@ -88,7 +87,11 @@ impl Core {
             .collect();
         let account = kit::id(&context().account);
         let mut open = Vec::new();
-        for (order, started) in &self.started {
+        for order in self.intake.started_orders() {
+            let Some(started) = self.intake.started(&order) else {
+                continue;
+            };
+            let order = order.as_str();
             let Some(request) = self.requests.get(order) else {
                 continue;
             };
@@ -167,11 +170,8 @@ impl Core {
             self.filings
                 .entry(order.as_str().to_owned())
                 .or_insert_with(|| filing.clone());
-            if let Some(start) = self.arrivals.start(order).cloned()
-                && !self.started.contains_key(order.as_str())
-            {
-                self.follow_filed(order, &start)?;
-            }
+            // What the filed order runs on is built by Core from the log, its filing's inputs among it (`T-020-61`).
+            rutent_core_orch::schedule::resume(&mut super::schedule::Due(self));
         }
         self.feed()?;
         Ok(filed?)
@@ -201,11 +201,8 @@ impl Core {
         let filed = self.with_arrivals(|arrivals, desk| {
             arrivals.accept::<RouteFinder>(desk, order, by, session, quote)
         });
-        if let Ok(Filed::Started { order, .. }) = &filed
-            && let Some(start) = self.arrivals.start(order).cloned()
-            && !self.started.contains_key(order.as_str())
-        {
-            self.follow_filed(order, &start)?;
+        if let Ok(Filed::Started { .. }) = &filed {
+            rutent_core_orch::schedule::resume(&mut super::schedule::Due(self));
         }
         self.feed()?;
         Ok(filed?)
@@ -214,73 +211,5 @@ impl Core {
     /// When the wait of the filed order `order` ends, where it waits for its customer (`T-020-51`).
     pub fn wait_ends(&self, order: &Id) -> Option<rutent_contracts::router_api::Timestamp> {
         self.arrivals.wait_ends(order)
-    }
-
-    /// Follows `order`, filed on an automatic deposit, from its start as arrivals answered it.
-    fn follow_filed(&mut self, order: &Id, start: &RecordedInput) -> Result<(), StepError> {
-        let Observed::RouteChosen {
-            decision_record,
-            parts,
-            ..
-        } = &start.observed
-        else {
-            return Err(StepError::NotNow("an order starts on its route chosen"));
-        };
-        let record = self.record_of(order, &kit::id(decision_record.as_str()))?;
-        let authorisation = self
-            .verified_whats()
-            .into_iter()
-            .find_map(|w| match w {
-                What::Acceptance {
-                    order: o,
-                    authorisation,
-                    ..
-                } if &o == order => Some(authorisation),
-                _ => None,
-            })
-            .ok_or(StepError::NotNow("an order starts on its acceptance"))?;
-        let logged: Vec<_> = self
-            .log
-            .borrow()
-            .entries()
-            .iter()
-            .map(|(_, e)| e.clone())
-            .collect();
-        let authorised = authorised(&logged, order, &authorisation).ok_or(StepError::NotNow(
-            "an acceptance rests on its authorisation",
-        ))?;
-        let filing = self
-            .filings
-            .get(order.as_str())
-            .ok_or(StepError::NotNow("an order starts on its filing"))?;
-        let mut inputs = filing.inputs.clone();
-        inputs.insert(
-            DESTINATION_INPUT.to_owned(),
-            filing.destination.account.as_str().to_owned(),
-        );
-        // What the route delivers before the operator's fee: the chosen candidate's, as the filing's quote showed it.
-        let delivers = record
-            .chosen()
-            .and_then(|c| {
-                c.parts.iter().try_fold(Amount::zero(), |sum, part| {
-                    sum.checked_add(&part.operations.last().amount_out)
-                })
-            })
-            .ok_or(StepError::NotNow("a chosen route delivers an amount"))?;
-        let begun = Begun {
-            origin: authorised.origin_reserve.clone(),
-            session: Some(filing.session.clone()),
-            inputs,
-            delivers,
-        };
-        self.follow_on(
-            order,
-            start,
-            record,
-            parts.clone(),
-            authorisation,
-            authorised,
-            begun,
-        )
     }
 }

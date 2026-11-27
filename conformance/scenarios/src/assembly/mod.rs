@@ -73,32 +73,28 @@ use rutent_contracts::core_internal::calls::{AppendFailure, GeneralEntry, Log, R
 use rutent_contracts::core_internal::{
     Action, Actor, ActorKind, Authorisation, CatalogueChange, Decision, DecisionRequest, Entry,
     OperatorSetting, Outcome, PermissionChange, ReadAnswer, ReadCheck, Receipt, RefusalClass, Role,
-    RouteEnd, SessionOutcome, SessionRequest, SettingKind, TimeSource, VerifiedEntry, VerifiedKind,
-    What, When,
+    SessionOutcome, SessionRequest, SettingKind, TimeSource, VerifiedEntry, VerifiedKind, What,
+    When,
 };
 use rutent_contracts::provider_role::{
     ADVERTISEMENT_SHAPE, JudgementOutcome, JudgementResult, Operation, ResultBody, Statement,
 };
 use rutent_contracts::router_api::{DECISION_RECORD_SHAPE, DecisionRecord, Id, PolicyBounds};
-use rutent_contracts::state_machine::{Observed, PartPlan, RecordedInput};
+use rutent_contracts::state_machine::RecordedInput;
 use rutent_core_audit::log::{AuditLog, Settings};
 use rutent_core_audit::receipts::store::{BoundStore, EvidenceStore, Keeper, LogsRead};
 use rutent_core_authz::engine::Engine;
 use rutent_core_authz::roles::Permission;
 use rutent_core_authz::session::LONGEST_SESSION_SECS;
 use rutent_core_orch::intake::{
-    Actors, DESTINATION_INPUT, Desk, Destinations, HeldSession, Intake, IntakeError, OrderRecord,
-    OrderRequest, Quote, Resolution, SessionRegister, Status as IntakeStatus, StatusReads, Told,
+    Actors, Desk, Destinations, HeldSession, Intake, IntakeError, OrderRecord, OrderRequest, Quote,
+    Resolution, SessionRegister, Status as IntakeStatus, StatusReads, Told,
 };
 use rutent_core_orch::rounds::{Fresh, Issued, OperatorKey, Parts as Rounds, Providers};
-use rutent_core_orch::segments::{
-    Live, Modules, NoProxy, Parts as SegmentParts, Ran, Segments, SegmentsError, Status,
-    StatusError,
-};
+use rutent_core_orch::segments::{Modules, NoProxy, Segments, SegmentsError, Status, StatusError};
 use rutent_core_orch::snapshot::{Exposures, Price, Releases};
 use rutent_core_orch::stuck::{
-    Deciding, Moved, Mover, Moving, NoRouteLeft, Parts as StuckParts, Ports, ResolveError, Stuck,
-    StuckError,
+    Mover, NoRouteLeft, Parts as StuckParts, ResolveError, Stuck, StuckError,
 };
 use rutent_prov::catalogue::Catalogue;
 use rutent_prov::module::lifecycle::Staging;
@@ -231,15 +227,6 @@ pub enum AssemblyError {
     Host(rutent_contracts::state_machine::host::HostError),
 }
 
-/// What an order's start takes from its intake or its filing: its origin reserve, the session its withdrawal goes in,
-/// the inputs its tuples need, and what its route delivers before the operator's fee.
-struct Begun {
-    origin: Id,
-    session: Option<Id>,
-    inputs: BTreeMap<String, String>,
-    delivers: rutent_contracts::router_api::Amount,
-}
-
 /// The operator's key, watched: every decision record Core signs is kept by its id, for the segments to run the
 /// route it chose (`Live::record`). Intake hands no record back; the log names it by digest, which Core holds the
 /// kept record to before it runs the route.
@@ -328,6 +315,10 @@ pub struct Faults {
     /// Right before the platform carries out this effect, the process crashes: the effect's record is in the log,
     /// and answered, and nothing was carried out (`INV-7`).
     pub crash_before_effect: Option<usize>,
+    /// Right after the platform carried out this effect, its provider having answered, and before Core took the answer,
+    /// the process crashes: the effect's record is in the log, the platform's record holds the operation carried out,
+    /// and the answer went with the Core that stopped (`T-020-61`, item 9).
+    pub crash_after_effect: Option<usize>,
     /// Right before the platform carries out this effect, the state machine moves to [`Core::swap_to`]: halted,
     /// exported and imported there, mid-order (`REQ-OPS-3`).
     pub swap_before_effect: Option<usize>,
@@ -409,6 +400,9 @@ impl Modules for Running<'_> {
         self.platform.world.set_clock(self.clock.instant());
         let first = Modules::carry_out(self.platform, effect, provider, operation);
         self.readings.refresh(&self.platform.world);
+        if self.faults.crash_after_effect == Some(n) {
+            panic!("{}", durable::CRASHED);
+        }
         if self.faults.operation_takes > 0 {
             self.clock.advance(self.faults.operation_takes);
         }
@@ -547,6 +541,10 @@ pub(crate) struct LogNow<'a>(pub(crate) &'a RefCell<CoreLog>);
 impl rutent_core_orch::quote::Recorded for LogNow<'_> {
     fn entry(&self, receipt: &Receipt) -> Option<Entry> {
         rutent_core_orch::quote::Recorded::entry(&charges::Log(self.0.borrow().entries()), receipt)
+    }
+
+    fn history(&self) -> Vec<(Receipt, Entry)> {
+        self.0.borrow().entries().to_vec()
     }
 }
 
@@ -731,7 +729,6 @@ pub struct Core {
     prices: Vec<Price>,
     quotes: BTreeMap<String, Quote>,
     requests: BTreeMap<String, OrderRequest>,
-    started: BTreeMap<String, Started>,
     /// The state machine, fed from the log.
     pub feed: Feed,
     /// The deployment's policy, which a scenario may set to refuse.
@@ -749,6 +746,9 @@ pub struct Core {
     checkpoints: Option<checking::ScheduledCheckpointer>,
     /// What the checkpointer published, as the deployment's publication channel received it, in order.
     published: Vec<Vec<u8>>,
+    /// The recalculation each order's last tick tried, as the round told it, until a reader takes it
+    /// ([`Core::take_recalculation`]): the operator's view of what Core's run did, kept as the round answered it.
+    recalculations_told: BTreeMap<String, Result<rutent_core_orch::recalc::Recalculation, String>>,
 }
 
 /// Why a step of Core's failed.
@@ -1259,7 +1259,6 @@ impl Core {
             prices,
             quotes: BTreeMap::new(),
             requests: BTreeMap::new(),
-            started: BTreeMap::new(),
             feed,
             deployment,
             faults: Faults::default(),
@@ -1267,6 +1266,7 @@ impl Core {
             schedule: rutent_core_orch::schedule::Schedule::new(),
             checkpoints: None,
             published: Vec::new(),
+            recalculations_told: BTreeMap::new(),
         };
         // Core's checkpointer, over its log and the disk's checkpoint store, which a reopened Core reads back.
         core.checkpoints = checking::ScheduledCheckpointer::new(
@@ -2496,204 +2496,13 @@ impl Core {
         digest: &rutent_contracts::module_interface::Digest,
         hold: Option<&Id>,
     ) -> Result<Told, StepError> {
+        // Intake's accept path builds and holds what the order runs on, once it starts (`T-020-61`); Core's run takes it
+        // up on its next tick.
         let told = self
             .with_desk(|intake, desk| intake.accept_holding(desk, order, by, digest, None, hold))?;
-        if let Some(start) = self.intake.start(order).cloned()
-            && !self.started.contains_key(order.as_str())
-        {
-            self.follow(order, &start)?;
-        }
+        rutent_core_orch::schedule::resume(&mut schedule::Due(self));
         self.feed()?;
         Ok(told)
-    }
-
-    /// Follows `order` from its start as intake answered it.
-    fn follow(&mut self, order: &Id, start: &RecordedInput) -> Result<(), StepError> {
-        let Observed::RouteChosen {
-            decision_record,
-            parts,
-            ..
-        } = &start.observed
-        else {
-            return Err(StepError::NotNow("an order starts on its route chosen"));
-        };
-        let record = self.record_of(order, &kit::id(decision_record.as_str()))?;
-        let entries: Vec<What> = self.verified_whats();
-        let authorisation = entries
-            .iter()
-            .find_map(|w| match w {
-                What::Acceptance {
-                    order: o,
-                    authorisation,
-                    ..
-                } if o == order => Some(authorisation.clone()),
-                _ => None,
-            })
-            .ok_or(StepError::NotNow("an order starts on its acceptance"))?;
-        let logged: Vec<Entry> = self
-            .log
-            .borrow()
-            .entries()
-            .iter()
-            .map(|(_, e)| e.clone())
-            .collect();
-        let authorised = authorised(&logged, order, &authorisation).ok_or(StepError::NotNow(
-            "an acceptance rests on its authorisation",
-        ))?;
-        let quote = self
-            .quotes
-            .get(order.as_str())
-            .ok_or(StepError::NotNow("an order starts on the quote shown"))?;
-        let request = self
-            .requests
-            .get(order.as_str())
-            .ok_or(StepError::NotNow("an order starts on its request"))?;
-        let mut inputs = request.inputs.clone();
-        inputs.insert(
-            DESTINATION_INPUT.to_owned(),
-            request.destination.account.as_str().to_owned(),
-        );
-        let begun = Begun {
-            origin: request.origin_reserve.clone(),
-            session: Some(request.session.clone()),
-            inputs,
-            delivers: quote.delivers.clone(),
-        };
-        self.follow_on(
-            order,
-            start,
-            record,
-            parts.clone(),
-            authorisation,
-            authorised,
-            begun,
-        )
-    }
-
-    /// Follows `order` from `start`, its route `record` and `plan`, under `authorisation` as the log holds it
-    /// (`authorised`), with what its intake or its filing gave (`begun`).
-    #[allow(clippy::too_many_arguments)]
-    fn follow_on(
-        &mut self,
-        order: &Id,
-        start: &RecordedInput,
-        record: DecisionRecord,
-        plan: Vec<PartPlan>,
-        authorisation: Id,
-        authorised: rutent_contracts::core_internal::Authorisation,
-        begun: Begun,
-    ) -> Result<(), StepError> {
-        let started = Started {
-            record,
-            plan,
-            authorisation,
-            origin: begun.origin,
-            route: RouteEnd {
-                destination: authorised.destination.clone(),
-                to_asset: authorised.to_asset.clone(),
-                delivers: begun.delivers,
-            },
-            session: begun.session,
-            inputs: begun.inputs,
-            floor: authorised.floor.clone(),
-        };
-        if !self.segments.follow(&self.clock, start) {
-            return Err(StepError::NotNow("the state machine opens the order"));
-        }
-        self.started.insert(order.as_str().to_owned(), started);
-        Ok(())
-    }
-
-    /// The decision record `id` of `order`, as Core signed it, held to the digest the log names it by.
-    fn record_of(&self, order: &Id, id: &Id) -> Result<DecisionRecord, StepError> {
-        let recorded = self
-            .signer
-            .records
-            .get(id.as_str())
-            .ok_or(StepError::NotNow("Core signed the decision record"))?;
-        let named = self
-            .verified_whats()
-            .into_iter()
-            .find_map(|w| match w {
-                What::DecisionRecord {
-                    decision_record,
-                    order: o,
-                    record,
-                    ..
-                } if &decision_record == id && &o == order => Some(record),
-                _ => None,
-            })
-            .ok_or(StepError::NotNow("the log names the decision record"))?;
-        let canonical = rutent_contracts::provider_role::to_canonical(
-            &serde_json::from_slice::<serde_json::Value>(recorded)
-                .map_err(|_| StepError::NotNow("a decision record is JSON"))?,
-        )
-        .map_err(|_| StepError::NotNow("a decision record has a canonical form"))?;
-        if named.value.as_str() != rutent_prov::module::wire::sha256(&canonical) {
-            return Err(StepError::NotNow(
-                "the decision record is the one the log names by digest",
-            ));
-        }
-        // Read only from the bytes the digest holds.
-        record_in(recorded).ok_or(StepError::NotNow("a decision record in its envelope"))
-    }
-
-    /// The receipt of the log's `decision_record` entry for `record`, which holds the answers the route was
-    /// evaluated with (`T-020-31`).
-    pub(crate) fn record_entry_of(&self, record: &DecisionRecord) -> Option<Receipt> {
-        self.log
-            .borrow()
-            .entries()
-            .iter()
-            .find_map(|(receipt, e)| match e {
-                Entry::Verified(v) => match &v.what {
-                    What::DecisionRecord {
-                        decision_record, ..
-                    } if decision_record == record.record_id() => Some(receipt.clone()),
-                    _ => None,
-                },
-                Entry::Stated(_) => None,
-            })
-    }
-
-    /// Runs every part of `order`'s route, each segment after the one before settles.
-    pub fn run(&mut self, order: &Id) -> Result<Vec<Ran>, StepError> {
-        let started = self
-            .started
-            .get(order.as_str())
-            .cloned()
-            .ok_or(StepError::NotNow("the order started"))?;
-        let core = kit::core();
-        let operator = kit::operator();
-        let record_entry = self.record_entry_of(&started.record);
-        let mut ran = Vec::new();
-        for (at, part) in started.plan.iter().enumerate() {
-            let segments: Vec<Id> = part
-                .segments
-                .iter()
-                .map(|s| kit::id(s.segment_id.as_str()))
-                .collect();
-            let part_id = kit::id(part.part_id.as_str());
-            let live = Live {
-                order,
-                part: &part_id,
-                segments: &segments,
-                record: &started.record,
-                at,
-                authorisation: &started.authorisation,
-                origin_reserve: &started.origin,
-                route: &started.route,
-                caller: &core,
-                core: &core,
-                operator: &operator,
-                session: started.session.as_ref(),
-                inputs: &started.inputs,
-                floor: started.floor.as_ref(),
-                record_entry: record_entry.as_ref(),
-            };
-            ran.push(self.run_live(&live)?);
-        }
-        Ok(ran)
     }
 
     /// Declares the part of `order` stuck for want of a route (`REQ-ORD-28`): its recalculations at their bound, the
@@ -2705,8 +2514,8 @@ impl Core {
     /// If the order hasn't started, or the part can't be declared.
     pub fn leave_no_route(&mut self, order: &Id) -> Result<(), StepError> {
         let started = self
-            .started
-            .get(order.as_str())
+            .intake
+            .started(order)
             .cloned()
             .ok_or(StepError::NotNow("the order started"))?;
         let part = kit::id(
@@ -2750,134 +2559,6 @@ impl Core {
         Ok(())
     }
 
-    /// The decide step of `order`'s stuck part, asked of the engine through the assembly's policy
-    /// (`REQ-AUZ-4`).
-    ///
-    /// # Errors
-    ///
-    /// If Core refuses it before policy is asked, or the log can't take it.
-    pub fn decide_stuck(
-        &mut self,
-        order: &Id,
-        decider: &Actor,
-        resolution: &rutent_contracts::core_internal::Resolution,
-        evidence: &[rutent_contracts::module_interface::Digest],
-    ) -> Result<rutent_contracts::core_internal::Decision, StepError> {
-        let started = self
-            .started
-            .get(order.as_str())
-            .cloned()
-            .ok_or(StepError::NotNow("the order started"))?;
-        let part = kit::id(
-            started
-                .plan
-                .first()
-                .ok_or(StepError::NotNow("the order has a part"))?
-                .part_id
-                .as_str(),
-        );
-        let mut policy = self.policy.clone();
-        let mut parts = StuckParts {
-            clock: &self.clock,
-            log: &mut self.general,
-            fresh: &mut self.fresh,
-            issued: &self.issued,
-            segments: &mut self.segments,
-            exposures: &mut self.exposures,
-        };
-        let history: Vec<_> = self.log.borrow().entries().to_vec();
-        Ok(self.stuck.decide(
-            &mut parts,
-            &mut policy,
-            Deciding {
-                order,
-                part: &part,
-                decider,
-                resolution,
-                evidence,
-            },
-            &history,
-        )?)
-    }
-
-    /// The move step of `order`'s stuck part, carrying out `carries_out`: policy decides it through the assembly's
-    /// engine, and the production mover hands the platform the effect it records (`REQ-AUZ-4`, `T-020-16`).
-    ///
-    /// # Errors
-    ///
-    /// If Core refuses it before policy is asked, or the log can't take a step of it.
-    pub fn move_stuck(
-        &mut self,
-        order: &Id,
-        carries_out: &rutent_contracts::core_internal::Decided,
-        mover: &Actor,
-    ) -> Result<Moved, StepError> {
-        let core = kit::core();
-        let operator = kit::operator();
-        let mut policy = self.policy.clone();
-        let resting = self.segments.resting_totals();
-        let readings = self.readings.clone();
-        readings.refresh(&self.fleet.platform.world);
-        let running = RefCell::new(Running {
-            platform: &mut self.fleet.platform,
-            clock: &self.clock,
-            faults: &mut self.faults,
-            feed: &mut self.feed,
-            log: &self.log,
-            swap_to: self.swap_to.as_deref_mut(),
-            readings: &readings,
-        });
-        let mut parts = StuckParts {
-            clock: &self.clock,
-            log: &mut self.general,
-            fresh: &mut self.fresh,
-            issued: &self.issued,
-            segments: &mut self.segments,
-            exposures: &mut self.exposures,
-        };
-        let mut no_proxy = NoProxy;
-        // The hand-on's reach (`T-020-26`): the operator's holding accounts, run on the platform the move's other
-        // calls go to; the linked orders' accepted routes; and the log's own handle, read as it stands each time.
-        let mut modules = holding::Shared(&running);
-        let mut wallets = holding::HeldWallets {
-            holdings: &self.holdings,
-            running: &running,
-            bounds: &self.bounds,
-            resting,
-        };
-        let accepted = holding::Accepted(&self.linked);
-        let log = holding::LogHandle(Rc::clone(&self.log));
-        let mut delivering = self
-            .mover
-            .on(Ports {
-                modules: &mut modules,
-                uses: &mut no_proxy,
-                evidence: &mut self.keeper,
-                catalogue: &self.catalogue,
-                operator_key: &mut self.signer,
-                bounds: &self.bounds,
-                operator: &operator,
-            })
-            .handing_on(rutent_core_orch::stuck::HandingOn {
-                withdrawals: &mut wallets,
-                routes: &accepted,
-                log: &log,
-            });
-        let moved = self.stuck.carry_out(
-            &mut parts,
-            &mut policy,
-            &mut delivering,
-            Moving {
-                order,
-                carries_out,
-                mover,
-                core: &core,
-            },
-        );
-        self.feed()?;
-        Ok(moved?)
-    }
-
     /// Declares that `order`'s input `input` rests on `judgement`, before the segment that carries it is handed over,
     /// so Core writes the `reliance` entry before it sends (`T-020-23`).
     ///
@@ -2918,10 +2599,16 @@ impl Core {
 
     /// The first part of a started `order`'s plan.
     pub fn first_part(&self, order: &Id) -> Option<Id> {
-        self.started
-            .get(order.as_str())
+        self.intake
+            .started(order)
             .and_then(|s| s.plan.first())
             .map(|p| kit::id(p.part_id.as_str()))
+    }
+
+    /// What `order` runs on, as Core holds it (`T-020-61`): built by intake on its acceptance, or by Core's run from the
+    /// log.
+    pub fn started(&self, order: &Id) -> Option<&Started> {
+        self.intake.started(order)
     }
 
     /// Whether Core holds the stuck part of `order` unresolved (`T-020-11`).
@@ -2932,58 +2619,6 @@ impl Core {
     /// The platform's count of operations handed to `provider`.
     pub fn operations_received(&self, provider: &str) -> usize {
         self.fleet.platform.operations_received(provider)
-    }
-
-    /// Runs one part as `live` says, each segment after the one before settles.
-    pub(crate) fn run_live(&mut self, live: &Live<'_>) -> Result<Ran, StepError> {
-        let readings = self.readings.clone();
-        readings.refresh(&self.fleet.platform.world);
-        let mut running = Running {
-            platform: &mut self.fleet.platform,
-            clock: &self.clock,
-            faults: &mut self.faults,
-            feed: &mut self.feed,
-            log: &self.log,
-            swap_to: self.swap_to.as_deref_mut(),
-            readings: &readings,
-        };
-        let mut grading = rutent_core_orch::closing::Evidenced {
-            catalogue: &self.catalogue,
-            records: &readings,
-            books: &readings,
-            closing: &mut self.closing,
-        };
-        let mut decisions = self.policy.clone();
-        let mut channel = rutent_core_orch::notice::Channel {
-            notices: &mut self.notices,
-            key: &mut self.notice_signer,
-            transport: &mut self.wire,
-        };
-        let mut parts = SegmentParts {
-            clock: &self.clock,
-            catalogue: &self.catalogue,
-            log: &mut self.general,
-            evidence: &mut self.keeper,
-            decisions: &mut decisions,
-            modules: &mut running,
-            uses: &mut NoProxy,
-            grading: &mut grading,
-            operator_key: &mut self.signer,
-            fresh: &mut self.fresh,
-            issued: &self.issued,
-            exposures: &mut self.exposures,
-            channel: &mut channel,
-        };
-        let result = self.segments.run_part(&mut parts, live);
-        // What settled at a public node a holding account holds is landed in it by Core's schedule, on its next tick
-        // (`T-020-33`, `T-020-48`): a run lands nothing itself.
-        // Core's closing is its schedule's (`REQ-QTE-7`, `T-020-48`): a run closes nothing.
-        self.feed()?;
-        // A segment the run left unknown is asked where it stands, once, at a provider that declares a status query
-        // (`REQ-ORD-1`, `T-020-47`).
-        self.ask_unknown_status(live);
-        self.feed()?;
-        Ok(result?)
     }
 
     /// `reader`'s read of `order`'s state and age, checked by policy.
@@ -3116,15 +2751,19 @@ pub fn component(party: &str, acts: &str, role: Role) -> Actor {
 
 #[cfg(test)]
 mod tests {
+    use rutent_contracts::state_machine::Observed;
     use rutent_core_orch::intake::{Status, Told};
 
     use super::*;
     use crate::harness::{Given, Scenario, base_request};
     use crate::kit::AMOUNT;
 
-    // verifies: DEC-18
+    /// The record Core runs an order on is the one the log names by digest (the review's L6, `T-020-61`): where the
+    /// evidence store's read gives back other bytes for the chosen record than the log's `decision_record` names, the
+    /// acceptance is recorded, and Core builds nothing to run on and hands nothing over, however often it ticks.
+    // verifies: REQ-AUD-4, INV-4
     #[test]
-    fn route_whose_signed_record_differs_from_the_logs_digest_is_not_run() {
+    fn decision_record_that_does_not_match_the_logs_digest_starts_nothing() {
         let (mut core, _) =
             Scenario::new("Core alone", "AC-28", Given::one_reserve(Staged::AtOnce))
                 .core(1, &mut machine::Reference);
@@ -3141,22 +2780,77 @@ mod tests {
         else {
             panic!("no quote")
         };
-        // The record Core kept, changed after the log took its digest.
-        let kept = core
+        // The chosen record, as signed, changed after the log took its digest; the store's read answers it so.
+        let signed = core
             .signer
             .records
-            .get_mut(quote.decision_record.as_str())
+            .get(quote.decision_record.as_str())
+            .cloned()
             .expect("the chosen record is kept");
-        let mut value: serde_json::Value = serde_json::from_slice(kept).unwrap();
+        let mut value: serde_json::Value = serde_json::from_slice(&signed).unwrap();
         value["made_at"] = "2026-11-09T02:00:00Z".into();
-        *kept = serde_json::to_vec(&value).unwrap();
-        assert!(matches!(
-            core.accept(&customer, &order, &digest),
-            Err(StepError::NotNow(
-                "the decision record is the one the log names by digest"
-            ))
-        ));
-        assert!(!core.started.contains_key(order.as_str()));
+        let changed = serde_json::to_vec(&value).unwrap();
+        let commitments: Vec<rutent_contracts::module_interface::Digest> = core
+            .log()
+            .entries()
+            .iter()
+            .filter_map(|(_, e)| match e {
+                Entry::Stated(s) if s.what.statement.as_str() == DECISION_RECORD_SHAPE => {
+                    Some(s.commitment.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        core.read_kept_through(Some(Box::new(move |found| {
+            found.map(|kept| {
+                if commitments.contains(&kept.commitment) {
+                    rutent_contracts::core_internal::KeptStatement {
+                        bytes: rutent_contracts::core_internal::Encoded::new(
+                            rutent_conformance::signing::base64url(&changed),
+                        )
+                        .expect("bytes"),
+                        ..kept
+                    }
+                } else {
+                    kept
+                }
+            })
+        })));
+        core.accept(&customer, &order, &digest).unwrap();
+        assert!(
+            core.intake.start(&order).is_some(),
+            "the start is the log's"
+        );
+        let asked = core.operations_received(kit::RESERVE);
+        let moves = |core: &Core| {
+            core.verified_whats()
+                .iter()
+                .filter(|w| {
+                    matches!(
+                        w,
+                        What::Effect {
+                            action: Action::MoveValue { .. },
+                            ..
+                        }
+                    )
+                })
+                .count()
+        };
+        for _ in 0..3 {
+            core.tick();
+        }
+        assert!(core.started(&order).is_none(), "nothing to run on");
+        assert_eq!(
+            core.operations_received(kit::RESERVE),
+            asked,
+            "nothing handed over"
+        );
+        assert_eq!(moves(&core), 0, "no move");
+        // Read as kept again, the record is the log's: the next tick builds what the order runs on, and runs it.
+        core.read_kept_through(None);
+        core.tick();
+        assert!(core.started(&order).is_some());
+        assert!(moves(&core) > 0);
     }
 
     /// Core alone, put together, and the config it was put together under.
@@ -3295,7 +2989,7 @@ mod tests {
     #[test]
     fn floor_the_authorisation_names_holds_the_part_at_the_segment_that_crosses_it() {
         let (mut core, order) = floored();
-        core.run(&order).unwrap();
+        core.tick();
         let moves = core
             .verified_whats()
             .into_iter()
@@ -3310,7 +3004,7 @@ mod tests {
             })
             .count();
         assert_eq!(moves, 1, "the deposit is not handed over");
-        let started = &core.started[order.as_str()];
+        let started = core.started(&order).expect("started").clone();
         let part = kit::id(started.plan[0].part_id.as_str());
         let since = core
             .segments

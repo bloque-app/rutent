@@ -67,6 +67,10 @@ impl Recorded for Log<'_> {
             .filter(|(r, _)| r == receipt)
             .map(|(_, e)| e.clone())
     }
+
+    fn history(&self) -> Vec<(Receipt, Entry)> {
+        self.0.to_vec()
+    }
 }
 
 impl Core {
@@ -118,7 +122,7 @@ impl Core {
 
     /// The segments of `order` whose settled charge Core noted for its check, in the plan's order.
     pub fn charged_segments(&self, order: &Id) -> Vec<Id> {
-        let Some(started) = self.started.get(order.as_str()) else {
+        let Some(started) = self.intake.started(order) else {
             return Vec::new();
         };
         started
@@ -138,7 +142,7 @@ impl Core {
 
     /// The operations of `order`'s chosen route, in order.
     pub fn route_operations(&self, order: &Id) -> Vec<rutent_contracts::router_api::Operation> {
-        let Some(started) = self.started.get(order.as_str()) else {
+        let Some(started) = self.intake.started(order) else {
             return Vec::new();
         };
         started
