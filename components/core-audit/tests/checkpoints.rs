@@ -1264,6 +1264,8 @@ fn validator(shape: &str) -> jsonschema::Validator {
         "module-interface",
         "router-api",
         "state-machine",
+        // core-internal's listing of a public network names the reader contract's shapes (`T-020-59`).
+        "reader",
     ] {
         let dir = contracts.join(contract).join("schemas");
         for entry in std::fs::read_dir(&dir).unwrap() {

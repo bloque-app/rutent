@@ -1,0 +1,274 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:reader:answer",
+  "title": "Reader answer",
+  "description": "A reader's answer to Core's question (DEC-28, ADR-0007 as amended): a statement in the contracts' envelope whose maker is the reader, by its name on its host, signed with the reader's statement key, which the reader host holds for it and never hands to the reader's process. It names the request it answers, the network, the reader's version and the question as asked, and answers it or says it is unreadable. Core refuses an answer to another request, question, network, movement or transaction, from another reader, under another key or version, or past its deadline on Core's own clock (check_reader_answer), and reads a refused one as unreadable. An answer answers the kind of question it names, or is unreadable, which the Rust types check.",
+  "$ref": "urn:rutent:provider-role:statement-envelope",
+  "properties": {
+    "shape": {
+      "const": "urn:rutent:reader:answer"
+    },
+    "statement": {
+      "$ref": "#/$defs/answer"
+    }
+  },
+  "$defs": {
+    "answer": {
+      "description": "The answer.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request",
+        "network",
+        "version",
+        "asked",
+        "answer"
+      ],
+      "properties": {
+        "request": {
+          "description": "The request it answers.",
+          "$ref": "urn:rutent:reader:common#/$defs/request_id"
+        },
+        "network": {
+          "description": "The network it is about.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "version": {
+          "description": "The reader's version, which Core holds to the listing's (REQ-AUD-4).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/version"
+        },
+        "asked": {
+          "description": "The question it answers, as asked.",
+          "$ref": "urn:rutent:reader:common#/$defs/asked"
+        },
+        "answer": {
+          "$ref": "#/$defs/answered"
+        }
+      }
+    },
+    "network_rules": {
+      "description": "A network's rules: its identity, its finality definition and reorg rule, and the reader's trust rule, what Core's start-up check compares with the listing. Its identity and trust rule are paired: a chain id is read from an RPC pool, and a genesis hash by a light client (item reader-answer-trust).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identity",
+        "finality",
+        "reorg",
+        "trust"
+      ],
+      "properties": {
+        "identity": {
+          "$ref": "urn:rutent:reader:common#/$defs/network_identity"
+        },
+        "finality": {
+          "$ref": "urn:rutent:reader:common#/$defs/finality"
+        },
+        "reorg": {
+          "$ref": "urn:rutent:reader:common#/$defs/reorg_rule"
+        },
+        "trust": {
+          "$ref": "urn:rutent:reader:common#/$defs/trust_rule"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "identity"
+            ],
+            "properties": {
+              "identity": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "chain_id"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "trust": {
+                "properties": {
+                  "rule": {
+                    "const": "rpc_pool"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "identity"
+            ],
+            "properties": {
+              "identity": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "genesis_hash"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "trust": {
+                "properties": {
+                  "rule": {
+                    "const": "light_client"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "movement": {
+      "description": "A movement as the network records it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "destination",
+        "asset",
+        "amount"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "pending",
+            "final"
+          ]
+        },
+        "destination": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "asset": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "amount": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        }
+      }
+    },
+    "standing": {
+      "description": "Where a movement stands now: unknown, pending or final with what the network records of it, or reorged out.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status"
+          ],
+          "properties": {
+            "status": {
+              "enum": [
+                "unknown",
+                "reorged_out"
+              ]
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/movement"
+        }
+      ]
+    },
+    "tied": {
+      "description": "The movement a network ties to a transaction: its id and where it went.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "destination"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "destination": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "answered": {
+      "description": "What the reader answers: the kind of the question asked, or unreadable, for any question, which settles nothing and grades nothing down.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "answer",
+            "rules"
+          ],
+          "properties": {
+            "answer": {
+              "const": "network_rules"
+            },
+            "rules": {
+              "$ref": "#/$defs/network_rules"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "answer",
+            "standing"
+          ],
+          "properties": {
+            "answer": {
+              "const": "movement_status"
+            },
+            "standing": {
+              "$ref": "#/$defs/standing"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "answer"
+          ],
+          "properties": {
+            "answer": {
+              "const": "movement_of"
+            },
+            "movement": {
+              "description": "The movement tied to the transaction asked about: absent where the network ties none.",
+              "$ref": "#/$defs/tied"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "answer",
+            "why"
+          ],
+          "properties": {
+            "answer": {
+              "const": "unreadable"
+            },
+            "why": {
+              "$ref": "urn:rutent:reader:common#/$defs/reason"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

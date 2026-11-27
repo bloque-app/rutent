@@ -564,6 +564,8 @@ fn every_permission(caller: &Actor) -> Vec<(Permission, DecisionRequest)> {
         CatalogueChange::Promote,
         CatalogueChange::RollBack,
         CatalogueChange::ConfirmReleases,
+        CatalogueChange::ListPublicNetwork,
+        CatalogueChange::DelistPublicNetwork,
     ] {
         match change {
             CatalogueChange::Grant
@@ -577,7 +579,9 @@ fn every_permission(caller: &Actor) -> Vec<(Permission, DecisionRequest)> {
             | CatalogueChange::SetSlippage
             | CatalogueChange::Promote
             | CatalogueChange::RollBack
-            | CatalogueChange::ConfirmReleases => {}
+            | CatalogueChange::ConfirmReleases
+            | CatalogueChange::ListPublicNetwork
+            | CatalogueChange::DelistPublicNetwork => {}
             // An operator's setting is a permission of its own for each setting, listed below (`T-021-15`).
             CatalogueChange::SetSetting => unreachable!("one permission for each setting, below"),
         }
@@ -603,7 +607,22 @@ fn every_permission(caller: &Actor) -> Vec<(Permission, DecisionRequest)> {
             } else {
                 Vec::new()
             },
+            public_network: None,
         };
+        // A public network's listing and delisting, as the contract's fixtures name them, by the caller's own party
+        // (`T-020-59`).
+        if change.is_about_a_public_network() {
+            let name = if change == CatalogueChange::ListPublicNetwork {
+                "decision-request-to-list-a-public-network-read-by-a-light-client"
+            } else {
+                "decision-request-to-delist-a-public-network"
+            };
+            let listed: DecisionRequest = valid!(name);
+            request.action = listed.action;
+            if let Action::ChangeCatalogue { provider, .. } = &mut request.action {
+                *provider = caller.party.clone();
+            }
+        }
         asked.push((Permission::Change(change), request));
     }
     // Each of the operator's settings (`T-020-45`), a permission of its own apiece (`T-021-15`).
@@ -1327,9 +1346,9 @@ fn every_call() -> Vec<Call> {
 #[test]
 fn each_permission_alone_allows_only_its_own_action() {
     let all = every_permission_held();
-    assert_eq!(all.len(), 37, "every permission of the register's");
+    assert_eq!(all.len(), 38, "every permission of the register's");
     let calls = every_call();
-    assert_eq!(calls.len(), 40, "every call a permission lets through");
+    assert_eq!(calls.len(), 41, "every call a permission lets through");
     for permission in &all {
         assert!(
             calls.iter().any(|c| &c.owner == permission),
@@ -3738,7 +3757,7 @@ fn another_partys_login_listed_in_the_operator_role_is_refused_every_setting_and
             "{permission:?}"
         );
     }
-    assert_eq!(asked, 12 + 9, "every catalogue change and every setting");
+    assert_eq!(asked, 14 + 9, "every catalogue change and every setting");
     assert_eq!(
         policy.policy.1.ruled, 0,
         "none reached the deployment's policy"
@@ -3965,4 +3984,153 @@ fn arrival_refiled_by_a_login_whose_party_may_not_refile_is_refused() {
             "recorded refused, with its actor"
         );
     }
+}
+
+/// Listing a public network with the reader service that reads it, and delisting one, are the operator's alone
+/// (`DEC-28`, item `reader-registration-path`, `T-020-59`): each a permission of its own beside the lifecycle
+/// permissions. An operator's login that the register lists for it, and that is the deployment operator's, naming its
+/// own party as the change's provider, is permitted, and the entry records it and the listing whole. The same login
+/// holding every other permission but that one, a login of another party listed in the operator's role, the operator
+/// naming another party as the listing's provider, and every other role (Core's own actors, a customer, a provider, a
+/// verifier, a regulator, a checker) are refused, the last ones before the deployment's policy is asked.
+// verifies: REQ-AUZ-1
+#[test]
+fn listing_a_public_network_is_permitted_to_the_operator_only() {
+    let list = Permission::Change(CatalogueChange::ListPublicNetwork);
+    let delist = Permission::Change(CatalogueChange::DelistPublicNetwork);
+    let asked = |caller: &Actor, permission: Permission| -> DecisionRequest {
+        every_permission(caller)
+            .into_iter()
+            .find(|(p, _)| *p == permission)
+            .expect("the sweep asks it")
+            .1
+    };
+
+    // The operator's login holding each.
+    let mut policy = engine(
+        Kept::with_a_decision_record(),
+        Register::holding(&operator(), &[list, delist]).of_the_operator(&operator()),
+    );
+    for permission in [list, delist] {
+        let request = asked(&operator(), permission);
+        let decision = policy.decide(&request).unwrap();
+        assert_eq!(decision.outcome, Answer::Permit {}, "{permission:?}");
+        let entry = policy.log().entry_of(&decision);
+        assert_eq!(entry.who, operator());
+        assert!(
+            matches!(&entry.what, What::Decide { request: recorded, .. } if recorded == &request),
+            "the entry holds the listing whole"
+        );
+        assert!(
+            policy
+                .log
+                .effect(&request, decision.permit().unwrap())
+                .is_ok()
+        );
+    }
+
+    // The same login holding every permission but the two, and each holding the other's alone.
+    let others: Vec<Permission> = every_permission_held()
+        .into_iter()
+        .filter(|p| *p != list && *p != delist)
+        .collect();
+    for (held, refused) in [
+        (others.clone(), list),
+        (others.clone(), delist),
+        (vec![delist], list),
+        (vec![list], delist),
+    ] {
+        let mut policy = engine(
+            Kept::with_a_decision_record(),
+            Register::holding(&operator(), &held).of_the_operator(&operator()),
+        );
+        let request = asked(&operator(), refused);
+        let decision = policy.decide(&request).unwrap();
+        assert_eq!(
+            decision.outcome, NOT_PERMITTED,
+            "{refused:?} without its permission"
+        );
+        assert_eq!(
+            policy.log.effect(&request, forged(&decision)),
+            no_permitting_decision()
+        );
+    }
+
+    // Another party's login listed in the operator's role, holding both; and the operator naming another party.
+    let outsider = actor(
+        "bridge-pay",
+        "bridge-pay-ops",
+        Role::Operator,
+        ActorKind::Person,
+    );
+    let mut policy = engine(
+        Kept::with_a_decision_record(),
+        Register::holding(&outsider, &[list, delist])
+            .listing(&outsider)
+            .and_holding(&operator(), &[list, delist])
+            .of_the_operator(&operator()),
+    );
+    for permission in [list, delist] {
+        let decision = policy.decide(&asked(&outsider, permission)).unwrap();
+        assert_eq!(
+            decision.outcome, NOT_PERMITTED,
+            "another party's login: {permission:?}"
+        );
+        let mut naming_another = asked(&operator(), permission);
+        naming_another.request = id(if permission == list {
+            "req-list-for-another"
+        } else {
+            "req-delist-for-another"
+        });
+        if let Action::ChangeCatalogue { provider, .. } = &mut naming_another.action {
+            *provider = id("bridge-pay");
+        }
+        let decision = policy.decide(&naming_another).unwrap();
+        assert_eq!(
+            decision.outcome, NOT_PERMITTED,
+            "naming another provider: {permission:?}"
+        );
+    }
+    assert_eq!(
+        policy.policy.1.ruled, 0,
+        "none reached the deployment's policy"
+    );
+
+    // Every other role, holding both.
+    let refused = [
+        core(),
+        actor("cust-1", "cust-1", Role::Customer, ActorKind::Person),
+        actor(
+            "bridge-pay",
+            "bridge-pay",
+            Role::Provider,
+            ActorKind::Component,
+        ),
+        actor("kyc-co", "kyc-co", Role::Verifier, ActorKind::Component),
+        actor(
+            "fin-regulator",
+            "examiner-3",
+            Role::Regulator,
+            ActorKind::Person,
+        ),
+        actor("audit-co", "checker-1", Role::Checker, ActorKind::Person),
+    ];
+    let mut register = Register::default();
+    for caller in &refused {
+        register = register.and_holding(caller, &[list, delist]);
+    }
+    let mut policy = engine(Kept::with_a_decision_record(), register);
+    for caller in &refused {
+        for permission in [list, delist] {
+            assert_eq!(
+                policy.decide(&asked(caller, permission)).unwrap().outcome,
+                NOT_PERMITTED,
+                "{caller:?}: {permission:?}"
+            );
+        }
+    }
+    assert_eq!(
+        policy.policy.1.ruled, 0,
+        "none reached the deployment's policy"
+    );
 }

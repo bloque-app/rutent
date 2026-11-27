@@ -5,3 +5,4 @@ router-api         contracts/router-api            contracts/src/router_api
 state-machine      contracts/state-machine         contracts/src/state_machine
 host               contracts/state-machine/host    contracts/src/state_machine/host
 core-internal      contracts/core-internal         contracts/src/core_internal
+reader             contracts/reader                contracts/src/reader

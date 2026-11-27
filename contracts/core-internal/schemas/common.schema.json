@@ -189,7 +189,7 @@
       }
     },
     "catalogue_change": {
-      "description": "A change to the catalogue, each a permission of its own (REQ-AUZ-6). accept_module, revoke_release, mark_stale, declare_exploited, reinstate, withdraw_release, promote and roll_back (a staging ended with the version in force kept, ADR-0014) are about one module release, and only they name its version; grant, revoke_grant and set_slippage are about one tuple, and only they name it, save that a grant and its revocation name a verifier's class in its place (REQ-CAT-13).; set_setting sets one of the operator's settings, and only it names one (T-020-45); confirm_releases is the operator's word that a provider's releases may come back into force after the platform's unclean end (T-013-11), and only it names the versions it confirms (T-020-49). The Rust types check these.",
+      "description": "A change to the catalogue, each a permission of its own (REQ-AUZ-6). accept_module, revoke_release, mark_stale, declare_exploited, reinstate, withdraw_release, promote and roll_back (a staging ended with the version in force kept, ADR-0014) are about one module release, and only they name its version; grant, revoke_grant and set_slippage are about one tuple, and only they name it, save that a grant and its revocation name a verifier's class in its place (REQ-CAT-13).; set_setting sets one of the operator's settings, and only it names one (T-020-45); confirm_releases is the operator's word that a provider's releases may come back into force after the platform's unclean end (T-013-11), and only it names the versions it confirms (T-020-49). list_public_network and delist_public_network list a public network with the reader service that reads it, and delist it, and only they name a public network (DEC-28, T-020-59). The Rust types check these.",
       "enum": [
         "grant",
         "revoke_grant",
@@ -203,7 +203,9 @@
         "promote",
         "roll_back",
         "set_setting",
-        "confirm_releases"
+        "confirm_releases",
+        "list_public_network",
+        "delist_public_network"
       ]
     },
     "action": {
@@ -504,6 +506,169 @@
           "items": {
             "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
           }
+        },
+        "public_network": {
+          "description": "The public network a listing or a delisting is about: named exactly by list_public_network, with its listing, and by delist_public_network, without one, which the Rust types check (DEC-28, T-020-59). The change's provider is then the caller's own party: the deployment operator's, or one of its desks'.",
+          "$ref": "#/$defs/public_network"
+        }
+      }
+    },
+    "subject_name": {
+      "description": "The subject name a reader host's server certificate carries (its SAN, a dNSName), which Core holds the host's certificate to under the operator's CA (DEC-28): a lower-case DNS name of at least two labels, with no wildcard, no trailing dot and a last label that starts with a letter, so it names one host and is never an IP address's literal, decimal or hexadecimal.",
+      "type": "string",
+      "maxLength": 253,
+      "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$",
+      "not": {
+        "pattern": "\\.[0-9][^.]*$"
+      }
+    },
+    "public_network": {
+      "description": "A public network a listing or a delisting is about (DEC-28, T-020-59): the network, as an outer node names it, and, for a listing, what lists it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "network"
+      ],
+      "properties": {
+        "network": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "listing": {
+          "description": "What lists it: present exactly for list_public_network, which the Rust types check.",
+          "$ref": "#/$defs/network_listing"
+        }
+      }
+    },
+    "network_listing": {
+      "description": "What lists a public network (DEC-28, ADR-0007 as amended): the network's identity, how to find its reader, who the reader is, its version and its trust rule. Its identity and trust rule are paired: a chain id is read from an RPC pool, and a genesis hash by a light client. Core checks each at start-up against the reader's own network_rules answer, and a network whose reader is unreachable or fails the check doesn't start.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identity",
+        "endpoint",
+        "reader",
+        "version",
+        "trust"
+      ],
+      "properties": {
+        "identity": {
+          "description": "The network's identity: a genesis hash, or a chain id.",
+          "$ref": "urn:rutent:reader:common#/$defs/network_identity"
+        },
+        "endpoint": {
+          "$ref": "#/$defs/reader_endpoint"
+        },
+        "reader": {
+          "$ref": "#/$defs/reader_identity"
+        },
+        "version": {
+          "description": "The reader's version, which Core holds each answer's to (REQ-AUD-4).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/version"
+        },
+        "trust": {
+          "description": "The reader's trust rule: a light client, or a pool of RPC endpoints with a quorum of at least two.",
+          "$ref": "urn:rutent:reader:common#/$defs/trust_rule"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "identity"
+            ],
+            "properties": {
+              "identity": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "chain_id"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "trust": {
+                "properties": {
+                  "rule": {
+                    "const": "rpc_pool"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "identity"
+            ],
+            "properties": {
+              "identity": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "genesis_hash"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "trust": {
+                "properties": {
+                  "rule": {
+                    "const": "light_client"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "reader_endpoint": {
+      "description": "How Core finds a reader (item reader-registration-path): the deployment's host setting, by name, that holds its reader host's address, and the reader's name on that host, the maker of its answers.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host_setting",
+        "reader"
+      ],
+      "properties": {
+        "host_setting": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "reader": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "reader_identity": {
+      "description": "Who a reader is, as Core holds it (DEC-28): the SHA-256 digest of the operator's CA certificate that issues the host's server certificate, the subject name that certificate carries, and the reader's statement key. Never the host's leaf certificate, so rotating it under the same CA and name needs no listing change.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ca",
+        "subject_name",
+        "statement_key"
+      ],
+      "properties": {
+        "ca": {
+          "description": "The SHA-256 digest of the operator's CA certificate (DER): a CA's, never a leaf's.",
+          "$ref": "urn:rutent:module-interface:common#/$defs/digest"
+        },
+        "subject_name": {
+          "$ref": "#/$defs/subject_name"
+        },
+        "statement_key": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/public_key"
         }
       }
     },

@@ -9704,3 +9704,227 @@ Branch `f-020/t-020-65`, from `2c86d6a9` (`origin/m3` with `T-020-49` merged), i
 | a re-read record is kept again after a restart | `a_restart_while_a_segment_waits_keeps_its_record_once` |
 | the books keep an order after its segments settle | `closing_books_drop_an_orders_records_once_its_segments_have_settled` |
 
+## T-020-59: the reader contract, and a public network listed with its reader service
+
+`DEC-28`, ADR-0007 as amended (the owner's finding 7 on the demo of 2026-11-25, and his form answers
+`reader-registration-path` and `reader-answer-trust` of 2026-11-26). Edits `contracts/` (`reader/` new, `src/reader/`
+new, `tests/reader.rs` new, `core-internal/`, `CONTRACTS`, `src/lib.rs`, `README.md`, the shared `CHANGELOG.md`),
+`components/core-authz/` (`roles`, and the engine's test list) and `tools/boundary-check/`, all `DEC-20` paths. The new
+field `Action::ChangeCatalogue.public_network` needed `public_network: None` at each place that builds the variant
+whole: eleven lines in `components/core-orch/` (`segments/`, `settings/`, a test) and `conformance/scenarios/`, nothing
+else changed there. `T-015-04` is built from this row's commit.
+
+### Design
+
+- **A seventh contract, `reader` 1.0.0** (`contracts/reader/`, `rutent_contracts::reader`, a line in
+  `contracts/CONTRACTS`). Three schemas: `common`, `question`, `answer`.
+  - A `ReaderQuestion` names the reader asked (by its name on its host), the network, what is asked (`Asked`:
+    `network_rules`, `movement_status {movement}`, `movement_of {transaction}`, each read-only), a `RequestId` and a
+    deadline. It is not a signed statement: it travels over the mTLS link, and only Core asks.
+  - A `RequestId` is 128 bits as 32 lower-case hex characters, with its top 64 bits never all zero, which is what a
+    counter written as an id gives. `RequestId::from_random([u8; 16])` is Core's draw; it gives `None` (draw again) on
+    those 2^-64 cases.
+  - A `ReaderAnswer` is a statement in the contracts' envelope (provider-role's `Statement`, shape
+    `urn:rutent:reader:answer`), maker the reader, signed with its statement key. It names the request, the network,
+    the reader's version, the question as asked, and answers it (`Answered`: `network_rules {rules}`,
+    `movement_status {standing}`, `movement_of {movement?}`) or says `unreadable {why}`, for any question.
+    `ReaderAnswer::check` holds the answer's kind to the kind asked.
+  - `check_reader_answer(question, answer, key, version, now)` gives every `ReaderMismatch`: another shape, reader,
+    key, version, request, network, kind of question, movement or transaction, or arrival past the deadline at `now`,
+    Core's clock. The answer's `made_at` is never read for the deadline.
+  - `network_rules`' shapes mirror `CMP-EVIDENCE`'s: `NetworkIdentity` (`genesis_hash {hash}` or `chain_id {id}`),
+    `Finality` (`instant`, `confirmations {count}`, `checkpoint`), `ReorgRule` (`never`, `depth_bound {depth}`,
+    `until_final`), and `TrustRule`: `light_client`, or `rpc_pool {endpoints, quorum}` with a quorum of at least two
+    (`LEAST_QUORUM`), each endpoint once, and at least as many endpoints as the quorum. An `RpcEndpoint` is an
+    `https` or `wss` URL to a DNS name with no user, query or fragment.
+- **The listing, in core-internal** (folded into the unreleased 1.0.0): `CatalogueChange::ListPublicNetwork` and
+  `DelistPublicNetwork` (`is_about_a_public_network`), and `Action::ChangeCatalogue.public_network`
+  (`PublicNetwork {network, listing?}`), named exactly by the two; only a listing names its `NetworkListing`:
+  `identity` (the reader's `NetworkIdentity`), `endpoint` (`ReaderEndpoint {host_setting, reader}`), `reader`
+  (`ReaderIdentity {ca, subject_name, statement_key}`), `version` and `trust` (the reader's `TrustRule`, also held by
+  `Action::check` for a value built in memory). The CA is the SHA-256 digest of the operator's CA certificate (DER);
+  the subject name is a `SubjectName`, a lower-case DNS name of two labels or more, with no wildcard. A leaf
+  certificate has no field to go in: `ReaderIdentity` refuses unknown fields and its schema is closed. core-internal's
+  schemas now name `urn:rutent:reader:common` (its tests' `REFERRED`). Totals recounted: thirty schemas, 196 valid and
+  208 invalid fixtures, 789 admission and 58 attribution cases, 120 relations, unchanged.
+- **Policy** (`components/core-authz/src/roles/`): each change is `Permission::Change(..)` of its own, held as the
+  lifecycle permissions are (`of_operator_holds`: an operator's login the register lists for it, the deployment
+  operator's by `Source::OfOperator`). A listing or delisting naming any other provider than the caller's own party is
+  given no rule, so it is refused before the register is asked.
+- **The boundary** (`tools/boundary-check/`): `READER_HOST` (`rutent-reader-host`) may depend on `rutent-contracts` and
+  `rutent-prov`; nothing of ours may depend on it, the scenario assembly included. Once it is a member, its sources are
+  scanned as outer code (never `core_internal`) and for `rutent_prov` named other than as a path starting
+  `rutent_prov::egress` (`Why::ReachesBeyondEgress`). The crate itself is `T-015-04`'s.
+- **Tests**, the six named ones written first and seen red on an assertion with their rules off:
+  - `reader_answer_to_another_request_or_movement_than_the_one_asked_is_refused` [`REQ-ORD-39`] (`tests/reader.rs`).
+    Red before: `left: Ok(()) right: Err([AnswersAnotherRequest])`.
+  - `rpc_pool_trust_rule_with_a_quorum_below_two_is_refused` [`DEC-28`]. Red before: "a quorum of 0 is refused".
+  - `reader_question_carries_a_request_id_drawn_at_random_and_a_deadline` [`DEC-28`]. Red before:
+    `left: Some(RequestId("00000000000000000000000000000007")) right: None`.
+  - `listing_a_public_network_names_its_identity_and_its_readers_endpoint_identity_version_and_trust_rule`
+    [`REQ-CAT-22`, `REQ-AUD-4`] (`tests/core-internal.rs`). Red before: `--naming-no-listing` read by Rust.
+  - `listing_that_pins_a_hosts_leaf_certificate_is_refused` [`DEC-28`]. Red before: the leaf-pinning fixture accepted by
+    the schema.
+  - `listing_a_public_network_is_permitted_to_the_operator_only` [`REQ-AUZ-1`] (`roles/tests.rs`). Red before:
+    `naming another provider: Change(ListPublicNetwork)`, `left: Permit`.
+  - Beside them: `reader_answer_from_another_reader_key_or_version_or_past_its_deadline_is_refused` [`DEC-28`,
+    `REQ-AUD-4`], the reader's fixture, version and schema tests, and
+    `reader_host_reaches_only_the_contracts_and_the_providers_egress_and_nothing_reaches_it` [`DEC-28`, `DEC-2`,
+    `REQ-MOD-3`] (red before: the host's edges to the contracts and the provider system reported).
+
+### Defaults, reversible, each failing closed
+
+1. A question is unsigned: the mTLS client certificate is Core's identity, and only Core asks. Alternative: Core signs
+   each question with the operator's key.
+2. A request id whose top 64 bits are all zero is refused, as a counter's would be; `from_random` gives `None` and Core
+   draws again.
+3. The deadline holds at its instant: an answer reaching Core exactly at the deadline is taken, a nanosecond after it is
+   refused.
+4. An `unreadable` answer passes `check_reader_answer` when it answers the question asked; it settles nothing. Any other
+   failure of the check is unreadable too, by ADR-0007's rule.
+5. RPC endpoints are `https` or `wss` only, with no user, path, query or fragment (at most a trailing `/`): a key or a
+   path a node needs is the reader host's to resolve by name through the egress layer's secret lookup, never written
+   in the listing (review round 1, L2: a key in a path can't be told from a route, so no path is taken).
+6. The CA is pinned as the SHA-256 digest of the CA certificate's DER. A digest of the leaf put in its place can't be
+   told apart by the contract; Core's link refuses a leaf as its trust anchor (`T-020-60`).
+7. The subject name, and every endpoint's host, is one DNS name of two labels or more, with no wildcard, and never an
+   IP literal, decimal or hexadecimal: the last label starts with a letter (review round 1, L1; round 2, L8). Names a
+   resolver answers locally, such as `.local` ones, are the operator's responsibility.
+8. A listing's `provider` is the caller's own party (the deployment operator's), so a desk of the operator lists under
+   its own party. Alternative: name the deployment operator's party, checked against the register. The docs say so
+   since review round 1 (L7 b).
+9. *(Replaced in review round 1, M1.)* The identity's kind and the trust rule are paired: a chain id is read from an
+   RPC pool, a genesis hash by a light client. An EVM light client would need a later round.
+10. *(Replaced in review round 1, L6.)* The scenario assembly may take the reader host as a dev-dependency, for
+    `T-024-25`'s readers in the test harness, and never as a dependency of its build; nothing else of ours depends on
+    it. This is the one exception to `DEC-28`'s "nothing of ours depends on it".
+11. A delisting names the network alone, and nothing in the contract says it must have been listed. Core's catalogue
+    (`T-020-60`, with `T-020-65`'s rule that an unlist waits while anything rests at the node) decides that.
+
+### Gaps, with owners
+
+1. *Verifying an answer's signature, and the host's certificate against the CA and the subject name*: Core's mTLS
+   client and adapter, `T-020-60`. The contract holds what the signature covers, and the listed key.
+2. *Core's decided path for `ListPublicNetwork` and `DelistPublicNetwork`* (the start-up check, the public list, the
+   raise): `T-020-60`. The entry-point scan in `core-authz` lists no Core entry point for them yet.
+3. *`read_by` on `PublicMovement`*: `T-020-60`'s fold into core-internal.
+4. *The reader host crate*, its mTLS, children, signing and egress: `T-015-04`. This row gives it the contract and the
+   boundary rule; the source scan starts once it is a member.
+5. *No log relation for a listing.* The listing is an ordinary decided change; no relation holds a delisting to an
+   earlier listing (default 11).
+6. *The boundary-check's documentation test* (`tests/docs.rs`) runs `cargo doc` on a fixture crate, so it was not run
+   locally; CI runs it, and this row doesn't change it.
+
+### Rule-off
+
+Each rule switched off alone and the file restored from its own text (`ruleoff.py` in the row's scratch folder),
+through the lock; `rutent-contracts`' `reader` and `core-internal` suites, `rutent-core-authz --lib` and the
+boundary-check's `boundary` suite:
+
+| Rule switched off | Tests that went red |
+|---|---|
+| a pool's quorum is at least two (Rust; then the schema's `minimum`) | `rpc_pool_trust_rule_with_a_quorum_below_two_is_refused`; `every_valid_reader_fixture_validates_and_every_invalid_one_is_rejected` |
+| a pool names each endpoint once (Rust) | the same two |
+| a pool has at least as many endpoints as its quorum | the same two |
+| a request id's top 64 bits are not all zero (Rust; then the schema's `not`) | `reader_question_carries_a_request_id_drawn_at_random_and_a_deadline`; the reader's fixture test |
+| a question names its deadline (the schema's `required`) | the same two |
+| an answer answers the kind of question it names | `reader_answer_to_another_request_or_movement_than_the_one_asked_is_refused`; the reader's fixture test |
+| `check_reader_answer`: the request, the network, the movement, the transaction, the kind of question (each alone) | `reader_answer_to_another_request_or_movement_than_the_one_asked_is_refused` |
+| `check_reader_answer`: the reader asked, the listed key, the listed version, the deadline on Core's clock, the shape (each alone) | `reader_answer_from_another_reader_key_or_version_or_past_its_deadline_is_refused` |
+| a public network exactly when listed or delisted | `listing_a_public_network_names_its_identity_and_its_readers_endpoint_identity_version_and_trust_rule`; `every_valid_fixture_validates_and_every_invalid_one_is_rejected`; `every_invalid_fixture_is_rejected_by_the_rust_types_too`; `each_invalid_fixture_breaks_only_the_rule_it_names` |
+| a listing exactly when listed | the same four |
+| a listing's trust rule held in `Action::check` | `listing_a_public_network_names_its_identity_and_its_readers_endpoint_identity_version_and_trust_rule` |
+| a reader's identity holds no other field (Rust's `deny_unknown_fields`; then the schema's `additionalProperties`) | `listing_that_pins_a_hosts_leaf_certificate_is_refused`; `every_valid_fixture_validates_and_every_invalid_one_is_rejected` (and, for Rust, `every_invalid_fixture_is_rejected_by_the_rust_types_too`) |
+| a subject name has no wildcard (Rust; then the schema's `pattern`) | the same |
+| policy: a listing names the caller's own party | `listing_a_public_network_is_permitted_to_the_operator_only` |
+| boundary: the reader host's allowed edges (Core admitted) | `reader_host_reaches_only_the_contracts_and_the_providers_egress_and_nothing_reaches_it` |
+| boundary: nothing depends on the reader host, the assembly included | the same |
+| boundary: the reader host names `rutent_prov` only through `egress` | the same |
+| boundary: the reader host never names the contract | the same |
+
+### Local checks
+
+Through the lock, `contracts/src/lib.rs` touched first, at `54cf9064`: `cargo fmt --all -- --check` and
+`cargo clippy --workspace --all-targets -- -D warnings` clean; `rutent-contracts`, every suite, all passed (`reader` 8,
+`core-internal` 100); `rutent-core-authz --lib` 166; the boundary-check's `boundary` 22 and `graph` 2 (its `docs` test
+runs `cargo doc`, so it is CI's); `plan-check --strict` 0 findings; `tag-check --strict` 2532 tests, 0 findings; the
+contract guard against `origin/develop`: no violations. `cargo doc` is CI's.
+
+### T-020-59, review round 1 (#343, CHANGES at `395333b0`)
+
+The fixes, on the same branch, then `origin/m3` (`ebf42c9c`) merged: only the notes met, T-020-64's and T-020-65's
+sections kept beside this one. T-020-58 (#340) is not on m3 yet. L3, L5 and the rest of L7 go to T-020-60's issue.
+
+- **M1.** A network's identity is paired with its trust rule: a chain id is read from an RPC pool, a genesis hash by a
+  light client (`reader::check_pairing`, in `NetworkRules::check` and in core-internal's `Action::check`; an `allOf` of
+  `if`/`then` in the reader's `network_rules` and core-internal's `network_listing`). Invalid fixtures each way in both
+  contracts.
+- **M2.** A pool names each host once, whatever the scheme, port or trailing `/` (`RpcEndpoint::host`): its quorum is
+  of distinct hosts. Separate names that resolve to one provider are beyond the contract (the reader's README).
+- **L1.** `reader::is_host_name`: two labels or more, a last label not all digits; subject names and endpoint hosts are
+  held to it, and both schemas say so (`not`).
+- **L2.** An endpoint has no path beyond a trailing `/` (with no user, query or fragment, as before): a key in a path
+  can't be told from a route, so a node that needs one gets it from the reader host through the egress layer's secret
+  lookup.
+- **L4.** `check_reader_answer(question, answer, &Expected { deployment, versions, key, version }, now)`: it also runs
+  `ReaderAnswer::check` (`BreaksItsShape`) and `Statement::check_context` (`OfAnotherDeployment`,
+  `UnderAProtocolVersionNotInForce`).
+- **L6.** The boundary admits `rutent-scenarios` → `rutent-reader-host` as a dev-dependency only; a dependency of its
+  build, and the host on the assembly either way, are refused.
+- **L7 (b).** The listing's provider is documented as the caller's own party (default 8) in `CatalogueChange`'s docs,
+  the schema, core-internal's README and changelog.
+- **Tests**, seen red together with the round's rules off (the reader's and core-internal's) and one by one below:
+  `rpc_pool_quorum_counts_distinct_hosts_not_spellings` [`DEC-28`], `network_identity_is_paired_with_its_trust_rule`
+  [`DEC-28`, `REQ-ORD-39`], `rpc_endpoint_names_a_host_and_nothing_that_could_be_a_key` [`DEC-28`, `REQ-MDL-6`],
+  `scenario_assembly_takes_the_reader_host_for_its_tests_only` [`DEC-28`, `DEC-2`]; and the named tests extended:
+  the other-reader test (deployment, protocol version, own rules), both listing tests (pairing, an IP-literal subject).
+- **Counts.** reader: 12 valid, 36 invalid, five refused by Rust alone. core-internal: 196 valid, 211 invalid, 789
+  admission, 58 attribution, 120 relations.
+
+| Rule switched off (alone) | Red |
+|---|---|
+| M1: the pairing, reader Rust; then the reader schema's `allOf` | `network_identity_is_paired_with_its_trust_rule`; the reader fixture test |
+| M1: the pairing in core-internal's `Action::check`; then its schema's `allOf` | `listing_a_public_network_names_its_identity_and_its_readers_endpoint_identity_version_and_trust_rule` |
+| M2: a pool names each host once | `rpc_pool_quorum_counts_distinct_hosts_not_spellings`; the reader fixture test |
+| L1: a last label not all digits (Rust) | `rpc_endpoint_names_a_host_and_nothing_that_could_be_a_key`; `listing_that_pins_a_hosts_leaf_certificate_is_refused`; the reader fixture test |
+| L1: two labels or more (Rust) | `rpc_endpoint_names_a_host_and_nothing_that_could_be_a_key`; the reader fixture test |
+| L1: no IP literal, the subject's schema `not` | `listing_that_pins_a_hosts_leaf_certificate_is_refused` |
+| L1: no IP literal, the endpoint's schema `not` | `rpc_endpoint_names_a_host_and_nothing_that_could_be_a_key`; the reader fixture test |
+| L2: no path beyond `/` (Rust; then the schema's pattern as before the round) | the same two |
+| L4: the answer's own rules; then the envelope's deployment and protocol version | `reader_answer_from_another_reader_key_or_version_or_past_its_deadline_is_refused` |
+| L6: the assembly's dev-dependency admitted | `scenario_assembly_takes_the_reader_host_for_its_tests_only` |
+| L6: the assembly's build never takes the host | the same, and `reader_host_reaches_only_the_contracts_and_the_providers_egress_and_nothing_reaches_it` |
+
+Local checks, through the lock, `contracts/src/lib.rs` touched first, after the merge: `fmt --check` and workspace
+`clippy --all-targets -D warnings` clean; `rutent-contracts`, every suite, all passed (`reader` 11, `core-internal`
+100); `rutent-core-authz --lib` 167; the boundary-check's `boundary` 23 and `graph` 2; `plan-check --strict` 0 findings;
+`tag-check --strict` 2554 tests, 0 findings; the contract guard against `origin/develop` below. No local `cargo doc`.
+
+### T-020-59, review round 2 (#343: CI's `ci` job red)
+
+- **H1.** `components/core-audit/tests/checkpoints.rs`'s validator registers the reader contract's schemas, which
+  core-internal's now name; three of its tests had panicked with `Unretrievable { uri: "urn:rutent:reader:common" }`.
+  A grep of the tree finds no other hand-built registry of core-internal's schemas outside `contracts/` (prov's and
+  core-orch's snapshot tests register provider-role and router-api alone, which name neither). `cargo test -p
+  rutent-core-audit` now runs in this row's local checks.
+- **L8.** `is_host_name`: the last label starts with a letter, so `0x8.0x8.0x8.0x8`, `0x7f.0x1` and `readers.0xff` are no
+  host names; both schemas' `not` say the same. Fixtures: reader `answer-of-an-rpc-pool-endpoint-at-a-hexadecimal-ip-literal`,
+  core-internal `decision-request-to-list-a-public-network-under-a-hexadecimal-ip-subject-name`. The reader's README
+  says `.local` names are the operator's responsibility.
+- **L9.** The reader changelog's first bullet counts the fixtures as they are now: 12 valid, 37 invalid. core-internal:
+  196 valid, 212 invalid, 789 admission, 58 attribution, 120 relations.
+- `origin/m3` (`f8bddbb4`) merged: PLAN only, no conflict.
+
+| Rule switched off (alone) | Red |
+|---|---|
+| L8: the last label starts with a letter (Rust; back to "not all digits") | `rpc_endpoint_names_a_host_and_nothing_that_could_be_a_key`; `listing_that_pins_a_hosts_leaf_certificate_is_refused`; the reader fixture test |
+| L8: the subject's schema `not` (back to round 1's) | `listing_that_pins_a_hosts_leaf_certificate_is_refused` |
+| L8: the endpoint's schema `not` (back to round 1's) | `rpc_endpoint_names_a_host_and_nothing_that_could_be_a_key`; the reader fixture test |
+
+Local checks, through the lock, `contracts/src/lib.rs` touched first, after the merge: `fmt --check` and workspace
+`clippy --all-targets -D warnings` clean; `rutent-contracts`, every suite, passed; `rutent-core-authz --lib` 167; the
+boundary-check's `boundary` 23 and `graph` 2; `rutent-core-audit`, every suite, passed (147); `plan-check --strict` 0
+findings; `tag-check --strict` 2554 tests, 0 findings; the contract guard against `origin/develop`: no violations. No
+local `cargo doc`: the new doc comments carry no new intra-doc links but `[`ReaderAnswer::check`]`,
+`[`Statement::check_context`]` and `[`check_pairing`]`, each in scope where it is written.
+

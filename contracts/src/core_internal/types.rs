@@ -358,6 +358,18 @@ pub enum CatalogueChange {
     /// confirms no other: Core checks the platform holds exactly those versions before it carries the confirmation
     /// out. Policy decides it under a permission of its own, held to the deployment operator's logins.
     ConfirmReleases,
+    /// Listing a public network with the reader service that reads it (`DEC-28`, ADR-0007 as amended, `T-020-59`): it
+    /// names the network and its listing ([`PublicNetwork`], [`NetworkListing`]): the network's identity, the reader's
+    /// endpoint, its identity (the operator's CA, the host's subject name and the reader's statement key, never the
+    /// host's leaf certificate), its version and its trust rule. A reader is the operator's own, so its `provider` is the
+    /// caller's own party: the deployment operator's, or one of its desks' (policy refuses any other). Core keys the
+    /// public list by the network, never by this provider (`T-020-60`). Policy decides it under a permission of its own,
+    /// held to the deployment operator's logins.
+    ListPublicNetwork,
+    /// Delisting a public network (`DEC-28`, `T-020-59`): it names the network alone ([`PublicNetwork`] with no
+    /// listing). Its `provider` is the caller's own party, as a listing's is. Policy decides it under a permission of its
+    /// own, held to the deployment operator's logins.
+    DelistPublicNetwork,
 }
 
 /// The platform's lifecycle actions on a module release, each a [`CatalogueChange`] of its own, which Core carries
@@ -401,6 +413,14 @@ impl CatalogueChange {
         self == CatalogueChange::SetSetting
     }
 
+    /// Whether the change lists or delists a public network, and so names it (`T-020-59`).
+    pub fn is_about_a_public_network(self) -> bool {
+        matches!(
+            self,
+            CatalogueChange::ListPublicNetwork | CatalogueChange::DelistPublicNetwork
+        )
+    }
+
     /// Whether the change is about one module release, and so names its version.
     pub fn is_about_a_release(self) -> bool {
         matches!(
@@ -423,6 +443,83 @@ impl CatalogueChange {
             CatalogueChange::Grant | CatalogueChange::RevokeGrant | CatalogueChange::SetSlippage
         )
     }
+}
+
+checked_text!(
+    /// The subject name a reader host's server certificate carries (its SAN, a `dNSName`), which Core holds the host's
+    /// certificate to under the operator's CA (`DEC-28`): a lower-case DNS name of LDH labels, each 1 to 63 characters,
+    /// neither starting nor ending with a hyphen, at least two labels, up to 253 characters, with no wildcard, no
+    /// trailing dot and a last label that starts with a letter, so it names one host by name and is never matched as an
+    /// IP address, decimal or hexadecimal (`crate::reader::is_host_name`). Schema: `urn:rutent:core-internal:common#/$defs/subject_name`.
+    SubjectName,
+    crate::reader::is_host_name,
+    "a subject name is a lower-case DNS host name of at least two labels, with no wildcard and no IP literal"
+);
+
+/// A public network a listing or a delisting is about (`DEC-28`, `T-020-59`): the network, as an outer node names it,
+/// and, for a listing, what lists it. Schema: `urn:rutent:core-internal:common#/$defs/public_network`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicNetwork {
+    /// The network.
+    pub network: Id,
+    /// What lists it: present exactly for `list_public_network`.
+    #[serde(
+        default,
+        deserialize_with = "some",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub listing: Option<NetworkListing>,
+}
+
+/// What lists a public network (`DEC-28`, ADR-0007 as amended): the network's identity, how to find its reader, who
+/// the reader is, its version and its trust rule. Core checks each at start-up against the reader's own
+/// `network_rules` answer, and a network whose reader is unreachable or fails the check doesn't start (`T-020-60`).
+/// Schema: `urn:rutent:core-internal:common#/$defs/network_listing`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkListing {
+    /// The network's identity: a genesis hash, or a chain id.
+    pub identity: crate::reader::NetworkIdentity,
+    /// Where its reader is.
+    pub endpoint: ReaderEndpoint,
+    /// Who its reader is.
+    pub reader: ReaderIdentity,
+    /// The reader's version, which Core holds each answer's to (`REQ-AUD-4`).
+    pub version: crate::router_api::Version,
+    /// The reader's trust rule: a light client, or a pool of RPC endpoints with a quorum of at least two.
+    pub trust: crate::reader::TrustRule,
+}
+
+/// How Core finds a reader (item `reader-registration-path`): the host setting that says where its reader host is, and
+/// the reader's name on that host, the maker of its answers. Schema:
+/// `urn:rutent:core-internal:common#/$defs/reader_endpoint`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReaderEndpoint {
+    /// The deployment's host setting, by name, that holds the reader host's address. The address itself stays the
+    /// deployment's, so moving a host needs no listing change.
+    pub host_setting: Id,
+    /// The reader's name on its host.
+    pub reader: Id,
+}
+
+/// Who a reader is, as Core holds it (`DEC-28`): the operator's CA that issues the host's server certificate, the
+/// subject name that certificate carries, and the reader's statement key, which its answers are signed with. Never
+/// the host's leaf certificate: rotating it under the same CA and name needs no listing change, and transport identity
+/// alone is not authorisation, so Core checks both the certificate and the answer's signature. Schema:
+/// `urn:rutent:core-internal:common#/$defs/reader_identity`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReaderIdentity {
+    /// The SHA-256 digest of the operator's CA certificate (DER), the trust anchor Core checks the host's chain to:
+    /// a CA's, never a leaf's. The contract can't tell a leaf's digest put here from a CA's; Core's link compares it
+    /// with the CA the deployment hands it, so a leaf's digest fails closed and its network doesn't start (`T-020-60`).
+    pub ca: Digest,
+    /// The subject name the host's server certificate must carry.
+    pub subject_name: SubjectName,
+    /// The reader's statement key: the key each of its answers names and is signed with.
+    pub statement_key: PublicKey,
 }
 
 /// One of the operator's settings and its value (finding 4 of `M3`'s milestone review, `T-020-45`): what a
@@ -660,6 +757,14 @@ pub enum Action {
         /// them, at least one, each once: named exactly by `confirm_releases` (`T-020-49`).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         versions: Vec<Id>,
+        /// The public network a listing or a delisting is about: named exactly by `list_public_network`, with its
+        /// listing, and by `delist_public_network`, without one (`DEC-28`, `T-020-59`).
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        public_network: Option<alloc::boxed::Box<PublicNetwork>>,
     },
     /// Asking the provider of a failed segment to reverse it, a decided action like any other (`REQ-ORD-3`,
     /// `REQ-ORD-11`): the segment owes its reversal, and the provider is the one that failed it.
