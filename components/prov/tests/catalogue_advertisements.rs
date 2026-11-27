@@ -970,6 +970,10 @@ fn change_adding_a_protection_binds_every_provider_from_its_cutover() {
         );
     }
     assert_eq!(catalogue.join(&reserve_new, at), Ok(()));
-    assert!(catalogue.accepted_advertisement(&reserve.provider).is_some());
+    assert!(
+        catalogue
+            .accepted_advertisement(&reserve.provider)
+            .is_some()
+    );
     assert!(catalogue.accepted_advertisement("bridge-pay").is_none());
 }

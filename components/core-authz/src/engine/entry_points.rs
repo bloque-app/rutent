@@ -215,6 +215,11 @@ pub(super) const CARRIES_OUT_NOTHING: &[(&str, &str, &str)] = &[
         "a catalogue setting",
     ),
     (
+        "set_cutover",
+        "prov/src/catalogue/advertisements.rs",
+        "an older protocol version's cutover date: only the operator's decided setting calls it (`T-020-49`, `T-020-54`), as `set_evidence_floor` is",
+    ),
+    (
         "trust_advertising_key",
         "prov/src/catalogue/advertisements.rs",
         "a key an advertisement is checked by",
