@@ -1,8 +1,8 @@
 //! Tests of the boundary check.
 
 use rutent_boundary_check::{
-    Graph, OUTER, SourceFinding, Why, load, members, parse_manifest, sources_naming_core_internal,
-    violations,
+    Graph, OUTER, READER_HOST, SourceFinding, Why, load, members, parse_manifest,
+    sources_naming_core_internal, violations,
 };
 use std::path::{Path, PathBuf};
 
@@ -630,5 +630,147 @@ fn a_crates_dev_dependency_on_itself_is_no_boundary_crossing() {
             ("rutent-router", "rutent-stm"),
             ("rutent-stm", "rutent-stm"),
         ]
+    );
+}
+
+/// The reader host (`DEC-28`, `T-015-04`'s crate) depends on the contracts and on the provider system, for its egress
+/// layer only, and nothing of ours depends on it, not even the scenario assembly (`T-020-59`): any other edge from it,
+/// and any edge to it, is reported. Its sources never name Core's internal contract, and name the provider system only
+/// through `rutent_prov::egress`.
+// verifies: DEC-28, DEC-2, REQ-MOD-3
+#[test]
+fn reader_host_reaches_only_the_contracts_and_the_providers_egress_and_nothing_reaches_it() {
+    let contracts = manifest("rutent-contracts", "", "");
+    let prov = manifest(
+        "rutent-prov",
+        "rutent-contracts = { path = \"../contracts\" }",
+        "",
+    );
+    let host = |deps: &str, dev: &str| manifest(READER_HOST, deps, dev);
+    let allowed =
+        "rutent-contracts = { path = \"../../contracts\" }\nrutent-prov = { path = \"../prov\" }";
+    let clean = fixture(&[&contracts, &prov, &host(allowed, "")]);
+    assert_eq!(violations(&clean, &[READER_HOST]), vec![]);
+
+    // The host on Core, on the evidence checker, or on the conformance suites outside its dev-dependencies.
+    let leaky = fixture(&[
+        &contracts,
+        &prov,
+        &host(
+            &format!(
+                "{allowed}\nrutent-core-orch = {{ path = \"../o\" }}\nrutent-evidence = {{ path = \"../e\" }}\n\
+                 rutent-conformance = {{ path = \"../c\" }}"
+            ),
+            "",
+        ),
+    ]);
+    let pairs: Vec<_> = violations(&leaky, &[READER_HOST])
+        .into_iter()
+        .map(|v| v.dep)
+        .collect();
+    assert_eq!(
+        pairs,
+        ["rutent-core-orch", "rutent-evidence", "rutent-conformance"]
+    );
+
+    // Nothing of ours on it: a library, Core, the conformance suites, the assembly, as a dependency or a
+    // dev-dependency.
+    let on_host = format!("{READER_HOST} = {{ path = \"../reader-host\" }}");
+    let leaning = fixture(&[
+        &contracts,
+        &host(allowed, ""),
+        &manifest("rutent-prov", "", &on_host),
+        &manifest("rutent-core-orch", &on_host, ""),
+        &manifest("rutent-conformance", &on_host, ""),
+        &manifest("rutent-scenarios", &on_host, ""),
+        &manifest("rutent-evidence", "", &on_host),
+    ]);
+    let all: Vec<&str> = leaning.keys().map(String::as_str).collect();
+    let mut pairs: Vec<_> = violations(&leaning, &all)
+        .into_iter()
+        .map(|v| (v.krate, v.dep))
+        .collect();
+    pairs.sort();
+    let expected = [
+        "rutent-conformance",
+        "rutent-core-orch",
+        "rutent-evidence",
+        "rutent-prov",
+        "rutent-scenarios",
+    ]
+    .map(|k| (k.to_string(), READER_HOST.to_string()));
+    assert_eq!(pairs, expected);
+
+    // Its sources, once it is a member: only paths into the provider system's egress layer, and never the contract.
+    let sources = Sources::new("reader-host");
+    sources.write(
+        "Cargo.toml",
+        &format!(
+            "{}\n",
+            std::fs::read_to_string(sources.0.join("Cargo.toml"))
+                .unwrap()
+                .replace("members = [", "members = [\"components/reader-host\", ")
+        ),
+    );
+    sources.write("components/reader-host/Cargo.toml", &host(allowed, ""));
+    sources.write(
+        "components/reader-host/src/lib.rs",
+        "//! The reader host; see rutent_prov's egress.\n\
+         use rutent_prov::egress::Egress;\n\
+         use rutent_prov :: egress;\n\
+         fn f() -> rutent_prov::egress::Call { todo!() }\n\
+         const S: &str = \"rutent_prov::module\";\n",
+    );
+    assert_eq!(sources.findings(), vec![]);
+    sources.write(
+        "components/reader-host/src/egress.rs",
+        "use rutent_prov::module::Platform;\n\
+         use rutent_prov::{egress, catalogue};\n\
+         extern crate rutent_prov;\n\
+         use rutent_prov::egressive::X;\n\
+         fn f(_: rutent_prov::catalogue::Snapshot) {}\n\
+         use rutent_contracts::core_internal::Entry;\n\
+         use my_rutent_prov::x;\n",
+    );
+    expect(
+        sources.findings(),
+        &[
+            (
+                "components/reader-host/src/egress.rs",
+                1,
+                Why::ReachesBeyondEgress,
+            ),
+            (
+                "components/reader-host/src/egress.rs",
+                2,
+                Why::ReachesBeyondEgress,
+            ),
+            (
+                "components/reader-host/src/egress.rs",
+                3,
+                Why::ReachesBeyondEgress,
+            ),
+            (
+                "components/reader-host/src/egress.rs",
+                4,
+                Why::ReachesBeyondEgress,
+            ),
+            (
+                "components/reader-host/src/egress.rs",
+                5,
+                Why::ReachesBeyondEgress,
+            ),
+            ("components/reader-host/src/egress.rs", 6, Why::Names),
+        ],
+    );
+
+    // The real workspace holds to it, whether the host is a member yet or not.
+    let real = workspace();
+    let all: Vec<&str> = real.keys().map(String::as_str).collect();
+    assert_eq!(violations(&real, &all), vec![]);
+    assert!(
+        real.values()
+            .all(|deps| deps.iter().all(|d| d.name != READER_HOST)),
+        "nothing of ours depends on the reader host"
     );
 }

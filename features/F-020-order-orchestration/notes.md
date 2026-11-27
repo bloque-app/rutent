@@ -9281,3 +9281,136 @@ scenario tests.
   `gross_charged`, `audit_scenarios`, `charge_check`, `holds`) 203; `invariants` on seeds 11 to 15, 10; `plan-check
   --strict` 0 findings, `tag-check --strict` 2520 tests, 0 findings; the contract guard against `origin/develop`: no
   violations. The doc check is CI's (core-orch's `rustdoc` passes 2 GB locally).
+
+## T-020-59: the reader contract, and a public network listed with its reader service
+
+`DEC-28`, ADR-0007 as amended (the owner's finding 7 on the demo of 2026-11-25, and his form answers
+`reader-registration-path` and `reader-answer-trust` of 2026-11-26). Edits `contracts/` (`reader/` new, `src/reader/`
+new, `tests/reader.rs` new, `core-internal/`, `CONTRACTS`, `src/lib.rs`, `README.md`, the shared `CHANGELOG.md`),
+`components/core-authz/` (`roles`, and the engine's test list) and `tools/boundary-check/`, all `DEC-20` paths. The new
+field `Action::ChangeCatalogue.public_network` needed `public_network: None` at each place that builds the variant
+whole: eleven lines in `components/core-orch/` (`segments/`, `settings/`, a test) and `conformance/scenarios/`, nothing
+else changed there. `T-015-04` is built from this row's commit.
+
+### Design
+
+- **A seventh contract, `reader` 1.0.0** (`contracts/reader/`, `rutent_contracts::reader`, a line in
+  `contracts/CONTRACTS`). Three schemas: `common`, `question`, `answer`.
+  - A `ReaderQuestion` names the reader asked (by its name on its host), the network, what is asked (`Asked`:
+    `network_rules`, `movement_status {movement}`, `movement_of {transaction}`, each read-only), a `RequestId` and a
+    deadline. It is not a signed statement: it travels over the mTLS link, and only Core asks.
+  - A `RequestId` is 128 bits as 32 lower-case hex characters, with its top 64 bits never all zero, which is what a
+    counter written as an id gives. `RequestId::from_random([u8; 16])` is Core's draw; it gives `None` (draw again) on
+    those 2^-64 cases.
+  - A `ReaderAnswer` is a statement in the contracts' envelope (provider-role's `Statement`, shape
+    `urn:rutent:reader:answer`), maker the reader, signed with its statement key. It names the request, the network,
+    the reader's version, the question as asked, and answers it (`Answered`: `network_rules {rules}`,
+    `movement_status {standing}`, `movement_of {movement?}`) or says `unreadable {why}`, for any question.
+    `ReaderAnswer::check` holds the answer's kind to the kind asked.
+  - `check_reader_answer(question, answer, key, version, now)` gives every `ReaderMismatch`: another shape, reader,
+    key, version, request, network, kind of question, movement or transaction, or arrival past the deadline at `now`,
+    Core's clock. The answer's `made_at` is never read for the deadline.
+  - `network_rules`' shapes mirror `CMP-EVIDENCE`'s: `NetworkIdentity` (`genesis_hash {hash}` or `chain_id {id}`),
+    `Finality` (`instant`, `confirmations {count}`, `checkpoint`), `ReorgRule` (`never`, `depth_bound {depth}`,
+    `until_final`), and `TrustRule`: `light_client`, or `rpc_pool {endpoints, quorum}` with a quorum of at least two
+    (`LEAST_QUORUM`), each endpoint once, and at least as many endpoints as the quorum. An `RpcEndpoint` is an
+    `https` or `wss` URL to a DNS name with no user, query or fragment.
+- **The listing, in core-internal** (folded into the unreleased 1.0.0): `CatalogueChange::ListPublicNetwork` and
+  `DelistPublicNetwork` (`is_about_a_public_network`), and `Action::ChangeCatalogue.public_network`
+  (`PublicNetwork {network, listing?}`), named exactly by the two; only a listing names its `NetworkListing`:
+  `identity` (the reader's `NetworkIdentity`), `endpoint` (`ReaderEndpoint {host_setting, reader}`), `reader`
+  (`ReaderIdentity {ca, subject_name, statement_key}`), `version` and `trust` (the reader's `TrustRule`, also held by
+  `Action::check` for a value built in memory). The CA is the SHA-256 digest of the operator's CA certificate (DER);
+  the subject name is a `SubjectName`, a lower-case DNS name of two labels or more, with no wildcard. A leaf
+  certificate has no field to go in: `ReaderIdentity` refuses unknown fields and its schema is closed. core-internal's
+  schemas now name `urn:rutent:reader:common` (its tests' `REFERRED`). Totals recounted: thirty schemas, 196 valid and
+  208 invalid fixtures, 789 admission and 58 attribution cases, 120 relations, unchanged.
+- **Policy** (`components/core-authz/src/roles/`): each change is `Permission::Change(..)` of its own, held as the
+  lifecycle permissions are (`of_operator_holds`: an operator's login the register lists for it, the deployment
+  operator's by `Source::OfOperator`). A listing or delisting naming any other provider than the caller's own party is
+  given no rule, so it is refused before the register is asked.
+- **The boundary** (`tools/boundary-check/`): `READER_HOST` (`rutent-reader-host`) may depend on `rutent-contracts` and
+  `rutent-prov`; nothing of ours may depend on it, the scenario assembly included. Once it is a member, its sources are
+  scanned as outer code (never `core_internal`) and for `rutent_prov` named other than as a path starting
+  `rutent_prov::egress` (`Why::ReachesBeyondEgress`). The crate itself is `T-015-04`'s.
+- **Tests**, the six named ones written first and seen red on an assertion with their rules off:
+  - `reader_answer_to_another_request_or_movement_than_the_one_asked_is_refused` [`REQ-ORD-39`] (`tests/reader.rs`).
+    Red before: `left: Ok(()) right: Err([AnswersAnotherRequest])`.
+  - `rpc_pool_trust_rule_with_a_quorum_below_two_is_refused` [`DEC-28`]. Red before: "a quorum of 0 is refused".
+  - `reader_question_carries_a_request_id_drawn_at_random_and_a_deadline` [`DEC-28`]. Red before:
+    `left: Some(RequestId("00000000000000000000000000000007")) right: None`.
+  - `listing_a_public_network_names_its_identity_and_its_readers_endpoint_identity_version_and_trust_rule`
+    [`REQ-CAT-22`, `REQ-AUD-4`] (`tests/core-internal.rs`). Red before: `--naming-no-listing` read by Rust.
+  - `listing_that_pins_a_hosts_leaf_certificate_is_refused` [`DEC-28`]. Red before: the leaf-pinning fixture accepted by
+    the schema.
+  - `listing_a_public_network_is_permitted_to_the_operator_only` [`REQ-AUZ-1`] (`roles/tests.rs`). Red before:
+    `naming another provider: Change(ListPublicNetwork)`, `left: Permit`.
+  - Beside them: `reader_answer_from_another_reader_key_or_version_or_past_its_deadline_is_refused` [`DEC-28`,
+    `REQ-AUD-4`], the reader's fixture, version and schema tests, and
+    `reader_host_reaches_only_the_contracts_and_the_providers_egress_and_nothing_reaches_it` [`DEC-28`, `DEC-2`,
+    `REQ-MOD-3`] (red before: the host's edges to the contracts and the provider system reported).
+
+### Defaults, reversible, each failing closed
+
+1. A question is unsigned: the mTLS client certificate is Core's identity, and only Core asks. Alternative: Core signs
+   each question with the operator's key.
+2. A request id whose top 64 bits are all zero is refused, as a counter's would be; `from_random` gives `None` and Core
+   draws again.
+3. The deadline holds at its instant: an answer reaching Core exactly at the deadline is taken, a nanosecond after it is
+   refused.
+4. An `unreadable` answer passes `check_reader_answer` when it answers the question asked; it settles nothing. Any other
+   failure of the check is unreadable too, by ADR-0007's rule.
+5. RPC endpoints are `https` or `wss` only, with no user, query or fragment: a key a node needs is the host's to resolve
+   by name, never written in the listing.
+6. The CA is pinned as the SHA-256 digest of the CA certificate's DER. A digest of the leaf put in its place can't be
+   told apart by the contract; Core's link refuses a leaf as its trust anchor (`T-020-60`).
+7. The subject name is one DNS name with no wildcard, and not an IP address.
+8. A listing's `provider` is the caller's own party (the deployment operator's), so a desk of the operator lists under
+   its own party. Alternative: name the deployment operator's party, checked against the register.
+9. The identity's kind and the trust rule are not paired: a genesis hash with an RPC pool, or a chain id with a light
+   client, is accepted by the contract. Alternative: tie Substrate to `light_client` and EVM to `rpc_pool`.
+10. The scenario assembly may not depend on the reader host: `T-024-25` runs it as its own process, or changes the
+    boundary rule in its own row (a `DEC-20` path).
+11. A delisting names the network alone, and nothing in the contract says it must have been listed. Core's catalogue
+    (`T-020-60`, with `T-020-65`'s rule that an unlist waits while anything rests at the node) decides that.
+
+### Gaps, with owners
+
+1. *Verifying an answer's signature, and the host's certificate against the CA and the subject name*: Core's mTLS
+   client and adapter, `T-020-60`. The contract holds what the signature covers, and the listed key.
+2. *Core's decided path for `ListPublicNetwork` and `DelistPublicNetwork`* (the start-up check, the public list, the
+   raise): `T-020-60`. The entry-point scan in `core-authz` lists no Core entry point for them yet.
+3. *`read_by` on `PublicMovement`*: `T-020-60`'s fold into core-internal.
+4. *The reader host crate*, its mTLS, children, signing and egress: `T-015-04`. This row gives it the contract and the
+   boundary rule; the source scan starts once it is a member.
+5. *No log relation for a listing.* The listing is an ordinary decided change; no relation holds a delisting to an
+   earlier listing (default 11).
+6. *The boundary-check's documentation test* (`tests/docs.rs`) runs `cargo doc` on a fixture crate, so it was not run
+   locally; CI runs it, and this row doesn't change it.
+
+### Rule-off
+
+Each rule switched off alone and the file restored from its own text (`ruleoff.py` in the row's scratch folder),
+through the lock; `rutent-contracts`' `reader` and `core-internal` suites, `rutent-core-authz --lib` and the
+boundary-check's `boundary` suite:
+
+| Rule switched off | Tests that went red |
+|---|---|
+| a pool's quorum is at least two (Rust; then the schema's `minimum`) | `rpc_pool_trust_rule_with_a_quorum_below_two_is_refused`; `every_valid_reader_fixture_validates_and_every_invalid_one_is_rejected` |
+| a pool names each endpoint once (Rust) | the same two |
+| a pool has at least as many endpoints as its quorum | the same two |
+| a request id's top 64 bits are not all zero (Rust; then the schema's `not`) | `reader_question_carries_a_request_id_drawn_at_random_and_a_deadline`; the reader's fixture test |
+| a question names its deadline (the schema's `required`) | the same two |
+| an answer answers the kind of question it names | `reader_answer_to_another_request_or_movement_than_the_one_asked_is_refused`; the reader's fixture test |
+| `check_reader_answer`: the request, the network, the movement, the transaction, the kind of question (each alone) | `reader_answer_to_another_request_or_movement_than_the_one_asked_is_refused` |
+| `check_reader_answer`: the reader asked, the listed key, the listed version, the deadline on Core's clock, the shape (each alone) | `reader_answer_from_another_reader_key_or_version_or_past_its_deadline_is_refused` |
+| a public network exactly when listed or delisted | `listing_a_public_network_names_its_identity_and_its_readers_endpoint_identity_version_and_trust_rule`; `every_valid_fixture_validates_and_every_invalid_one_is_rejected`; `every_invalid_fixture_is_rejected_by_the_rust_types_too`; `each_invalid_fixture_breaks_only_the_rule_it_names` |
+| a listing exactly when listed | the same four |
+| a listing's trust rule held in `Action::check` | `listing_a_public_network_names_its_identity_and_its_readers_endpoint_identity_version_and_trust_rule` |
+| a reader's identity holds no other field (Rust's `deny_unknown_fields`; then the schema's `additionalProperties`) | `listing_that_pins_a_hosts_leaf_certificate_is_refused`; `every_valid_fixture_validates_and_every_invalid_one_is_rejected` (and, for Rust, `every_invalid_fixture_is_rejected_by_the_rust_types_too`) |
+| a subject name has no wildcard (Rust; then the schema's `pattern`) | the same |
+| policy: a listing names the caller's own party | `listing_a_public_network_is_permitted_to_the_operator_only` |
+| boundary: the reader host's allowed edges (Core admitted) | `reader_host_reaches_only_the_contracts_and_the_providers_egress_and_nothing_reaches_it` |
+| boundary: nothing depends on the reader host, the assembly included | the same |
+| boundary: the reader host names `rutent_prov` only through `egress` | the same |
+| boundary: the reader host never names the contract | the same |

@@ -78,6 +78,7 @@ impl Action {
             setting,
             provider,
             versions,
+            public_network,
         } = self
         {
             if change.is_about_a_release() != version.is_some() {
@@ -120,6 +121,23 @@ impl Action {
                 broke(
                     "a catalogue change names the versions it confirms, at least one, each once, exactly when it confirms a provider's releases",
                 )?;
+            }
+            // A listing or a delisting names its public network, and nothing else does; only a listing names what
+            // lists it (`T-020-59`).
+            if change.is_about_a_public_network() != public_network.is_some() {
+                broke(
+                    "a catalogue change names a public network exactly when it lists or delists one",
+                )?;
+            }
+            if let Some(network) = public_network
+                && (*change == CatalogueChange::ListPublicNetwork) != network.listing.is_some()
+            {
+                broke("a public network names its listing exactly when it is listed")?;
+            }
+            if let Some(listing) = public_network.as_ref().and_then(|n| n.listing.as_ref())
+                && let Err(violation) = listing.trust.check()
+            {
+                broke(violation.0)?;
             }
             // A provider's own cadence is the status question's alone (`T-020-49`).
             if let Some(OperatorSetting::Cadence {

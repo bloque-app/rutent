@@ -75,16 +75,33 @@ const SHAPES: [&str; 30] = [
 ];
 
 /// The other contracts whose shapes these schemas refer to by `$id`, directly or through another's.
-const REFERRED: [&str; 4] = [
+const REFERRED: [&str; 5] = [
     "provider-role",
     "module-interface",
     "router-api",
     "state-machine",
+    "reader",
 ];
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 63] = [
+const RUST_RULES: [(&str, &str); 67] = [
+    (
+        "decision-request-to-list-a-public-network-naming-no-listing",
+        "a public network names its listing exactly when it is listed",
+    ),
+    (
+        "decision-request-to-delist-a-public-network-naming-a-listing",
+        "a public network names its listing exactly when it is listed",
+    ),
+    (
+        "decision-request-to-list-naming-no-public-network",
+        "a catalogue change names a public network exactly when it lists or delists one",
+    ),
+    (
+        "decision-request-to-promote-naming-a-public-network",
+        "a catalogue change names a public network exactly when it lists or delists one",
+    ),
     (
         "decision-request-to-confirm-releases-naming-no-versions",
         "a catalogue change names the versions it confirms, at least one, each once, exactly when it confirms a provider's releases",
@@ -348,7 +365,64 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 132] = [
+const SCHEMA_RULES: [SchemaRule; 141] = [
+    (
+        "decision-request-to-list-a-public-network-pinning-the-hosts-leaf-certificate",
+        &[(
+            "/action/public_network/listing/reader",
+            "additionalProperties",
+        )],
+        "unknown field `leaf_certificate`",
+    ),
+    (
+        "decision-request-to-list-a-public-network-pinning-a-leaf-certificate-in-place-of-its-ca",
+        &[
+            (
+                "/action/public_network/listing/reader",
+                "additionalProperties",
+            ),
+            ("/action/public_network/listing/reader", "required"),
+        ],
+        "unknown field `certificate`",
+    ),
+    (
+        "decision-request-to-list-a-public-network-under-a-wildcard-subject-name",
+        &[(
+            "/action/public_network/listing/reader/subject_name",
+            "pattern",
+        )],
+        "a subject name is a lower-case DNS name of at least two labels, with no wildcard",
+    ),
+    (
+        "decision-request-to-list-a-public-network-without-its-readers-statement-key",
+        &[("/action/public_network/listing/reader", "required")],
+        "missing field `statement_key`",
+    ),
+    (
+        "decision-request-to-list-a-public-network-without-its-identity",
+        &[("/action/public_network/listing", "required")],
+        "missing field `identity`",
+    ),
+    (
+        "decision-request-to-list-a-public-network-without-its-readers-version",
+        &[("/action/public_network/listing", "required")],
+        "missing field `version`",
+    ),
+    (
+        "decision-request-to-list-a-public-network-without-its-trust-rule",
+        &[("/action/public_network/listing", "required")],
+        "missing field `trust`",
+    ),
+    (
+        "decision-request-to-list-a-public-network-without-its-host-setting",
+        &[("/action/public_network/listing/endpoint", "required")],
+        "missing field `host_setting`",
+    ),
+    (
+        "decision-request-to-list-a-public-network-from-an-rpc-pool-with-a-quorum-of-one",
+        &[("/action/public_network/listing/trust", "oneOf")],
+        "an rpc pool's quorum is at least two",
+    ),
     (
         "decision-request-to-confirm-releases-naming-a-version-twice",
         &[("/action/versions", "uniqueItems")],
@@ -2656,6 +2730,7 @@ fn a_value_built_in_memory_is_held_to_the_same_rules_as_one_read() {
         statement_key: None,
         setting: None,
         versions: Vec::new(),
+        public_network: None,
     };
     assert_eq!(
         effect.check(),
@@ -5291,4 +5366,190 @@ fn recalculation_from_a_from_node_whose_reversal_is_not_completed_is_refused() {
     assert_case_refused(
         "recalculation-starts-from-evidenced-value--a-handed-on-routes-reversal-from-another-node",
     );
+}
+
+// --- T-020-59: a public network listed with its reader service --------------------------------------------------
+
+/// A public network is listed by a catalogue change of its own, decided by policy (`DEC-28`, item
+/// `reader-registration-path`): it names the network and its identity (a genesis hash, or a chain id), its reader's
+/// endpoint (the host setting that says where its reader host is, and the reader's name there), the reader's identity
+/// (the operator's CA, the host's subject name and the reader's statement key), its version and its trust rule, so the
+/// log holds what Core checks the reader against at start-up (`REQ-CAT-22`, `REQ-AUD-4`). A delisting names the
+/// network alone, and no other change names a public network.
+// verifies: REQ-CAT-22, REQ-AUD-4
+#[test]
+fn listing_a_public_network_names_its_identity_and_its_readers_endpoint_identity_version_and_trust_rule()
+ {
+    use rutent_contracts::core_internal::{NetworkListing, PublicNetwork};
+    use rutent_contracts::reader::{NetworkIdentity, TrustRule};
+    let change = CatalogueChange::ListPublicNetwork;
+    assert!(change.is_about_a_public_network());
+    assert!(CatalogueChange::DelistPublicNetwork.is_about_a_public_network());
+    assert!(!change.is_about_a_release() && !change.is_about_a_tuple() && !change.is_a_setting());
+    assert!(!change.is_a_lifecycle_action() && !change.confirms_releases());
+    assert_eq!(serde_json::to_value(change).unwrap(), "list_public_network");
+    assert_eq!(
+        serde_json::to_value(CatalogueChange::DelistPublicNetwork).unwrap(),
+        "delist_public_network"
+    );
+    let listed = |name: &str| -> (Id, PublicNetwork) {
+        assert_accepted_by_both(name);
+        let request: DecisionRequest = serde_json::from_value(fixture("valid", name)).unwrap();
+        let Action::ChangeCatalogue {
+            change,
+            provider,
+            public_network: Some(network),
+            version: None,
+            tuple: None,
+            setting: None,
+            ..
+        } = request.action
+        else {
+            panic!("{name} lists or delists a public network");
+        };
+        assert!(change.is_about_a_public_network(), "{name}");
+        (provider, *network)
+    };
+    let (provider, light) =
+        listed("decision-request-to-list-a-public-network-read-by-a-light-client");
+    assert_eq!(
+        provider.as_str(),
+        "operator",
+        "a reader is the operator's own"
+    );
+    assert_eq!(light.network.as_str(), "kreivo");
+    let Some(NetworkListing {
+        identity,
+        endpoint,
+        reader,
+        version,
+        trust,
+    }) = light.listing
+    else {
+        panic!("a listing names what lists it");
+    };
+    assert!(
+        matches!(&identity, NetworkIdentity::GenesisHash { hash } if hash.as_str().starts_with("0xc710a5f1"))
+    );
+    assert_eq!(
+        (endpoint.host_setting.as_str(), endpoint.reader.as_str()),
+        ("reader-host-a", "kreivo-reader")
+    );
+    assert_eq!(reader.subject_name.as_str(), "readers.rutent.internal");
+    assert_eq!(
+        reader.ca.algorithm,
+        rutent_contracts::module_interface::DigestAlgorithm::Sha256
+    );
+    assert_eq!(
+        reader.statement_key.as_str(),
+        "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8"
+    );
+    assert_eq!(version.as_str(), "0.1.0");
+    assert!(matches!(trust, TrustRule::LightClient(_)));
+    let (_, pool) = listed("decision-request-to-list-a-public-network-read-from-an-rpc-pool");
+    let listing = pool.listing.expect("a listing");
+    assert!(matches!(&listing.identity, NetworkIdentity::ChainId { id } if id.as_str() == "8453"));
+    assert!(
+        matches!(&listing.trust, TrustRule::RpcPool { endpoints, quorum: 2 } if endpoints.len() == 3)
+    );
+    let (_, delisted) = listed("decision-request-to-delist-a-public-network");
+    assert_eq!(delisted.network.as_str(), "kreivo");
+    assert_eq!(
+        delisted.listing, None,
+        "a delisting names the network alone"
+    );
+    // Each part of the listing is required, and only a listing names one; a delisting names none, and no other change
+    // names a public network.
+    for name in [
+        "decision-request-to-list-a-public-network-without-its-identity",
+        "decision-request-to-list-a-public-network-without-its-host-setting",
+        "decision-request-to-list-a-public-network-without-its-readers-statement-key",
+        "decision-request-to-list-a-public-network-without-its-readers-version",
+        "decision-request-to-list-a-public-network-without-its-trust-rule",
+        "decision-request-to-list-a-public-network-naming-no-listing",
+        "decision-request-to-list-naming-no-public-network",
+        "decision-request-to-delist-a-public-network-naming-a-listing",
+        "decision-request-to-promote-naming-a-public-network",
+        "decision-request-to-list-a-public-network-from-an-rpc-pool-with-a-quorum-of-one",
+    ] {
+        assert_rejected(name);
+    }
+    // A listing built in memory is held to the same rules: a delisting that names a listing, and a pool below its
+    // quorum, are refused by `check`.
+    let request: DecisionRequest = serde_json::from_value(fixture(
+        "valid",
+        "decision-request-to-list-a-public-network-read-from-an-rpc-pool",
+    ))
+    .unwrap();
+    let mut action = request.action.clone();
+    if let Action::ChangeCatalogue { change, .. } = &mut action {
+        *change = CatalogueChange::DelistPublicNetwork;
+    }
+    assert_eq!(
+        action.check(),
+        Err(Violation(
+            "a public network names its listing exactly when it is listed"
+        ))
+    );
+    let mut action = request.action;
+    if let Action::ChangeCatalogue {
+        public_network: Some(network),
+        ..
+    } = &mut action
+        && let Some(listing) = network.listing.as_mut()
+        && let TrustRule::RpcPool { quorum, .. } = &mut listing.trust
+    {
+        *quorum = 4;
+    }
+    assert_eq!(
+        action.check(),
+        Err(Violation(
+            "an rpc pool has at least as many endpoints as its quorum"
+        ))
+    );
+}
+
+/// The listing pins the reader's identity as the operator's CA, the host's subject name and the reader's statement key,
+/// never the host's leaf certificate, so rotating the leaf under the same CA and name needs no listing change
+/// (`DEC-28`): a listing that pins a leaf, beside the CA or in its place, is refused, and so is one whose subject name is
+/// a wildcard, which would name every host under the CA.
+// verifies: DEC-28
+#[test]
+fn listing_that_pins_a_hosts_leaf_certificate_is_refused() {
+    use rutent_contracts::core_internal::{ReaderIdentity, SubjectName};
+    for name in [
+        "decision-request-to-list-a-public-network-pinning-the-hosts-leaf-certificate",
+        "decision-request-to-list-a-public-network-pinning-a-leaf-certificate-in-place-of-its-ca",
+        "decision-request-to-list-a-public-network-under-a-wildcard-subject-name",
+    ] {
+        assert_rejected(name);
+    }
+    // What the identity holds, and nothing else: the CA, the subject name and the statement key.
+    let identity: ReaderIdentity = serde_json::from_value(
+        fixture(
+            "valid",
+            "decision-request-to-list-a-public-network-read-by-a-light-client",
+        )["action"]["public_network"]["listing"]["reader"]
+            .clone(),
+    )
+    .unwrap();
+    let fields: Vec<String> = serde_json::to_value(&identity)
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+    assert_eq!(fields, ["ca", "statement_key", "subject_name"]);
+    for name in [
+        "*.rutent.internal",
+        "readers",
+        "Readers.rutent.internal",
+        "readers.rutent.internal.",
+        "-readers.rutent.internal",
+        "10.0.0.1:443",
+    ] {
+        assert_eq!(SubjectName::new(name), None, "{name}");
+    }
+    assert!(SubjectName::new("readers.rutent.internal").is_some());
 }

@@ -36,17 +36,30 @@ const OURS: &str = "rutent-";
 /// three included, and that nothing imports.
 const SCENARIOS: &str = "rutent-scenarios";
 
+/// The reader host (`DEC-28`, `T-015-04`): `CMP-EVIDENCE`'s standalone part, which runs each public
+/// network's reader as a reader service outside Core. It depends on the contracts, for the reader
+/// contract, and on the provider system for its egress layer alone ([`PROV_EGRESS`]); nothing of
+/// ours depends on it, the scenario assembly included (`T-020-59`).
+pub const READER_HOST: &str = "rutent-reader-host";
+
+/// The one path of the provider system the reader host may name: its egress layer
+/// (`components/prov/src/egress/`), which enforces a reader's declared destinations.
+pub const PROV_EGRESS: &str = "rutent_prov::egress";
+
 /// The crates of ours that `krate` may depend on (DEC-2).
 ///
 /// The outer libraries, the evidence checker and the conformance suites import nothing of ours but
 /// the contracts. Core's three crates may also reach the four libraries, but not each other: they
-/// talk through the core-internal contract, in the contracts crate (`T-020-01`). The scenario
-/// assembly may import every crate of ours. Any other crate imports nothing of ours, so no crate
-/// but the assembly imports Core, and none imports the assembly.
+/// talk through the core-internal contract, in the contracts crate (`T-020-01`). The reader host
+/// reaches the contracts and the provider system, for its egress layer only (`T-020-59`). The
+/// scenario assembly may import every crate of ours but the reader host. Any other crate imports
+/// nothing of ours, so no crate but the assembly imports Core, none imports the assembly, and none
+/// imports the reader host.
 fn allowed(krate: &str) -> &'static [&'static str] {
     match krate {
         "rutent-conformance" | "rutent-router" | "rutent-stm" | "rutent-prov"
         | "rutent-evidence" => &["rutent-contracts"],
+        READER_HOST => &["rutent-contracts", "rutent-prov"],
         "rutent-core-orch" | "rutent-core-authz" | "rutent-core-audit" => &[
             "rutent-contracts",
             "rutent-router",
@@ -70,10 +83,11 @@ pub fn violations(graph: &Graph, krates: &[&str]) -> Vec<Violation> {
     let mut found = Vec::new();
     for &krate in krates {
         for dep in graph.get(krate).map(Vec::as_slice).unwrap_or_default() {
-            let permitted = (krate == SCENARIOS && dep.name != SCENARIOS)
-                || allowed(krate).contains(&dep.name.as_str())
-                || (dep.dev && dep.name == "rutent-conformance")
-                || (dep.dev && dep.name == krate);
+            let permitted =
+                (krate == SCENARIOS && dep.name != SCENARIOS && dep.name != READER_HOST)
+                    || allowed(krate).contains(&dep.name.as_str())
+                    || (dep.dev && dep.name == "rutent-conformance")
+                    || (dep.dev && dep.name == krate);
             if !permitted {
                 found.push(Violation {
                     krate: krate.to_string(),
@@ -245,6 +259,9 @@ pub enum Why {
     /// A `#[macro_export]` in the contract's own module, which would export a macro at the
     /// contracts crate's root, out of the reach of the name.
     ExportsAMacro,
+    /// The reader host names the provider system other than through its egress layer
+    /// ([`PROV_EGRESS`]).
+    ReachesBeyondEgress,
 }
 
 /// A source line that breaks the boundary.
@@ -611,6 +628,38 @@ fn public_items_naming(text: &str) -> Vec<usize> {
     found
 }
 
+/// The 1-based lines of `text`, its comments and literals blanked, that name the provider system's
+/// crate, `rutent_prov`, other than as a path into its egress layer: `rutent_prov::egress`
+/// followed by `::` or by a character that can't continue a name. Fails closed: a bare
+/// `rutent_prov`, a grouped `use rutent_prov::{egress, ..}`, an `extern crate` or a rename is a
+/// finding, so only paths that start with [`PROV_EGRESS`] pass.
+fn lines_beyond_egress(text: &str) -> Vec<usize> {
+    const CRATE: &str = "rutent_prov";
+    let code = blank(text, true);
+    let continues = |c: char| c.is_alphanumeric() || c == '_';
+    let mut found = Vec::new();
+    let mut from = 0;
+    while let Some(at) = code[from..].find(CRATE).map(|n| from + n) {
+        from = at + CRATE.len();
+        let before = code[..at].chars().next_back();
+        let after = &code[from..];
+        if before.is_some_and(continues) || after.chars().next().is_some_and(continues) {
+            continue;
+        }
+        let rest = after.trim_start();
+        let through_egress = rest
+            .strip_prefix("::")
+            .map(str::trim_start)
+            .and_then(|r| r.strip_prefix("egress"))
+            .is_some_and(|r| !r.chars().next().is_some_and(continues));
+        if !through_egress {
+            found.push(line_of(text, at));
+        }
+    }
+    found.dedup();
+    found
+}
+
 /// Reports every line that breaks the source boundary of the core-internal contract (DEC-2):
 ///
 /// - any line that names [`CORE_INTERNAL`] in the sources of the outer libraries and the
@@ -623,7 +672,10 @@ fn public_items_naming(text: &str) -> Vec<usize> {
 /// - any attribute with a `path` key (`#[path]`, `# [path]`, `#[cfg_attr(.., path = ..)]`, over
 ///   any lines) or `include!` in those trees that mounts a file from outside its package, or that
 ///   the check can't resolve;
-/// - any `#[macro_export]` in the contract's own module.
+/// - any `#[macro_export]` in the contract's own module;
+/// - in the reader host ([`READER_HOST`]), once it is a member, any line that names the contract,
+///   and any that names the provider system other than through its egress layer
+///   ([`PROV_EGRESS`], `T-020-59`).
 ///
 /// Fails closed: it matches the plain text, comments included, so a mention in a library's
 /// documentation fails too. A package [`OUTER`] names that isn't a member, and a symbolic link in
@@ -646,6 +698,7 @@ pub fn sources_naming_core_internal(root: &Path) -> std::io::Result<Vec<SourceFi
             .collect()
     };
     let mut found = Vec::new();
+    let mut beyond_egress = Vec::new();
     let relative = |file: &Path| file.strip_prefix(root).unwrap_or(file).to_path_buf();
     let mut scan = |package: &Path,
                     names_allowed: &dyn Fn(&Path, &str) -> bool,
@@ -683,6 +736,21 @@ pub fn sources_naming_core_internal(root: &Path) -> std::io::Result<Vec<SourceFi
         let dir = dirs.get(name).ok_or_else(|| missing(name))?;
         scan(dir, &|_, _| false, false)?;
     }
+    // The reader host is outer code too, once it is a member (`T-015-04` makes it one): it never
+    // names the contract, and names the provider system only through its egress layer.
+    if let Some(dir) = dirs.get(READER_HOST) {
+        scan(dir, &|_, _| false, false)?;
+        for file in rust_files(dir, &others(dir))? {
+            let text = std::fs::read_to_string(&file)?;
+            for line in lines_beyond_egress(&text) {
+                beyond_egress.push(SourceFinding {
+                    file: relative(&file),
+                    line,
+                    why: Why::ReachesBeyondEgress,
+                });
+            }
+        }
+    }
     let conformance = dirs.get(CONFORMANCE).ok_or_else(|| missing(CONFORMANCE))?;
     scan(conformance, &|_, _| true, true)?;
 
@@ -708,6 +776,7 @@ pub fn sources_naming_core_internal(root: &Path) -> std::io::Result<Vec<SourceFi
             }
         }
     }
+    found.extend(beyond_egress);
     found.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
     Ok(found)
 }

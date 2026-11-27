@@ -1,0 +1,248 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:reader:common",
+  "title": "Shared atoms of the reader contract",
+  "description": "Referenced by the reader's question and answer, and by core-internal's listing of a public network (DEC-28); validates nothing on its own.",
+  "$defs": {
+    "request_id": {
+      "description": "A question's request id: 128 bits Core draws at random for each question, never from a counter, as 32 lower-case hexadecimal characters, its top 64 bits never all zero, which is what a counter written as an id gives (DEC-28's condition (b)).",
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$",
+      "not": {
+        "pattern": "^0{16}"
+      }
+    },
+    "genesis_hash": {
+      "description": "A Substrate network's genesis hash: 0x and 64 lower-case hexadecimal characters.",
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{64}$"
+    },
+    "chain_id": {
+      "description": "An EVM network's chain id (EIP-155), in decimal digits with no leading zero, above zero, up to 20 digits.",
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,19}$"
+    },
+    "network_identity": {
+      "description": "A network's identity, which the reader checks before it answers anything and Core holds to the listing: a genesis hash, or a chain id.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "hash"
+          ],
+          "properties": {
+            "kind": {
+              "const": "genesis_hash"
+            },
+            "hash": {
+              "$ref": "#/$defs/genesis_hash"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "chain_id"
+            },
+            "id": {
+              "$ref": "#/$defs/chain_id"
+            }
+          }
+        }
+      ]
+    },
+    "depth": {
+      "description": "A count of blocks: at least one.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4294967295
+    },
+    "finality": {
+      "description": "When a movement on the network counts as final (DEC-13): as soon as it is recorded, after a count of confirmations, or once a later checkpoint covers it.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "finality"
+          ],
+          "properties": {
+            "finality": {
+              "enum": [
+                "instant",
+                "checkpoint"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "finality",
+            "count"
+          ],
+          "properties": {
+            "finality": {
+              "const": "confirmations"
+            },
+            "count": {
+              "$ref": "#/$defs/depth"
+            }
+          }
+        }
+      ]
+    },
+    "reorg_rule": {
+      "description": "What the network can do to a movement that is not yet final (DEC-13): never undo it, undo it to a depth, or undo it until the finality rule says otherwise.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "reorg"
+          ],
+          "properties": {
+            "reorg": {
+              "enum": [
+                "never",
+                "until_final"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "reorg",
+            "depth"
+          ],
+          "properties": {
+            "reorg": {
+              "const": "depth_bound"
+            },
+            "depth": {
+              "$ref": "#/$defs/depth"
+            }
+          }
+        }
+      ]
+    },
+    "rpc_endpoint": {
+      "description": "One endpoint of an RPC pool: an https or wss URL to a lower-case DNS name, with an optional port and path, and no user, query or fragment. The reader host's egress reaches it by its name; a key a node needs is resolved by name by the host and never written here.",
+      "type": "string",
+      "maxLength": 256,
+      "pattern": "^(https|wss)://[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*(:(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[1-9][0-9]{0,3}))?(/[A-Za-z0-9._~/-]*)?$"
+    },
+    "trust_rule": {
+      "description": "How a reader stands behind what it answers (item reader-answer-trust, DEC-28): an embedded light client (a Substrate network's), or a preset pool of RPC endpoints of which at least the quorum, two or more, must agree (an EVM network's). A pool names each endpoint once and at least as many endpoints as its quorum, which the Rust types check.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "rule"
+          ],
+          "properties": {
+            "rule": {
+              "const": "light_client"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "rule",
+            "endpoints",
+            "quorum"
+          ],
+          "properties": {
+            "rule": {
+              "const": "rpc_pool"
+            },
+            "endpoints": {
+              "type": "array",
+              "minItems": 2,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/rpc_endpoint"
+              }
+            },
+            "quorum": {
+              "description": "How many of the endpoints must agree: at least two.",
+              "type": "integer",
+              "minimum": 2,
+              "maximum": 4294967295
+            }
+          }
+        }
+      ]
+    },
+    "asked": {
+      "description": "A question, by kind, with what it is about. Each is read-only.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "question"
+          ],
+          "properties": {
+            "question": {
+              "const": "network_rules"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "question",
+            "movement"
+          ],
+          "properties": {
+            "question": {
+              "const": "movement_status"
+            },
+            "movement": {
+              "description": "The movement asked about, by its id on the network.",
+              "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "question",
+            "transaction"
+          ],
+          "properties": {
+            "question": {
+              "const": "movement_of"
+            },
+            "transaction": {
+              "description": "The segment's transaction whose movement is asked for.",
+              "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+            }
+          }
+        }
+      ]
+    },
+    "reason": {
+      "description": "Why a reader can't stand behind an answer, as a token: a label to read, which no decision branches on.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    }
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:reader:question",
+  "title": "Reader question",
+  "description": "A question from Core to a reader host (DEC-28, ADR-0007 as amended): the reader asked, by its name on its host, the network, what is asked (network_rules, movement_status or movement_of, each read-only), a request id Core draws at random for it, never from a counter, so a host can't compute an answer before it is asked, and the deadline its answer must meet on Core's own clock, never the host's. It travels over the mTLS link under the operator's CA, and is not a signed statement: only Core asks.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "request",
+    "reader",
+    "network",
+    "deadline",
+    "asked"
+  ],
+  "properties": {
+    "request": {
+      "$ref": "urn:rutent:reader:common#/$defs/request_id"
+    },
+    "reader": {
+      "description": "The reader asked, by its name on its host: the answer's maker.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "network": {
+      "description": "The network asked about, as an outer node names it.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "deadline": {
+      "description": "The last instant, on Core's clock, at which Core takes its answer. The host answers under it and never draws its own.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+    },
+    "asked": {
+      "$ref": "urn:rutent:reader:common#/$defs/asked"
+    }
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "deployment": {
+    "name": "rutent-test",
+    "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+  },
+  "protocol_version": "4.0.0",
+  "shape": "urn:rutent:reader:answer",
+  "maker": "base-reader",
+  "made_at": "2026-11-27T10:00:01Z",
+  "signature": {
+    "scheme": "ed25519",
+    "key": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8",
+    "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+  },
+  "statement": {
+    "request": "9f3c2a7be14d4c0e8a51d6b07e2f9c13",
+    "network": "base",
+    "version": "0.1.0",
+    "asked": {
+      "question": "network_rules"
+    },
+    "answer": {
+      "answer": "network_rules",
+      "rules": {
+        "identity": {
+          "kind": "chain_id",
+          "id": "8453"
+        },
+        "finality": {
+          "finality": "confirmations",
+          "count": 12
+        },
+        "reorg": {
+          "reorg": "depth_bound",
+          "depth": 12
+        },
+        "trust": {
+          "rule": "rpc_pool",
+          "endpoints": [
+            "https://rpc-a.base.example",
+            "https://rpc-b.base.example:8545/v1",
+            "wss://rpc-c.base.example/ws"
+          ]
+        }
+      }
+    }
+  }
+}
