@@ -601,3 +601,14 @@ rule-off turned red. The host's launcher bound and its check's read of `/proc/<p
 their rule-offs ran on the draft PR's `jail-probes` job (below). The wiring of the root check on Linux has no test of
 its own: no stand-in can pass the status check (seccomp, capabilities) without `confine`, which empties the root
 first. It is held by the pure reader's rule-offs above and by `T-015-04`'s confined reader passing it in the same job.
+
+On Linux, on the draft PR (#354): `bf1731f8`'s `jail-probes` run 46059050785 passed both reader-host probes. The
+unbounded reader was refused with `reader_memory_unbounded` (`unlimited unlimited`). The hosted one was bounded at
+`4294967296 4294967296` and refused only with `reader_not_confined`. `T-015-04`'s confined reader passed the new
+limits and root checks. Then the two Linux rules were switched off together in `2746c4c7` and reverted in the next
+commit. The test reads every expectation before it fails, so run 46060498666 shows each red on its own:
+
+| Rule switched off | Test | Red |
+|---|---|---|
+| The host's launcher sets `RLIMIT_AS` | `reader_that_skips_its_own_memory_limit_is_refused_by_the_hosts_check` | the hosted reader's limit was `unlimited unlimited`, not the bound |
+| The check reads `/proc/<pid>/limits` | the same | the unbounded reader was refused only as `reader_not_confined`, never for its address space |
