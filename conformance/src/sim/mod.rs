@@ -58,6 +58,10 @@ pub const DEPLOYMENT_KEY: &str = "deployment";
 /// it keeps the stand-in's own.
 pub const OPENING_KEY: &str = "opening";
 
+/// The state key under which the world holds the sessions the holder's register issued, a JSON list of their ids,
+/// which a simulated reserve answers a check in as in its own (`T-024-21`).
+pub const SESSIONS_KEY: &str = "sessions";
+
 /// The prefix of the state keys a script's next behaviour is read under: `script/next/{kind}/{dry|real}`. Reading
 /// one takes the behaviour out of the queue, which is how a script is consumed.
 pub const SCRIPT_PREFIX: &str = "script/next";
@@ -876,6 +880,14 @@ impl Simulated {
     /// Its identity.
     pub fn spec(&self) -> &Spec {
         &self.spec
+    }
+
+    /// Tells it of each of `sessions`, the sessions the holder's register issued (`RoleHarness::open_session`,
+    /// `T-024-21`).
+    pub fn open_sessions(&mut self, sessions: &[String]) {
+        for session in sessions {
+            self.provider.open_session(session);
+        }
     }
 
     /// Its advertisement, as the stand-in signs it.

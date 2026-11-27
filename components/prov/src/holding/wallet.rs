@@ -144,6 +144,43 @@ impl WalletHolding {
         }
     }
 
+    /// The account of `node` held in `asset` by the wallet of `provider`, as a host that restarted opens it again
+    /// (`T-024-21`, `REQ-ORD-43`): nothing of what the host held in memory survives, so it is built from what is kept
+    /// beyond it. Its attribution starts empty, and is what the log holds once Core restores each order the log
+    /// settled at the node ([`Self::restore`]). Its transactions follow the last one the platform's record holds as
+    /// carried out under the host's names (`{provider}-{deposit,withdrawal,balance}-{n}`), so none is asked again
+    /// (each `n` from 1 is probed until [`REOPEN_PROBE_GAP`] in a row are not held). The start it last saw is none the
+    /// platform ever minted: the wallet is taken as restarted until it confirms a movement, so nothing in its own record
+    /// is trusted before it is asked.
+    pub fn reopened<W: World>(
+        node: impl Into<String>,
+        asset: impl Into<String>,
+        provider: impl Into<String>,
+        platform: &Platform<W>,
+    ) -> Self {
+        let provider = provider.into();
+        let (mut sent, mut n, mut misses) = (0, 0, 0);
+        while misses < REOPEN_PROBE_GAP {
+            n += 1;
+            let held = ["deposit", "withdrawal", "balance"]
+                .iter()
+                .any(|kind| platform.carries(&format!("{provider}-{kind}-{n}")));
+            if held {
+                sent = n;
+                misses = 0;
+            } else {
+                misses += 1;
+            }
+        }
+        Self {
+            provider,
+            ledger: OrderLedger::new(node, asset),
+            sent,
+            // No start the platform mints is empty (`start-…`).
+            start: Some(StartId::new()),
+        }
+    }
+
     /// The provider whose module is the account.
     pub fn provider(&self) -> &str {
         &self.provider
@@ -253,6 +290,14 @@ impl WalletHolding {
         let units = parse_amount(amount)?;
         let held = self.held_by_wallet(platform, operator, order, units, transaction)?;
         if held >= units {
+            // The wallet holds it: the host's attribution is the log's figure, which a host opened again
+            // ([`Self::reopened`]) holds nothing of until now.
+            let attributed = self.ledger.held_for(order);
+            if attributed < units {
+                self.ledger.hold(order, units - attributed)?;
+            } else if attributed > units {
+                self.ledger.release(order, attributed - units)?;
+            }
             self.start = platform.start_of(&self.provider);
             return Ok(0);
         }
@@ -271,9 +316,13 @@ impl WalletHolding {
             &short.to_string(),
             Some(transaction.to_owned()),
         )?;
+        // The attribution ends at the log's figure: above it, as a host that ran on may hold, and below it, as a host
+        // opened again holds (`T-024-21`).
         let attributed = next.held_for(order);
         if attributed > units {
             next.release(order, attributed - units)?;
+        } else if attributed < units {
+            next.hold(order, units - attributed)?;
         }
         self.ledger = next;
         self.start = platform.start_of(&self.provider);
@@ -458,6 +507,11 @@ impl WalletHolding {
     }
 }
 
+/// How many of the host's transaction numbers in a row a reopened account finds not held in the platform's record
+/// before it takes the last one held as the last it asked under ([`WalletHolding::reopened`]): a number asked and
+/// refused before anything passed out is held by no record, so a few gaps are passed over.
+pub const REOPEN_PROBE_GAP: u64 = 16;
+
 /// The holding accounts of the operator's public nodes: one plain wallet each.
 #[derive(Debug, Clone, Default)]
 pub struct Holdings {
@@ -502,6 +556,22 @@ impl Holdings {
         self.accounts
             .insert(node.to_owned(), WalletHolding::new(node, asset, provider));
         Ok(())
+    }
+
+    /// The holding account of `node`, held in `asset` by the wallet of `provider`, opened again as a host that
+    /// restarted opens it, from the deployment's register and the platform's record ([`WalletHolding::reopened`],
+    /// `T-024-21`). The catalogue's way to it is the deployment's, listed again apart. A node already holding one keeps
+    /// it.
+    pub fn reopen_account<W: World>(
+        &mut self,
+        platform: &Platform<W>,
+        node: &str,
+        asset: &str,
+        provider: &str,
+    ) {
+        self.accounts
+            .entry(node.to_owned())
+            .or_insert_with(|| WalletHolding::reopened(node, asset, provider, platform));
     }
 
     /// The holding account of a node, if one is registered.

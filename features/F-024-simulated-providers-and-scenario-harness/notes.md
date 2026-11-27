@@ -2097,4 +2097,55 @@ two times in three (`Kind::drawn`), so CI's seeds draw restarts too.
 Not switched off: `Landing::restore`'s `NotNow` (no test reaches it, gaps above), `relist`'s accepted advertisement (no test
 re-advertises), the bounded `WouldBlock` retry (it only shows as a flake).
 
+**Review round 1 of #350** (verdict CHANGES at `8ee8f4b3`).
+- *H1, the host's holdings no longer cross the restart.* `Core::restart` carries an empty `Holdings`; as Core opens, each
+  account the deployment's register names is opened again (`Core::reopen_holdings`, `Holdings::reopen_account`,
+  `WalletHolding::reopened`) from what is kept beyond the host's memory: its node, wallet and asset from the register (the
+  asset is the register's now, `Registers::holding_assets`, set where the operator installs the wallet), its transaction
+  count from the platform's record (the last `{provider}-{deposit,withdrawal,balance}-{n}` the record holds as carried out,
+  probed past gaps of up to 16), and a last-seen start no platform mints, so the wallet is taken as restarted until it
+  confirms a movement. Its attribution is the log's: `Segments::reconcile_landings` restores each order the log settled at
+  the node, and `WalletHolding::restore` now ends the host's attribution at the log's figure in both directions (it only
+  cut it down before), whether the wallet still held the value or lacked some. Test 5 passes on the rebuilt state, its
+  `attributions() == held` now a check of the rebuild. `Scenario::reopen` (Core alone, the platform going on) still carries
+  them, as `T-020-46` set.
+- *H2:* `report_process_as` is listed in `CARRIES_OUT_NOTHING` (`components/core-authz/src/engine/entry_points.rs`, a
+  `DEC-20` path); `cargo test -p rutent-core-authz --lib` is green.
+- *M1:* the orders a crash caught are recorded (`Sim::caught`), and only those of the kinds `stuck_until_t020_61` marks
+  (`RestartAfterRecord`, `RestartBeforeEffect`: the effect recorded, its outcome not) are timed out and declared stuck.
+  `Sim::expected_end` says how each order of a restarted run must end: stuck for those and for the order stuck when a
+  `RestartWhileStuck` run restarted, complete for every other; the restarted `INV-3` and the `NFR-6` tests hold each order
+  to it, so an unexpected stuck order is red. When `T-020-61` lands (it carries such a segment on), emptying
+  `stuck_until_t020_61` is the whole change here.
+- *M2:* the `NFR-6` test's carry-on is bound to the order (`carried_on_after`: an effect or input of the order, or a result
+  of an effect of it, after the restart's last confirmation), each order ends as `expected_end` says, and at least two
+  orders started before a restart complete after it. The restarted `INV-1` test holds each order to complete to a
+  delivered deposit, and the hold test holds each caught order to nothing of its own between the restart and the
+  confirmations and a step of its own after them.
+- *L1:* `rutent-prov`'s `test-support` is turned on by `rutent-scenarios`'s dev-dependencies only; the library has none
+  of it.
+- *L2:* a simulated reserve answers a check in every session the holder's register issued: `RoleHarness::open_session`,
+  which the conformance `Reserve` keeps, `Simulated::open_sessions`, the sim guest reading `SESSIONS_KEY` from its state,
+  and `Core::open_session` putting the register's sessions there for every provider. Test `order in a second session of a
+  long run is quoted` (`REQ-CAT-3`): past the first session's end, a second is opened under its own id and an order asked
+  in it is quoted. R5 below no longer reads as it did.
+- *L3:* a `SilentAtTheEnd` run's provider then states something else about the late deposit (`contradicting`: its first
+  piece of evidence named anew, signed again with the provider's key, `SimWorld::sign_as`); `INV-4` floors
+  `contradictions >= 1`.
+- *L4:* no scenario re-advertises a provider before a restart, so `relist`'s rule keeps its gap. Seed 117's two late
+  deliveries after the restart are refused `Reversal(NotAnswered)`: the restarted Core doesn't hold the silent segment's
+  ended effect (`unanswered`) as answered, so it takes no late answer for it. A real gap, not expected: a late answer after
+  a restart should be kept as it is by a Core that ran on. Owner: `T-020-61` (segments rebuilt from the log); reported, not
+  fixed here.
+- *L5:* the hold test asserts the hold's own refusal: `Unavailable` (the platform gives the hold no class of its own)
+  while the platform says the reserve's releases wait and it runs no process of it.
+
+**Rule-offs of round 1** (each alone, the file restored).
+
+| Switched off | Red |
+|---|---|
+| no carry-on `run` after a restart (the `None =>` branch's loop) | RO1_RESULT |
+| `stuck_until_t020_61` marks no kind | RO2_RESULT |
+| the reserve's other sessions (`in_session` reads its own session only) | RO3_RESULT |
+
 **Run id.** Pending: CI's run on this row's pull request goes here.

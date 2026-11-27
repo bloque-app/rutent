@@ -512,6 +512,9 @@ pub struct Reserve {
     /// it; a credit of anyone else's names none.
     deposit_instruction: Option<DepositInstruction>,
     unknown_next: bool,
+    /// The other sessions the holder's register issued, as the deployment told it ([`RoleHarness::open_session`]): a
+    /// check in one is a check in the holder's own session (`T-024-21`).
+    sessions: BTreeSet<String>,
     /// The next real movement fails, with evidence, having moved nothing (`force_failure`).
     fail_next: bool,
     shape: Shape,
@@ -668,6 +671,7 @@ impl Reserve {
             noticed: BTreeMap::new(),
             deposit_instruction: None,
             unknown_next: false,
+            sessions: BTreeSet::new(),
             fail_next: false,
             shape: Shape::default(),
             faults: BTreeSet::new(),
@@ -970,7 +974,9 @@ impl Reserve {
     }
 
     fn in_session(&self, session: Option<&str>) -> bool {
-        self.breaks(Fault::IgnoresTheSession) || session == Some(self.session.as_str())
+        self.breaks(Fault::IgnoresTheSession)
+            || session == Some(self.session.as_str())
+            || session.is_some_and(|s| self.sessions.contains(s))
     }
 }
 
@@ -1188,6 +1194,11 @@ impl Typed for Reserve {
 }
 
 impl RoleHarness for Reserve {
+    fn open_session(&mut self, session: &str) -> bool {
+        self.sessions.insert(session.to_owned());
+        true
+    }
+
     fn credit_arrival(&mut self, credit: &BankCredit) -> bool {
         let at_its_bank = self
             .advertisement

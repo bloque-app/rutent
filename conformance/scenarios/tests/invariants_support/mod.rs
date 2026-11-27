@@ -80,6 +80,19 @@ pub enum Kind {
     RestartWhileStuck,
 }
 
+/// The restart kinds whose caught order ends stuck, not complete, until `T-020-61` lands (`T-024-21`): the crash falls
+/// after the log took a segment's effect and before its outcome was recorded, and the restarted Core never hands that
+/// segment over again (`Segments::AlreadyActed`: its value may be in motion, `INV-8`) nor asks its provider where it
+/// stands, so the order is held until its time passes and then declared stuck, for the operator. `T-020-61` carries such
+/// a segment on (a status question, then a repeat under its transaction where nothing moved); when it lands, emptying
+/// this is the whole change here, and every caught order must then complete.
+pub fn stuck_until_t020_61(kind: Kind) -> bool {
+    matches!(
+        kind,
+        Kind::RestartAfterRecord(_) | Kind::RestartBeforeEffect(_)
+    )
+}
+
 impl Kind {
     /// Whether a run of this kind restarts Core and its platform mid-order (`T-024-21`).
     pub fn restarts(self) -> bool {
@@ -252,9 +265,23 @@ pub struct Sim {
     pub run: Run,
     /// What each failure step answered, for the record of what the run did.
     pub notes: Vec<String>,
+    /// The orders a planted crash caught mid-run, Core and its platform restarted under them (`T-024-21`).
+    pub caught: Vec<String>,
 }
 
 impl Sim {
+    /// The state a restarted run's `order` must end in (`T-024-21`): `stuck` where it was stuck when the run restarted
+    /// (`RestartWhileStuck`), or a crash caught it in a kind `stuck_until_t020_61` marks; `complete` otherwise.
+    pub fn expected_end(&self, order: &str) -> &'static str {
+        if (self.plan.kind == Kind::RestartWhileStuck || stuck_until_t020_61(self.plan.kind))
+            && self.caught.iter().any(|o| o == order)
+        {
+            "stuck"
+        } else {
+            "complete"
+        }
+    }
+
     /// How a failing check names this run.
     pub fn name(&self) -> String {
         format!(
@@ -353,13 +380,19 @@ pub fn play(plan: Plan) -> Sim {
         scenario: &scenario,
         plan,
         notes: Vec::new(),
+        caught: Vec::new(),
     };
     let mut orders: Vec<Id> = Vec::new();
     let crashed = match drive(&mut driving, &mut orders) {
         Ok(()) => false,
         Err(Stopped) => true,
     };
-    let Driving { core, notes, .. } = driving;
+    let Driving {
+        core,
+        notes,
+        caught,
+        ..
+    } = driving;
     let run = Run::read(
         &scenario,
         plan.seed,
@@ -367,7 +400,12 @@ pub fn play(plan: Plan) -> Sim {
         orders,
         crashed,
     );
-    Sim { plan, run, notes }
+    Sim {
+        plan,
+        run,
+        notes,
+        caught,
+    }
 }
 
 /// Core stopped on a planted crash, and the run's kind doesn't restart it.
@@ -379,6 +417,7 @@ struct Driving<'a> {
     scenario: &'a Scenario,
     plan: Plan,
     notes: Vec<String>,
+    caught: Vec<String>,
 }
 
 impl Driving<'_> {
@@ -410,6 +449,22 @@ impl Driving<'_> {
             Err(panic) => resume_unwind(panic),
         }
     }
+}
+
+/// `late`, a provider's signed result, stated otherwise by the same provider: its first piece of evidence named
+/// anew, signed again with the provider's statement key the world holds. `None` where it states no evidence.
+fn contradicting(core: &mut Core, late: &[u8]) -> Option<Vec<u8>> {
+    let mut statement: serde_json::Value = serde_json::from_slice(late).ok()?;
+    let maker = statement["maker"].as_str()?.to_owned();
+    let reference = statement["statement"]["outcome"]["evidence"][0]["reference"]
+        .as_str()?
+        .to_owned();
+    statement["statement"]["outcome"]["evidence"][0]["reference"] =
+        format!("{reference}-restated").into();
+    core.world()
+        .sign_as(&maker, &mut statement)
+        .then(|| serde_json::to_vec(&statement).ok())
+        .flatten()
 }
 
 /// The segments of `order` whose outcome a run left unknown.
@@ -530,6 +585,7 @@ fn drive(driving: &mut Driving<'_>, orders: &mut Vec<Id>) -> Result<(), Stopped>
             // Restarted where the crash fell: every order accepted so far carries on from the log, and the session the
             // restarted Core's policy holds is the one the next order is asked in.
             None => {
+                driving.caught.push(order.as_str().to_owned());
                 session = driving.core().open_session(&customer).expect("a session");
                 for order in orders.clone() {
                     match driving.guarded(|core| core.run(&order))? {
@@ -570,15 +626,13 @@ fn drive(driving: &mut Driving<'_>, orders: &mut Vec<Id>) -> Result<(), Stopped>
             }
         }
     }
-    // A segment whose effect the stopped Core took and whose outcome no one recorded is never handed over again by the
-    // restarted one, whose value may be in motion (`INV-8`): it is held until its time passes, and the order is then
-    // declared stuck, for the operator (`T-024-21`). Every order of a restarted run is timed so.
-    if matches!(
-        plan.kind,
-        Kind::RestartAfterRecord(_) | Kind::RestartBeforeEffect(_) | Kind::RestartAfterAnswer(_)
-    ) {
+    // The order a crash caught after its segment's effect was recorded and before its outcome was is held by the
+    // restarted Core until its time passes, and then declared stuck, for the operator: only those, of the kinds
+    // `stuck_until_t020_61` marks, are timed out. Every other order of a restarted run must have completed by itself.
+    if stuck_until_t020_61(plan.kind) && !driving.caught.is_empty() {
         driving.core().clock.advance(2 * 86_400 + 60);
-        for order in orders.clone() {
+        for order in driving.caught.clone() {
+            let order = rutent_contracts::router_api::Id::new(&order).expect("an order id");
             if let Ok(Some(watched)) = driving.guarded(|core| core.watch(&order)) {
                 driving.notes.push(format!(
                     "watch after the restart: {}",
@@ -633,6 +687,12 @@ fn drive(driving: &mut Driving<'_>, orders: &mut Vec<Id>) -> Result<(), Stopped>
                 // Declared stuck, Core and its platform crash and are restarted: the stuck order is followed on from
                 // the log (`T-024-21`).
                 if plan.kind == Kind::RestartWhileStuck && driving.core().restarts() == 0 {
+                    driving.caught.extend(
+                        unknown
+                            .iter()
+                            .filter(|(o, _)| *o == order)
+                            .map(|(o, _)| o.as_str().to_owned()),
+                    );
                     driving.restart("with the order stuck");
                 }
                 // A stuck order starts no new route and hands nothing over (`AC-5`): both are asked, and what the log
@@ -654,6 +714,15 @@ fn drive(driving: &mut Driving<'_>, orders: &mut Vec<Id>) -> Result<(), Stopped>
                             if let Err(e) = driving.core().late_delivery(o, segment, &late) {
                                 driving.notes.push(format!("late delivery: {e:?}"));
                             }
+                        }
+                        // Then the provider states something else about it (`T-020-47`'s shape): the same result with
+                        // its evidence named otherwise, signed anew by the provider. Kept as a further statement that
+                        // moves nothing: `INV-4` holds it to that (`T-024-21`).
+                        if plan.kind == Kind::SilentAtTheEnd
+                            && let Some(other) = contradicting(driving.core(), &late)
+                            && let Err(e) = driving.core().late_delivery(o, segment, &other)
+                        {
+                            driving.notes.push(format!("contradicting delivery: {e:?}"));
                         }
                     }
                 }

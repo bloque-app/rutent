@@ -35,7 +35,7 @@ required-features = ["jail-layers"]
 jail-layers = []
 # Test-only (`T-024-21`): `Platform::report_process_as`, which has the platform report a process id of the test's
 # choosing, so a test shows a module restarted under the process id it had is still seen as restarted. Never a
-# default; only `rutent-scenarios`, which nothing ships, turns it on.
+# default; only `rutent-scenarios`'s dev-dependencies turn it on, so no build but a test build has it.
 test-support = []
 
 [dependencies]

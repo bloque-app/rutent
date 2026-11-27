@@ -165,6 +165,11 @@ pub(super) const CARRIES_OUT_NOTHING: &[(&str, &str, &str)] = &[
         "a platform setting",
     ),
     (
+        "report_process_as",
+        "prov/src/module/platform.rs",
+        "a test hook behind prov's `test-support` feature: what `process()` reports, nothing carried out (`T-024-21`)",
+    ),
+    (
         "set_staging",
         "prov/src/module/platform.rs",
         "a platform setting (ADR-0014)",

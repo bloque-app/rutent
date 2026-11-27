@@ -619,6 +619,8 @@ struct Carried {
     holding_accounts: BTreeMap<String, String>,
     /// The same register's private nodes' accounts, which go on with it (`T-020-48`, the review's S1).
     publisher_accounts: BTreeMap<String, rutent_core_orch::schedule::PublisherAccount>,
+    /// The same register's assets of the holding accounts, which go on with it (`T-024-21`).
+    holding_assets: BTreeMap<String, String>,
     /// How many times Core was restarted with its platform before this one ([`Core::restarted`]), and, where the
     /// platform restarted with it, whether the operator confirms the releases it holds as Core opens (`T-024-21`).
     restarts: usize,
@@ -835,6 +837,7 @@ impl Core {
             holdings: std::mem::take(&mut *self.holdings.borrow_mut()),
             holding_accounts: self.deployed.registers.borrow().holding_accounts.clone(),
             publisher_accounts: self.deployed.registers.borrow().publisher_accounts.clone(),
+            holding_assets: self.deployed.registers.borrow().holding_assets.clone(),
             restarts: self.restarts,
             confirm: None,
         };
@@ -902,9 +905,13 @@ impl Core {
             // sequence again would draw identifiers the log already holds.
             fresh: Seeded::new(config.seed ^ 0x7e57_a27e_d000_0000 ^ (restarts as u64)),
             ties: self.readings.ties(),
-            holdings: std::mem::take(&mut *self.holdings.borrow_mut()),
+            // The host's holding accounts go with the restart: what they held in memory, each order's attribution, the
+            // transactions they asked under and the start they last saw, is rebuilt from the deployment's register, the
+            // platform's record and the log as Core opens (`Core::reopen_holdings`), never carried.
+            holdings: rutent_prov::holding::wallet::Holdings::default(),
             holding_accounts: self.deployed.registers.borrow().holding_accounts.clone(),
             publisher_accounts: self.deployed.registers.borrow().publisher_accounts.clone(),
+            holding_assets: self.deployed.registers.borrow().holding_assets.clone(),
             restarts,
             confirm: Some(confirm),
         };
@@ -967,6 +974,10 @@ impl Core {
         let publisher_accounts = carried
             .as_mut()
             .map(|c| std::mem::take(&mut c.publisher_accounts))
+            .unwrap_or_default();
+        let holding_assets = carried
+            .as_mut()
+            .map(|c| std::mem::take(&mut c.holding_assets))
             .unwrap_or_default();
         let restarts = carried.as_ref().map_or(0, |c| c.restarts);
         let confirm = carried.as_ref().and_then(|c| c.confirm);
@@ -1082,6 +1093,7 @@ impl Core {
             // The register of holding accounts the deployment kept, on a reopen (`T-020-55`).
             r.holding_accounts = holding_accounts;
             r.publisher_accounts = publisher_accounts;
+            r.holding_assets = holding_assets;
         }
         // The operator's holding accounts, the host's: on a reopen they are the ones carried across it (`T-020-46`).
         let holdings: Rc<RefCell<rutent_prov::holding::wallet::Holdings>> =
@@ -1220,6 +1232,11 @@ impl Core {
         core.closing = rutent_core_orch::closing::Closing::recorded(core.log.borrow().entries());
         core.holds = rutent_core_orch::quote::Holds::recorded(core.log.borrow().entries());
         if reopened {
+            // A host restarted with its platform opens its holding accounts again from what is kept beyond its memory
+            // (`T-024-21`); one reopened alone carried them.
+            if confirm.is_some() {
+                core.reopen_holdings();
+            }
             // The providers were listed before Core stopped: its catalogue is rebuilt from what its log holds, the host's
             // holding accounts listed again first.
             core.relist_holdings();
@@ -2150,6 +2167,30 @@ impl Core {
                     .borrow()
                     .register()
                     .open_in(&mut self.catalogue);
+                // The reserves are told every session the holder's register issued, so a check in any of them is one in
+                // the holder's session (`T-024-21`): the world holds them where each simulated reserve reads them.
+                let issued: Vec<String> = self
+                    .policy
+                    .engine()
+                    .borrow()
+                    .register()
+                    .sessions()
+                    .iter()
+                    .map(|s| s.session.as_str().to_owned())
+                    .collect();
+                let issued = serde_json::to_string(&issued).unwrap_or_default();
+                let providers: Vec<String> = self
+                    .installed
+                    .iter()
+                    .map(|one| one.spec.provider.clone())
+                    .collect();
+                for provider in providers {
+                    self.fleet.platform.world.seed_state(
+                        &provider,
+                        rutent_conformance::sim::SESSIONS_KEY,
+                        &issued,
+                    );
+                }
                 Ok(session)
             }
             other => Err(StepError::Session(other)),

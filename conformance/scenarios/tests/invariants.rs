@@ -132,7 +132,27 @@ fn value_in_equals_value_delivered_plus_fees_remainder_and_value_held_across_eve
 #[test]
 fn value_in_equals_value_delivered_plus_fees_remainder_and_value_held_across_restarted_runs() {
     let (orders_balanced, nodes_compared, _) = value_balances(restarted);
-    let found = violations_in(restarted, |sim| sim.run.effects_without_record());
+    let found = violations_in(restarted, |sim| {
+        let mut bad = sim.run.effects_without_record();
+        // Each order its run's kind says completes delivered its value: its last settled segment is a deposit.
+        let by = by_order(segments(&sim.run));
+        for order in &sim.run.orders {
+            let o = order.as_str();
+            if sim.expected_end(o) != "complete" {
+                continue;
+            }
+            let delivered = by
+                .get(o)
+                .and_then(|segs| segs.iter().rev().find(|s| s.settled()))
+                .is_some_and(|last| last.kind() == "deposit" && last.amount_out() > 0);
+            if !delivered {
+                bad.push(format!(
+                    "{o}: to complete, and its value was never delivered"
+                ));
+            }
+        }
+        bad
+    });
     none(&found);
     let runs = runs().iter().filter(|sim| restarted(sim)).count();
     assert!(runs >= 5, "only {runs} restarted runs");
@@ -389,6 +409,23 @@ fn every_segment_ends_settled_reversed_in_full_or_its_order_stuck() {
 #[test]
 fn every_segment_of_a_restarted_run_ends_settled_reversed_in_full_or_its_order_stuck() {
     let (complete, stuck, _) = segment_ends(restarted);
+    // And the end is the one the run's kind says: stuck only where `stuck_until_t020_61` or a stuck order says so, so an
+    // unexpected stuck order is red.
+    let found = violations_in(restarted, |sim| {
+        let states = sim.run.state_names();
+        sim.run
+            .orders
+            .iter()
+            .filter_map(|order| {
+                let o = order.as_str();
+                let want = sim.expected_end(o);
+                let ended = states.get(o).cloned().flatten();
+                (ended.as_deref() != Some(want))
+                    .then(|| format!("{o}: ended {ended:?}, not {want}"))
+            })
+            .collect()
+    });
+    none(&found);
     assert!(
         complete >= 3 && stuck >= 1,
         "ends reached by restarted runs: {complete} complete, {stuck} stuck"
@@ -617,8 +654,12 @@ fn silence_and_late_delivery_never_move_one_value_from_two_places() {
     });
     none(&found);
     assert!(moves_checked >= 20, "{moves_checked} moves checked");
-    // Not a floor: how many segments a contradicting answer reached, which the runs may or may not plant.
-    let _ = contradictions;
+    // The silent deposit's provider states something else later (`invariants_support::contradicting`), so the
+    // contradiction branch is reached.
+    assert!(
+        contradictions >= 1,
+        "no run kept a contradicting late answer"
+    );
     assert!(
         late >= 1,
         "no run left a segment whose effect the log ended unanswered, whose late delivery could be tried"
@@ -1286,7 +1327,7 @@ fn no_recalculation_changes_destination_or_to_asset() {
 // verifies: NFR-6
 #[test]
 fn core_and_the_platform_restarted_mid_order_lose_no_order() {
-    let (mut kept, mut started_before) = (0, 0);
+    let (mut kept, mut started_before, mut completed_across) = (0, 0, 0);
     let found = violations_in(restarted, |sim| {
         let mut bad = Vec::new();
         let log = entries(&sim.run);
@@ -1328,17 +1369,23 @@ fn core_and_the_platform_restarted_mid_order_lose_no_order() {
             });
             if chosen.is_some_and(|at| at < restart) {
                 started_before += 1;
-                let carried_on = log[restart..].iter().any(|e| {
-                    e["kind"] == "verified"
-                        && (e["what"]["action"]["order"] == o
-                            || e["what"]["input"]["subject"]["order"] == o
-                            || e["what"]["call"] == "result")
-                });
-                if !carried_on {
+                // A step of its own after the restart's last confirmation, not the confirmation's result.
+                let after = last_confirmation(&log).unwrap_or(restart);
+                if !carried_on_after(&log, o, after) {
                     bad.push(format!(
                         "{o}: started before the restart, and nothing of it after"
                     ));
                 }
+            }
+            // Each order ends where its run's kind says: a caught order the restarted Core can't yet carry on
+            // (`stuck_until_t020_61`) or one stuck when the run restarted is stuck, and every other completes.
+            let want = sim.expected_end(o);
+            let ended = sim.run.state_names().get(o).cloned().flatten();
+            if ended.as_deref() != Some(want) {
+                bad.push(format!("{o}: ended {ended:?}, not {want}"));
+            }
+            if want == "complete" && chosen.is_some_and(|at| at < restart) {
+                completed_across += 1;
             }
         }
         bad
@@ -1349,6 +1396,34 @@ fn core_and_the_platform_restarted_mid_order_lose_no_order() {
         started_before >= 4,
         "only {started_before} orders were started before a restart"
     );
+    assert!(
+        completed_across >= 2,
+        "only {completed_across} orders started before a restart completed after it"
+    );
+}
+
+/// Whether the log holds a step of `order`'s own after `at`, written by the restarted Core: an effect or an input of
+/// the order, or the result of an effect of the order; never another order's, nor the platform's confirmation.
+fn carried_on_after(log: &[Value], order: &str, at: usize) -> bool {
+    let of_order = |e: &Value| {
+        e["kind"] == "verified"
+            && (e["what"]["action"]["order"] == order
+                || e["what"]["input"]["subject"]["order"] == order)
+    };
+    log.iter().skip(at + 1).any(|e| {
+        of_order(e)
+            || (e["kind"] == "verified"
+                && e["what"]["call"] == "result"
+                && e["what"]["effect"]["index"]
+                    .as_u64()
+                    .and_then(|i| log.get(usize::try_from(i).ok()?))
+                    .is_some_and(of_order))
+    })
+}
+
+/// Where the log holds the last of the confirmations a restart made, or `None` where it holds none.
+fn last_confirmation(log: &[Value]) -> Option<usize> {
+    confirmations(log).last().map(|(at, _)| *at)
 }
 
 /// The platform restarted mid-run, its record not ending whole, holds every provider's releases until the operator
@@ -1361,7 +1436,7 @@ fn core_and_the_platform_restarted_mid_order_lose_no_order() {
 #[test]
 fn platform_restarted_mid_run_holds_its_releases_until_the_operator_confirms() {
     use rutent_contracts::provider_role::Statement;
-    use rutent_prov::module::types::Handled;
+    use rutent_prov::module::types::{Handled, PlatformRefusal};
     use rutent_scenarios::assembly::machine::Reference;
     use rutent_scenarios::assembly::{Staged, context};
     use rutent_scenarios::harness::{Fault, Given, Scenario, Step, plant};
@@ -1409,9 +1484,17 @@ fn platform_restarted_mid_run_holds_its_releases_until_the_operator_confirms() {
         );
         let book = core.world().journal(RESERVE).len();
         let held = core.fleet_mut().handle(RESERVE, &probe("probe-held"));
+        // The hold's own refusal: unavailable, nothing passed out, while the platform says the reserve's releases wait
+        // for the operator and runs no process of it (the platform gives the hold no class of its own).
         assert!(
-            matches!(held, Handled::Refused(_)),
-            "seed {seed}: an operation handed to a held provider is refused: {held:?}"
+            matches!(held, Handled::Refused(PlatformRefusal::Unavailable))
+                && core
+                    .fleet()
+                    .platform
+                    .awaiting_confirmation(RESERVE)
+                    .is_some()
+                && core.fleet().platform.start_of(RESERVE).is_none(),
+            "seed {seed}: an operation handed to a held provider is refused as held: {held:?}"
         );
         assert_eq!(
             core.world().journal(RESERVE).len(),
@@ -1463,9 +1546,33 @@ fn platform_restarted_mid_run_holds_its_releases_until_the_operator_confirms() {
             "seed {seed}: the stopped order completes"
         );
     }
-    // In every restarted run: each restart confirmed each provider of the run, decided and done.
+    // In every restarted run: each restart confirmed each provider of the run, decided and done, and each order the
+    // crash caught had nothing of its own carried out between the restart and the confirmations, and went on after them.
     let found = violations_in(restarted, |sim| {
         let log = entries(&sim.run);
+        let mut bad = Vec::new();
+        if let (Some(first), Some(last)) = (
+            confirmations(&log).first().map(|(at, _)| *at),
+            last_confirmation(&log),
+        ) {
+            for order in &sim.caught {
+                let between = log[first..last].iter().any(|e| {
+                    e["kind"] == "verified"
+                        && e["what"]["call"] == "effect"
+                        && e["what"]["action"]["order"] == order.as_str()
+                });
+                if between {
+                    bad.push(format!(
+                        "{order}: an effect of it between the restart and its confirmations"
+                    ));
+                }
+                if !carried_on_after(&log, order, last) {
+                    bad.push(format!(
+                        "{order}: caught by the crash, and nothing of it after the confirmations"
+                    ));
+                }
+            }
+        }
         let mut want: Vec<String> = specs_of(sim.plan.shape)
             .into_iter()
             .map(|s| s.provider)
@@ -1478,14 +1585,13 @@ fn platform_restarted_mid_run_holds_its_releases_until_the_operator_confirms() {
             expected.extend(want.iter().cloned());
         }
         expected.sort();
-        if decided == expected {
-            Vec::new()
-        } else {
-            vec![format!(
+        if decided != expected {
+            bad.push(format!(
                 "{} restart(s), confirmations decided and done for {decided:?}, not {want:?} each",
                 sim.run.restarts
-            )]
+            ));
         }
+        bad
     });
     none(&found);
 }
@@ -1514,4 +1620,56 @@ fn confirmation_decided(log: &[Value]) -> Vec<String> {
         })
         .map(|(_, provider)| provider)
         .collect()
+}
+
+/// A run longer than a session's life opens another, under an id of its own, and an order asked in it is quoted: the
+/// simulated reserve answers its dry run in every session the holder's register issued, as the deployment tells it
+/// (`T-024-21`, the review's L2). The first session ended, the open one isn't reused, and the second has another id.
+// verifies: REQ-CAT-3
+#[test]
+fn order_in_a_second_session_of_a_long_run_is_quoted() {
+    use rutent_scenarios::assembly::machine::Reference;
+    use rutent_scenarios::assembly::{Core, Staged};
+    use rutent_scenarios::harness::{Given, Scenario, base_request};
+    use rutent_scenarios::kit::{self, AMOUNT};
+
+    let scenario = Scenario::new(
+        "a second session",
+        "AC-28",
+        Given::one_reserve(Staged::AtOnce),
+    );
+    let (mut core, _) = scenario.core(1, &mut Reference);
+    let customer = kit::customer();
+    let quoted = |core: &mut Core, request: &str, session: &rutent_contracts::router_api::Id| {
+        let told = core
+            .request(base_request(request, AMOUNT, session))
+            .expect("the request opens an order");
+        let order = Core::order_of(&told).expect("an order");
+        let told = core.quote(&customer, &order).expect("asked for a quote");
+        matches!(
+            told,
+            rutent_core_orch::intake::Told::Exists {
+                status: rutent_core_orch::intake::Status::Quoted { .. },
+                ..
+            }
+        )
+    };
+    let first = core.open_session(&customer).expect("a session");
+    assert!(
+        quoted(&mut core, "req-first-session", &first),
+        "quoted in the first session"
+    );
+    assert_eq!(
+        core.open_session(&customer).expect("the open session"),
+        first,
+        "an open session is the one answered"
+    );
+    // Past the first session's end (at most 15 minutes).
+    core.clock.advance(20 * 60);
+    let second = core.open_session(&customer).expect("a second session");
+    assert_ne!(second, first, "a session of its own");
+    assert!(
+        quoted(&mut core, "req-second-session", &second),
+        "quoted in the second session"
+    );
 }

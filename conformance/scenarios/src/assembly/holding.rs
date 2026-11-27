@@ -361,6 +361,29 @@ impl Core {
         self.holdings.borrow_mut()
     }
 
+    /// The host's holding accounts opened again after a restart of Core and its platform (`T-024-21`): nothing of the
+    /// host's memory survives, so each account the deployment's register names is opened from the register (its node,
+    /// wallet and asset) and the platform's record (the transactions it asked under), its attribution empty until Core
+    /// restores what the log holds for each order there (`Segments::reconcile_landings`), and its wallet taken as
+    /// restarted until it confirms a movement.
+    pub(super) fn reopen_holdings(&mut self) {
+        let accounts: Vec<(String, String, String)> = {
+            let registers = self.deployed.registers.borrow();
+            registers
+                .holding_accounts
+                .iter()
+                .filter_map(|(node, provider)| {
+                    let asset = registers.holding_assets.get(node)?;
+                    Some((node.clone(), provider.clone(), asset.clone()))
+                })
+                .collect()
+        };
+        let mut holdings = self.holdings.borrow_mut();
+        for (node, provider, asset) in accounts {
+            holdings.reopen_account(&self.fleet.platform, &node, &asset, &provider);
+        }
+    }
+
     /// Whether `node`'s holding account's module restarted since it last confirmed a movement, as the host reads it
     /// from the platform's report of the module's start (`Holdings::restarted`, `T-024-21`).
     pub fn holding_account_restarted(&self, node: &str) -> bool {
@@ -688,6 +711,11 @@ impl Core {
             .borrow_mut()
             .holding_accounts
             .insert(node.to_owned(), wallet.provider.clone());
+        self.deployed
+            .registers
+            .borrow_mut()
+            .holding_assets
+            .insert(node.to_owned(), asset.to_owned());
         // The node listed for its wallet gives way to the operator's own setting of it (L2 of #337's review).
         self.reapply_catalogue_settings();
         Ok(wallet)
