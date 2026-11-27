@@ -210,6 +210,7 @@ fn flight(segment: &str, outcome: SegmentOutcome) -> InFlight {
         record_entry: None,
         reopened: false,
         answer_logged: false,
+        carried_on: false,
     }
 }
 

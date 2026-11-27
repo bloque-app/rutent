@@ -16,6 +16,7 @@ use rutent_core_orch::segments::SegmentOutcome;
 use rutent_scenarios::assembly::machine::Reference;
 use rutent_scenarios::harness::Scenario;
 use rutent_scenarios::kit::{self, AMOUNT, RESERVE, START};
+use rutent_scenarios::on_tick::OnTick;
 
 const OLD: &str = "3.0.0";
 const IN: &str = "sim-join-in";
@@ -285,7 +286,7 @@ fn status_answer_of_a_holdouts_late_deposit_is_taken_after_the_cutover_for_a_seg
     );
     core.world()
         .script_for(RESERVE, "deposit", Behaviour::late());
-    let ran = core.run(&order).expect("the order ran");
+    let ran = core.ran_on_tick(&order).expect("the order ran");
     let segments = segments_of(&ran);
     assert!(
         matches!(segments[0].outcome, SegmentOutcome::Settled { .. }),

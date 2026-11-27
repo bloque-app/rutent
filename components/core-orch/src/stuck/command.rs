@@ -20,7 +20,7 @@ use super::{Deciding, Moved, Moving, ResolveError};
 use crate::schedule::Ports;
 
 /// The decide step of `order`'s stuck part, by `decider`, naming `resolution` and the evidence relied on, asked of policy
-/// (`REQ-AUZ-4`). The part is the first of the order as Core started it.
+/// (`REQ-AUZ-4`). The part is the one of the order, as Core started it, that Core holds stuck: any part of a split order.
 ///
 /// # Errors
 ///
@@ -32,12 +32,16 @@ pub fn decide_stuck(
     resolution: &Resolution,
     evidence: &[Digest],
 ) -> Result<Decision, ResolveError> {
+    // The part Core holds stuck, of the order as Core started it: any part of a split order, never one the caller names.
     let part = ports
         .intake()
         .started(order)
-        .and_then(crate::intake::Started::first)
-        .ok_or(ResolveError::NotStuck)?
-        .part;
+        .map(crate::intake::Started::parts)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|placed| placed.part)
+        .find(|part| ports.stuck().is_stuck(order, part))
+        .ok_or(ResolveError::NotStuck)?;
     let history = ports.history();
     let mut decided = Err(ResolveError::Append(AppendFailure::Unavailable));
     ports.with_stuck(&mut |stuck, parts, policy, _| {

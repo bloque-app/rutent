@@ -1187,7 +1187,7 @@ fn segment_graded_many_times_while_it_waits_asks_a_publisher_answering_not_known
     // Graded again and again within the hour: asked no more, and the log holds no more of it.
     let (entries_before, effects_before) = (entries(&core).len(), read_effects_of(&core));
     for _ in 0..20 {
-        core.run(&order).expect("the order runs again");
+        core.ran_on_tick(&order).expect("the order runs again");
     }
     assert_eq!(reads(&core), 1, "not at every grading");
     assert_eq!(read_effects_of(&core), effects_before);
@@ -1200,15 +1200,15 @@ fn segment_graded_many_times_while_it_waits_asks_a_publisher_answering_not_known
 
     // An hour on, once: the cadence.
     core.advance(3600);
-    core.run(&order).expect("the order runs again");
+    core.ran_on_tick(&order).expect("the order runs again");
     assert_eq!(reads(&core), 2, "asked again an hour on");
-    core.run(&order).expect("the order runs again");
+    core.ran_on_tick(&order).expect("the order runs again");
     assert_eq!(reads(&core), 2, "and once");
 
     // However long it waits, no more than the cap.
     for _ in 0..cap + 5 {
         core.advance(3600);
-        core.run(&order).expect("the order runs again");
+        core.ran_on_tick(&order).expect("the order runs again");
     }
     assert_eq!(reads(&core), cap, "bounded");
     assert!(
@@ -1224,7 +1224,7 @@ fn segment_graded_many_times_while_it_waits_asks_a_publisher_answering_not_known
         .reopen(core, 1, &mut rutent_scenarios::assembly::machine::Reference);
     for _ in 0..3 {
         core.advance(3600);
-        core.run(&order)
+        core.ran_on_tick(&order)
             .expect("the order runs again after the restart");
     }
     let after_restart = reads_by(&core, &order, &segment, RESERVE);
@@ -1331,19 +1331,19 @@ fn read_not_taken_is_asked_again_at_the_operators_publishers_records_cadence_acr
     let reads = |core: &Core| reads_by(core, &order, &segment, RESERVE);
     assert_eq!(reads(&core), 1);
     core.advance(30);
-    core.run(&order).expect("runs");
+    core.ran_on_tick(&order).expect("runs");
     assert_eq!(reads(&core), 1, "not before the minute");
     core.advance(30);
-    core.run(&order).expect("runs");
+    core.ran_on_tick(&order).expect("runs");
     assert_eq!(reads(&core), 2, "a minute on, not an hour");
     let mut core = rutent_scenarios::harness::Scenario::new("execution", "AC-35", given(&names))
         .reopen(core, 1, &mut rutent_scenarios::assembly::machine::Reference);
     // The planted fault is the test's, not the log's: put it again on the reopened Core.
     core.tamper_with_record_of(RESERVE, Tamper::NotKnown);
-    core.run(&order).expect("runs after the restart");
+    core.ran_on_tick(&order).expect("runs after the restart");
     let after_restart = reads_by(&core, &order, &segment, RESERVE);
     core.advance(60);
-    core.run(&order).expect("runs");
+    core.ran_on_tick(&order).expect("runs");
     assert_eq!(
         reads_by(&core, &order, &segment, RESERVE),
         after_restart + 1,
@@ -1386,7 +1386,7 @@ fn segment_waiting_more_than_a_day_is_graded_with_the_record_the_publisher_has_b
     for hour in 1..=30 {
         core.advance(3600);
         core.tick();
-        core.run(&order).expect("runs");
+        core.ran_on_tick(&order).expect("runs");
         assert!(
             reads(&core) <= 1 + 2 * hour,
             "hour {hour}: {}",
@@ -1409,7 +1409,7 @@ fn segment_waiting_more_than_a_day_is_graded_with_the_record_the_publisher_has_b
     core.advance(3600);
     core.tick();
     put_on_the_banks_record(&mut core, &transaction(&waiting[1]));
-    core.run(&order).expect("runs");
+    core.ran_on_tick(&order).expect("runs");
     assert_eq!(
         state(&mut core, &order),
         rutent_contracts::state_machine::OrderState::Complete

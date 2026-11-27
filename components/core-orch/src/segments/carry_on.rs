@@ -12,14 +12,11 @@
 //!    segment's transaction gives the segment its answer, which Core then takes as it takes any answer: judged, graded
 //!    and settled, each step once (`REQ-ORD-1`'s "a result counts only if attributable to that segment's provider and
 //!    matching that transaction").
-//! 2. **Its own operation handed again, under its own transaction** (`repeat_operation`, `T-020-63`), where the
-//!    provider declares no status query or knows no such transaction: the platform carries an operation out only under a
-//!    transaction it never carried ([`Modules::carry_out`](super::Modules::carry_out)), and refuses one it did (`DuplicateTransaction`, `T-013-09`,
-//!    held in its record across its own restart), so a move whose first carrying out never reached the platform is
-//!    carried out now, and one that did is never carried out twice, whatever its provider declares (`INV-8`). Where the
-//!    platform carried it and got no answer, a provider that declares a safe repeat has the platform run it again
-//!    ([`Modules::repeat_operation`](super::Modules::repeat_operation), as `T-020-63`'s repeat does).
-//! 3. **Otherwise it waits**: nothing more is asked, and the stuck check times it on its provider's figures
+//! 2. **Its own operation carried out again, under its own transaction** (`repeat_operation`, `T-020-63`), only at a
+//!    provider that declares a safe repeat and no status query: the platform runs again what it carried with no answer
+//!    ([`Modules::repeat_operation`](super::Modules::repeat_operation)). Never at another provider: the platform's record
+//!    of what it carried is a guard, not the rule, since a record restored from an older backup would let a move run twice.
+//! 3. **Otherwise, and once carried on, it waits**: nothing more is asked, and the stuck check times it on its provider's figures
 //!    (`REQ-ORD-29`). Core never writes a result for it it has no answer for: it is never timed out.
 
 use rutent_contracts::core_internal::{Action, Actor, DecisionRequest, Effect, Outcome, What};
@@ -92,7 +89,11 @@ impl Segments {
         );
         let declared = parts.catalogue.declared_by(provider.as_str());
         let asks = declared.is_some_and(|d| d.tracking.contains(&Tracking::StatusQuery));
-        let repeats = declared.is_some_and(|d| d.safe_retry == Some(true));
+        let repeats = !asks && declared.is_some_and(|d| d.safe_retry == Some(true));
+        // Asked once: a provider that knows no result of it now is not pressed on every tick; the stuck check times it.
+        if self.flights.get(&at).is_some_and(|f| f.carried_on) {
+            return CarriedOn::Waiting("carried on once already: left for the stuck check");
+        }
         if asks {
             let Ok(asking) = self.claim_transaction(parts.fresh, parts.issued) else {
                 return CarriedOn::Failed;
@@ -116,44 +117,57 @@ impl Segments {
                 Ok(answered) => answered,
                 Err(stopped) => return stopped,
             };
-            if let Answered::Bytes(bytes) = &answered {
-                // Only the provider's own result of the segment's transaction is its answer: a status that knows
-                // none, or a refusal, leaves it for the operation handed again.
-                if let Some(result) =
+            self.mark_carried_on(&at);
+            // Only the provider's own result of the segment's transaction is its answer: a status that knows none, or a
+            // refusal, leaves it for the stuck check (`T-020-63`'s design: a provider that answers status queries is
+            // never handed the operation again).
+            if let Answered::Bytes(bytes) = &answered
+                && let Some(result) =
                     crate::reversal::status_result(bytes, &statement.statement, &asking, &provider)
                         .filter(|result| names_transaction(result, transaction.as_str()))
-                {
-                    return self.take_answer(&at, result);
-                }
+            {
+                return self.take_answer(&at, result);
             }
+            return CarriedOn::Waiting(
+                "its provider knows no result of it: left for the stuck check",
+            );
         }
-        // The operation handed again, under its own transaction: carried out only where the platform never carried it.
-        let action = Action::RepeatOperation {
-            order: carry.order.clone(),
-            segment: carry.segment.clone(),
-            provider: provider.clone(),
-            transaction: transaction.clone(),
-        };
-        let answered = match self.decided(
-            parts,
-            carry.core,
-            action,
-            Ask::Again {
-                provider: &provider,
-                operation: &statement,
-                transaction: &transaction,
-                repeats,
-            },
-        ) {
-            Ok(answered) => answered,
-            Err(stopped) => return stopped,
-        };
-        match answered {
-            Answered::Bytes(bytes) => self.take_answer(&at, bytes),
-            Answered::Refused(PlatformRefusal::DuplicateTransaction) => {
-                CarriedOn::Waiting("the platform carried the operation out already")
-            }
-            Answered::Refused(_) => CarriedOn::Waiting("the platform gave no answer"),
+        if repeats {
+            // Its own operation carried out again under its own transaction, at a provider that declares that safe and no
+            // status query (`T-020-63`): the platform runs again what it carried with no answer.
+            let action = Action::RepeatOperation {
+                order: carry.order.clone(),
+                segment: carry.segment.clone(),
+                provider: provider.clone(),
+                transaction: transaction.clone(),
+            };
+            let answered = match self.decided(
+                parts,
+                carry.core,
+                action,
+                Ask::Repeat {
+                    provider: &provider,
+                    transaction: &transaction,
+                },
+            ) {
+                Ok(answered) => answered,
+                Err(stopped) => return stopped,
+            };
+            self.mark_carried_on(&at);
+            return match answered {
+                Answered::Bytes(bytes) => self.take_answer(&at, bytes),
+                Answered::Refused(_) => CarriedOn::Waiting("the platform gave no answer"),
+            };
+        }
+        CarriedOn::Waiting(
+            "its provider declares neither a status query nor a safe repeat: left for the stuck check",
+        )
+    }
+
+    /// Marks the segment at `at` carried on once.
+    fn mark_carried_on(&mut self, at: &(String, String)) {
+        if let Some(flight) = self.flights.get_mut(at) {
+            flight.carried_on = true;
         }
     }
 
@@ -306,17 +320,12 @@ fn put(parts: &mut Parts<'_>, effect: &Effect, ask: Ask<'_>) -> Answered {
             asking,
             about,
         } => parts.modules.status(effect, provider, asking, about),
-        Ask::Again {
+        Ask::Repeat {
             provider,
-            operation,
             transaction,
-            repeats,
-        } => match parts.modules.carry_out(effect, provider, operation) {
-            Answered::Refused(PlatformRefusal::DuplicateTransaction) if repeats => parts
-                .modules
-                .repeat_operation(effect, provider, transaction),
-            answered => answered,
-        },
+        } => parts
+            .modules
+            .repeat_operation(effect, provider, transaction),
     }
 }
 
@@ -330,14 +339,10 @@ enum Ask<'a> {
             rutent_contracts::provider_role::Operation,
         >,
     },
-    /// The segment's own operation, handed again under its own transaction.
-    Again {
+    /// The segment's own operation, carried out again under its own transaction.
+    Repeat {
         provider: &'a Id,
-        operation: &'a rutent_contracts::provider_role::Statement<
-            rutent_contracts::provider_role::Operation,
-        >,
         transaction: &'a Id,
-        repeats: bool,
     },
 }
 

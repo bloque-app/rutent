@@ -365,6 +365,10 @@ impl Recalculations {
 
     /// Recalculates `ask.part` of its order (see the module's docs), with router `R`, chaining each routing's
     /// records to `history`.
+    ///
+    /// It doesn't hold a route recalculated and not yet run from being recalculated again: that is Core's run's rule
+    /// (`schedule::run`, which asks only of a part with nothing left to run whose route failed, `T-020-61`). A direct
+    /// caller bypasses it.
     pub fn recalculate<R: Router>(
         &mut self,
         parts: &mut Parts<'_>,

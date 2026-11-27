@@ -410,7 +410,7 @@ fn every_segment_ends_settled_reversed_in_full_or_its_order_stuck() {
 #[test]
 fn every_segment_of_a_restarted_run_ends_settled_reversed_in_full_or_its_order_stuck() {
     let (complete, stuck, _) = segment_ends(restarted);
-    // And the end is the one the run's kind says: stuck only where `stuck_until_t020_61` or a stuck order says so, so an
+    // And the end is the one the run's kind says: stuck only where `stuck_for_the_operator` or a stuck order says so, so an
     // unexpected stuck order is red.
     let found = violations_in(restarted, |sim| {
         let states = sim.run.state_names();
@@ -1383,7 +1383,7 @@ fn core_and_the_platform_restarted_mid_order_lose_no_order() {
                 }
             }
             // Each order ends where its run's kind says: a caught order the restarted Core can't yet carry on
-            // (`stuck_until_t020_61`) or one stuck when the run restarted is stuck, and every other completes.
+            // (`stuck_for_the_operator`) or one stuck when the run restarted is stuck, and every other completes.
             let want = sim.expected_end(o);
             let ended = sim.run.state_names().get(o).cloned().flatten();
             if ended.as_deref() != Some(want) {
@@ -1707,15 +1707,27 @@ fn restart_after_the_provider_moved_and_before_its_answer_was_logged_moves_nothi
         fell += 1;
         let bad = moved_once(sim);
         assert!(bad.is_empty(), "{}: {bad:?}", sim.name());
+        // The caught order ends as its kind says: complete where its provider answered its status, stuck for the operator at
+        // the exchange, which answers no status query and declares no safe repeat (the decided read of the platform's
+        // recorded answer is item 10's), and never handed again either way.
         let states = sim.run.state_names();
         for order in &sim.caught {
             assert_eq!(
                 states.get(order).cloned().flatten().as_deref(),
-                Some("complete"),
-                "{}: the caught order completes",
+                Some(sim.expected_end(order)),
+                "{}: the caught order ends as its kind says",
                 sim.name()
             );
         }
+        let repeats = entries(&sim.run)
+            .iter()
+            .filter(|e| {
+                e["kind"] == "verified"
+                    && e["what"]["call"] == "effect"
+                    && e["what"]["action"]["kind"] == "repeat_operation"
+            })
+            .count();
+        assert_eq!(repeats, 0, "{}: never handed again", sim.name());
     }
     assert!(fell >= 2, "only {fell} runs crashed after an effect");
 }

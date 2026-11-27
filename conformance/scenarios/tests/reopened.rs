@@ -146,16 +146,17 @@ fn core_reopened_mid_order_carries_on_as_the_core_that_ran_on() {
 #[test]
 fn no_value_moves_twice_after_core_reopens() {
     for seed in SEEDS {
-        // Whether the order then completes: a move that never reached the platform is carried on; one whose provider's
-        // answer is the log's, its grading cut short by the crash, is left for the stuck check, never carried out again.
+        // None completes: a move that never reached the platform is asked its status (the reserve answers status queries),
+        // its provider knows none, and it is left for the stuck check, never handed again (`T-020-63`'s design); one whose
+        // provider's answer is the log's, its grading cut short by the crash, is not carried on at all.
         for (crash, completes) in [
-            (Fault::CrashBeforeEffect(0), true),
+            (Fault::CrashBeforeEffect(0), false),
             (
                 Fault::CrashAfterRecord {
                     call: "effect",
                     nth: 0,
                 },
-                true,
+                false,
             ),
             (
                 Fault::CrashAfterRecord {
@@ -189,6 +190,39 @@ fn no_value_moves_twice_after_core_reopens() {
                 moved.values().all(|n| *n == 1),
                 "seed {seed}, {crash:?}: {moved:?}"
             );
+            let carried_on = run
+                .log
+                .iter()
+                .filter(|e| {
+                    matches!(e, Entry::Verified(v) if matches!(&v.what, What::Effect {
+                        action: Action::AskStatus { .. } | Action::RepeatOperation { .. },
+                        ..
+                    }))
+                })
+                .count();
+            let repeats = run
+                .log
+                .iter()
+                .filter(|e| {
+                    matches!(e, Entry::Verified(v) if matches!(&v.what, What::Effect {
+                        action: Action::RepeatOperation { .. },
+                        ..
+                    }))
+                })
+                .count();
+            assert_eq!(repeats, 0, "seed {seed}, {crash:?}: never handed again");
+            if matches!(
+                crash,
+                Fault::CrashAfterRecord {
+                    call: "evidence",
+                    ..
+                }
+            ) {
+                assert_eq!(
+                    carried_on, 0,
+                    "seed {seed}: a segment whose answer is the log's is not carried on"
+                );
+            }
             assert_eq!(
                 run.state_names()
                     .values()
@@ -732,11 +766,11 @@ fn segment_answered_before_core_reopens_goes_on_from_its_logged_answer() {
     }
 }
 
-/// A Core stopped right before the platform carried out the order's deposit, its effect in the log with no result and no
-/// answer, and Core and its platform restarted: the restarted Core carries the segment on (`T-020-61`, item 8) on its own
-/// ticks: the reserve, which declares a status query, is asked where it stands and knows no such transaction, and the
-/// operation is handed again under its own transaction through a decided effect, which the platform carries out only
-/// because it never carried it. The order completes, the deposit moved once by one `move_value`, and nothing timed it out.
+/// A Core stopped right after the platform carried out the order's deposit, the reserve having moved and answered, and
+/// before Core took the answer, and Core and its platform restarted: the restarted Core carries the segment on (`T-020-61`,
+/// item 8) on its own ticks: the reserve, which answers status queries, is asked where it stands, a decided effect, and
+/// its answer is its own result of the transaction, which the segment takes. The order completes, the deposit moved once by
+/// one `move_value`, nothing handed again, and nothing timed it out.
 // verifies: NFR-6, INV-3
 #[test]
 fn segment_begun_before_core_stopped_is_carried_on_after_it_reopens() {
@@ -747,7 +781,7 @@ fn segment_begun_before_core_stopped_is_carried_on_after_it_reopens() {
             .play(seed, &mut Reference, reference());
         let restarted = scenario("a Core stopped before the deposit was carried out")
             .when(order(1))
-            .when(Step::Plant(Fault::CrashBeforeEffect(1)))
+            .when(Step::Plant(Fault::CrashAfterEffect(1)))
             .when(Step::Run)
             .when(Step::Restart)
             .when(Step::Rerun)

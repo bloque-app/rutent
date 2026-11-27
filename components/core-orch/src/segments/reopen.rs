@@ -717,6 +717,7 @@ impl Segments {
             }),
             reopened: true,
             answer_logged,
+            carried_on: false,
         };
         Some((flight, held))
     }

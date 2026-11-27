@@ -82,14 +82,15 @@ pub enum Kind {
     RestartWhileStuck,
 }
 
-/// The restart kinds whose caught order ended stuck, not complete, until `T-020-61` landed (`T-024-21`): none now. A crash
-/// after the log took a segment's effect and before its outcome was recorded leaves a segment the restarted Core carries
-/// on (`T-020-61`, item 8): its status asked at a provider that answers status queries, then its operation handed again
-/// under its own transaction through a decided effect, which the platform carries out only where it never carried it
-/// (`INV-8`). Every caught order of a restarted run must complete, but the one stuck when a `RestartWhileStuck` run
-/// restarted.
-pub fn stuck_until_t020_61(_kind: Kind) -> bool {
-    false
+/// The restart kinds whose caught order ends stuck, not complete, for the operator (`T-020-61`, item 8 as `T-020-63` designed
+/// it): a crash after the log took a segment's effect and before the platform carried it out leaves a segment whose provider
+/// knows no result of it; the restarted Core asks its status where it answers status queries, repeats only at a provider
+/// that declares a safe repeat and no status query, and otherwise leaves it for the stuck check, never handing it again. The
+/// crash after the exchange carried its conversion out (the joined route's `RestartAfterEffect(1)`) is one too: the exchange
+/// declares neither, and its answer is only the platform's record's (gap: the decided read of a recorded answer, item 10).
+pub fn stuck_for_the_operator(plan: &Plan) -> bool {
+    matches!(plan.kind, Kind::RestartAfterRecord(_))
+        || (plan.shape == Shape::Joined && plan.kind == Kind::RestartAfterEffect(1))
 }
 
 impl Kind {
@@ -234,7 +235,7 @@ pub const PINNED: [Plan; 19] = [
     Plan {
         seed: 116,
         shape: Shape::Joined,
-        kind: Kind::RestartAfterEffect(2),
+        kind: Kind::RestartAfterEffect(1),
     },
     Plan {
         seed: 117,
@@ -270,9 +271,9 @@ pub struct Sim {
 
 impl Sim {
     /// The state a restarted run's `order` must end in (`T-024-21`): `stuck` where it was stuck when the run restarted
-    /// (`RestartWhileStuck`), or a crash caught it in a kind `stuck_until_t020_61` marks; `complete` otherwise.
+    /// (`RestartWhileStuck`), or a crash caught it in a kind `stuck_for_the_operator` marks; `complete` otherwise.
     pub fn expected_end(&self, order: &str) -> &'static str {
-        if (self.plan.kind == Kind::RestartWhileStuck || stuck_until_t020_61(self.plan.kind))
+        if (self.plan.kind == Kind::RestartWhileStuck || stuck_for_the_operator(&self.plan))
             && self.caught.iter().any(|o| o == order)
         {
             "stuck"
@@ -303,12 +304,6 @@ pub fn plan_of(seed: u64) -> Plan {
     // to be the destination's, and so do on the joined one; the plan keeps the draw as it is.
     if shape == Shape::Joined && matches!(kind, Kind::SilentAtTheEnd) {
         kind = Kind::FailsAtTheEnd;
-    }
-    // A crash after the exchange carried its conversion out leaves an answer only the platform's record holds, which no
-    // port hands back, at a provider that declares neither a status query nor a safe repeat: it waits for the stuck check
-    // (`T-020-61`'s gap). The joined route's crash after an effect falls at its ramp, which answers status queries.
-    if shape == Shape::Joined && kind == Kind::RestartAfterEffect(1) {
-        kind = Kind::RestartAfterEffect(2);
     }
     if shape == Shape::Joined && matches!(kind, Kind::RestartWhileStuck) {
         kind = Kind::RestartAfterRecord(1);
@@ -636,8 +631,8 @@ fn drive(driving: &mut Driving<'_>, orders: &mut Vec<Id>) -> Result<(), Stopped>
     }
     // The order a crash caught after its segment's effect was recorded and before its outcome was is held by the
     // restarted Core until its time passes, and then declared stuck, for the operator: only those, of the kinds
-    // `stuck_until_t020_61` marks, are timed out. Every other order of a restarted run must have completed by itself.
-    if stuck_until_t020_61(plan.kind) && !driving.caught.is_empty() {
+    // `stuck_for_the_operator` marks, are timed out. Every other order of a restarted run must have completed by itself.
+    if stuck_for_the_operator(&plan) && !driving.caught.is_empty() {
         driving.core().clock.advance(2 * 86_400 + 60);
         for order in driving.caught.clone() {
             let order = rutent_contracts::router_api::Id::new(&order).expect("an order id");

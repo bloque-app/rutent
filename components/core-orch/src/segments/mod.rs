@@ -675,6 +675,8 @@ struct InFlight {
     /// Rebuilt by a Core that reopened with its provider's answer, or its evidence, in the log, though the answer isn't
     /// taken up again (its grading cut short): it is not one to carry on (`T-020-61`, item 8), and waits for the stuck check.
     answer_logged: bool,
+    /// Carried on once by a Core that reopened (`T-020-61`, item 8): asked its status, or repeated, and not again.
+    carried_on: bool,
     /// The answers its operation was evaluated with: its provider's dry runs, a verifier's judgements.
     heard: Vec<measured::Heard>,
     /// The entry that carries those answers: the order's `decision_record` entry.
@@ -2588,6 +2590,7 @@ impl Segments {
                 record_entry: live.record_entry.cloned(),
                 reopened: false,
                 answer_logged: false,
+                carried_on: false,
             },
         );
         self.advance(parts, live, &at, operation, true)

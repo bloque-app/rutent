@@ -490,7 +490,7 @@ impl Kept {
 /// Core opens, by intake or by the arrival filing, draws its identifier through [`draw_order`].
 pub(crate) const REQUEST_NAME: &str = "request-";
 
-/// A fresh identifier for an order: one that doesn't begin with [`REQUEST_NAME`], so a refused request's record can never
+/// A fresh identifier for an order: one that doesn't begin with `request-`, the prefix of a refused request's record's name, so a refused request's record can never
 /// take an order's name in the deployment's map. A source that draws only such names gives none, and the call is
 /// refused as an identifier Core used before is.
 pub fn draw_order(fresh: &mut dyn crate::rounds::Fresh) -> Option<Id> {
