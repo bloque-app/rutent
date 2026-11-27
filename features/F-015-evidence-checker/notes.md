@@ -407,6 +407,69 @@ Rule-offs, each alone and reverted:
 | No module directory beside an admitted file | the same | `left: []`, `src/confine/` passed |
 | An RPC pool's movement answer rests on an agreed call | `evm_reader_with_fewer_than_two_agreeing_rpc_answers_is_unreadable` | `left: None`: the reader that asked nothing was signed as answered |
 
-The phase's bound read on every turn, switched off alone, leaves the test green: a reader that talks without end
-either leaves the worker an idle instant (once the bound has passed, the worker's wait is zero, and a timeout is all
-it takes) or is stopped first by the bound on its frames. It stays as defence beside them, and no test isolates it.
+The phase's bound read on every turn, switched off alone, left that round's test green. Round 2 showed it is
+load-bearing (a light client that keeps one send queued ahead of each reply always leaves its worker an event), and
+the test now has that reader: see round 2 below.
+
+### The review of #348 at `e0f07090` (review 6089810793)
+
+CHANGES, on H2, M2 and M1′, with L7 and L8; each fixed in this row.
+
+- **H2. CI's jail test was red.** In a network namespace with only a down `lo`, an IPv6 connect fails with
+  `AddrNotAvailable` (no source address), not `NetworkUnreachable`. The unconfined reader's probe now passes on any
+  no-route error (`NetworkUnreachable`, `AddrNotAvailable`, `HostUnreachable`) and still fails on seccomp's
+  `PermissionDenied` or a connection. Linux clippy, fmt and the doc check ran on no earlier head (CI skipped them after
+  the red test step), so the Linux-only code (`jail::linux`, `tests/jail.rs`) was read by eye for them; CI's next run is
+  their first.
+- **M2. The per-turn bound is load-bearing.** A light-client `Send` now counts against `calls_per_question`, and its
+  wait for what comes back ends with the phase it serves (`Serving::until`). The named test
+  `reader_that_keeps_talking_or_stops_reading_is_stopped_at_its_bound_and_the_others_answer_on` gains two readers, each
+  with the call bound set out of the way: `stream`, a light client that keeps sixteen sends queued ahead of each reply
+  to a peer that never answers (`wait`), and `pipeline`, an RPC reader that keeps two slow pool requests queued ahead
+  of each reply. Each is stopped as `reader_hung` within 2.5 s of its 1.5 s bound, and the test goes red with the
+  per-turn bound switched off (below).
+- **M1′. The admitted paths pinned text, not what it resolves to.** The check now resolves each admitted path's
+  re-exports by file layout and holds each name to its definition:
+  - **(a)** no `#[path]` (or `cfg_attr` path, or `include!`) anywhere under prov's `src/`, and no `[lib]` table in its
+    manifest, so module resolution follows file layout alone;
+  - every module on the way (`module`, `module::sandbox`, `proxy`, `proxy::{https, kv, resolver, settings,
+    transport}`) is declared plainly in its parent (`pub mod` or `pub(crate) mod`, no attribute, no body, once), its
+    file exists (`<name>/mod.rs` for a parent with no `<name>.rs` beside it, `<name>.rs` for a leaf with no `<name>/`
+    beside it);
+  - **(b)** `keys.rs` now re-exports each item from the file that defines it (`crate::proxy::kv::KvResolver` and so
+    on; the five proxy modules it names became `pub(crate) mod`), and each name `confine.rs` and `keys.rs` re-export
+    must be defined in its source file's own items, once (`defined_in`: a `pub fn`, `struct`, `enum`, `union`,
+    `const`, `static`, `trait` or `type`), with no top-level `pub use` naming it or globbing, and no `pub mod` or
+    `pub macro` of that name beside it. The reviewer's alias (`pub use crate::proxy as PROVIDER_ADDRESS_SPACE;` beside
+    the constant), a nested re-export, a glob, a second definition, a missing one, a module beside a function, a
+    redirect in `module/mod.rs`, a `#[path]` elsewhere in the package, a directory beside a module's file and a `[lib]`
+    table are each tested (`providers_admitted_paths_resolve_by_layout_to_the_items_their_files_define`);
+  - **(c)** `components/prov/Cargo.toml` and `components/prov/src/module/mod.rs` join `.github/CODEOWNERS` and
+    `HOUSE-RULES.md`; the files that define the key resolver are under `components/prov/src/proxy/`, already listed.
+  - **The boundary check is a lint over source, not a proof.** It reads the text of the files it names and resolves
+    paths by their layout; it doesn't run the compiler's name resolution, and macro-generated items, build scripts or
+    a code path it doesn't model could still widen what the reader host reaches. The control behind it is code review:
+    every file it reads for the admitted paths is a `DEC-20` path, which reaches `main` only with the owner's click
+    after a separate security review.
+- **L7.** The host's network-namespace check fails closed: a reader whose `/proc/<pid>/ns/net` (or the host's) can't
+  be read is refused (`reader_namespace_unreadable`).
+- **L8.** At most `MAX_HANDSHAKING_PER_SOURCE` (4) of the 16 handshake slots may be held from one source address
+  (`LinkLimits::handshaking_per_source`), so one peer that never authenticates can't starve Core of handshakes. Peers
+  from many addresses still can: gap, owned by `F-030`, whose deployment keeps the link's port reachable from Core's
+  task alone (a security group, or the task's network policy).
+
+Rule-offs, each alone and reverted:
+
+| Rule switched off | Test | Red |
+|---|---|---|
+| The phase's bound read on every turn | `reader_that_keeps_talking_or_stops_reading_is_stopped_at_its_bound_and_the_others_answer_on` | the `pipeline` reader (two slow pool requests queued ahead of each reply) was not stopped within 2.5 s: its worker always had a frame waiting |
+| A re-exported name is defined in its source file | `providers_admitted_paths_resolve_by_layout_to_the_items_their_files_define` | the alias beside `PROVIDER_ADDRESS_SPACE` passed |
+| No `#[path]` anywhere under prov's `src/` | the same | the redirect in `module/mod.rs` passed |
+| No `[lib]` table in prov's manifest | the same | `[lib] path = "src/lib_wide.rs"` passed |
+| No directory beside a module's file | the same | `src/proxy/kv/` passed |
+| Handshakes per source address | `link_closes_a_handshake_past_its_deadline_and_keeps_room_for_core` | the third connection from one address was held to the handshake's deadline, not closed at once |
+
+The `stream` reader the reviewer described (one send queued ahead of each reply) no longer holds its worker once a
+send's wait ends with the phase (M2's fix): after the bound each send returns at once, the worker drains faster than
+the reader refills, and the timeout path stops it too. So the `pipeline` reader, whose stand-in endpoints take 20 ms
+whatever the deadline, is the case that shows the per-turn bound load-bearing; the `stream` reader stays in the test.

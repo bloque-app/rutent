@@ -15,8 +15,8 @@
 //! - **Held by the host** ([`check_confined`]): on Linux, before the host serves a reader anything but its log (a call,
 //!   its checks, an answer), it reads the status of every thread of the reader's process and holds each to the
 //!   confinement: `no_new_privs` set, a `seccomp` filter installed and no capability held, bounding set included. The
-//!   reader may have no child process, and its network namespace must not be the host's. A reader that didn't confine
-//!   itself is served nothing and never answers.
+//!   reader may have no child process, and its network namespace must be one the host can read and not the host's.
+//!   A reader that didn't confine itself is served nothing and never answers.
 //! - **Killed first** (Linux): each reader's `oom_score_adj` is the highest, so when the readers of one task press its
 //!   memory, the kernel kills a reader, which the host restarts, and not the host.
 
@@ -146,14 +146,13 @@ mod linux {
         if threads == 0 || !children(reader).is_empty() {
             return Some("reader_not_confined");
         }
-        // Its network namespace is its own, where the host can read it: defence beside the launcher's.
+        // Its network namespace is its own: defence beside the launcher's, failing closed where either can't be read.
         let net = |pid: &str| std::fs::read_link(format!("/proc/{pid}/ns/net")).ok();
-        if let (Some(own), Some(theirs)) = (net("self"), net(&reader.to_string()))
-            && own == theirs
-        {
-            return Some("reader_not_confined");
+        match (net("self"), net(&reader.to_string())) {
+            (Some(own), Some(theirs)) if own != theirs => None,
+            (Some(_), Some(_)) => Some("reader_not_confined"),
+            _ => Some("reader_namespace_unreadable"),
         }
-        None
     }
 }
 

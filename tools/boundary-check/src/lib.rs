@@ -52,9 +52,10 @@ pub const READER_HOST: &str = "rutent-reader-host";
 pub const PROV_PATHS: [&str; 3] = ["egress", "confine", "keys"];
 
 /// What `rutent_prov::confine` (`components/prov/src/confine.rs`) re-exports, and nothing more: the
-/// launcher and the in-process jail a provider's process runs in, and what they take.
-pub const PROV_CONFINE: (&str, &[&str]) = (
-    "crate::module::sandbox",
+/// launcher and the in-process jail a provider's process runs in, and what they take, each from the
+/// module that defines it (a path under `crate::`, resolved by file layout from `src/`).
+pub const PROV_CONFINE: &[(&str, &[&str])] = &[(
+    "module::sandbox",
     &[
         "Limits",
         "PROVIDER_ADDRESS_SPACE",
@@ -62,30 +63,31 @@ pub const PROV_CONFINE: (&str, &[&str]) = (
         "confine",
         "isolated",
     ],
-);
+)];
 
 /// What `rutent_prov::keys` (`components/prov/src/keys.rs`) re-exports, and nothing more: the
-/// resolver interface, its vault implementation and what builds it from a process role's settings.
-pub const PROV_KEYS: (&str, &[&str]) = (
-    "crate::proxy",
-    &[
-        "Bucket",
-        "HttpsTransport",
-        "InvalidConfig",
-        "InvalidSettings",
-        "KvConfig",
-        "KvResolver",
-        "ResolveError",
-        "Resolver",
-        "RoleSettings",
-        "Server",
-        "StoreAddress",
-        "StoreScheme",
-        "Token",
-        "TransportError",
-        "kv_bucket",
-    ],
-);
+/// resolver interface, its vault implementation and what builds it from a process role's settings,
+/// each from the module that defines it.
+pub const PROV_KEYS: &[(&str, &[&str])] = &[
+    ("proxy::https", &["HttpsTransport"]),
+    (
+        "proxy::kv",
+        &["InvalidConfig", "KvConfig", "KvResolver", "Server", "Token"],
+    ),
+    ("proxy::resolver", &["ResolveError", "Resolver"]),
+    (
+        "proxy::settings",
+        &[
+            "Bucket",
+            "InvalidSettings",
+            "RoleSettings",
+            "StoreAddress",
+            "StoreScheme",
+            "kv_bucket",
+        ],
+    ),
+    ("proxy::transport", &["TransportError"]),
+];
 
 /// The crates of ours that `krate` may depend on (DEC-2).
 ///
@@ -305,7 +307,9 @@ pub enum Why {
     /// ([`PROV_PATHS`]).
     ReachesBeyondItsPaths,
     /// An admitted path of the provider system re-exports more, or other, than it is admitted
-    /// with ([`PROV_CONFINE`], [`PROV_KEYS`]), or holds anything but that re-export.
+    /// with ([`PROV_CONFINE`], [`PROV_KEYS`]), holds anything but those re-exports, re-exports a
+    /// name its source file doesn't define, or is reached other than by plain declarations and
+    /// file layout.
     WidensAnAdmittedPath,
 }
 
@@ -710,7 +714,8 @@ fn lines_beyond_admitted(text: &str) -> Vec<usize> {
     found
 }
 
-/// Whether the crate root `text` declares the module `name` once, as `pub mod <name>;` alone: no attribute before it
+/// Whether the module file `text` declares the module `name` once, as `pub mod <name>;` or `pub(crate) mod <name>;`
+/// alone: no attribute before it
 /// (a `#[path]` or a `#[cfg_attr(.., path = ..)]` would mount another file under the admitted name), no inline body,
 /// no second declaration. `Err` gives the 1-based line to report: the offending declaration's, or 1 where there is
 /// none.
@@ -743,7 +748,10 @@ pub fn declared_plainly(text: &str, name: &str) -> Result<(), usize> {
         .and_then(|r| r.strip_prefix(name))
         .is_some_and(|r| r.trim_start().starts_with(';'));
     let before = code[..at].trim_end();
-    let public = before.strip_suffix("pub").is_some_and(|b| {
+    let visible = before
+        .strip_suffix("pub(crate)")
+        .or_else(|| before.strip_suffix("pub"));
+    let public = visible.is_some_and(|b| {
         !b.chars().next_back().is_some_and(continues)
             && b.trim_end()
                 .chars()
@@ -757,29 +765,223 @@ pub fn declared_plainly(text: &str, name: &str) -> Result<(), usize> {
     }
 }
 
-/// Whether `text`, an admitted path's file, holds the one re-export `admitted` names and nothing
-/// else: comments, then `pub use <from>::{<items>};` with exactly those items, in any order. Fails
-/// closed: another item, a glob, a rename, a second statement, or anything but comments around it
-/// is a widening.
-pub fn holds_its_reexport(text: &str, admitted: (&str, &[&str])) -> bool {
+/// Whether `text`, an admitted path's file, holds its re-exports and nothing else: comments, then one
+/// `pub use crate::<module>::<item>;` or `pub use crate::<module>::{<items>};` for each module
+/// `admitted` names, with exactly its items, in any order. Fails closed: another item, a glob, a
+/// rename, another statement, or anything but comments around them is a widening.
+pub fn holds_its_reexports(text: &str, admitted: &[(&str, &[&str])]) -> bool {
     let code = blank(text, true);
     let code: String = code.split_whitespace().collect::<Vec<_>>().join(" ");
-    let (from, items) = admitted;
-    let Some(list) = code
-        .strip_prefix(&format!("pub use {from}::{{"))
-        .and_then(|r| r.strip_suffix("};"))
-    else {
+    let Some(statements) = code.strip_suffix(';') else {
         return false;
     };
-    let mut named: Vec<&str> = list
-        .split(',')
-        .map(str::trim)
-        .filter(|i| !i.is_empty())
+    let mut found: Vec<(String, Vec<String>)> = Vec::new();
+    for statement in statements.split(';') {
+        let Some(path) = statement.trim().strip_prefix("pub use crate::") else {
+            return false;
+        };
+        let (module, items) = match path.split_once("::{") {
+            Some((module, list)) => {
+                let Some(list) = list.strip_suffix('}') else {
+                    return false;
+                };
+                (
+                    module.trim(),
+                    list.split(',').map(str::trim).collect::<Vec<_>>(),
+                )
+            }
+            None => match path.rsplit_once("::") {
+                Some((module, item)) => (module.trim(), vec![item.trim()]),
+                None => return false,
+            },
+        };
+        let mut items: Vec<String> = items
+            .into_iter()
+            .filter(|i| !i.is_empty())
+            .map(str::to_owned)
+            .collect();
+        if module.contains([' ', '{', '}', '*']) || items.iter().any(|i| !is_name(i)) {
+            return false;
+        }
+        items.sort_unstable();
+        found.push((module.replace(' ', ""), items));
+    }
+    found.sort_unstable();
+    let mut wanted: Vec<(String, Vec<String>)> = admitted
+        .iter()
+        .map(|(module, items)| {
+            let mut items: Vec<String> = items.iter().map(|i| (*i).to_owned()).collect();
+            items.sort_unstable();
+            ((*module).to_owned(), items)
+        })
         .collect();
-    named.sort_unstable();
-    let mut wanted = items.to_vec();
     wanted.sort_unstable();
-    named == wanted
+    found == wanted
+}
+
+/// Whether `text` is one plain name: letters, digits and `_`, not starting with a digit.
+fn is_name(text: &str) -> bool {
+    text.chars()
+        .next()
+        .is_some_and(|c| c.is_alphabetic() || c == '_')
+        && text.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// The blanked code of `text`, with the brace depth at each byte, so a rule can look at the
+/// file's own items alone.
+fn depths(code: &str) -> Vec<usize> {
+    let mut depth = 0usize;
+    code.bytes()
+        .map(|b| {
+            let here = depth;
+            match b {
+                b'{' => depth += 1,
+                b'}' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+            here
+        })
+        .collect()
+}
+
+/// Whether the module file `text` defines `name` itself, among its own items: exactly one
+/// `pub fn`, `pub const fn`, `pub struct`, `pub enum`, `pub union`, `pub const`, `pub static`,
+/// `pub trait` or `pub type` of that name at the file's top level; no `pub mod <name>` or
+/// `pub macro <name>` beside it; and no top-level `pub use` or `pub extern crate` that names it, or
+/// that globs (`*`), so no module of the same name can ride on a value's path (a `pub use
+/// crate::proxy as <name>;` beside a `pub const <name>`).
+pub fn defined_in(text: &str, name: &str) -> bool {
+    let code = blank(text, true);
+    let depth = depths(&code);
+    let continues = |c: char| c.is_alphanumeric() || c == '_';
+    let word_at = |at: usize, word: &str| {
+        code[at..].starts_with(word)
+            && !code[..at].chars().next_back().is_some_and(continues)
+            && !code[at + word.len()..]
+                .chars()
+                .next()
+                .is_some_and(continues)
+    };
+    let mut definitions = 0;
+    let mut from = 0;
+    while let Some(at) = code[from..].find("pub").map(|n| from + n) {
+        from = at + 3;
+        if depth[at] != 0 || !word_at(at, "pub") {
+            continue;
+        }
+        let statement_end = code[at..].find([';', '{']).map_or(code.len(), |n| at + n);
+        let head: Vec<&str> = code[at + 3..statement_end].split_whitespace().collect();
+        match head.as_slice() {
+            ["use", ..] | ["extern", "crate", ..] => {
+                let statement = &code[at..code[at..].find(';').map_or(code.len(), |n| at + n)];
+                let names_it = statement
+                    .match_indices(name)
+                    .any(|(i, _)| word_at(at + i, name));
+                if names_it || statement.contains('*') {
+                    return false;
+                }
+            }
+            ["mod" | "macro", item, ..] if item.trim_end_matches(['(', '!']) == name => {
+                return false;
+            }
+            ["const" | "unsafe", "fn", item, ..]
+            | [
+                "fn" | "struct" | "enum" | "union" | "const" | "static" | "trait" | "type",
+                item,
+                ..,
+            ] => {
+                let item = item.split(['<', '(', ':', '=']).next().unwrap_or("");
+                if item == name {
+                    definitions += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    definitions == 1
+}
+
+/// The file a module path under `crate::` resolves to by file layout from the crate's `src`, each
+/// segment declared plainly in its parent ([`declared_plainly`]): a module with children is
+/// `<name>/mod.rs`, with no `<name>.rs` beside it, and a leaf is `<name>.rs`, with no `<name>/`
+/// beside it. `Err` gives the file and line to report.
+fn module_file(src: &Path, module: &str) -> Result<PathBuf, (PathBuf, usize)> {
+    let segments: Vec<&str> = module.split("::").collect();
+    let mut parent = src.join("lib.rs");
+    let mut dir = src.to_path_buf();
+    for (i, segment) in segments.iter().enumerate() {
+        let text = std::fs::read_to_string(&parent).map_err(|_| (parent.clone(), 1))?;
+        declared_plainly(&text, segment).map_err(|line| (parent.clone(), line))?;
+        let leaf = i + 1 == segments.len();
+        let (file, other) = if leaf {
+            (dir.join(format!("{segment}.rs")), dir.join(segment))
+        } else {
+            (
+                dir.join(segment).join("mod.rs"),
+                dir.join(format!("{segment}.rs")),
+            )
+        };
+        if !file.is_file() {
+            return Err((file, 1));
+        }
+        if other.exists() {
+            return Err((other, 1));
+        }
+        dir = dir.join(segment);
+        parent = file;
+    }
+    Ok(parent)
+}
+
+/// The findings, under the provider system's package `prov`, against what the reader host's
+/// admitted paths admit ([`PROV_CONFINE`], [`PROV_KEYS`]): each admitted file and every module on
+/// the way to what it re-exports is declared plainly and found by file layout alone, so no
+/// `#[path]` (or `include!`) anywhere under `src/` and no `[lib]` table in the manifest moves one;
+/// each admitted file holds its re-exports and nothing more; and each name they re-export is
+/// defined in the file of the module it is re-exported from. A lint over the source, beside the
+/// code review that every one of these files gets as a `DEC-20` path.
+fn admitted_path_findings(prov: &Path) -> std::io::Result<Vec<(PathBuf, usize)>> {
+    let mut found = Vec::new();
+    let src = prov.join("src");
+    let manifest = std::fs::read_to_string(prov.join("Cargo.toml"))?;
+    for (n, line) in manifest.lines().enumerate() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        if line.starts_with("[lib]") || line.replace(' ', "").starts_with("lib.") {
+            found.push((prov.join("Cargo.toml"), n + 1));
+        }
+    }
+    for file in rust_files(&src, &[])? {
+        let text = std::fs::read_to_string(&file)?;
+        for (at, _) in mounted(&text) {
+            found.push((file.clone(), line_of(&text, at)));
+        }
+    }
+    for (name, admitted) in [("confine", PROV_CONFINE), ("keys", PROV_KEYS)] {
+        let file = match module_file(&src, name) {
+            Ok(file) => file,
+            Err(at) => {
+                found.push(at);
+                continue;
+            }
+        };
+        if !std::fs::read_to_string(&file).is_ok_and(|text| holds_its_reexports(&text, admitted)) {
+            found.push((file, 1));
+        }
+        for (module, items) in admitted {
+            match module_file(&src, module) {
+                Ok(source) => {
+                    let text = std::fs::read_to_string(&source).unwrap_or_default();
+                    if !items.iter().all(|item| defined_in(&text, item)) {
+                        found.push((source, 1));
+                    }
+                }
+                Err(at) => found.push(at),
+            }
+        }
+    }
+    found.sort();
+    found.dedup();
+    Ok(found)
 }
 
 /// Reports every line that breaks the source boundary of the core-internal contract (DEC-2):
@@ -798,8 +1000,12 @@ pub fn holds_its_reexport(text: &str, admitted: (&str, &[&str])) -> bool {
 /// - in the reader host ([`READER_HOST`]), once it is a member, any line that names the contract,
 ///   and any that names the provider system other than through its admitted paths
 ///   ([`PROV_PATHS`], `T-020-59`, `T-015-04`);
-/// - in the provider system, an admitted path's file (`src/confine.rs`, `src/keys.rs`) that holds
-///   more or other than its one re-export ([`PROV_CONFINE`], [`PROV_KEYS`], [`holds_its_reexport`]).
+/// - in the provider system, once the reader host is a member, anything that widens an admitted
+///   path: a `#[path]` or `include!` anywhere under `src/`, a `[lib]` table in its manifest, a
+///   module on the way declared other than plainly or found other than by file layout, an admitted
+///   file that holds more or other than its re-exports, or a name they re-export that its source
+///   file doesn't itself define ([`PROV_CONFINE`], [`PROV_KEYS`], [`holds_its_reexports`],
+///   [`declared_plainly`], [`defined_in`]).
 ///
 /// Fails closed: it matches the plain text, comments included, so a mention in a library's
 /// documentation fails too. A package [`OUTER`] names that isn't a member, and a symbolic link in
@@ -875,37 +1081,17 @@ pub fn sources_naming_core_internal(root: &Path) -> std::io::Result<Vec<SourceFi
             }
         }
     }
-    // What the admitted paths admit, once the reader host is a member: each is declared in the provider system's
-    // crate root plainly, `pub mod <name>;`, with no attribute that could mount another file and no inline body; its
-    // file is `src/<name>.rs`, which must exist, with no `src/<name>/` beside it; and that file holds its one
-    // re-export and nothing more. So the reader host reaches no more of `module` or `proxy` than it is admitted to.
+    // What the admitted paths admit, once the reader host is a member (`admitted_path_findings`).
     if dirs.contains_key(READER_HOST) {
         let prov = dirs
             .get("rutent-prov")
-            .ok_or_else(|| missing("rutent-prov"))?
-            .join("src");
-        let lib = prov.join("lib.rs");
-        let root_text = std::fs::read_to_string(&lib).unwrap_or_default();
-        for (name, admitted) in [("confine", PROV_CONFINE), ("keys", PROV_KEYS)] {
-            let mut widen = |path: &Path, line: usize| {
-                beyond_paths.push(SourceFinding {
-                    file: relative(path),
-                    line,
-                    why: Why::WidensAnAdmittedPath,
-                })
-            };
-            if let Err(line) = declared_plainly(&root_text, name) {
-                widen(&lib, line);
-            }
-            let file = prov.join(format!("{name}.rs"));
-            match std::fs::read_to_string(&file) {
-                Ok(text) if holds_its_reexport(&text, admitted) => {}
-                _ => widen(&file, 1),
-            }
-            let dir = prov.join(name);
-            if dir.exists() {
-                widen(&dir, 1);
-            }
+            .ok_or_else(|| missing("rutent-prov"))?;
+        for (path, line) in admitted_path_findings(prov)? {
+            beyond_paths.push(SourceFinding {
+                file: relative(&path),
+                line,
+                why: Why::WidensAnAdmittedPath,
+            });
         }
     }
     let conformance = dirs.get(CONFORMANCE).ok_or_else(|| missing(CONFORMANCE))?;

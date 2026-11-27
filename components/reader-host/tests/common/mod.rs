@@ -404,6 +404,11 @@ pub fn evm_node(lie: bool) -> Answerer {
                     "amount": "100"
                 }}))
             }
+            // A slow answer, 20 ms, whatever the call's deadline: an endpoint that keeps the host busy.
+            Some("rutent_slow") => {
+                std::thread::sleep(Duration::from_millis(20));
+                ok(serde_json::json!({"jsonrpc": "2.0", "id": id, "result": 1}))
+            }
             // A large answer, 32 KiB: what fills a reader's input when it stops reading.
             Some("rutent_large") => {
                 ok(serde_json::json!({"jsonrpc": "2.0", "id": id, "result": "x".repeat(32 << 10)}))
@@ -444,7 +449,7 @@ impl Dialer for MappedDialer {
 }
 
 /// A stand-in light-client peer on a loopback port: it answers `genesis` with its genesis once it is open, and
-/// `not-yet` before, and `status <id>` with the movement final.
+/// `not-yet` before, `status <id>` with the movement final, and `wait` never.
 pub struct Peer {
     pub address: SocketAddr,
     pub open: Arc<AtomicBool>,
@@ -467,6 +472,10 @@ impl Peer {
                     let mut writer = stream.try_clone().expect("a stream");
                     for line in BufReader::new(stream).lines() {
                         let Ok(line) = line else { return };
+                        // `wait` is never answered: a peer that keeps a light client waiting.
+                        if line == "wait" {
+                            continue;
+                        }
                         let reply = match line.split_once(' ').map_or((line.as_str(), ""), |(a, b)| (a, b)) {
                             ("genesis", _) if gate.load(Ordering::SeqCst) => genesis.to_owned(),
                             ("genesis", _) => "not-yet".to_owned(),

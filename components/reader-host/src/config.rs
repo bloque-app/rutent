@@ -119,8 +119,8 @@ pub struct ReaderLimits {
     /// the host from one reader are bounded too, at four such frames' worth of bytes and [`READ_FRAMES`] in number,
     /// and those waiting for the reader at [`WRITE_FRAMES`] and [`WRITE_BYTES`]: a reader over either is stopped.
     pub max_frame: u32,
-    /// The most egress calls (RPC requests and light-client connections) the reader may ask for over one question, or
-    /// over its start-up checks; one more is a limit hit.
+    /// The most egress calls (RPC requests, light-client connections and sends on them) the reader may ask for over one
+    /// question, or over its start-up checks; one more is a limit hit.
     pub calls_per_question: u32,
 }
 

@@ -13,10 +13,11 @@
 //!   [`MAX_QUESTION`] bytes), and each answer one frame back: the reader's signed answer, or an empty frame where the
 //!   host has nothing to sign for, which Core reads as unreadable.
 
+use std::collections::HashMap;
 use std::io::{self, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::Arc;
+use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -44,6 +45,10 @@ pub const MAX_CONNECTIONS: usize = 64;
 /// never authenticate can't take the slots Core's connections need.
 pub const MAX_HANDSHAKING: usize = 16;
 
+/// The most of them from one source address, so one peer that never authenticates can't take every handshake slot
+/// from Core.
+pub const MAX_HANDSHAKING_PER_SOURCE: usize = 4;
+
 /// How long a whole handshake may take, every read and write of it together, before the host closes the connection.
 pub const HANDSHAKE: Duration = Duration::from_secs(10);
 
@@ -57,6 +62,8 @@ pub struct LinkLimits {
     pub connections: usize,
     /// [`MAX_HANDSHAKING`] by default.
     pub handshaking: usize,
+    /// [`MAX_HANDSHAKING_PER_SOURCE`] by default.
+    pub handshaking_per_source: usize,
     /// [`HANDSHAKE`] by default.
     pub handshake: Duration,
     /// [`IDLE`] by default.
@@ -68,6 +75,7 @@ impl Default for LinkLimits {
         LinkLimits {
             connections: MAX_CONNECTIONS,
             handshaking: MAX_HANDSHAKING,
+            handshaking_per_source: MAX_HANDSHAKING_PER_SOURCE,
             handshake: HANDSHAKE,
             idle: IDLE,
         }
@@ -243,6 +251,7 @@ impl Link {
         let stop = Arc::new(AtomicBool::new(false));
         let open = Arc::new(AtomicUsize::new(0));
         let handshaking = Arc::new(AtomicUsize::new(0));
+        let sources: Arc<Mutex<HashMap<IpAddr, usize>>> = Arc::default();
         let stopping = stop.clone();
         let accepter = std::thread::Builder::new()
             .name("reader host link".to_owned())
@@ -256,15 +265,36 @@ impl Link {
                         open.fetch_sub(1, Ordering::SeqCst);
                         continue;
                     }
-                    if handshaking.fetch_add(1, Ordering::SeqCst) >= limits.handshaking {
-                        handshaking.fetch_sub(1, Ordering::SeqCst);
+                    let source = stream.peer_addr().map(|a| a.ip()).ok();
+                    let admitted = source.is_some_and(|ip| {
+                        let Ok(mut by_source) = sources.lock() else {
+                            return false;
+                        };
+                        let from_it = by_source.entry(ip).or_insert(0);
+                        if *from_it >= limits.handshaking_per_source {
+                            return false;
+                        }
+                        if handshaking.fetch_add(1, Ordering::SeqCst) >= limits.handshaking {
+                            handshaking.fetch_sub(1, Ordering::SeqCst);
+                            return false;
+                        }
+                        *from_it += 1;
+                        true
+                    });
+                    let Some(source) = source.filter(|_| admitted) else {
                         open.fetch_sub(1, Ordering::SeqCst);
                         continue;
-                    }
+                    };
                     let (tls, host) = (tls.clone(), host.clone());
-                    let (open, handshaking) = (open.clone(), handshaking.clone());
+                    let (open, handshaking, sources) =
+                        (open.clone(), handshaking.clone(), sources.clone());
                     std::thread::spawn(move || {
-                        let _ = serve_connection(stream, &tls, &host, &limits, &handshaking);
+                        let shaken = Shaking {
+                            handshaking: &handshaking,
+                            sources: &sources,
+                            source,
+                        };
+                        let _ = serve_connection(stream, &tls, &host, &limits, shaken);
                         open.fetch_sub(1, Ordering::SeqCst);
                     });
                 }
@@ -300,10 +330,10 @@ fn serve_connection(
     tls: &LinkTls,
     host: &Host,
     limits: &LinkLimits,
-    handshaking: &AtomicUsize,
+    slot: Shaking<'_>,
 ) -> io::Result<()> {
     let shaken = handshake(tcp, tls, limits.handshake);
-    handshaking.fetch_sub(1, Ordering::SeqCst);
+    slot.release();
     let mut stream = shaken?;
     stream.sock.set_read_timeout(Some(limits.idle))?;
     stream.sock.set_write_timeout(Some(limits.idle))?;
@@ -313,6 +343,28 @@ fn serve_connection(
         };
         let answer = host.answer(&question).unwrap_or_default();
         write_frame(&mut stream, &answer)?;
+    }
+}
+
+/// A connection's handshake slot: counted in the link's total and its source's, both given back when the handshake
+/// ends, done or not.
+struct Shaking<'a> {
+    handshaking: &'a AtomicUsize,
+    sources: &'a Mutex<HashMap<IpAddr, usize>>,
+    source: IpAddr,
+}
+
+impl Shaking<'_> {
+    fn release(self) {
+        self.handshaking.fetch_sub(1, Ordering::SeqCst);
+        if let Ok(mut by_source) = self.sources.lock()
+            && let Some(from_it) = by_source.get_mut(&self.source)
+        {
+            *from_it -= 1;
+            if *from_it == 0 {
+                by_source.remove(&self.source);
+            }
+        }
     }
 }
 

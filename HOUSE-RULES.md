@@ -92,8 +92,10 @@ security review. It may land on `develop` before that, once the reviewer approve
 - the reader host (`components/reader-host/`, `CMP-EVIDENCE`'s standalone part, `DEC-28`): the readers' answers'
   signing, the mTLS link to Core and the readers' egress; and the provider system's two paths it alone reaches beside
   the egress layer, the provider's jail and the key resolver, re-exported (`components/prov/src/confine.rs`,
-  `components/prov/src/keys.rs`), the crate root that declares them (`components/prov/src/lib.rs`) and the jail itself
-  (`components/prov/src/module/sandbox.rs`);
+  `components/prov/src/keys.rs`), the crate root that declares them (`components/prov/src/lib.rs`), the jail itself
+  (`components/prov/src/module/sandbox.rs`) and the module that declares it (`components/prov/src/module/mod.rs`), the
+  files that define the key resolver (under `components/prov/src/proxy/`, already listed), and the provider system's
+  manifest (`components/prov/Cargo.toml`), where a target path could move the library;
 - the repository's own gates: `.github/`, `licences/`, `tools/licence-check/` and `tools/contract-guard/`.
 
 `.github/CODEOWNERS` holds each of these paths for the owner, and `main`'s protection requires code-owner review.

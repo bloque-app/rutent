@@ -88,7 +88,7 @@ mod linux {
         // A reader that skips the jail's in-process half (the empty root, capabilities, Landlock, seccomp) is never
         // taken: the host reads its status and refuses it before it serves it anything. It probes the network first,
         // with only the namespaces around it and no seccomp: what refuses it then is the network namespace alone (no
-        // interface is up, so no route: `NetworkUnreachable`, never seccomp's `PermissionDenied`).
+        // route: `NetworkUnreachable`, `AddrNotAvailable` or `HostUnreachable`, never seccomp's `PermissionDenied`).
         let loose = rpc_reader("loose", &["unconfined", probe.as_str()]);
         let loose_rig = Rig::start(vec![loose.clone()], honest_pool(), &[]);
         let until = std::time::Instant::now() + Duration::from_secs(10);
@@ -122,8 +122,12 @@ mod linux {
                 .iter()
                 .find(|l| l.starts_with(&format!("probe {target}: ")))
                 .unwrap_or_else(|| panic!("the unconfined reader probed {target}: {loose_log:?}"));
+            // No route in the namespace: no interface is up for IPv4, and no IPv6 source address at all.
+            let no_route = ["NetworkUnreachable", "AddrNotAvailable", "HostUnreachable"]
+                .iter()
+                .any(|kind| line.contains(&format!("refused: {kind} ")));
             assert!(
-                line.contains("NetworkUnreachable"),
+                no_route && !line.contains("PermissionDenied") && !line.contains("connected"),
                 "the network namespace alone refuses {target}: {line}"
             );
         }

@@ -447,8 +447,15 @@ impl ReaderEgress {
         OpenResult::Open { conn }
     }
 
-    /// Sends `bytes` on a connection, and gives what comes back within the host's wait.
-    pub(crate) fn send(&mut self, conn: u64, bytes: &[u8]) -> ReceiveResult {
+    /// Sends `bytes` on a connection, and gives what comes back within the host's wait, which ends with the phase the
+    /// send serves.
+    pub(crate) fn send(&mut self, serving: &Serving, conn: u64, bytes: &[u8]) -> ReceiveResult {
+        // The wait for what comes back ends with the phase it serves, as every call's does.
+        let wait = serving.until.map_or(RECEIVE_WAIT, |until| {
+            until
+                .saturating_duration_since(Instant::now())
+                .min(RECEIVE_WAIT)
+        });
         let Some(stream) = self.connections.get_mut(&conn) else {
             return ReceiveResult::Closed;
         };
@@ -456,7 +463,10 @@ impl ReaderEgress {
             self.connections.remove(&conn);
             return ReceiveResult::Closed;
         }
-        let _ = stream.set_read_timeout(Some(RECEIVE_WAIT));
+        if wait.is_zero() {
+            return ReceiveResult::Bytes { bytes: Vec::new() };
+        }
+        let _ = stream.set_read_timeout(Some(wait));
         let mut buffer = vec![0u8; RECEIVE_MAX];
         match stream.read(&mut buffer) {
             Ok(0) => {

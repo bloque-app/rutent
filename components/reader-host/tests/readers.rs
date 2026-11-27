@@ -101,30 +101,57 @@ fn reader_that_keeps_talking_or_stops_reading_is_stopped_at_its_bound_and_the_ot
         reader.limits.hang_after_ms = 1_500;
         reader.limits.calls_per_question = 1_000_000;
     }
+    // And a light client that keeps a send queued ahead of each reply, to a peer that never answers: there is always an
+    // event for its worker, so only the bound read on every turn stops it.
+    let mut streamer = light_reader(
+        "streamer",
+        &["peer-a.kreivo.example:p2p:30333"],
+        kreivo_rule(4),
+        &["stream"],
+    );
+    streamer.limits.hang_after_ms = 1_500;
+    streamer.limits.calls_per_question = 1_000_000;
+    // And one that keeps two slow pool requests queued ahead of each reply: its worker always has a frame waiting, so
+    // only the bound read on every turn, not a quiet moment, stops it.
+    let mut pipeliner = rpc_reader("pipeliner", &["pipeline"]);
+    pipeliner.limits.hang_after_ms = 1_500;
+    pipeliner.limits.calls_per_question = 1_000_000;
+    let peer = Peer::serve(GENESIS, true);
     let steady = rpc_reader("steady", &[]);
     let rig = Arc::new(Rig::start(
-        vec![flooder.clone(), chatter.clone(), steady.clone()],
+        vec![
+            flooder.clone(),
+            chatter.clone(),
+            streamer.clone(),
+            pipeliner.clone(),
+            steady.clone(),
+        ],
         honest_pool(),
-        &[],
+        &[("peer-a.kreivo.example", &peer)],
     ));
-    for reader in [&flooder, &chatter, &steady] {
+    for reader in [&flooder, &chatter, &streamer, &pipeliner, &steady] {
         assert!(
             rig.host.wait_ready(&reader.name, READY),
             "{} passes its checks",
             reader.name
         );
     }
-    let asked: Vec<_> = [flooder.clone(), chatter.clone()]
-        .into_iter()
-        .map(|reader| {
-            let rig = rig.clone();
-            std::thread::spawn(move || {
-                let started = Instant::now();
-                let answer = ask(&rig.host, &reader, status_of("0xmove"));
-                (answer, started.elapsed())
-            })
+    let asked: Vec<_> = [
+        flooder.clone(),
+        chatter.clone(),
+        streamer.clone(),
+        pipeliner.clone(),
+    ]
+    .into_iter()
+    .map(|reader| {
+        let rig = rig.clone();
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            let answer = ask(&rig.host, &reader, status_of("0xmove"));
+            (answer, started.elapsed())
         })
-        .collect();
+    })
+    .collect();
     std::thread::sleep(Duration::from_millis(200));
     for _ in 0..3 {
         let started = Instant::now();
@@ -158,7 +185,29 @@ fn reader_that_keeps_talking_or_stops_reading_is_stopped_at_its_bound_and_the_ot
         took < Duration::from_millis(2_500),
         "stopped at its bound though it kept talking: {took:?}"
     );
-    for reader in [&flooder, &chatter] {
+    let (streamed, took) = results.next().unwrap();
+    assert_eq!(
+        unreadable(&streamed),
+        Some("reader_hung"),
+        "{:?}",
+        rig.host.log(&streamer.name)
+    );
+    assert!(
+        took < Duration::from_millis(2_500),
+        "stopped at its bound though it always had a frame waiting: {took:?}"
+    );
+    let (pipelined, took) = results.next().unwrap();
+    assert_eq!(
+        unreadable(&pipelined),
+        Some("reader_hung"),
+        "{:?}",
+        rig.host.log(&pipeliner.name)
+    );
+    assert!(
+        took < Duration::from_millis(2_500),
+        "stopped at its bound though its worker always had a frame waiting: {took:?}"
+    );
+    for reader in [&flooder, &chatter, &streamer, &pipeliner] {
         assert!(
             rig.host.wait_ready(&reader.name, READY),
             "{} is back",

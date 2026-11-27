@@ -237,16 +237,18 @@ fn link_closes_a_handshake_past_its_deadline_and_keeps_room_for_core() {
         CORE_NAME,
     )
     .unwrap();
+    // Two at once in their handshake from one source address, of eight in all.
     let limits = LinkLimits {
-        handshake: Duration::from_millis(300),
-        handshaking: 2,
+        handshake: Duration::from_millis(1_000),
+        handshaking: 8,
+        handshaking_per_source: 2,
         ..LinkLimits::default()
     };
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let link = Link::serve_with(listener, tls, Arc::new(rig.host), limits).unwrap();
 
-    // Peers that never authenticate: two are held, each no longer than the handshake's deadline, and a third, past
-    // the cap, is closed at once.
+    // Peers that never authenticate, from one address: two are held, each no longer than the handshake's deadline, and
+    // a third, past that address's share, is closed at once.
     let connect = || {
         let tcp = TcpStream::connect(link.address()).unwrap();
         tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
@@ -270,13 +272,13 @@ fn link_closes_a_handshake_past_its_deadline_and_keeps_room_for_core() {
     };
     let (ended, took) = closed(&mut third);
     assert!(
-        ended && took < Duration::from_millis(500),
+        ended && took < Duration::from_millis(300),
         "the third is closed at once: {took:?}"
     );
     for tcp in [&mut first, &mut second] {
         let (ended, took) = closed(tcp);
         assert!(
-            ended && took < Duration::from_millis(1_500),
+            ended && took < Duration::from_millis(2_500),
             "closed at the handshake's deadline: {took:?}"
         );
     }

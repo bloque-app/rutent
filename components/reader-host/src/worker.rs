@@ -551,7 +551,11 @@ impl Worker {
             }
             running.confined = true;
         }
-        if matches!(frame, FromReader::Rpc { .. } | FromReader::Open { .. }) && !self.count_call() {
+        if matches!(
+            frame,
+            FromReader::Rpc { .. } | FromReader::Open { .. } | FromReader::Send { .. }
+        ) && !self.count_call()
+        {
             self.log("host: the reader asked for more calls than its bound".to_owned());
             self.down("reader_hit_a_limit");
             return;
@@ -602,7 +606,8 @@ impl Worker {
                 self.send(&ToReader::Opened { call, result });
             }
             FromReader::Send { conn, bytes } => {
-                let result = self.egress.send(conn, &bytes);
+                let serving = self.serving();
+                let result = self.egress.send(&serving, conn, &bytes);
                 self.send(&ToReader::Received { conn, result });
             }
             FromReader::Close { conn } => self.egress.close(conn),

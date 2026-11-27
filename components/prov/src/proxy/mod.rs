@@ -42,13 +42,15 @@
 //!   and never held by the module.
 
 mod calls;
-mod https;
-mod kv;
-mod resolver;
-mod settings;
+// Named by `crate::keys`, which re-exports from each the items it defines (`T-015-04`): crate-visible, so the reader
+// host's path resolves to where each is defined.
+pub(crate) mod https;
+pub(crate) mod kv;
+pub(crate) mod resolver;
+pub(crate) mod settings;
 mod shared;
 mod signing;
-mod transport;
+pub(crate) mod transport;
 mod world;
 
 #[cfg(test)]

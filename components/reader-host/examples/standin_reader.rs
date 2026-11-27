@@ -17,7 +17,9 @@
 //! request id), `other-rules` (names a stricter quorum than its listing in its network's rules), `skip-checks` (never
 //! reports its checks, and answers anyway), `crash` and `hang` (on a question), `unconfined` (skips the jail's in-process half), `echo` (reports the identity
 //! it was handed without checking), `no-call` (answers a movement without asking its network), `flood` (asks the pool
-//! without end and never reads) and `busy` (asks the pool without end, reading each reply, and never answers),
+//! without end and never reads) `busy` (asks the pool without end, reading each reply, and never answers) `stream` (keeps sends to a silent
+//! peer queued ahead of each reply, and never answers) and `pipeline` (keeps two slow pool requests queued ahead of
+//! each reply, and never answers),
 //! `inspect` (logs its arguments, its environment and every frame it reads) and `probe-network=<address:port>` (tries
 //! to connect to that address, and to a public one, at start, and logs what happened).
 
@@ -458,6 +460,43 @@ fn main() {
                 let _ = write_frame(&mut reader.io.output.lock(), &bytes);
                 // Paced, so the host keeps up with what it sends: what fills up is what it never reads.
                 pause(Duration::from_millis(5));
+            }
+        }
+        if reader.hostile("stream") {
+            // A light client that keeps sixteen sends queued ahead of each reply, to a peer that never answers, and
+            // never answers itself: the host always has its next frame waiting, well inside the bound on frames.
+            let conn = *reader.conns.first().expect("a peer");
+            for _ in 0..16 {
+                reader.io.send(&FromReader::Send {
+                    conn,
+                    bytes: b"wait\n".to_vec(),
+                });
+            }
+            loop {
+                let _ = reader.io.receive();
+                reader.io.send(&FromReader::Send {
+                    conn,
+                    bytes: b"wait\n".to_vec(),
+                });
+            }
+        }
+        if reader.hostile("pipeline") {
+            // Keeps two slow pool requests queued ahead of each reply, and never answers: the host always has its next
+            // frame waiting.
+            let body = json!({"jsonrpc": "2.0", "id": 9, "method": "rutent_slow"}).to_string();
+            let ask = |reader: &mut Reader, call: u64| {
+                let endpoints = reader.endpoints.clone();
+                reader.io.send(&FromReader::Rpc {
+                    call,
+                    endpoints,
+                    body: body.clone(),
+                });
+            };
+            ask(&mut reader, 1000);
+            ask(&mut reader, 1001);
+            for call in 1002..u64::MAX {
+                let _ = reader.io.receive();
+                ask(&mut reader, call);
             }
         }
         if reader.hostile("busy") {
