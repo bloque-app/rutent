@@ -263,3 +263,52 @@ fn statement_about_an_order_by_a_provider_whose_segment_began_after_the_cutover_
     )
     .expect("the same statement under the current version is taken");
 }
+
+/// The original run's own late answer, not a repeat's: a reserve that declares a status query (so Core asks, never repeats)
+/// answers its deposit late; the date passes, and the answer Core gets to its status question, under the old version the
+/// holdout provider speaks, is taken for a segment begun before the date (`REQ-PRT-2`, `REQ-PRT-4`, `T-020-54`,
+/// `T-020-67`). The holdout is the fleet's one reserve, `RESERVE`, whose answer is the one asserted on.
+// verifies: REQ-PRT-2, REQ-PRT-4
+#[test]
+fn status_answer_of_a_holdouts_late_deposit_is_taken_after_the_cutover_for_a_segment_begun_before_it()
+ {
+    let scenario = Scenario::new("cutover", "AC-5", given(&[RESERVE])).holdout(OLD, &at(3_600));
+    let (mut core, _) = scenario.core(1, &mut Reference);
+    let session = core.open_session(&kit::customer()).expect("a session");
+    assert!(
+        core.catalogue().accepted_advertisement(RESERVE).is_some(),
+        "the holdout's advertisement was taken before its cutover"
+    );
+    let order = accepted(
+        &mut core,
+        within("req-late-status", &session, AMOUNT, RESERVE, OTHER),
+    );
+    core.world()
+        .script_for(RESERVE, "deposit", Behaviour::late());
+    let ran = core.run(&order).expect("the order ran");
+    let segments = segments_of(&ran);
+    assert!(
+        matches!(segments[0].outcome, SegmentOutcome::Settled { .. }),
+        "{segments:?}"
+    );
+    assert!(
+        matches!(segments[1].outcome, SegmentOutcome::Unknown(_)),
+        "{segments:?}"
+    );
+    core.set_setting(&cutover(&at(0)))
+        .expect("the operator moves the cutover");
+    core.clock.advance(7_200);
+    core.set_cadence(rutent_core_orch::schedule::Job::StatusAsks, 0);
+    core.set_cadence(rutent_core_orch::schedule::Job::StuckReports, u64::MAX);
+    let round = core.tick();
+    let tried = round
+        .statuses
+        .iter()
+        .find(|t| t.unknown.provider == RESERVE)
+        .expect("the holdout's unknown deposit is asked its status");
+    assert!(tried.asked.is_ok(), "{tried:?}");
+    assert!(
+        tried.kept.is_some(),
+        "the holdout's answer, under the old version, is kept for a segment begun before the date: {tried:?}"
+    );
+}

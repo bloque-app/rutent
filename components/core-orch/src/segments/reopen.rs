@@ -1396,6 +1396,13 @@ fn rebuilt_tries(
             *count = count.saturating_sub(1);
         }
     }
+    // The log doesn't say which of a key's reads were the tick's (the effect names no asker), and the tick asks under the
+    // first segment of an order at a node, which the grading may be waiting on too: so a key never rebuilds at the cap or
+    // past it, and a restart leaves the grading at least one try, never none for good. Exactly counting the grading's reads
+    // takes a field on `read_node_record` saying who asked (a contract change; owner: the lead).
+    for count in tries.values_mut() {
+        *count = (*count).min(super::MAX_RECORD_TRIES.saturating_sub(1));
+    }
     tries.retain(|_, count| *count > 0);
     tries
 }
@@ -1413,12 +1420,12 @@ mod rebuilt_tries_tests {
     // verifies: REQ-ORD-41, NFR-5
     #[test]
     fn restart_exemption_of_a_held_record_is_one_read_of_each_segment_and_not_all_of_a_second() {
-        let reads: Vec<_> = (0..24).map(|_| key("s2")).chain([key("s1")]).collect();
         let held = [("o".to_owned(), "n".to_owned(), "p".to_owned())];
-        let tries = rebuilt_tries(&reads, &held);
+        let few: Vec<_> = (0..10).map(|_| key("s2")).chain([key("s1")]).collect();
+        let tries = rebuilt_tries(&few, &held);
         assert_eq!(
             tries.get(&key("s2")),
-            Some(&23),
+            Some(&9),
             "the second segment keeps its tries"
         );
         assert_eq!(
@@ -1426,6 +1433,12 @@ mod rebuilt_tries_tests {
             None,
             "the first's one read produced the record"
         );
-        assert_eq!(rebuilt_tries(&reads, &[]).get(&key("s2")), Some(&24));
+        assert_eq!(rebuilt_tries(&few, &[]).get(&key("s2")), Some(&10));
+        // Many reads, the tick's among them: a restart never rebuilds the grading at its cap.
+        let many: Vec<_> = (0..40).map(|_| key("s2")).collect();
+        assert_eq!(
+            rebuilt_tries(&many, &[]).get(&key("s2")),
+            Some(&(super::super::MAX_RECORD_TRIES - 1))
+        );
     }
 }

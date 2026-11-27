@@ -698,10 +698,13 @@ fn ticks_reads_stay_bounded_over_many_ticks() {
             read_effects_of(&core) - effects,
         ));
     }
+    // The first tick asks each of its three providers for each order; the providers whose record it took, one for each order,
+    // are asked no more (`T-020-67`), so each later tick asks the four that gave none.
+    assert_eq!(per_tick[0], (6, 6), "{per_tick:?}");
     assert!(
-        per_tick
+        per_tick[1..]
             .iter()
-            .all(|&(asked, effects)| asked == 6 && effects == 6),
+            .all(|&(asked, effects)| asked == 4 && effects == 4),
         "{per_tick:?}"
     );
     // Each read names the order it is about, and asks about that order's own segments alone.
@@ -1219,10 +1222,10 @@ fn segment_graded_many_times_while_it_waits_asks_a_publisher_answering_not_known
         core.run(&order)
             .expect("the order runs again after the restart");
     }
-    assert_eq!(
-        reads_by(&core, &order, &segment, RESERVE),
-        cap,
-        "the cap is rebuilt from the log"
+    let after_restart = reads_by(&core, &order, &segment, RESERVE);
+    assert!(
+        (cap..=cap + 1).contains(&after_restart),
+        "the cap is rebuilt from the log, a restart leaving the grading no more than one try: {after_restart}"
     );
 }
 
@@ -1265,9 +1268,9 @@ fn transaction_read_by(core: &Core, provider: &str) -> String {
 }
 
 /// An answer that is made a little after its question, as a provider takes a moment to answer, is judged at the time Core
-/// got it, not at the question's own: a catalogue that allows two seconds of skew doesn't refuse an answer made five
-/// seconds after the question as dated too far ahead. One that came after the question's deadline (ten seconds) is judged at
-/// the deadline, so it is dated beyond it, and refused (`REQ-ORD-41`, `T-020-67`).
+/// got it, not at the question's own: a catalogue that allows two seconds of skew doesn't refuse an answer made three
+/// seconds after the question as dated too far ahead. One that came after the question's deadline (the platform's, two
+/// seconds here) is judged at the deadline, so it is dated beyond it, and refused (`REQ-ORD-41`, `T-020-67`).
 // verifies: REQ-ORD-41
 #[test]
 fn node_record_answer_made_a_little_after_its_question_is_judged_at_the_time_core_got_it() {
@@ -1281,8 +1284,8 @@ fn node_record_answer_made_a_little_after_its_question_is_judged_at_the_time_cor
     };
     assert!(taken(0, 2), "an answer at once is taken");
     assert!(
-        taken(5, 2),
-        "an answer five seconds after its question, with two seconds of skew, is taken"
+        taken(3, 2),
+        "an answer three seconds after its question, the platform's deadline two, with two seconds of skew, is taken"
     );
     assert!(
         !taken(60, 2),
@@ -1371,17 +1374,30 @@ fn segment_waiting_more_than_a_day_is_graded_with_the_record_the_publisher_has_b
     let waiting = accounted(&ran).to_vec();
     let segment = waiting[1].segment.clone();
     let reads = |core: &Core| reads_by(core, &order, &segment, RESERVE);
-    // More than a day of hours, a tick and a grading each: one read an hour between them, never two.
+    // The tick asks under the order's first segment at the node, already settled; the grading under the waiting deposit.
+    let first = waiting[0].segment.clone();
+    let tick_reads = |core: &Core| reads_by(core, &order, &first, RESERVE);
+    // More than a day of hours, a tick and a grading each: each its own read an hour, never more.
     for hour in 1..=30 {
         core.advance(3600);
         core.tick();
         core.run(&order).expect("runs");
-        assert!(reads(&core) <= 1 + hour, "hour {hour}: {}", reads(&core));
+        assert!(
+            reads(&core) <= 1 + 2 * hour,
+            "hour {hour}: {}",
+            reads(&core)
+        );
     }
-    assert!(reads(&core) <= 31, "bounded: {}", reads(&core));
+    // Each is bounded under its own key, and the grading, at its cap, is the one that can ask no more.
+    assert_eq!(
+        reads(&core),
+        MAX_RECORD_TRIES as usize,
+        "the waiting segment is at the grading's cap"
+    );
     assert!(
-        reads(&core) <= (MAX_RECORD_TRIES + MAX_TICK_TRIES) as usize,
-        "within both bounds"
+        (30..=32).contains(&tick_reads(&core)) && tick_reads(&core) <= MAX_TICK_TRIES as usize,
+        "the tick's reads of the first segment: {}",
+        tick_reads(&core)
     );
     // The publisher has its record by now: the tick takes it, and the grading cites it.
     core.lift_tamper_of_record_of(RESERVE);

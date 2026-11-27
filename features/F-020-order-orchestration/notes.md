@@ -9671,7 +9671,7 @@ now the second comparison, is what each test's earlier raises are about).
 
 ### Defaults, reversible, each failing closed
 
-1. **A holder the register doesn't name is raised only where Core's segments rest value at its node.** The row says "a catalogue
+1. **(Changed by `T-020-67`, item 4: a holder the register doesn't name is raised whether or not value rests at its node; this was the default as built.) A holder the register doesn't name is raised only where Core's segments rest value at its node.** The row says "a catalogue
    node with a holder and no register entry". The scenario kit (`kit::join`) lists a placeholder holder at every private node
    its providers declare and the operator's wallet at every public node their tuples reach, which no scenario registers (a
    scenario that wants a wallet installs one, and the register names it): raising each every spell would put a
@@ -10748,14 +10748,14 @@ scenario tests) and `tools/licence-check/src/artifact.rs`, a `DEC-20` path. No o
 
 ### T-020-67, review round 1 (#351's review at `8c8577e8`)
 
-- **M1: the tick's reads are held to the grading's due time and to a bound of their own.** `Segments::read_node_record_on_tick`
-  (used by `Job::PublishersRecords`) puts a read only when the retry cadence has passed since the last read of the key,
-  whoever put it, only while fewer than `MAX_TICK_TRIES` (72, three days at the hourly retry) have been put by the tick in
-  this Core's life, and never once the key's record is taken (`note_record_taken`, called for each record the tick took).
+- **M1: the tick's reads are held to a due time and a bound of their own, apart from the grading's.** `Segments::read_node_record_on_tick`
+  (used by `Job::PublishersRecords`) puts a read only when the retry cadence has passed since the tick's last read of the key,
+  only while fewer than `MAX_TICK_TRIES` (72, three days at the hourly retry) have been put by the tick in
+  this Core's life, and never once the tick has taken the key's record (`note_record_taken`, called for each record it took, which also stops the grading's reads of it).
   Its reads are not counted among the grading's `MAX_RECORD_TRIES` (24), so the tick can't spend the grading's tries; the
   grading's own bound is as before. The tick's count is not rebuilt on a restart (the cadence bounds it between restarts).
-  Because the due time is shared, tick and grading together put at most one read an hour. A segment that waits more than a
-  day is still graded with a record the publisher has by then, which the tick takes and feeds the books: test
+  Tick and grading each put at most one read an hour. What the tick takes it hands to the grading's books too (`Grading::record_read`), so a segment that waits more than a
+  day is still graded with a record the publisher has by then, whatever the grading's own tries came to: test
   `segment_waiting_more_than_a_day_is_graded_with_the_record_the_publisher_has_by_then_and_the_ticks_reads_stay_bounded`.
 - **L1: the restart exemption is per segment.** Of the reads of a segment, node and provider in the log, the last doesn't
   count where the log holds that provider's record of the node for the order, since it produced it (`rebuilt_tries`); a
@@ -10794,3 +10794,56 @@ scenario tests) and `tools/licence-check/src/artifact.rs`, a `DEC-20` path. No o
   Not switched off: the tick's bound and its stop once taken (the order has completed by then, so no tick reads either way),
   and L5's refresh of the versions (no test). `protocol_cutover`'s
   `old_version_provider_survives_its_cutover_…` fails here as on `19e6984d`; its fix is `de9d9728`, not yet in `m3`.
+
+### T-020-67, item (4): the milestone reviewer's check of `T-020-63` at `be306133`
+
+- **Low-Medium: each holding account is held to its own asset.** `Segments::resting_totals_by_asset` keys by node, order and
+  asset, and the schedule's `held_by` matches an account's node and asset, so at a node resting two assets each account is
+  compared with its own, never the sum of both (which raised false differences and could hide a short in one asset behind an
+  over in the other). `resting_totals` (by node and order) stays for the landings and the stuck mover, which don't need the
+  asset. Test `holding_check_at_a_node_resting_two_assets_compares_each_account_with_its_own_asset` (`schedule/jobs.rs`, at
+  `held_by`: no fleet rests two assets at one node).
+- **Low: an unregistered holder is raised whether or not value rests there.** The nodes walked are Core's resting nodes and
+  every node the catalogue lists a holder at; each the register names in neither list is raised `not_registered`, once a
+  spell. Default 1 of `T-020-63` above (conditional on value) is changed; the scenario kit's placeholder holders, which no
+  scenario registers, are now raised too. Test `holder_the_register_does_not_name_is_raised_where_no_value_rests_too`.
+- **Low: the original late answer.** `status_answer_of_a_holdouts_late_deposit_is_taken_after_the_cutover_for_a_segment_begun_before_it`
+  keeps a test of the holdout's own answer (here to Core's status question, `RESERVE` the only reserve of the fleet) beside
+  the decided repeat's, which `old_version_provider_survives_its_cutover_…` shows through `OUT_UNTRACKED`. The platform
+  holds no original late answer since `T-020-63`; Core gets one by a status question or a repeat.
+
+### T-020-67, review round 2 (#351's review at `d55dea48`)
+
+- **H1.** The tick asks under the order's first segment at the node (already settled), the grading under the waiting
+  deposit, so they never share a key. What the tick takes is handed to the grading's books (`Grading::record_read`), which
+  are by provider, node and order, not by segment, so closing finds it whatever the waiting segment's own tries came to.
+  `segment_waiting_more_than_a_day_is_graded_with_the_record_…` counts reads per segment (the waiting deposit at the grading's
+  cap of 24, the first segment at 30 to 32 tick reads) and asserts closing records `ConsistentWithTheExit`.
+- **H2 (a deliberate change of contract).** `T-020-58`'s `ticks_reads_stay_bounded_over_many_ticks` changed: the tick no longer
+  asks the providers whose record it took, so at cadence 0 the first tick asks the six pairs and each later one the four
+  that gave none (`(6, 6)` then `(4, 4)`). `ticks_question_about_a_private_node_is_decided_and_recorded_and_a_denial_asks_nothing`
+  passes unchanged.
+- **H3.** The fleets' platform deadline is 2 s (`harness.rs`), so the judging-time test answers 3 s after its question, past
+  the deadline and within the catalogue's 2 s of skew (a 5 s answer is refused by design).
+- **M2.** The log can't say whether the tick or the grading asked (`read_node_record` carries no asker), so the rebuild can't
+  count the grading's reads alone. Mitigation: a key never rebuilds at the cap, so a restart after many tick reads leaves the
+  grading at least one try (`rebuilt_tries`, tested with 40 reads). An exact count takes a field on the effect saying who asked,
+  a contract change in `core-internal` (owner: the lead).
+- **L4.** The done-on-reopen test is a roll-back of a staging the platform has already ended. A restriction the platform
+  actually holds can't be left without its result through the assembly: the result of a revocation or mark taken through
+  `change_release` is written by Core, and a second, unresulted effect for it is refused on reopen as a change `relist`
+  doesn't replay; only a crash between the platform's taking it and the append leaves it so, which the fleet has no hook for
+  (owner: `F-024`'s fleet, with L5).
+- **The `T-020-63` default and its tests.** Raising an unregistered holder wherever the catalogue lists one changed three
+  tests that counted raises: `holder_the_register_does_not_name_is_raised_as_not_read`, `public_nodes_balance_is_checked_…`
+  (`assembly_real_wallet.rs`) and `pairs_a_restart_dropped_reach_the_operator_…` (`report_pairs.rs`), which now look at the
+  difference they are about.
+
+- **Rule-offs, against the green tree (the table of `d55dea48` is void).** R13 to R19 each red on an assertion: R13 the
+  per-segment exemption (`restart_exemption_of_a_held_record_…`), R14 the judging deadline, R15 the past-cutover drop, R16 the
+  earliest-segment read, R17 the roll-back completion, R18 `held_by` ignoring the asset
+  (`holding_check_at_a_node_resting_two_assets_compares_each_account_with_its_own_asset`), R19 the unregistered holder raised
+  only where value rests (`holder_the_register_does_not_name_is_raised_where_no_value_rests_too`). R12, the tick's own due time,
+  is not red alone: the job's own cadence (`PublishersRecords`, the same setting) already keeps the tick to it. Checks: the
+  whole `rutent-scenarios` package (57 test binaries), core-orch, `invariants` and `assembly` on seeds 11 to 15, core-authz
+  `--lib`, licence-check, prov, conformance, plan-check and tag-check `--strict`, fmt and clippy `-D warnings`.

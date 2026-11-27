@@ -196,10 +196,10 @@ impl Segments {
         self.ask_node_record(parts, read, true)
     }
 
-    /// The tick's read of a node's record (`Job::PublishersRecords`, `T-020-67`): the same decided read, but held to the
-    /// grading's due time (a read isn't put before the retry cadence has passed since the last, whoever put it), to a bound of
-    /// its own ([`MAX_TICK_TRIES`], not counted among the grading's tries, so it never starves the grading), and never put
-    /// once the key's record is taken. `None` where it isn't due.
+    /// The tick's read of a node's record (`Job::PublishersRecords`, `T-020-67`): the same decided read, but held to its
+    /// own due time (not before the retry cadence has passed since the tick's last read of the key), to a bound of its own
+    /// ([`MAX_TICK_TRIES`], not counted among the grading's tries, so it never starves the grading), and never put once the
+    /// tick has taken the key's record. `None` where it isn't due.
     pub fn read_node_record_on_tick(
         &mut self,
         parts: &mut Parts<'_>,
@@ -211,7 +211,7 @@ impl Segments {
             read.node.to_owned(),
             read.provider.to_owned(),
         );
-        if self.records_read.contains(&key)
+        if self.tick_done.contains(&key)
             || self.tick_tries.get(&key).copied().unwrap_or(0) >= MAX_TICK_TRIES
         {
             return None;
@@ -219,15 +219,14 @@ impl Segments {
         let at = now(parts.clock).ok()?;
         let seconds = u64::try_from(at.unix_nanos() / 1_000_000_000).unwrap_or(0);
         let due = self
-            .record_tries
+            .tick_last
             .get(&key)
-            .is_none_or(|tries| now_or_back(seconds, tries.last, self.record_retry_seconds()));
+            .is_none_or(|last| now_or_back(seconds, *last, self.record_retry_seconds()));
         if !due {
             return None;
         }
         let read = self.ask_node_record(parts, read, false);
-        let tries = self.record_tries.entry(key.clone()).or_default();
-        tries.last = tries.last.max(seconds);
+        self.tick_last.insert(key.clone(), seconds);
         *self.tick_tries.entry(key).or_insert(0) += 1;
         Some(read)
     }
@@ -235,12 +234,14 @@ impl Segments {
     /// That the record of `node` asked of `provider` for `segment` of `order` was taken (by the tick's read, whose answer
     /// feeds the books): it is asked for no more by the grading or the tick.
     pub fn note_record_taken(&mut self, order: &Id, segment: &Id, node: &str, provider: &str) {
-        self.records_read.insert((
+        let key = (
             order.as_str().to_owned(),
             segment.as_str().to_owned(),
             node.to_owned(),
             provider.to_owned(),
-        ));
+        );
+        self.tick_done.insert(key.clone());
+        self.records_read.insert(key);
     }
 
     fn ask_node_record(

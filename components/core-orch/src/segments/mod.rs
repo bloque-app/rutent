@@ -717,6 +717,11 @@ pub struct Segments {
     record_retry: Option<u64>,
     /// How often the tick asked each read, by order, segment, node and provider, while this Core lives (its own bound).
     tick_tries: BTreeMap<(String, String, String, String), u32>,
+    /// When the tick last asked each read, in whole seconds: the tick's own due time.
+    tick_last: BTreeMap<(String, String, String, String), u64>,
+    /// The reads whose record the tick took: it asks for no more of them (the grading, which the tick's answer feeds, asks
+    /// for none either).
+    tick_done: BTreeSet<(String, String, String, String)>,
     /// The publishers' records of private nodes the log held when Core reopened, by what they say (`T-020-58`): a record
     /// read again after a restart, signed afresh, that says the same of the same order and node is not kept a second
     /// time, and cites the receipt the log gave the first.
@@ -1042,6 +1047,30 @@ impl Segments {
             resting.push(((node.clone(), order.clone()), amount));
         }
         landing::totals(resting)
+    }
+
+    /// [`Segments::resting_totals`] by node, order and asset: a holding account holds one asset, so at a node where two rest
+    /// each account is held to its own (`INV-1`'s second half, `REQ-AUD-6`, `T-020-67`).
+    pub fn resting_totals_by_asset(&self) -> BTreeMap<(String, String, String), Amount> {
+        let values = self.values_at_nodes();
+        type Resting<'a> = Vec<((String, String), &'a Amount)>;
+        let mut by_asset: BTreeMap<&str, Resting<'_>> = BTreeMap::new();
+        for ((order, _), node, asset, amount, at) in &values {
+            if *at != AtNode::Rests {
+                continue;
+            }
+            by_asset
+                .entry(asset.as_str())
+                .or_default()
+                .push(((node.clone(), order.clone()), amount));
+        }
+        let mut totals = BTreeMap::new();
+        for (asset, resting) in by_asset {
+            for ((node, order), amount) in landing::totals(resting) {
+                totals.insert((node, order, asset.to_owned()), amount);
+            }
+        }
+        totals
     }
 
     /// Whether anything of Core's is at `node` now (`T-020-65`, `T-020-66`): what an unlist of a public node is held to,
