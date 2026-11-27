@@ -136,6 +136,23 @@ impl Catalogue {
         self.context = Some((deployment, protocol_version.to_owned()));
     }
 
+    /// Puts an older protocol version in force until `cutover` (an RFC 3339 UTC time in the contract's form): a
+    /// statement under it is taken before then, and void from then on, judged at the caller's clock (`REQ-PRT-4`,
+    /// `THR-64`). A date set again for a version replaces the first; the current version is never an older one. The
+    /// operator's decided setting reaches here (`T-020-49`, `T-020-54`).
+    pub fn set_cutover(&mut self, version: &str, cutover: &str) {
+        self.older.insert(version.to_owned(), cutover.to_owned());
+    }
+
+    /// The protocol versions in force: the one the catalogue serves, and each older one before its cutover date.
+    pub fn protocol_versions(&self) -> Option<rutent_contracts::provider_role::ProtocolVersions> {
+        let (_, current) = self.context.as_ref()?;
+        Some(self.older.iter().fold(
+            rutent_contracts::provider_role::ProtocolVersions::only(current.as_str()),
+            |versions, (version, cutover)| versions.with_older(version.as_str(), cutover.as_str()),
+        ))
+    }
+
     /// Sets how far ahead of the caller's clock an advertisement may be dated, in seconds
     /// ([`DEFAULT_CLOCK_SKEW_SECONDS`] until set).
     pub fn set_clock_skew(&mut self, seconds: u64) {
@@ -214,17 +231,19 @@ impl Catalogue {
     /// follow an outcome, comes from a provider with a grant in force, and its publisher and reserve declaration
     /// are recorded. `at` is the caller's clock, the one the skew check counts from. A refusal changes nothing.
     pub fn join(&mut self, received: &[u8], at: Instant) -> Result<(), JoinRefusal> {
-        let (deployment, protocol_version) = self.context.clone().ok_or(JoinRefusal::NoContext)?;
+        let (deployment, _) = self.context.clone().ok_or(JoinRefusal::NoContext)?;
+        let versions = self.protocol_versions().ok_or(JoinRefusal::NoContext)?;
         let statement: Statement<Advertisement> =
             serde_json::from_slice(received).map_err(|e| JoinRefusal::Unreadable(e.to_string()))?;
         canonicalize(received).map_err(JoinRefusal::NoSigningInput)?;
         statement.check_shape().map_err(JoinRefusal::WrongShape)?;
         statement
             // Judged at the caller's clock `at`, never the maker's own `made_at`, so a statement can't be dated back past a
-            // cutover (provider-role 4.0.0; one version in force here). A clock past year 9999 can't be written, and voids it.
+            // cutover (provider-role 4.0.0): the versions in force are the catalogue's, each older one with the date the operator
+            // set. A clock past year 9999 can't be written, and voids it.
             .check_context(
                 &deployment,
-                &rutent_contracts::provider_role::ProtocolVersions::only(protocol_version.as_str()),
+                &versions,
                 &at.rfc3339().ok_or(JoinRefusal::BadTime)?,
             )
             .map_err(JoinRefusal::WrongContext)?;
@@ -399,15 +418,23 @@ impl Catalogue {
                 .ok_or_else(|| unreadable(&path.join("/")))?;
             serde_json::from_slice::<String>(bytes).map_err(|_| unreadable(&path.join("/")))
         };
-        let (deployment, protocol_version) =
-            self.context.as_ref().ok_or(StatementRefusal::NoContext)?;
+        let (deployment, _) = self.context.as_ref().ok_or(StatementRefusal::NoContext)?;
+        let versions = self
+            .protocol_versions()
+            .ok_or(StatementRefusal::NoContext)?;
         let sent_deployment: rutent_contracts::provider_role::Deployment =
             rutent_contracts::provider_role::member(received, &["deployment"])
                 .ok()
                 .flatten()
                 .and_then(|bytes| serde_json::from_slice(bytes).ok())
                 .ok_or_else(|| unreadable("deployment"))?;
-        if &sent_deployment != deployment || text(&["protocol_version"])? != *protocol_version {
+        // The version is judged at the caller's clock, never the statement's own `made_at`: a holdout can't date a statement
+        // back before its cutover (`REQ-PRT-4`, `THR-64`). A clock no time can be written for voids an older version's.
+        let sent_version = text(&["protocol_version"])?;
+        let in_force = at
+            .rfc3339()
+            .is_some_and(|now| versions.in_force(&sent_version, &now).is_ok());
+        if &sent_deployment != deployment || !in_force {
             return Err(StatementRefusal::WrongContext);
         }
         let maker = text(&["maker"])?;

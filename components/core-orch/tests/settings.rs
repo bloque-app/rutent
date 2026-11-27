@@ -555,3 +555,95 @@ fn public_node_unlisted_by_the_operator_is_no_longer_on_the_catalogues_public_li
     .expect("permitted");
     assert!(catalogue.nodes().is_public(node));
 }
+
+/// A protocol version's cutover date the operator sets reaches the catalogue that judges statements (`REQ-PRT-4`,
+/// `T-020-49`, `T-020-54`): refused, nothing changes; permitted, the older version is in force in the catalogue until
+/// the date; a reopened Core puts it there again from the log.
+// verifies: REQ-PRT-4, REQ-AUZ-6
+#[test]
+fn a_cutover_the_operator_sets_is_the_catalogues_older_version_in_force() {
+    use rutent_prov::catalogue::Catalogue;
+    let cutover: OperatorSetting = serde_json::from_value(json!({
+        "setting": "cutover",
+        "version": "3.0.0",
+        "cutover": "2026-12-01T00:00:00Z",
+    }))
+    .unwrap();
+    let deployment = serde_json::from_value(json!({
+        "name": "rutent-test",
+        "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA",
+    }))
+    .unwrap();
+    let mut catalogue = Catalogue::new();
+    catalogue.set_context(deployment, "4.0.0");
+    let older = |catalogue: &Catalogue| {
+        catalogue
+            .protocol_versions()
+            .expect("a context")
+            .older()
+            .iter()
+            .map(|c| (c.version.clone(), c.cutover.clone()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(older(&catalogue), Vec::new());
+
+    let (mut log, mut policy) = (
+        KeptLog::default(),
+        Answering::with(Answer::Refuse {
+            class: RefusalClass::NotPermitted,
+        }),
+    );
+    let mut settings = Settings::new();
+    assert!(
+        set(
+            &mut settings,
+            &mut log,
+            &mut policy,
+            &mut Targets {
+                catalogue: Some(&mut catalogue),
+                ..Targets::default()
+            },
+            &cutover,
+        )
+        .is_err()
+    );
+    assert_eq!(
+        older(&catalogue),
+        Vec::new(),
+        "refused: nothing is in force"
+    );
+
+    let mut policy = Answering::with(Answer::Permit {});
+    set(
+        &mut settings,
+        &mut log,
+        &mut policy,
+        &mut Targets {
+            catalogue: Some(&mut catalogue),
+            ..Targets::default()
+        },
+        &cutover,
+    )
+    .expect("permitted");
+    let expected = vec![("3.0.0".to_owned(), "2026-12-01T00:00:00Z".to_owned())];
+    assert_eq!(older(&catalogue), expected);
+    assert_eq!(
+        settings.cutover("3.0.0").map(|t| t.as_str().to_owned()),
+        Some("2026-12-01T00:00:00Z".to_owned())
+    );
+
+    let mut again = Catalogue::new();
+    again.set_context(
+        serde_json::from_value(json!({
+            "name": "rutent-test",
+            "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA",
+        }))
+        .unwrap(),
+        "4.0.0",
+    );
+    Settings::reopened(&log.entries).apply(&mut Targets {
+        catalogue: Some(&mut again),
+        ..Targets::default()
+    });
+    assert_eq!(older(&again), expected, "rebuilt from the log");
+}

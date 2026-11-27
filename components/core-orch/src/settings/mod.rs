@@ -425,6 +425,11 @@ impl Settings {
                 cadences.set_status_of(provider, *seconds);
             }
         }
+        if let Some(catalogue) = targets.catalogue.as_deref_mut() {
+            for (version, cutover) in &self.cutovers {
+                catalogue.set_cutover(version, cutover.as_str());
+            }
+        }
         if let (Some(arrivals), Some(seconds)) =
             (targets.arrivals.as_deref_mut(), self.deposit_wait)
         {
@@ -481,7 +486,7 @@ impl Settings {
         self.status_cadences.get(provider).copied()
     }
 
-    /// The cutover date the operator set for the older protocol version `version`, if any (read by `T-020-54`).
+    /// The cutover date the operator set for the older protocol version `version`, if any (the catalogue holds it, `T-020-54`).
     pub fn cutover(&self, version: &str) -> Option<&Timestamp> {
         self.cutovers.get(version)
     }
@@ -492,7 +497,8 @@ impl Settings {
     }
 }
 
-/// Applies one setting to `targets`: an evidence floor and a listed public node to the catalogue, a cadence to the
+/// Applies one setting to `targets`: an evidence floor, a listed public node and a protocol version's cutover to the
+/// catalogue, a cadence to the
 /// schedule, the deposit wait to arrivals. The bounds and a node's confirmations are read from the settings.
 fn apply_one(setting: &OperatorSetting, targets: &mut Targets<'_>) {
     match setting {
@@ -530,11 +536,17 @@ fn apply_one(setting: &OperatorSetting, targets: &mut Targets<'_>) {
                 arrivals.set_deposit_wait(*seconds);
             }
         }
+        // The older version is in force in the catalogue until the date, and a statement under it is void from then
+        // on (`REQ-PRT-4`, `THR-64`).
+        OperatorSetting::Cutover { version, cutover } => {
+            if let Some(catalogue) = targets.catalogue.as_deref_mut() {
+                catalogue.set_cutover(version.as_str(), cutover.as_str());
+            }
+        }
         OperatorSetting::OperatorFee { .. }
         | OperatorSetting::SlippageLimit { .. }
         | OperatorSetting::ProviderCeiling { .. }
-        | OperatorSetting::PublisherCeiling { .. }
-        | OperatorSetting::Cutover { .. } => {}
+        | OperatorSetting::PublisherCeiling { .. } => {}
     }
 }
 

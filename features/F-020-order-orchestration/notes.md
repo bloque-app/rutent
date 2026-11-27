@@ -9281,3 +9281,77 @@ scenario tests.
   `gross_charged`, `audit_scenarios`, `charge_check`, `holds`) 203; `invariants` on seeds 11 to 15, 10; `plan-check
   --strict` 0 findings, `tag-check --strict` 2520 tests, 0 findings; the contract guard against `origin/develop`: no
   violations. The doc check is CI's (core-orch's `rustdoc` passes 2 GB locally).
+
+## T-020-54: protocol changes and cutovers, as protocol behaviour (finding 11 of the milestone review of 2026-11-24)
+
+What the row's author built, on `T-020-45`'s shapes and `T-020-49`'s recorded cutover. It edits `tools/contract-guard/` and
+`contracts/` (`DEC-20` paths), `components/prov/src/catalogue/` (an outer library's code this Work names), and, in
+`core-orch`, `settings/` and, in `core-audit`, `log/keys.rs` (`DEC-20`); and the scope file (an `F-024` file).
+
+### Design
+
+- **The guard's fold rule** (the milestone reviewer's check of 2026-11-25, and its addendum). A contract version whose
+  heading `develop`'s changelog lacks is unreleased. Against a base that is no release line (the base commit is an
+  ancestor of neither `develop` nor `main`: `m3`, a PR's earlier commit), a change to an unreleased version needs no bump
+  (it may not go down), and a README-only change to it needs no new bullet; a lock move that touches every contract
+  asks no bump of an unreleased one. Against `develop` and `main`, and for any version `develop` holds, both rules are
+  as they were. `Files` gained `base_is_release()` (default true) and `released(path)` (the text on `develop`'s tip);
+  the command line answers them from `origin/develop`, else `develop`, and `main`.
+- **Ignorable against `additionalProperties`** (the review's Low, routed to this row). An entry of provider-role's
+  changelog that says `Ignorable: yes` and names, in backticks (`field`, `Type.field`, `Type::field`), a field its
+  change adds to an object whose older schema text closes it with `additionalProperties: false` is refused: an older
+  reader refuses that field, so the entry can't call it ignorable. Three entries said so and were wrong
+  (`answers_hold_requests`, a failed outcome's `fault`, a fee's `billed_separately`): each now says `Ignorable: no`. The
+  reserve declaration admits what a later version adds (`additionalProperties: true`, and `ReserveDeclaration` no longer
+  denies unknown fields), so the next optional field there is ignorable for real. Test
+  `reserve_declaration_admits_a_field_a_later_version_adds` (contracts) and `field_marked_ignorable_is_admitted_by_the_older_schema` (guard).
+- **The Lows of `T-020-45` (6).** `arrival-question.schema.json` and `ArrivalQuestion`'s doc say what a provider states,
+  and name core-internal's README for what the log binds. router-api's invalid fixtures are held to their one rule:
+  each `return Err(Violation(..))` that can go on is a `broke(..)?` (the `rule-switches` feature, the same switch as
+  core-internal's, now shared), and `each_router_api_invalid_fixture_breaks_only_the_rule_it_names` switches each
+  fixture's rule off and holds the rest to what it must be.
+- **The cutover is read** (`REQ-PRT-4`, `THR-64`). The catalogue holds the versions in force (`Catalogue::set_cutover`,
+  `protocol_versions`): its context's version, and each older one with its date. The operator's decided `cutover` setting
+  reaches it (`settings::apply_one`, and `Settings::apply` when a reopened Core puts its parts together). The catalogue's
+  advertisement `join` and `verify_statement` judge by those versions at the reader's clock, never the statement's
+  `made_at`: before the date a statement under either version is taken, from it a holdout's is refused
+  (`ContextMismatch::PastCutover`; `StatementRefusal::WrongContext` for a statement). The log's register reads them from
+  its own permitted `set_setting` effects (`Register::cutovers`), never from orchestration: a cutover counts from its
+  admitted effect, as a revocation does, and a `failed` result undoes it; the later of two for one version stands. The
+  log's advertisement `join` judges by them at the time it received it.
+- **Scope.** `REQ-PRT-2` and `REQ-PRT-4` move from `m4` to `m3` in `conformance/evidence/v0-scope`; `F-030` keeps running
+  the cutovers in production.
+
+### Defaults taken (reversible, fail closed)
+
+1. A base the guard can't place (no `develop` or `main` in the clone) is a release base: every rule applies, and it says so.
+2. Release-ness is by ancestry, not by name, so a SHA that is on `develop` is a release base.
+3. An entry that says `Ignorable: yes` and names a refused field fails; one that names no field is not read for one.
+4. The three entries above say `Ignorable: no` rather than the older schemas being re-opened (they are 3.0.0's, released).
+5. A cutover counts from its effect, not its result, and a version nobody put in force is refused as before.
+6. A statement under an older version after its date is refused whatever segment it answers (see gap 1).
+7. A cutover set for the current version changes nothing (`ProtocolVersions::with_older`).
+
+### Gaps, with owners
+
+1. **The per-segment reading.** `segment begun before a cutover resolves the same whether its result lands before or after
+   it` [`REQ-PRT-2`] is not built. The catalogue refuses an old-version statement after the date whichever operation it
+   answers, so a result that lands after the date for a segment begun before it is refused until Core records each
+   segment's version and the readers judge by it. Fails closed (nothing moves wrongly; the segment stalls to
+   its stuck handling). Owner: a follow-up row of `F-020` (core-orch `segments/`, `snapshot/`); the row's Done
+   needs it. Reported to the lead.
+2. **Readers that still take one version.** The platform's release-assertion admission (`Platform::admit`), the reversal
+   judge, the router's bounds and the stand-ins read `ProtocolVersions::only(..)`; only the catalogue's and the log's
+   advertisement and statement reads take the older versions. Owner: `F-013` (admission) and `F-020`, with gap 1.
+3. **router-api's fixtures.** `ALSO_BREAK` (20 fixtures that still break a second rule) and `UNSWITCHABLE` (15 whose
+   refusal returns where the check can't go on) are pinned in the test as they are, so each list can only shrink.
+   Mending them is fixture and check work in router-api's decision-record rules. Owner: a follow-up row of `F-004`/`F-020`.
+4. **The guard sees only what it can name.** An entry that says `Ignorable: yes` and names no field, a schema moved to
+   another pointer, a property added to an `oneOf` arm by position and an enumeration value are not read for a closed
+   older object; a backticked word that is also an added property (`terms`) counts. Owner: this guard, if a review finds one.
+5. **`change adding a protection binds every provider from its cutover`** is shown at the catalogue (every provider, by
+   advertisement); the module platform's own statements follow gap 2.
+6. **The unclean end.** The revoked provider's advertisement that still declares (the review's Low-Medium) is not this
+   row's: its row names `REQ-AUZ-9`.
+
+### Rule-off
