@@ -40,6 +40,8 @@ pub enum ArtifactReason {
     Unrecorded,
     /// The record's licence for it differs from the one its manifest declares.
     LicenceMismatch,
+    /// Its manifest gives a `license-file` and no `license`, and the file cannot be read, or has no SPDX header or more than one distinct one.
+    LicenceFileUnread,
     /// Its graph holds a crate of rutent's core and a package outside the permissive set, with no exception.
     CoreWithCopyleft,
     /// `rutent-stm` or `rutent-contracts` has a package outside the permissive set in its own graph.
@@ -73,6 +75,9 @@ impl fmt::Display for ArtifactViolation {
             ArtifactReason::LicenceMismatch => {
                 "is recorded with another licence than its manifest declares"
             }
+            ArtifactReason::LicenceFileUnread => {
+                "gives a license-file and no license, and the file has no readable SPDX header"
+            }
             ArtifactReason::CoreWithCopyleft => {
                 "holds a crate of rutent's core and a package outside the permissive licences, with no exception"
             }
@@ -101,6 +106,9 @@ struct Pkg {
     name: String,
     version: String,
     license: Option<String>,
+    /// The `license_file` of its manifest, and its manifest's path, for a package that gives no `license`.
+    license_file: Option<String>,
+    manifest: Option<String>,
     /// For a path package (no `source`), the directory of its manifest relative to the repository root.
     dir: Option<String>,
     path: bool,
@@ -164,6 +172,11 @@ fn parse_meta(text_in: &str, lockfile: &str) -> Result<Meta, String> {
                 name: text(p, "name")?,
                 version: text(p, "version")?,
                 license: p.get("license").and_then(Json::as_str).map(str::to_string),
+                license_file: p
+                    .get("license_file")
+                    .and_then(Json::as_str)
+                    .map(str::to_string),
+                manifest: manifest.map(str::to_string),
                 dir: if path {
                     package_dir(workspace_root, lockdir, manifest)
                 } else {
@@ -284,12 +297,80 @@ pub fn check_artifacts(
     inputs: &[ArtifactInput],
     record: &str,
 ) -> Result<Vec<ArtifactViolation>, String> {
+    check_artifacts_with(inputs, record, &|_| None)
+}
+
+/// A licence text for comparison: a `/` read as ` OR `, and runs of whitespace as one space, so that `Apache-2.0/MIT`
+/// and `Apache-2.0 OR MIT` are the same text, and nothing else is.
+fn canon(licence: &str) -> String {
+    licence
+        .replace('/', " OR ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The text of the SPDX header of a licence file: the expression after `SPDX-License-Identifier:`, without a comment
+/// closer. A file with no header, or with more than one distinct header, has none (it fails closed).
+fn spdx_header(text: &str) -> Option<String> {
+    let mut found: Vec<String> = Vec::new();
+    for line in text.lines() {
+        if let Some((_, rest)) = line.split_once("SPDX-License-Identifier:") {
+            let rest = rest
+                .trim()
+                .trim_end_matches("*/")
+                .trim_end_matches("-->")
+                .trim();
+            if rest.is_empty() {
+                return None;
+            }
+            if !found.iter().any(|f| canon(f) == canon(rest)) {
+                found.push(rest.to_string());
+            }
+        }
+    }
+    (found.len() == 1).then(|| found.remove(0))
+}
+
+/// As [`check_artifacts`], reading a manifest's `license-file` through `read` (given the file's path, absolute or
+/// as the metadata gives it): a package (artifact or dependency) with a `license-file` and no `license` is compared by
+/// the file's SPDX header, and fails with [`ArtifactReason::LicenceFileUnread`] when `read` gives nothing or the file
+/// has no header, or more than one distinct one.
+pub fn check_artifacts_with(
+    inputs: &[ArtifactInput],
+    record: &str,
+    read: &dyn Fn(&str) -> Option<String>,
+) -> Result<Vec<ArtifactViolation>, String> {
     let record = parse_record(record)?;
     let mut found: Vec<ArtifactViolation> = Vec::new();
     check_core_lists(inputs, &record, &mut found)?;
     for input in inputs {
-        let meta = parse_meta(&input.metadata, &input.lockfile)
+        let mut meta = parse_meta(&input.metadata, &input.lockfile)
             .map_err(|e| format!("{}: {e}", input.lockfile))?;
+        // A package that gives a `license-file` and no `license` is read by the file's SPDX header, or fails.
+        let mut unread = Vec::new();
+        for p in meta.pkgs.values_mut() {
+            if p.license.is_some() {
+                continue;
+            }
+            let Some(file) = p.license_file.clone() else {
+                continue;
+            };
+            let path = if file.starts_with('/') {
+                file
+            } else {
+                let dir = p
+                    .manifest
+                    .as_deref()
+                    .and_then(|m| m.rsplit_once('/'))
+                    .map_or("", |d| d.0);
+                format!("{dir}/{file}")
+            };
+            match read(&path).and_then(|t| spdx_header(&t)) {
+                Some(header) => p.license = Some(header),
+                None => unread.push((p.name.clone(), path)),
+            }
+        }
         let mut push = |artifact: &str, reason, detail: String| {
             let v = ArtifactViolation {
                 lockfile: input.lockfile.clone(),
@@ -313,6 +394,25 @@ pub fn check_artifacts(
             };
             format!("{} {} ({l})", p.name, p.version)
         };
+        for (name, path) in unread {
+            push(&name, ArtifactReason::LicenceFileUnread, path);
+        }
+        // Every locked package whose record licence differs from its manifest's fails, dependencies too.
+        for p in meta.pkgs.values() {
+            let entry = record
+                .entries
+                .iter()
+                .find(|e| e.name == p.name && e.version == p.version);
+            if let (Some(e), Some(declared)) = (entry, &p.license)
+                && canon(&e.licence) != canon(declared)
+            {
+                push(
+                    &p.name,
+                    ArtifactReason::LicenceMismatch,
+                    format!("record `{}`, manifest `{declared}`", e.licence),
+                );
+            }
+        }
         for id in &meta.members {
             let artifact = &meta.pkgs[id];
             match record
@@ -327,7 +427,7 @@ pub fn check_artifacts(
                 ),
                 Some(line) => {
                     if let Some(declared) = &artifact.license
-                        && *declared != line.licence
+                        && canon(declared) != canon(&line.licence)
                     {
                         push(
                             &artifact.name,
@@ -393,14 +493,17 @@ pub fn check_artifacts(
 }
 
 /// Every crate of the root workspace is `@core` or `@noncore`, and not both; every such name is a crate of the root
-/// workspace. Skipped when no input is the root lock (`Cargo.lock`), which the tool always gives.
+/// workspace. An error when no input is the root lock (`Cargo.lock`), which the tool always gives.
 fn check_core_lists(
     inputs: &[ArtifactInput],
     record: &Record,
     found: &mut Vec<ArtifactViolation>,
 ) -> Result<(), String> {
     let Some(root) = inputs.iter().find(|i| i.lockfile == "Cargo.lock") else {
-        return Ok(());
+        return Err(
+            "no input is the root lock `Cargo.lock`, so the core lists cannot be checked"
+                .to_string(),
+        );
     };
     let meta =
         parse_meta(&root.metadata, &root.lockfile).map_err(|e| format!("Cargo.lock: {e}"))?;

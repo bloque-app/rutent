@@ -526,3 +526,23 @@ fn a_git_submodule_fails_closed() {
         "{result:?}"
     );
 }
+
+// verifies: REQ-MOD-5
+#[test]
+fn tracked_lock_that_gitignore_also_matches_is_read() {
+    let base = fixture_repo(
+        "licence-find-tracked-ignored",
+        "Cargo.lock\n",
+        &["tools/x/Cargo.lock", "tools/y/Cargo.lock"],
+    );
+    // `tools/x` is tracked although `.gitignore` matches it (`git add -f`); `tools/y` is only ignored.
+    let git = std::process::Command::new("git")
+        .args(["add", "-f", "tools/x/Cargo.lock"])
+        .current_dir(&base)
+        .status()
+        .expect("git runs");
+    assert!(git.success());
+    let found = find_all_locks(&base).expect("walk");
+    fs::remove_dir_all(&base).expect("clean up");
+    assert_eq!(found, vec!["tools/x/Cargo.lock"]);
+}
