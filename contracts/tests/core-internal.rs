@@ -3527,6 +3527,19 @@ fn repeat_of_a_segment_that_already_has_an_outcome_is_refused_by_the_log() {
     assert_case("world--effect_repeat");
     assert_case_refused("repeat-is-of-an-unsettled-segment-at-its-provider--missing");
     assert_case_refused("repeat-is-of-an-unsettled-segment-at-its-provider--a-settled-segment");
+    // And only under the segment's own transaction, never another segment's of the same provider.
+    assert_case_refused(
+        "repeat-is-of-an-unsettled-segment-at-its-provider--another-segments-transaction",
+    );
+}
+
+// verifies: REQ-ORD-1, INV-8
+#[test]
+fn repeat_under_another_segments_transaction_is_refused_by_the_log() {
+    assert_case("world--effect_repeat");
+    assert_case_refused(
+        "repeat-is-of-an-unsettled-segment-at-its-provider--another-segments-transaction",
+    );
 }
 
 // verifies: REQ-AUZ-1

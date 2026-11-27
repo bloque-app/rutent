@@ -36,7 +36,7 @@
 //! stamped only once the job succeeded, so a job that failed is tried again on the next tick and not after its whole
 //! cadence. A restart forgets when each job last ran, so a reopened Core runs every job on its first tick (it fails
 //! closed: a job done twice is done once, as the jobs' own rules say); it doesn't forget when each segment was last asked
-//! its status, which [`Schedule::recorded`] rebuilds from the log's `ask_status` effects, so the first tick presses no
+//! its status, which [`Schedule::recorded`] rebuilds from the log's `ask_status` and `repeat_operation` effects, so the first tick presses no
 //! provider again (`T-020-63`). What each job does is [`jobs::Jobs`]'s, over [`jobs::Ports`], which the
 //! deployment answers with what only it has (the platform, its register of holding accounts, the log, the evidence
 //! store, the notices channel, the clock, policy) and which decide nothing. [`Duties`] is the seam between the two, for
@@ -465,8 +465,12 @@ impl Schedule {
             let Entry::Verified(verified) = entry else {
                 continue;
             };
+            // A status question put, or a segment's operation carried out again, is the provider asked: both count from
+            // their effect's time, so a reopened Core runs neither again before the provider's cadence (`T-020-63`).
             let What::Effect {
-                action: Action::AskStatus { order, segment, .. },
+                action:
+                    Action::AskStatus { order, segment, .. }
+                    | Action::RepeatOperation { order, segment, .. },
                 ..
             } = &verified.what
             else {
@@ -899,23 +903,32 @@ mod tests {
     // verifies: NFR-6
     #[test]
     fn schedule_rebuilt_from_the_log_keeps_each_segments_last_status_question() {
-        let effect = |order: &str, segment: &str, at: &str| -> (Receipt, Entry) {
+        let effect_of = |kind: &str, order: &str, segment: &str, at: &str| -> (Receipt, Entry) {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
                 "../../contracts/core-internal/fixtures/valid/verified-entry-of-an-effect.json",
             );
             let mut entry: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(path).expect("the fixture")).expect("JSON");
             entry["what"]["action"] = serde_json::json!({
-                "kind": "ask_status", "order": order, "segment": segment,
+                "kind": kind, "order": order, "segment": segment,
                 "provider": "slow", "transaction": format!("tx-{order}-{segment}-{at}"),
             });
             entry["when"]["at"] = at.into();
             (receipt(), serde_json::from_value(entry).expect("an entry"))
         };
+        let effect =
+            |order: &str, segment: &str, at: &str| effect_of("ask_status", order, segment, at);
         let history = vec![
             effect("order", "segment", "1970-01-01T00:16:40Z"),
             effect("order", "segment", "1970-01-01T00:20:00Z"),
             effect("order", "other", "1970-01-01T00:10:00Z"),
+            // A segment's operation carried out again is the provider asked as well: at 1 500 s, the later of the two.
+            effect_of(
+                "repeat_operation",
+                "order",
+                "repeated",
+                "1970-01-01T00:25:00Z",
+            ),
         ];
         let mut schedule = Schedule::recorded(&history);
         schedule.cadences_mut().set_status_of("slow", 600);
@@ -929,5 +942,7 @@ mod tests {
         // Another, asked at 600 s, is due at 1 200; a segment never asked is due at once.
         assert!(!due("other", 1_199) && due("other", 1_200));
         assert!(due("never", 0));
+        // A repeat counts from its effect: not due before 2 100 s, and due at it, as a status question is.
+        assert!(!due("repeated", 2_099) && due("repeated", 2_100));
     }
 }

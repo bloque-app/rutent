@@ -28,7 +28,8 @@
     valid `decision-request-to-repeat-an-operation`, invalid `--without-its-segment`, `--without-its-transaction`; and the row
     `repeat-is-of-an-unsettled-segment-at-its-provider`: a `repeat_operation` effect names the provider its segment's move went
     to, and only while that move has no final result nor a permitted confirmation; admission cases `world--decide_repeat`,
-    `world--effect_repeat`, `--missing`, `--a-settled-segment`. That the provider declares a safe repeat and no status query
+    `world--effect_repeat`, `--missing`, `--a-settled-segment`, `--another-segments-transaction` (the repeat's `transaction` is one Core's question of that
+    segment named). That the provider declares a safe repeat and no status query
     is its advertisement's, which the log holds by commitment alone, so the platform refuses the rest (`REQ-CAT-10`). 121
     relations.) Fixtures:
     valid `decision-request-to-read-a-holding-balance`,
@@ -184,7 +185,7 @@
   Valid fixtures for each new shape and setting, an invalid one per rule broken, and admission cases for each new
   row and field. With `T-020-44`'s, `T-020-50`'s, `T-020-46`'s (five rounds), `T-021-16`'s, `T-020-51`'s, `T-020-52`'s,
   `T-020-48`'s, `T-020-57`'s, `T-020-49`'s, `T-020-58`'s, `T-020-59`'s and `T-020-63`'s rounds, merged beside it: thirty schemas, 203 valid fixtures
-  and 220 invalid, 793 admission cases and 58 attribution cases (counted from the files); 121
+  and 220 invalid, 794 admission cases and 58 attribution cases (counted from the files); 121
   relations and 5 closing ones, three stated. (DEC-4, DEC-20, DEC-28, REQ-QTE-10, REQ-AUZ-7, REQ-AUZ-6, REQ-AUZ-8, THR-3, GUA-1, REQ-ORD-20, REQ-ORD-41, T-020-45, T-020-58, T-020-59)
 - The interfaces between `CMP-CORE-ORCH`, `CMP-CORE-AUTHZ` and `CMP-CORE-AUDIT`, settled as a sixth contract before the
   three parts are built side by side (`PLAN.md` §3, §4.4). From orchestration to policy: one decision call for every

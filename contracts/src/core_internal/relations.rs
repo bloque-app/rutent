@@ -322,6 +322,21 @@ fn move_without_outcome(order: &Id, segment: &Id, history: &History) -> bool {
     })
 }
 
+/// Whether `transaction` is one Core's own question about `segment` of `order` names: a stated `operation` about that order
+/// and segment under it. A repeat names the segment's own transaction, never another segment's (`T-020-63`).
+fn is_segments_transaction(order: &Id, segment: &Id, transaction: &Id, history: &History) -> bool {
+    history.iter().any(|(_, e)| {
+        stated(e).is_some_and(|s| {
+            s.what.statement.as_str() == crate::provider_role::OPERATION_SHAPE
+                && s.about.as_ref().is_some_and(|a| {
+                    a.order.as_ref() == Some(order)
+                        && a.segment.as_ref() == Some(segment)
+                        && a.transaction.as_ref() == Some(transaction)
+                })
+        })
+    })
+}
+
 /// The citing entry's recorded input, if it records one.
 fn input(entry: &VerifiedEntry) -> Option<&crate::state_machine::RecordedInput> {
     match &entry.what {
@@ -2556,10 +2571,10 @@ pub static RELATIONS: [Relation; 121] = [
         name: "repeat-is-of-an-unsettled-segment-at-its-provider",
         spec: &["REQ-ORD-1", "INV-8"],
         quantifier: Quantifier::Exists,
-        refusal: "a segment's operation is carried out again only by the provider its move went to, and only while that move has no final outcome",
+        refusal: "a segment's operation is carried out again only by the provider its move went to, under the transaction its question named, and only while that move has no final outcome",
         fields: &[],
         // None to point to: a `repeat_operation` effect is refused unless its provider is the one the segment's move
-        // went to and that move has no final result nor a permitted confirmation of its outcome (`T-020-63`). That the
+        // went to, its transaction one Core's question of that segment (`operation`, stated about it) named, and that move has no final result nor a permitted confirmation of its outcome (`T-020-63`). That the
         // provider declares a safe repeat and no status query is its accepted advertisement's, which the log holds by
         // commitment alone: the platform refuses the repeat of a provider that doesn't declare it (`REQ-CAT-10`).
         cites: |e, h| match effect_action(e) {
@@ -2568,11 +2583,12 @@ pub static RELATIONS: [Relation; 121] = [
                     order,
                     segment,
                     provider,
-                    ..
+                    transaction,
                 },
                 _,
             )) if !(segment_provider(order, segment, h) == Some(provider)
-                && move_without_outcome(order, segment, h)) =>
+                && move_without_outcome(order, segment, h)
+                && is_segments_transaction(order, segment, transaction, h)) =>
             {
                 by_fields(0)
             }

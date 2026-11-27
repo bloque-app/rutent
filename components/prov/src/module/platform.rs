@@ -212,6 +212,13 @@ struct Slot {
     evidence_window: Option<u64>,
 }
 
+/// Whether the record of an operation just run is a late answer waiting for its taker (`T-020-63`): only the answer to
+/// Core's own repeat at the top level, never that of a cross-module call the repeated operation made, whose record is the
+/// call's and is freed with its transaction's.
+fn late_mark(repeating: bool, answered: bool, scope: &str) -> bool {
+    repeating && answered && scope == TOP_LEVEL
+}
+
 /// The in-place form of a decision that only restricts what runs, taken where the platform's record can't hold the
 /// decision itself (`T-013-10`).
 type Restrict<'a> = Box<dyn FnOnce(&mut Lifecycle) -> Result<(), LifecycleRefusal> + 'a>;
@@ -3178,7 +3185,7 @@ impl<W: World> Platform<W> {
                         answer,
                         free_at,
                         version: Some(version.clone()),
-                        late: self.repeating && answer_held,
+                        late: late_mark(self.repeating, answer_held, &scope),
                     };
                     kept = Some(Box::new(first.entry(&transaction, &scope)));
                     carried.insert(scope, first);
@@ -3700,6 +3707,28 @@ mod tests {
         }
 
         fn deliver(&mut self, _: &super::Endpoint, _: &str) {}
+    }
+
+    /// Only the answer to Core's own repeat at the top level is marked late: the record of a cross-module call the repeated
+    /// operation made is the call's, and is freed with its transaction's, never held for an acknowledgement nobody gives
+    /// (`T-020-63`, review L3).
+    // verifies: NFR-6
+    #[test]
+    fn only_the_top_level_answer_to_a_repeat_is_marked_late() {
+        use super::{TOP_LEVEL, late_mark};
+        assert!(late_mark(true, true, TOP_LEVEL));
+        assert!(
+            !late_mark(true, true, "callee"),
+            "a callee's call inside the repeat"
+        );
+        assert!(
+            !late_mark(true, false, TOP_LEVEL),
+            "no answer is nothing to hold"
+        );
+        assert!(
+            !late_mark(false, true, TOP_LEVEL),
+            "an operation that isn't a repeat"
+        );
     }
 
     /// A call into a callee that declares a repeat safe runs again only where it is the same call: one under the
