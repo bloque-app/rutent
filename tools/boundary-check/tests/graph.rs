@@ -12,9 +12,8 @@ fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// The workspace members' edges between our crates, read from `cargo metadata`: every table, renames and target
-/// tables included, by the package each edge names.
-fn metadata() -> Edges {
+/// `cargo metadata --no-deps` of the workspace, as JSON.
+fn metadata_json() -> serde_json::Value {
     let out = Command::new(std::env::var_os("CARGO").unwrap_or("cargo".into()))
         .args([
             "metadata",
@@ -31,8 +30,13 @@ fn metadata() -> Edges {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let json: serde_json::Value =
-        serde_json::from_slice(&out.stdout).expect("cargo metadata is JSON");
+    serde_json::from_slice(&out.stdout).expect("cargo metadata is JSON")
+}
+
+/// The workspace members' edges between our crates, read from `cargo metadata`: every table, renames and target
+/// tables included, by the package each edge names.
+fn metadata() -> Edges {
+    let json = metadata_json();
     let members: BTreeSet<&str> = json["workspace_members"]
         .as_array()
         .expect("workspace members")
@@ -110,4 +114,64 @@ fn only_the_assembly_reaches_the_log_and_the_policy_engine() {
             .keys()
             .all(|k| !reaches(&edges, k).contains(SCENARIOS))
     );
+}
+
+/// The provider system's library, as cargo resolves its targets, is the one its admitted paths are read from: one
+/// library target, at `components/prov/src/lib.rs`, and no build script (#348's L9, #353's review, Medium 1). The source
+/// lint refuses each spelling that moves it; this holds what cargo makes of the manifest, whatever the spelling.
+// verifies: DEC-28, DEC-2
+#[test]
+fn providers_library_is_its_own_root_and_it_has_no_build_script_as_cargo_reads_it() {
+    let json = metadata_json();
+    let prov = json["packages"]
+        .as_array()
+        .expect("packages")
+        .iter()
+        .find(|p| p["name"] == "rutent-prov")
+        .expect("the provider system is a member");
+    let targets = prov["targets"].as_array().expect("targets");
+    let kinds = |t: &serde_json::Value| -> Vec<String> {
+        t["kind"]
+            .as_array()
+            .expect("kinds")
+            .iter()
+            .map(|k| k.as_str().expect("a kind").to_string())
+            .collect()
+    };
+    let libraries: Vec<&serde_json::Value> = targets
+        .iter()
+        .filter(|t| kinds(t).iter().any(|k| k.contains("lib")))
+        .collect();
+    assert_eq!(libraries.len(), 1, "one library target: {libraries:?}");
+    let at = Path::new(libraries[0]["src_path"].as_str().expect("its root"))
+        .canonicalize()
+        .expect("its root exists");
+    let expected = root()
+        .join("components/prov/src/lib.rs")
+        .canonicalize()
+        .expect("prov's crate root");
+    assert_eq!(at, expected);
+    assert!(
+        targets
+            .iter()
+            .all(|t| !kinds(t).iter().any(|k| k == "custom-build")),
+        "no build script"
+    );
+}
+
+/// Nothing of ours reaches the reader host but the scenario assembly's tests, as a dev-dependency, as cargo resolves
+/// the graph (`DEC-28`, `T-024-25`): a manifest spelling can't turn the build's edge into a test's.
+// verifies: DEC-28, DEC-2
+#[test]
+fn only_the_assemblys_tests_reach_the_reader_host_as_cargo_resolves_it() {
+    let edges = metadata();
+    let on_host: Vec<(&str, bool)> = edges
+        .iter()
+        .flat_map(|(krate, deps)| {
+            deps.iter()
+                .filter(|(dep, _)| dep == "rutent-reader-host")
+                .map(move |(_, dev)| (krate.as_str(), *dev))
+        })
+        .collect();
+    assert_eq!(on_host, vec![(SCENARIOS, true)]);
 }
