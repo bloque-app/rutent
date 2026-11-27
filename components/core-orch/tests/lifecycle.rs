@@ -255,6 +255,9 @@ impl Releases for Platform {
     fn in_force(&self, _: &Id) -> Option<String> {
         None
     }
+    fn is_accepted(&self, _: &Id, _: &Id) -> bool {
+        true
+    }
 }
 
 impl RollsBack for Platform {
@@ -717,6 +720,9 @@ impl Releases for Crashing {
     fn in_force(&self, _: &Id) -> Option<String> {
         None
     }
+    fn is_accepted(&self, _: &Id, _: &Id) -> bool {
+        true
+    }
 }
 
 /// A restriction the platform could not record before a crash still holds after Core reopens (`T-020-49`, gap 3 of its
@@ -947,6 +953,9 @@ impl Releases for Unstalable {
     fn in_force(&self, _: &Id) -> Option<String> {
         Some("2.1.0".to_owned())
     }
+    fn is_accepted(&self, _: &Id, _: &Id) -> bool {
+        true
+    }
 }
 
 /// A restriction the platform refused before its result was written does not hold its provider for good (`T-020-65`,
@@ -1018,4 +1027,196 @@ fn restriction_refused_before_its_result_was_written_does_not_hold_its_provider_
         ["mark_stale 2.1.0", "confirm"],
         "not taken again"
     );
+}
+
+/// A withdrawal is not taken again for a release resubmitted under a new digest (`T-020-66`, L3 of #342's review): the
+/// operator's withdrawal of 2.3.0 is logged, its result never written, and the platform ends unclean, dropping the
+/// release that waited (a waiting release is in no platform record). The publisher resubmits 2.3.0 under another digest,
+/// which waits. The confirmation takes no withdrawal again (the effect names a version, not a digest, so nothing could
+/// tell the resubmission apart), and the resubmitted release still waits for its own decision.
+// verifies: REQ-MDL-4
+#[test]
+fn withdrawal_is_not_taken_again_for_a_release_resubmitted_under_a_new_digest() {
+    let (provider, caller, core) = (id("bridge-pay"), operator(), core());
+    let mut platform = Platform::holding();
+    let mut policy = Answering::with(Answer::Permit {});
+    let mut log = KeptLog(Vec::new(), Some(1));
+    let version = id("2.3.0");
+    let withdrawn = Segments::new().change_release(
+        &mut log,
+        &mut policy,
+        &mut platform,
+        &clock(),
+        &mut Ids::default(),
+        &ReleaseAsked {
+            provider: &provider,
+            change: ReleaseChange::Withdraw { version: &version },
+            caller: &caller,
+            core: &core,
+        },
+    );
+    assert!(
+        matches!(withdrawn, Err(ReleaseRefused::Append(_))),
+        "{withdrawn:?}"
+    );
+    assert_eq!(log.0.len(), 1, "the effect, and no result");
+
+    // The platform ended unclean: the withdrawn release is gone, its version resubmitted under a new digest, waiting.
+    let resubmitted: Digest =
+        serde_json::from_value(json!({"algorithm": "sha-256", "value": "b".repeat(64)})).unwrap();
+    platform.done.clear();
+    platform.waiting = Some(Waiting {
+        version: "2.3.0".into(),
+        digest: resubmitted.clone(),
+        statement_key: PublicKey::new(KEY).unwrap(),
+    });
+    log.1 = None;
+    let held = [id("2.1.0")];
+    let confirmed = Segments::new().change_release(
+        &mut log,
+        &mut policy,
+        &mut platform,
+        &clock(),
+        &mut Ids::default(),
+        &ReleaseAsked {
+            provider: &provider,
+            change: ReleaseChange::Confirm { versions: &held },
+            caller: &caller,
+            core: &core,
+        },
+    );
+    assert_eq!(confirmed, Ok(Changed::Confirmed));
+    assert_eq!(
+        platform.done,
+        vec![("confirm", "ops-lead".to_owned())],
+        "no withdrawal taken again"
+    );
+    assert_eq!(
+        platform.waiting.as_ref().map(|w| &w.digest),
+        Some(&resubmitted),
+        "the resubmitted release still waits"
+    );
+}
+
+/// A stale mark of a version the platform holds no release of stays open (`T-020-66`, L1 of #342's review): Core's log
+/// holds the mark's effect with no result, and the platform reopened against knows nothing of the provider (a replaced
+/// host): nothing marked, nothing in force. The reopening records nothing, since the platform's standing can't tell; it
+/// would record `failed` were the version held with nothing newer in force.
+// verifies: NFR-6
+#[test]
+fn stale_mark_of_a_version_the_platform_holds_no_release_of_stays_open() {
+    struct Stranger;
+    impl Releases for Stranger {
+        fn waiting(&self, _: &Id) -> Option<Waiting> {
+            None
+        }
+        fn held(&self, _: &Id) -> Option<BTreeSet<String>> {
+            None
+        }
+        fn accept(
+            &mut self,
+            _: &Effect,
+            _: &Id,
+            _: &Digest,
+            _: &Id,
+            _: Instant,
+        ) -> Result<(), LifecycleRefusal> {
+            unreachable!()
+        }
+        fn withdraw(
+            &mut self,
+            _: &Effect,
+            _: &Id,
+            _: &Digest,
+            _: &Id,
+            _: Instant,
+        ) -> Result<(), LifecycleRefusal> {
+            unreachable!()
+        }
+        fn revoke(
+            &mut self,
+            _: &Effect,
+            _: &Id,
+            _: &Id,
+            _: &Id,
+            _: Instant,
+        ) -> Result<Option<String>, LifecycleRefusal> {
+            unreachable!()
+        }
+        fn declare_exploited(
+            &mut self,
+            _: &Effect,
+            _: &Id,
+            _: &Id,
+            _: &Id,
+            _: Instant,
+        ) -> Result<Option<String>, LifecycleRefusal> {
+            unreachable!()
+        }
+        fn mark_stale(
+            &mut self,
+            _: &Effect,
+            _: &Id,
+            _: &Id,
+            _: &Id,
+            _: Instant,
+        ) -> Result<usize, LifecycleRefusal> {
+            Err(LifecycleRefusal::NoSuchVersion)
+        }
+        fn confirm(
+            &mut self,
+            _: &Effect,
+            _: &Id,
+            _: &Id,
+            _: Instant,
+        ) -> Result<(), LifecycleRefusal> {
+            unreachable!()
+        }
+        fn staged(&self, _: &Id) -> Option<String> {
+            None
+        }
+        fn roll_back(
+            &mut self,
+            _: &Effect,
+            _: &Id,
+            _: &Id,
+            _: Instant,
+        ) -> Result<String, LifecycleRefusal> {
+            unreachable!()
+        }
+        fn mark(&self, _: &Id, _: &Id) -> Option<rutent_prov::module::lifecycle::Mark> {
+            None
+        }
+        fn in_force(&self, _: &Id) -> Option<String> {
+            None
+        }
+        fn is_accepted(&self, _: &Id, _: &Id) -> bool {
+            false
+        }
+    }
+    let (provider, caller, core) = (id("bridge-pay"), operator(), core());
+    let mut policy = Answering::with(Answer::Permit {});
+    let mut log = KeptLog(Vec::new(), Some(1));
+    let stale = id("2.1.0");
+    let _ = Segments::new().change_release(
+        &mut log,
+        &mut policy,
+        &mut Stranger,
+        &clock(),
+        &mut Ids::default(),
+        &ReleaseAsked {
+            provider: &provider,
+            change: ReleaseChange::MarkStale { version: &stale },
+            caller: &caller,
+            core: &core,
+        },
+    );
+    assert_eq!(log.0.len(), 1, "the effect, and no result");
+    log.1 = None;
+    assert_eq!(
+        Segments::reopen_lifecycle(&mut log, &Stranger, &clock(), &core),
+        Ok(0),
+        "nothing completed"
+    );
+    assert_eq!(log.0.len(), 1);
 }

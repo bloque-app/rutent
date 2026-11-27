@@ -300,14 +300,30 @@ pub fn check_artifacts(
     check_artifacts_with(inputs, record, &|_| None)
 }
 
-/// A licence text for comparison: a `/` read as ` OR `, and runs of whitespace as one space, so that `Apache-2.0/MIT`
-/// and `Apache-2.0 OR MIT` are the same text, and nothing else is.
+/// A licence text for comparison: a `/` read as ` OR `, runs of whitespace as one space, and the operands of an
+/// expression that is only `OR`s of licence identifiers put in order, so that `Apache-2.0/MIT`, `Apache-2.0 OR MIT` and
+/// `MIT OR Apache-2.0` are the same text (`T-020-66`, #342's review). An expression with `AND`, `WITH` or parentheses
+/// keeps its order: two of them are the same only as written (it fails closed).
 fn canon(licence: &str) -> String {
-    licence
+    let words: Vec<String> = licence
         .replace('/', " OR ")
         .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+        .map(str::to_owned)
+        .collect();
+    let plain_or = !words
+        .iter()
+        .any(|w| w == "AND" || w == "WITH" || w.contains('(') || w.contains(')'));
+    if plain_or && words.iter().any(|w| w == "OR") {
+        let mut operands: Vec<&str> = words
+            .iter()
+            .filter(|w| *w != "OR")
+            .map(String::as_str)
+            .collect();
+        operands.sort_unstable();
+        operands.dedup();
+        return operands.join(" OR ");
+    }
+    words.join(" ")
 }
 
 /// The text of the SPDX header of a licence file: the expression after `SPDX-License-Identifier:`, without a comment
@@ -547,4 +563,31 @@ fn check_core_lists(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::canon;
+
+    /// The operands of an `OR` of licence identifiers compare in any order, and in any spelling of the operator; an
+    /// expression with `AND`, `WITH` or parentheses compares only as written (`T-020-66`).
+    // verifies: REQ-MOD-5
+    #[test]
+    fn or_operands_compare_in_any_order() {
+        assert_eq!(canon("MIT OR Apache-2.0"), canon("Apache-2.0 OR MIT"));
+        assert_eq!(canon("Apache-2.0/MIT"), canon("MIT OR Apache-2.0"));
+        assert_eq!(
+            canon("Unlicense OR MIT OR Apache-2.0"),
+            canon("Apache-2.0 OR Unlicense OR MIT")
+        );
+        assert_ne!(canon("MIT OR Apache-2.0"), canon("MIT"));
+        assert_ne!(
+            canon("(MIT OR Apache-2.0) AND BSD-3-Clause"),
+            canon("BSD-3-Clause AND (Apache-2.0 OR MIT)")
+        );
+        assert_ne!(
+            canon("Apache-2.0 WITH LLVM-exception OR MIT"),
+            canon("MIT OR Apache-2.0 WITH LLVM-exception")
+        );
+    }
 }

@@ -871,7 +871,7 @@ impl Core {
                     .iter()
                     .map(|spec| fleet.install(spec.clone()))
                     .collect();
-                fleet.platform.set_staging(config.staging.policy());
+                fleet.set_staging(config.staging.policy());
 
                 // First trust in a provider is its grant's, and an advertisement made before its grant rides on
                 // none: Core's clock starts before the earliest advertisement was made, for the grants.
@@ -1116,6 +1116,10 @@ impl Core {
                 &mut core.general,
                 &core.clock,
                 &kit::core(),
+                &mut rutent_core_orch::settings::Targets {
+                    catalogue: Some(&mut core.catalogue),
+                    ..rutent_core_orch::settings::Targets::default()
+                },
             );
             completed.map_err(|e| {
                 AssemblyError::Listing(format!("a setting's result wasn't completed: {e:?}"))
@@ -1413,6 +1417,38 @@ impl Core {
     /// The operator's settings, as Core holds them (`T-020-49`).
     pub fn settings(&self) -> &rutent_core_orch::settings::Settings {
         &self.settings
+    }
+
+    /// A fault the scenarios plant (`T-020-66`): `action`, by the operator's login, decided by policy and its effect
+    /// appended, and nothing after it: what Core's log holds when Core stops between an effect and its result, the
+    /// platform never asked. The effect's receipt.
+    ///
+    /// # Errors
+    ///
+    /// If policy doesn't permit it, or the log takes no step of it.
+    pub fn effect_without_its_result(&mut self, action: Action) -> Result<Receipt, AssemblyError> {
+        let listing =
+            |step: &str, e: AppendFailure| AssemblyError::Listing(format!("{step}: {e:?}"));
+        let request = DecisionRequest {
+            request: self.fresh.id(),
+            caller: kit::operator_login(),
+            action: action.clone(),
+            at: self.clock.timestamp(),
+        };
+        let decision =
+            rutent_contracts::core_internal::calls::Decisions::decide(&mut self.policy, &request)
+                .map_err(|e| listing("the decision", e))?;
+        let permit = decision.permit().ok_or_else(|| {
+            AssemblyError::Listing(format!("not permitted: {:?}", decision.outcome))
+        })?;
+        self.verified(
+            What::Effect {
+                action,
+                decision: permit,
+            },
+            Outcome::ToTakeEffect {},
+        )
+        .map_err(|e| listing("the effect", e))
     }
 
     /// Sets the weakest evidence the operator accepts on `tuple` (`REQ-ORD-39`) through the operator's command

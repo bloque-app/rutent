@@ -511,6 +511,41 @@ fn handed_on_routes_withdrawal_is_proven_by_the_holding_accounts_record() {
         .expect("the log admits every entry");
 }
 
+/// A refused final deposit holds no node once its order ends (`T-020-66`, #346's review, L1): a deposit's reversal never
+/// applies, so it owes none. The kit's order's deposit is refused and, with no route left, its part waits for the
+/// customer, who hands it on to a linked order that runs from the ledger and completes. Both orders have ended; the
+/// refused deposit stays on the first order's part, `FailedReversalOwed` for ever, and still no unlist is held by it.
+/// The ledger and the bank are free of Core's orders.
+// verifies: REQ-CAT-22
+#[test]
+fn refused_deposit_holds_no_node_once_its_order_is_handed_on() {
+    let (mut world, mut core) = waiting_for_the_customer();
+    seed_linked(
+        &mut core,
+        &Named::another(2),
+        &customer(),
+        &linked_record("ord-2"),
+    );
+    let mut hand_on = HandOn::new();
+    let plan = from_the_ledger(&core, "p1-s1-of-2");
+    hand_on_to(&mut core, &mut hand_on, "ord-2", &plan, "acc-ord-2").expect("handed on");
+    prove(&mut core, &mut hand_on, &id("ord-2"), &withdrawal_record()).expect("proven");
+    let record = linked_route(&mut world, &core.clock, "ord-2");
+    run_linked(&mut core, &mut world, &record).expect("the linked route runs");
+    assert_eq!(part_of(&core, "ord-2").state, OrderState::Complete);
+    let first = part_of(&core, ORDER);
+    assert_eq!(first.state, OrderState::HandedOn);
+    let deposit = first.segments.last().expect("the refused deposit").clone();
+    assert_eq!(deposit.state, SegmentState::FailedReversalOwed);
+    for end in [&deposit.from.node, &deposit.to.node] {
+        let node = match end {
+            rutent_contracts::provider_role::NodeRef::Inner(id) => id.as_str().to_owned(),
+            rutent_contracts::provider_role::NodeRef::Outer(outer) => outer.network.clone(),
+        };
+        assert!(!core.segments.touches_node(&node), "{node}: held");
+    }
+}
+
 /// Runs the kit's linked order, `ord-2`, over `record`, its route handed on.
 fn run_linked(
     core: &mut Core,
