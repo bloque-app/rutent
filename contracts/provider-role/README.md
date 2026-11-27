@@ -221,11 +221,16 @@ or with the accepted one's `statements` key (which `next` must then list for `ad
 - **Operations.** An operation is the operator's statement, signed with its `operator_key`.
   - Its `kind` is one of `withdrawal`, `deposit`, `balance_verification` and `reversal_confirmation` (reserve),
     `holding_balance` (a holding account's module, 3.0.0), `conversion` (exchange), `transfer` (ramp), `reversal` (exchange or ramp), or `judgement` (verifier)
-    (`REQ-CAT-9`, `REQ-CAT-15`, ADR-0008); or the operator's `status_query` and `hold` (4.0.0).
+    (`REQ-CAT-9`, `REQ-CAT-15`, ADR-0008); or the operator's `status_query`, `hold` and `inner_segments_query` (4.0.0).
   - A status query (4.0.0) is asked of a provider that declares `status_query` tracking, under a transaction of its
     own, naming the transaction it is `about`. Its result names both, and is `answered` (the provider's own result for
     `about`, whole), `not_known` or `refused`; `check_status_answer` takes both signed statements, so the answer is the
     provider asked's (`AnsweredByAnotherProvider`). It changes nothing (`REQ-ORD-1`).
+  - An inner-segments query (4.0.0, `T-020-58`) is the operator's question, of a provider that handles it, for the record
+    of the segments that ran inside a private node: its own transaction, the `provider` asked and the `node`. Its result
+    names the transaction and the node, and is `answered` (the provider's own `inner-segments` statement for the node,
+    whole), `not_known` or `refused`; `check_inner_segments_answer` holds the answer to the question, so an answer to
+    another question, transaction, node or provider is no record of the node (`REQ-ORD-41`). It changes nothing.
   - The value-moving kinds carry a `transaction`, the `provider` asked, their segment, `inputs` (`REQ-CAT-12`) and
     `dry_run` (`REQ-CAT-14`). A conversion and a transfer also carry a `direction`, `exact_in` or `exact_out`,
     which says which amount is stated.

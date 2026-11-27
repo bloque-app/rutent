@@ -68,6 +68,14 @@ pub fn without_rule<T>(rule: &'static str, f: impl FnOnce() -> T) -> T {
 impl Action {
     /// Checks the rules of an action the schema can't state.
     pub fn check(&self) -> Result<(), Violation> {
+        // A read of a private node's record names the transactions it is about, at least one, each once (`T-020-58`).
+        if let Action::ReadNodeRecord { about, .. } = self
+            && (about.is_empty() || !distinct(about))
+        {
+            broke(
+                "a read of a private node's record names the transactions it is about, at least one, each once",
+            )?;
+        }
         if let Action::ChangeCatalogue {
             change,
             version,

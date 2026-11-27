@@ -123,7 +123,7 @@ rule it is named for:
     one. Since 0.2.0 they include `reversal`, which an exchange's or ramp's module handles, and
     `reversal_confirmation`, which a reserve's module handles (provider-role 0.4.0); since 5.0.0, `status_query`,
     the operator's status question about a transaction the module carried out, and `hold`, a reserve's hold of a
-    chosen quote (provider-role 4.0.0). A declaration's `calls` lists neither, nor `holding_balance`
+    chosen quote (provider-role 4.0.0), and `inner_segments_query`, the question of a private node's record (`T-020-58`). A declaration's `calls` lists none of them, nor `holding_balance`
     (`DeclaredCallOfAnOperatorsQuestion`). The contract doesn't tie a
     kind to a category: a declaration names its provider, not a category, and the catalogue (`F-012`) matches a
     module's kinds to what its provider advertises.

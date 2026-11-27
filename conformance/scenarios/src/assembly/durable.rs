@@ -153,6 +153,10 @@ impl Disk {
         {
             return;
         }
+        // A read of a private node's record is an effect too (`T-020-58`), but no move: the plans count the moves.
+        if value["what"]["action"]["kind"].as_str() == Some("read_node_record") {
+            return;
+        }
         let mut seen = self.seen.borrow_mut();
         let count = seen.iter().find(|(c, _)| c == call).map_or(0, |(_, n)| *n);
         seen.retain(|(c, _)| c != call);

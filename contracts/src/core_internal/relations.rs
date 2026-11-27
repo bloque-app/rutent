@@ -5712,9 +5712,9 @@ fn operator_question<'a>(statement: &'a StatedEntry, operator: &Id) -> Option<&'
 /// of fault is about.
 fn action_transactions(action: &Action) -> Option<&str> {
     match action {
-        Action::AskStatus { transaction, .. } | Action::ResolveStuck { transaction, .. } => {
-            Some(transaction.as_str())
-        }
+        Action::AskStatus { transaction, .. }
+        | Action::ReadNodeRecord { transaction, .. }
+        | Action::ResolveStuck { transaction, .. } => Some(transaction.as_str()),
         Action::AcceptFault { showing, .. } => Some(showing.transaction.as_str()),
         _ => None,
     }

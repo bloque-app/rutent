@@ -17,11 +17,12 @@ use serde_json::{Value, json};
 /// The provider-role contract's schemas, which the result schema refers to by their `$id`. The contract crate
 /// carries no schema text (it builds for `no_std`), so the files are read from `contracts/provider-role/schemas/`
 /// at build time.
-const SCHEMAS: [&str; 11] = [
+const SCHEMAS: [&str; 12] = [
     include_str!("../../../../contracts/provider-role/schemas/advertisement.schema.json"),
     include_str!("../../../../contracts/provider-role/schemas/common.schema.json"),
     include_str!("../../../../contracts/provider-role/schemas/declarations.schema.json"),
     include_str!("../../../../contracts/provider-role/schemas/hold.schema.json"),
+    include_str!("../../../../contracts/provider-role/schemas/inner-segments.schema.json"),
     include_str!("../../../../contracts/provider-role/schemas/judgement.schema.json"),
     include_str!("../../../../contracts/provider-role/schemas/operation.schema.json"),
     include_str!("../../../../contracts/provider-role/schemas/reserve-declaration.schema.json"),

@@ -51,7 +51,7 @@ its route names it (`judge_call`, `T-014-04`), so the route is what bounds a mod
   `balance_verification`, …), as `validate_call_against` and the call record use it, by `$ref` to
   `urn:rutent:provider-role:operation#/$defs/operation/properties/kind`; in Rust, `CallKind`, the module
   interface's `OperationKind`. It is not the typed operation's kind, and it is never one of the operator's own
-  questions, which no module may call for: `holding_balance`, a holding's balance, nor `status_query` and `hold`
+  questions, which no module may call for: `holding_balance`, a holding's balance, nor `status_query`, `hold` and `inner_segments_query`
   (provider-role 4.0.0).
 - **The segment's calls.** An operation's `calls` lists `{callee, kind}` pairs, each once, none to its own provider,
   and is absent when it names none. Each is declared in the one calls figure the operation cites, of the release its
