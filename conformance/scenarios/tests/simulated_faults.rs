@@ -27,6 +27,8 @@ const IN: &str = "sim-join-in";
 const EXCHANGE: &str = "sim-join-exchange";
 const QUICK: &str = "sim-join-ramp-quick";
 const OUT: &str = "sim-join-out";
+/// A reserve like [`OUT`] that declares a safe repeat and no status query (`T-020-63`).
+const OUT_UNTRACKED: &str = "sim-join-out-untracked";
 
 /// The order that carries `AMOUNT` of COP from the reserve `sim-join-in`'s bank to USD at the bank of `sim-join-out`.
 fn across(name: &str, session: &Id) -> rutent_core_orch::intake::OrderRequest {
@@ -41,6 +43,37 @@ fn across(name: &str, session: &Id) -> rutent_core_orch::intake::OrderRequest {
         OTHER,
         "lowest_total_cost",
     )
+}
+
+/// The order across the joined providers to the reserve that declares no status query.
+fn across_untracked(name: &str, session: &Id) -> rutent_core_orch::intake::OrderRequest {
+    request(
+        name,
+        session,
+        AMOUNT,
+        IN,
+        outer("sim-join-in-bank", "COP"),
+        outer("sim-join-out-untracked-bank", "USD"),
+        OUT_UNTRACKED,
+        OTHER,
+        "lowest_total_cost",
+    )
+}
+
+/// How many segment moves repeated, as the log holds their effects.
+fn repeats(core: &Core) -> usize {
+    entries(core)
+        .iter()
+        .filter(|v| {
+            matches!(
+                v.what,
+                What::Effect {
+                    action: Action::RepeatOperation { .. },
+                    ..
+                }
+            )
+        })
+        .count()
 }
 
 /// What a world of one order whose ramp failed holds: Core, the customer's session, the order and the ramp's segment,
@@ -412,6 +445,72 @@ fn owed_reversal_refused_short_or_unknown_past_its_window_makes_its_order_stuck(
         );
         admitted(core);
     }
+}
+
+/// An owed reversal at a tuple that never settles, with no history of its own and no time its record declares, is held
+/// to the floor window on Core's own tick, and its order goes stuck past twice it: the schedule's watch, not a test's,
+/// times it (`INV-3`, `REQ-ORD-29`, `T-020-63`; the milestone reviewer's check of `T-020-48`). The call is on record with
+/// a basis of its own, the floor, not an advertised time nothing advertised.
+// verifies: INV-3, REQ-ORD-29
+#[test]
+fn owed_reversal_at_a_never_settling_tuple_goes_stuck_on_cores_tick() {
+    use rutent_contracts::core_internal::StuckBasis;
+    use rutent_core_orch::stuck::{FLOOR_SECONDS, Watch};
+    let mut failed = ramp_failing("AC-4", Behaviour::act(Act::Fail));
+    let Failed {
+        core, order, ramp, ..
+    } = &mut failed;
+    core.owe_reversal(order, ramp).expect("owed");
+    core.world()
+        .script_for(QUICK, "reversal", Behaviour::act(Act::Refuse));
+    let asked = core.ask_reversal(order, ramp).expect("asked");
+    assert!(asked.completed.is_none(), "the reversal stays owed");
+    assert!(
+        core.plant_unpriced_route(order),
+        "the order's record declares no settlement time"
+    );
+    // Inside twice the floor nothing is declared, however many ticks; it takes the schedule, not a call, to time it.
+    core.clock.advance(2 * FLOOR_SECONDS - 120);
+    let round = core.tick();
+    assert!(
+        round.watched.iter().all(|w| &w.order != order),
+        "still running: {:?}",
+        round.watched
+    );
+    assert_eq!(state(core, order), OrderState::FirstSegmentSettled);
+    core.clock.advance(240);
+    let round = core.tick();
+    let called = round
+        .watched
+        .iter()
+        .find_map(|w| match &w.found {
+            Ok(Watch::Stuck(called)) if &w.order == order => Some(called.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the tick declared it stuck: {:?}", round.watched));
+    assert_eq!(
+        called.segment, *ramp,
+        "the owed reversal's segment is the one timed"
+    );
+    assert_eq!(called.basis, StuckBasis::Floor);
+    assert_eq!(called.figure_seconds, FLOOR_SECONDS);
+    assert!(called.held_seconds > 2 * FLOOR_SECONDS, "{called:?}");
+    assert_eq!(state(core, order), OrderState::Stuck);
+    assert_eq!(
+        segment_state(core, order, ramp),
+        SegmentState::FailedReversalOwed,
+        "still owed, and now to the stuck order's resolution"
+    );
+    // The figures behind the call are on record, with the floor as their basis.
+    assert!(
+        entries(core).iter().any(|v| matches!(
+            &v.what,
+            What::StuckCall { basis: StuckBasis::Floor, figure_seconds, .. }
+                if u64::from(*figure_seconds) == FLOOR_SECONDS
+        )),
+        "the stuck call's figures name the floor"
+    );
+    admitted(core);
 }
 
 /// What the ramp's transfer, left unknown by a ramp that says later that it failed, comes to: Core's run asks the ramp,
@@ -824,6 +923,52 @@ fn unknown_segment_already_asked_is_not_asked_again_after_core_reopens() {
     admitted(&core);
 }
 
+/// The schedule's own state survives a restart: a provider asked where a segment stands is not asked again by the first
+/// tick of a Core that reopened, until its cadence has passed from the question the log holds (`NFR-6`, `REQ-ORD-1`,
+/// `T-020-63`; the milestone reviewer's check of `T-020-48`). A schedule that forgot it would press every provider again
+/// at each restart.
+// verifies: NFR-6
+#[test]
+fn first_tick_after_a_restart_keeps_each_providers_ask_cadence() {
+    use rutent_core_orch::schedule::Job;
+    let Failed {
+        mut core,
+        order,
+        ramp,
+        ..
+    } = ramp_left_unknown();
+    // The step that left the ramp unknown asked its provider once, now; its cadence is ten minutes.
+    core.set_status_cadence(QUICK, 600);
+    assert_eq!(status_asks(&core), 1);
+    core.clock.advance(100);
+    let given = execution_support::given(&[IN, EXCHANGE, QUICK, OUT]);
+    let mut core = Scenario::new("execution", "AC-5", given).reopen(core, 1, &mut Reference);
+    assert!(
+        core.is_unknown(&order, &ramp),
+        "still unknown after the restart"
+    );
+    // The reopened Core's first tick runs every job, the status question's among them, and presses nobody.
+    let round = core.tick();
+    assert!(round.did(Job::StatusAsks));
+    assert!(
+        round.statuses.is_empty(),
+        "asked a hundred seconds ago: {:?}",
+        round.statuses
+    );
+    assert_eq!(status_asks(&core), 1);
+    // Ten minutes from the question the log holds, it is asked again, once.
+    core.clock.advance(500);
+    assert!(core.tick().statuses.is_empty(), "599 seconds on, not yet");
+    core.clock.advance(1);
+    // Due again from the question the log holds, as the first tick would have asked it had the schedule forgotten. The
+    // question itself isn't put: a reopened Core holds no taken answer of an unknown segment (`NotAnswered`), a gap
+    // `T-020-61`'s resume closes, so it is tried again each tick until then; what this shows is that it is tried now.
+    let round = core.tick();
+    assert_eq!(round.statuses.len(), 1, "{:?}", round.statuses);
+    assert_eq!(round.statuses[0].unknown.segment, ramp);
+    admitted(&core);
+}
+
 /// What Core keeps of a segment's result after its status question is that one answer: another statement of the segment's
 /// result handed to it later, made at another time, is the same result held, never a second result statement for the
 /// segment (`INV-4`, `T-020-47`).
@@ -1042,23 +1187,22 @@ fn value_undone_at_its_providers_cost_is_shown_back_by_another_party() {
 // verifies: AC-5, INV-4
 #[test]
 fn late_answer_the_platform_receives_moves_nothing_twice() {
-    let (mut core, session) = core_with("AC-5", &[RESERVE]);
-    let order = accepted(
-        &mut core,
-        within("req-late", &session, AMOUNT, RESERVE, OTHER),
-    );
+    let (mut core, session) = core_with("AC-5", &[IN, EXCHANGE, QUICK, OUT_UNTRACKED]);
     core.world()
-        .script_for(RESERVE, "deposit", Behaviour::late());
-    let ran = core.run(&order).expect("the order ran");
+        .script_for(OUT_UNTRACKED, "deposit", Behaviour::late());
+    let (order, ran) = run(&mut core, across_untracked("req-late", &session));
     let segments = segments_of(&ran);
     assert!(
-        matches!(segments[1].outcome, SegmentOutcome::Unknown(_)),
+        matches!(segments[3].outcome, SegmentOutcome::Unknown(_)),
         "the deposit's outcome is not known: {segments:?}"
     );
-    // The provider's answer comes late and the platform hands it on: Core's own schedule takes it, with no call of a
-    // test's (`T-020-48`). Core's own status question, asked when the segment was left unknown, already brought the
-    // provider's result of it, kept once as its statement: the late answer is that result held, never a second result
-    // statement for the segment (`T-020-47`).
+    assert_eq!(
+        status_asks(&core),
+        0,
+        "its provider declares no status query"
+    );
+    // The provider's answer comes late: Core's own schedule carries the operation out again, as a decided effect on its
+    // provider's cadence, and takes the answer the platform holds, with no call of a test's (`T-020-48`, `T-020-63`).
     let results = |core: &Core| {
         core.log()
             .entries()
@@ -1070,15 +1214,15 @@ fn late_answer_the_platform_receives_moves_nothing_twice() {
             })
             .count()
     };
-    core.set_cadence(rutent_core_orch::schedule::Job::StatusAsks, u64::MAX);
     core.set_cadence(rutent_core_orch::schedule::Job::StuckReports, u64::MAX);
     let (results_before, effects_before) = (results(&core), effects(&core));
     let round = core.tick();
+    assert_eq!(repeats(&core), 1, "the repeat is a decided effect");
     assert_eq!(round.late.len(), 1, "one late answer: {:?}", round.late);
     assert!(round.late[0].kept.is_ok(), "{:?}", round.late[0]);
-    assert_eq!(results(&core), results_before, "no second statement");
+    assert_eq!(results(&core), results_before + 1, "kept once");
     assert!(core.tick().late.is_empty(), "the platform takes it once");
-    assert_eq!(results(&core), results_before);
+    assert_eq!(results(&core), results_before + 1);
     // Past its time the order is stuck.
     core.clock.advance(2 * kit::DECLARED + 5);
     assert!(matches!(
@@ -1089,9 +1233,9 @@ fn late_answer_the_platform_receives_moves_nothing_twice() {
     // The part's being declared stuck is an input of its own: what follows is held to it.
     let inputs_before = core.inputs().len();
     let log_before = core.log().entries().len();
-    // The same answer handed to Core directly, past the fleet's once: Core itself moves nothing and records nothing new.
+    // The same answer handed to Core directly, past the platform's once: Core itself moves nothing and records nothing new.
     let segment = id(
-        core.followed(&order).expect("followed").parts[0].segments[1]
+        core.followed(&order).expect("followed").parts[0].segments[3]
             .segment_id
             .as_str(),
     );
@@ -1102,13 +1246,123 @@ fn late_answer_the_platform_receives_moves_nothing_twice() {
         .expect("kept once more");
     assert_eq!(core.log().entries().len(), log_before, "nothing new");
     assert_eq!(core.inputs().len(), inputs_before, "no input");
-    assert_eq!(effects(&core), effects_before, "no value moves");
+    assert_eq!(
+        effects(&core),
+        effects_before,
+        "no value moves, by the answer or by the repeat"
+    );
     assert_eq!(state(&mut core, &order), OrderState::Stuck);
     assert_eq!(core.stuck_values(), held);
+    admitted(&core);
+}
+
+/// A segment left unknown at a provider that declares a safe repeat and no status query is carried out again by Core's
+/// schedule as a decided effect, on its provider's cadence and no oftener, and nothing is handed over where policy
+/// refuses (`REQ-AUZ-1`, `REQ-ORD-1`, `AC-5`, `T-020-63`; review M2).
+// verifies: REQ-AUZ-1, REQ-ORD-1
+#[test]
+fn unknown_segment_is_carried_out_again_on_a_decided_effect_at_its_providers_cadence() {
+    let (mut core, session) = core_with("AC-5", &[IN, EXCHANGE, QUICK, OUT_UNTRACKED]);
+    core.world()
+        .script_for(OUT_UNTRACKED, "deposit", Behaviour::late());
+    let (_, ran) = run(&mut core, across_untracked("req-repeat", &session));
+    assert!(matches!(
+        segments_of(&ran)[3].outcome,
+        SegmentOutcome::Unknown(_)
+    ));
+    core.set_status_cadence(OUT_UNTRACKED, 600);
+    let before = core.operations_received(OUT_UNTRACKED);
+    assert_eq!(repeats(&core), 0, "nothing is carried out again by a run");
+    // The first tick carries it out again, once.
+    core.tick();
+    assert_eq!(repeats(&core), 1);
+    assert_eq!(core.operations_received(OUT_UNTRACKED), before + 1);
+    // A tick every ten seconds for ten minutes less ten: nothing is handed over, nothing recorded.
+    for _ in 0..59 {
+        core.clock.advance(10);
+        core.tick();
+    }
+    assert_eq!(repeats(&core), 1, "held to its provider's cadence");
+    assert_eq!(core.operations_received(OUT_UNTRACKED), before + 1);
+    // Ten minutes from it, due again: policy decides again, and the platform, holding the answer, runs nothing.
+    core.clock.advance(10);
+    core.tick();
+    assert_eq!(repeats(&core), 2);
+    assert_eq!(core.operations_received(OUT_UNTRACKED), before + 1);
+    // Policy no longer lets Core: nothing is handed over, and no effect is recorded.
+    core.registers().permissions.retain(|(acts, p)| {
+        !(acts == kit::core().acts.as_str()
+            && *p == rutent_core_authz::roles::Permission::RepeatOperation)
+    });
+    core.clock.advance(600);
+    core.tick();
+    assert_eq!(repeats(&core), 2, "refused, so no effect");
+    assert_eq!(core.operations_received(OUT_UNTRACKED), before + 1);
+    admitted(&core);
+}
+
+/// A late answer Core couldn't record now (its log can't take the entry) is not dropped: the platform holds it until Core
+/// says it kept it, and hands it over again the next tick, when it is kept once (`NFR-6`, `AC-5`, `T-020-63`; the
+/// milestone reviewer's check of `T-020-48`). The platform's one delivery of it was the first build's only.
+// verifies: NFR-6
+#[test]
+fn late_answer_the_log_could_not_record_is_kept_for_the_next_tick() {
+    use rutent_core_orch::schedule::Job;
+    // The deposit's outcome is left unknown at a reserve that declares no status query, so Core's schedule carries it out
+    // again, and what its late answer says is the first statement of it Core keeps.
+    let (mut core, session) = core_with("AC-5", &[IN, EXCHANGE, QUICK, OUT_UNTRACKED]);
+    core.world()
+        .script_for(OUT_UNTRACKED, "deposit", Behaviour::late());
+    let (order, ran) = run(&mut core, across_untracked("req-late-log", &session));
+    assert!(
+        matches!(segments_of(&ran)[3].outcome, SegmentOutcome::Unknown(_)),
+        "the deposit's outcome is not known: {ran:?}"
+    );
+    core.set_cadence(Job::StuckReports, u64::MAX);
+    let statements = |core: &Core| {
+        core.log()
+            .entries()
+            .iter()
+            .filter(|(_, e)| {
+                matches!(e, rutent_contracts::core_internal::Entry::Stated(s)
+                    if s.what.statement.as_str().ends_with("result")
+                        && s.about.as_ref().and_then(|a| a.order.as_ref()) == Some(&order))
+            })
+            .count()
+    };
+    let before = statements(&core);
+    let ran_before = core.operations_received(OUT_UNTRACKED);
+    // The log can take no result statement now: three tries are three refusals.
+    core.refuse_log_appends(
+        rutent_contracts::provider_role::RESULT_SHAPE,
+        rutent_core_orch::segments::APPEND_TRIES,
+    );
+    let round = core.tick();
+    assert!(round.did(Job::LateAnswers));
+    assert_eq!(round.late.len(), 1, "one late answer: {:?}", round.late);
+    assert!(
+        round.late[0].kept.is_err(),
+        "the log couldn't take it: {:?}",
+        round.late[0]
+    );
+    assert_eq!(statements(&core), before, "nothing was recorded");
+    // The platform hands it over again, and this time it is kept, once; the module wasn't run for it again.
+    let round = core.tick();
     assert_eq!(
-        core.world().journal(RESERVE).len(),
-        2,
-        "the provider's books grew only by its own withdrawal and deposit"
+        core.operations_received(OUT_UNTRACKED),
+        ran_before + 1,
+        "run once, for the repeat"
+    );
+    assert_eq!(
+        round.late.len(),
+        1,
+        "the same answer again: {:?}",
+        round.late
+    );
+    assert!(round.late[0].kept.is_ok(), "{:?}", round.late[0]);
+    assert!(
+        core.tick().late.is_empty(),
+        "and the platform holds it no more"
     );
     admitted(&core);
 }

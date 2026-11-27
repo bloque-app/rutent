@@ -666,6 +666,10 @@ pub(crate) struct CarriedEntry {
     /// (`T-013-11`). `None` where the record was written without it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) version: Option<String>,
+    /// Whether its answer came late and Core hasn't yet said it kept it ([`Platform::late_answers`], `T-020-63`): the
+    /// platform hands it over each time it is asked until then, a restart included, and frees nothing of it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) late: bool,
 }
 
 /// A segment in flight.

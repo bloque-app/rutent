@@ -536,6 +536,14 @@ pub fn shape_of(provider: &str) -> Shape {
             undeclared_node: true,
             ..Shape::default()
         },
+        // A reserve like `sim-join-out` that declares a safe repeat and no status query (`T-020-63`).
+        "sim-join-out-untracked" => Shape {
+            asset: Some("USD".to_owned()),
+            node: Some("sim-join-chain".to_owned()),
+            public_node: true,
+            untracked: true,
+            ..Shape::default()
+        },
         "sim-join-out-silent" => Shape {
             asset: Some("USD".to_owned()),
             node: Some("sim-join-chain".to_owned()),

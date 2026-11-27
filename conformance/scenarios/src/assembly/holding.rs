@@ -716,6 +716,11 @@ impl Core {
             .borrow_mut()
             .holding_assets
             .insert(node.to_owned(), asset.to_owned());
+        self.deployed
+            .registers
+            .borrow_mut()
+            .holding_decimals
+            .insert(node.to_owned(), super::schedule::DECIMALS);
         // The node listed for its wallet gives way to the operator's own setting of it (L2 of #337's review).
         self.reapply_catalogue_settings();
         Ok(wallet)

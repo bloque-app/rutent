@@ -1,0 +1,16 @@
+{
+  "request": "req-103",
+  "caller": {
+    "party": "operator",
+    "acts": "rutent-operator",
+    "role": "operator",
+    "kind": "component"
+  },
+  "action": {
+    "kind": "repeat_operation",
+    "order": "ord-17",
+    "segment": "seg-2",
+    "provider": "bridge-pay"
+  },
+  "at": "2026-11-10T09:00:00Z"
+}

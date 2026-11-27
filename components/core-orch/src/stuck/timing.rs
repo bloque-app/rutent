@@ -125,7 +125,7 @@ impl History {
     /// known, so every segment the clock times has a figure.
     pub fn figure_or_floor(&self, advertised: u64) -> (StuckBasis, u64) {
         self.figure(advertised)
-            .unwrap_or((StuckBasis::TwiceAdvertised, FLOOR_SECONDS))
+            .unwrap_or((StuckBasis::Floor, FLOOR_SECONDS))
     }
 }
 
@@ -163,10 +163,7 @@ mod tests {
             stuck_clock(Some(&History::new()), u64::MAX),
             (basis, figure)
         );
-        assert_eq!(
-            (basis, figure),
-            (StuckBasis::TwiceAdvertised, FLOOR_SECONDS)
-        );
+        assert_eq!((basis, figure), (StuckBasis::Floor, FLOOR_SECONDS));
         assert!(
             !over_time(figure, 2 * FLOOR_SECONDS),
             "not at twice the floor"

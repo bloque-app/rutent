@@ -1980,10 +1980,11 @@
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         },
         "basis": {
-          "description": "What the clock ran on: twice the p99, or twice the advertised time until a history.",
+          "description": "What the clock ran on: twice the p99, twice the advertised time until a history, or twice the floor window where the tuple has neither.",
           "enum": [
             "twice_p99",
-            "twice_advertised"
+            "twice_advertised",
+            "floor"
           ]
         },
         "figure_seconds": {

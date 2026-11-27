@@ -462,6 +462,30 @@ impl Modules for Running<'_> {
         }
     }
 
+    fn ask_for_balance(
+        &mut self,
+        effect: &rutent_contracts::core_internal::Effect,
+        provider: &Id,
+        question: &Statement<Operation>,
+    ) -> rutent_core_orch::segments::Answered {
+        // The production platform carries it, at Core's clock (`T-020-63`).
+        self.platform.world.set_clock(self.clock.instant());
+        Modules::ask_for_balance(self.platform, effect, provider, question)
+    }
+
+    fn repeat_operation(
+        &mut self,
+        effect: &rutent_contracts::core_internal::Effect,
+        provider: &Id,
+        transaction: &Id,
+    ) -> rutent_core_orch::segments::Answered {
+        // The production platform carries it, at Core's clock (`T-020-63`).
+        self.platform.world.set_clock(self.clock.instant());
+        let answered = Modules::repeat_operation(self.platform, effect, provider, transaction);
+        self.readings.refresh(&self.platform.world);
+        answered
+    }
+
     fn take_events(&mut self) -> rutent_prov::module::types::Events {
         Modules::take_events(self.platform)
     }
@@ -621,6 +645,8 @@ struct Carried {
     /// The deployment's register of holding accounts, its own configuration, which goes on as the deployment keeps it
     /// (`T-020-55`): policy reads a node's holder from it, never from the host's holdings above.
     holding_accounts: BTreeMap<String, String>,
+    /// The decimals the register gives each public node's asset, which go on with it (`T-020-63`).
+    holding_decimals: BTreeMap<String, u8>,
     /// The same register's private nodes' accounts, which go on with it (`T-020-48`, the review's S1).
     publisher_accounts: BTreeMap<String, rutent_core_orch::schedule::PublisherAccount>,
     /// The same register's assets of the holding accounts, which go on with it (`T-024-21`).
@@ -840,6 +866,7 @@ impl Core {
             // The host's holdings are shared within Core (`Rc`), so they are taken out of the share, not moved.
             holdings: std::mem::take(&mut *self.holdings.borrow_mut()),
             holding_accounts: self.deployed.registers.borrow().holding_accounts.clone(),
+            holding_decimals: self.deployed.registers.borrow().holding_decimals.clone(),
             publisher_accounts: self.deployed.registers.borrow().publisher_accounts.clone(),
             holding_assets: self.deployed.registers.borrow().holding_assets.clone(),
             restarts: self.restarts,
@@ -919,6 +946,7 @@ impl Core {
             holding_accounts: self.deployed.registers.borrow().holding_accounts.clone(),
             publisher_accounts: self.deployed.registers.borrow().publisher_accounts.clone(),
             holding_assets: self.deployed.registers.borrow().holding_assets.clone(),
+            holding_decimals: self.deployed.registers.borrow().holding_decimals.clone(),
             restarts,
             confirm: Some(confirm),
         };
@@ -977,6 +1005,10 @@ impl Core {
         let holding_accounts = carried
             .as_mut()
             .map(|c| std::mem::take(&mut c.holding_accounts))
+            .unwrap_or_default();
+        let holding_decimals = carried
+            .as_mut()
+            .map(|c| std::mem::take(&mut c.holding_decimals))
             .unwrap_or_default();
         let publisher_accounts = carried
             .as_mut()
@@ -1053,6 +1085,11 @@ impl Core {
             // Core reads a private node's record from its publisher's provider where policy decides it, carrying the
             // operator's standing permission onward, beside `CarryOnward` (`REQ-ORD-41`, `REQ-AUZ-1`, `T-020-58`).
             r.permit(&kit::core(), Permission::ReadNodeRecord);
+            // Core reads each holding account's balance where policy decides it, carrying the operator's standing
+            // permission onward, beside `CarryOnward` (`REQ-AUD-15`, `REQ-AUZ-1`, `T-020-63`).
+            r.permit(&kit::core(), Permission::ReadHoldingBalance);
+            // And carries a segment's own operation out again where policy decides it (`REQ-ORD-1`, `T-020-63`).
+            r.permit(&kit::core(), Permission::RepeatOperation);
             for change in [
                 CatalogueChange::Grant,
                 CatalogueChange::Promote,
@@ -1108,6 +1145,7 @@ impl Core {
             );
             // The register of holding accounts the deployment kept, on a reopen (`T-020-55`).
             r.holding_accounts = holding_accounts;
+            r.holding_decimals = holding_decimals;
             r.publisher_accounts = publisher_accounts;
             r.holding_assets = holding_assets;
         }
@@ -1265,6 +1303,10 @@ impl Core {
             }
             // Core's own state, rebuilt from the log (`T-020-46`), the proven starts of `T-020-26` among it.
             core.rebuild_from_log();
+            // The schedule's own state: when each segment was last asked its status, so the first tick after a restart
+            // keeps each provider's cadence (`T-020-63`).
+            core.schedule =
+                rutent_core_orch::schedule::Schedule::recorded(core.log.borrow().entries());
             // The operator's settings, rebuilt from the log, a setting's missing result completed, and put back where they
             // are read (`T-020-49`).
             let (settings, completed) = rutent_core_orch::settings::Settings::reopen(

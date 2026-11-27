@@ -18,6 +18,11 @@ use rutent_scenarios::harness::Scenario;
 use rutent_scenarios::kit::{self, AMOUNT, RESERVE, START};
 
 const OLD: &str = "3.0.0";
+const IN: &str = "sim-join-in";
+const EXCHANGE: &str = "sim-join-exchange";
+const QUICK: &str = "sim-join-ramp-quick";
+const OUT: &str = "sim-join-out";
+const OUT_UNTRACKED: &str = "sim-join-out-untracked";
 
 fn at(seconds: u64) -> String {
     rutent_prov::catalogue::Instant(START + seconds)
@@ -32,53 +37,58 @@ fn cutover(date: &str) -> OperatorSetting {
     }
 }
 
-/// A holdout fleet of one reserve, its cutover `after` seconds from the scenario's start: Core, the customer's session
-/// and the scenario that reopens it.
-fn holdout(
-    after: u64,
-) -> (
-    rutent_scenarios::assembly::Core,
-    rutent_contracts::router_api::Id,
-    Scenario,
-) {
-    let scenario = Scenario::new("cutover", "AC-5", given(&[RESERVE])).holdout(OLD, &at(after));
-    let (mut core, _) = scenario.core(1, &mut Reference);
-    let session = core.open_session(&kit::customer()).expect("a session");
-    (core, session, scenario)
-}
-
 /// An old-version provider's advertisement is taken before its cutover, its order runs, and its answer that lands
 /// after the cutover for a segment begun before it is taken, the cutover moved earlier than the segment's start since
 /// changing nothing; a reopened Core reads its settled withdrawal as it was read, and lists the provider again.
 // verifies: REQ-PRT-2, REQ-PRT-4, THR-64
 #[test]
 fn old_version_provider_survives_its_cutover_and_a_reopen_by_the_version_its_segment_began_under() {
-    let (mut core, session, scenario) = holdout(3_600);
+    // A fleet whose last reserve declares a safe repeat and no status query: the late answer of its deposit comes the
+    // way Core takes one, by a decided repeat at the provider's status cadence, the platform holding the answer (`T-020-63`).
+    let scenario = Scenario::new(
+        "cutover",
+        "AC-5",
+        given(&[IN, EXCHANGE, QUICK, OUT_UNTRACKED]),
+    )
+    .holdout(OLD, &at(3_600));
+    let (mut core, _) = scenario.core(1, &mut Reference);
+    let session = core.open_session(&kit::customer()).expect("a session");
     assert!(
-        core.catalogue().accepted_advertisement(RESERVE).is_some(),
+        core.catalogue()
+            .accepted_advertisement(OUT_UNTRACKED)
+            .is_some(),
         "the old version's advertisement was taken before its cutover"
     );
-    let order = accepted(
-        &mut core,
-        within("req-cutover", &session, AMOUNT, RESERVE, OTHER),
-    );
     core.world()
-        .script_for(RESERVE, "deposit", Behaviour::late());
-    let ran = core.run(&order).expect("the order ran");
+        .script_for(OUT_UNTRACKED, "deposit", Behaviour::late());
+    let (order, ran) = run(
+        &mut core,
+        request(
+            "req-cutover",
+            &session,
+            AMOUNT,
+            IN,
+            outer("sim-join-in-bank", "COP"),
+            outer("sim-join-out-untracked-bank", "USD"),
+            OUT_UNTRACKED,
+            OTHER,
+            "lowest_total_cost",
+        ),
+    );
     let segments = segments_of(&ran);
     assert!(
         matches!(segments[0].outcome, SegmentOutcome::Settled { .. }),
         "the withdrawal settled under the old version: {segments:?}"
     );
     assert!(
-        matches!(segments[1].outcome, SegmentOutcome::Unknown(_)),
+        matches!(segments[3].outcome, SegmentOutcome::Unknown(_)),
         "{segments:?}"
     );
     // The operator moves the cutover to before the segments began, and the clock passes it.
     core.set_setting(&cutover(&at(0)))
         .expect("the operator moves the cutover");
     core.clock.advance(7_200);
-    core.set_cadence(rutent_core_orch::schedule::Job::StatusAsks, u64::MAX);
+    core.set_status_cadence(OUT_UNTRACKED, 600);
     core.set_cadence(rutent_core_orch::schedule::Job::StuckReports, u64::MAX);
     // The late answer for a segment begun before the date lands after it, and is taken.
     let round = core.tick();
@@ -93,7 +103,9 @@ fn old_version_provider_survives_its_cutover_and_a_reopen_by_the_version_its_seg
         "the settled withdrawal's result is judged again by what its segment began under"
     );
     assert!(
-        core.catalogue().accepted_advertisement(RESERVE).is_some(),
+        core.catalogue()
+            .accepted_advertisement(OUT_UNTRACKED)
+            .is_some(),
         "listed again"
     );
 }
@@ -131,11 +143,6 @@ fn operator_listed_public_node_stays_public_across_a_reopen() {
     );
     assert!(core.catalogue().accepted_advertisement(RESERVE).is_some());
 }
-
-const IN: &str = "sim-join-in";
-const EXCHANGE: &str = "sim-join-exchange";
-const QUICK: &str = "sim-join-ramp-quick";
-const OUT: &str = "sim-join-out";
 
 /// A holdout fleet's exchange fails mid-route and the reversal is asked after the cutover: the failed provider's answer
 /// and a reserve's confirmation, under the old version, are taken by the version the segment began under (`REQ-PRT-2`,

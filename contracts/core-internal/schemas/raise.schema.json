@@ -673,7 +673,10 @@
             "not_answered",
             "refused",
             "another_answer",
-            "not_a_balance"
+            "not_a_balance",
+            "not_permitted",
+            "not_timed",
+            "not_registered"
           ]
         }
       }

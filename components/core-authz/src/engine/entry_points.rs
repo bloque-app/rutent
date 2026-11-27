@@ -65,7 +65,13 @@ pub(super) const CARRY_OUT: &[(&str, &str, &str)] = &[
     (
         "handle",
         "prov/src/module/platform.rs",
-        "move_value, resolve_stuck, read_node_record",
+        "move_value, resolve_stuck, read_node_record, read_holding_balance",
+    ),
+    // Carries a segment's own operation out again on a decided effect, which may be that move's first carrying-out (`T-020-63`).
+    (
+        "repeat_operation",
+        "prov/src/module/platform.rs",
+        "repeat_operation",
     ),
     (
         "accept",
@@ -133,6 +139,16 @@ pub(super) const CARRIES_OUT_NOTHING: &[(&str, &str, &str)] = &[
         "status",
         "prov/src/module/platform.rs",
         "a read that moves nothing",
+    ),
+    (
+        "late_kept",
+        "prov/src/module/platform.rs",
+        "an acknowledgement that moves nothing",
+    ),
+    (
+        "late_answers",
+        "prov/src/module/platform.rs",
+        "what the platform holds of a repeat's late answer, which it hands over and moves nothing by",
     ),
     (
         "set_bounds",

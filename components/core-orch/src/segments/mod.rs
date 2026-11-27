@@ -81,6 +81,7 @@
 //! reversal returns in full; [`Segments::answered`] whether its answer was taken, after which a report is late; and a part that has ended hands no segment over for the first time
 //! ([`SegmentsError::Ended`]).
 
+mod balances;
 mod charges;
 mod drain;
 pub(crate) mod journal;
@@ -92,6 +93,7 @@ mod pairs;
 mod ports;
 mod records;
 mod reopen;
+mod repeats;
 #[cfg(test)]
 mod returned;
 pub mod roll_back;
@@ -131,6 +133,7 @@ use crate::snapshot::{
     check_recalculated_part, record_route_refusal,
 };
 
+pub use balances::{Balance, BalanceRead};
 pub use drain::Uncarried;
 /// What a stuck resolution's mover reuses of the segments' own writing: the drains it hands the log, its signed
 /// operation and the stated entry of a statement kept (`T-020-16`).
@@ -148,6 +151,7 @@ pub use ports::{
 };
 pub use records::{Read, RecordRead};
 pub use reopen::Reopening;
+pub use repeats::{RepeatOf, Repeated};
 pub use sign::Unwritten;
 pub(crate) use sign::sign as sign_operation;
 
