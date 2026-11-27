@@ -9327,3 +9327,84 @@ scenario tests.
   `gross_charged`, `audit_scenarios`, `charge_check`, `holds`) 203; `invariants` on seeds 11 to 15, 10; `plan-check
   --strict` 0 findings, `tag-check --strict` 2520 tests, 0 findings; the contract guard against `origin/develop`: no
   violations. The doc check is CI's (core-orch's `rustdoc` passes 2 GB locally).
+
+## T-020-65: no provider held for good, and the public-node listing made a rule
+
+Branch `f-020/t-020-65`, from `2c86d6a9` (`origin/m3` with `T-020-49` merged), issue #341: the milestone reviewer's check of
+`T-020-49` at `52696e59`, with #337's round-2 Lows. Edits `components/core-orch/` (`segments/lifecycle.rs`,
+`segments/mod.rs`, `settings/`), the `DEC-20` paths `components/prov/src/module/lifecycle.rs` and `components/core-authz/`
+(the scan), `components/prov/src/catalogue/` (not `DEC-20`), and the `F-024` files the commit body names (the assembly's
+`mod.rs`; the scenario tests `assembly_real_wallet.rs`, `simulated_faults.rs`, `assembly_policy.rs`).
+
+- **(1) A restriction refused before its `failed` result was written no longer holds its provider for good.**
+  `Segments::reopen_lifecycle` (the assembly's reopen calls it) and the confirmation, before it takes anything again,
+  complete each restrictive lifecycle effect Core's log holds with no result, from the platform's standing, as
+  `Settings::reopen` completes a setting's: `done` where the restriction holds (the version marked exploited, revoked or
+  stale; the staging or the waiting release it ends gone), `failed` where it can't have taken effect (a stale mark of a
+  version with nothing newer in force, which the platform refuses `NoNewerVersion`), and nothing where the standing can't
+  tell (a version the platform holds no release of yet, a stale mark under a staging): those stay without a result and the
+  confirmation takes them again, failing closed. It reads the platform and carries nothing out (`Releases` gains `mark`
+  and `in_force`). Test `restriction refused before its result was written does not hold its provider for good`
+  (core-orch `tests/lifecycle.rs`), written first and seen red (nothing completed; the confirmation refused).
+- **(2) A stale mark taken again under a staging holds.** `Lifecycle::mark_stale` answers `AlreadyMarked` before it looks
+  at a staging; `revoke` and `declare_exploited` (`retire`) look at no staging. Test `provider marked stale with a release
+  staged is confirmed after an unclean end` (prov `tests/module_record.rs`), red first on `StagingInProgress`.
+- **(3) The rule for unlisting a public node.** *An unlist (`public_node`, `listed: false`) is refused while anything of
+  Core's is at the node: value of an order it follows resting there (a settled segment's, or one a reversal brought back),
+  or a segment whose outcome is not final, or not known, moving value from or to it (`Segments::touches_node`); and where
+  Core's segments aren't read, it is refused too.* Policy is asked first, and a refused unlist (`SettingRefused::Rests`)
+  records no effect. So a segment is never regraded as non-public after it began (`closing`), and a publisher can claim a
+  node as its own private one (`advertisements.rs` refuses that only while the node is public) only once nothing of
+  Core's depends on the node's standing. Once unlisted, the snapshot leaves the node out (`NodeNotListed`). Tests: `public
+  node cannot be unlisted while a segment or holding rests there` (`assembly_real_wallet.rs`: a holding rests, refused;
+  nothing rests, unlisted, and the same order is quoted no route through the node), `public_node_cannot_be_unlisted_while_a_segment_is_in_flight_there`
+  (`simulated_faults.rs`, the ramp's transfer left unknown) and `private_claim_of_a_node_is_joined_only_once_the_operator_unlisted_it`
+  (prov `catalogue_snapshot.rs`).
+- **(4) The Lows.**
+  - Scan rule 4's reach is the crate's call graph by name: a public function (a trait impl's method included) that
+    reaches a carrier directly or through functions that are no decided path is found, and a decided path is one that
+    asks policy and takes the permit (`.decide(..)` and `.permit()`), so one that asks and ignores the answer is found.
+    Test `public wrapper reaching a carrier indirectly is caught by the scan` (core-authz `engine`).
+  - The named policy test asks Showing, Kept and KeptAbout of another order too, each answered no.
+  - `list()` answers the catalogue's refusal: a listing the catalogue refuses (a node a provider declared private) has
+    its result `failed`, and is no setting of the operator's (`SettingRefused::NotTaken`).
+  - **Re-takes and the release's digest.** A withdrawal's and a roll-back's re-take match the release by its version,
+    and the platform makes a version name one release: a version accepted, waiting or withdrawn is never admitted again
+    (`platform.rs` ~2657-2668, the withdrawn set rebuilt on opening at ~775), a rolled-back version is marked revoked,
+    and an accepted version is admitted again only under the digest its record holds (~2677-2684). A digest on the
+    effect would be a contract field (`Action::ChangeCatalogue.release: Option<Digest>`, core-internal 1.0.0); not
+    added, since the row edits no contract and the platform's rule already holds it. Owner: the lead, if wanted.
+  - **A crash re-holds every provider until it is confirmed.** `Platform::open` replaces its record with no close, so a
+    crash in the session after it (or a failed write) holds every provider again, those already confirmed included,
+    until the operator confirms each again: it fails closed, at the cost of a confirmation.
+- **Defaults** (reversible, fail closed). (1) Completion records `failed` only for a stale mark with nothing newer in
+  force; anything the standing can't tell stays without a result. (2) An unlist is refused where Core's segments aren't
+  read. (3) A listing the catalogue refuses is `failed`.
+- **Red first.** The four named tests were written before their fixes: (1) and (2) ran red on their assertions against
+  the unfixed code (nothing completed, the confirmation refused; `StagingInProgress` for `AlreadyMarked`). (3) and the
+  scan's (4) were written in the same pass as their rules: their reds below (C1, D1, D2) are those rules switched back to
+  the code as it stood. `T-020-49`'s `public_node_unlisted_by_the_operator_is_no_longer_on_the_catalogues_public_list`
+  now hands Core's segments to the unlist, and asserts the unlist with none is refused.
+- **Rule-off table** (each alone, its test run through the lock, the file restored from git; `ruleoff.py` in the row's
+  scratch folder; every red an assertion, no build failure).
+
+  | Rule switched off | Red |
+  |---|---|
+  | A: the stale mark is checked before the staging | `provider_marked_stale_with_a_release_staged_is_confirmed_after_an_unclean_end` |
+  | B1: the confirmation completes a missing result first | `restriction_refused_before_its_result_was_written_does_not_hold_its_provider_for_good` |
+  | B2: a stale mark with nothing newer in force completes `failed` | the same |
+  | C1: an unlist is held to what is at the node | `public_node_cannot_be_unlisted_while_a_segment_or_holding_rests_there` |
+  | C2: a segment in flight counts | `public_node_cannot_be_unlisted_while_a_segment_is_in_flight_there` |
+  | C3: value resting counts | `public_node_cannot_be_unlisted_while_a_segment_or_holding_rests_there` |
+  | C4: an unlist with no segments read is refused | `public_node_unlisted_by_the_operator_is_no_longer_on_the_catalogues_public_list` |
+  | D1: rule 4's reach goes through helpers | `public_wrapper_reaching_a_carrier_indirectly_is_caught_by_the_scan` |
+  | D2: a decided path takes the permit | the same |
+  | L1: Kept answers no for another order | `policys_log_backed_answers_are_cores_and_the_assembly_supplies_only_the_deployments_registers` |
+  | L2: a listing the catalogue refuses is `failed` | `listing_a_node_the_catalogue_refuses_is_recorded_failed` |
+- **Local checks** (through the lock, `contracts/src/lib.rs` touched first): `fmt --check` and workspace `clippy
+  --all-targets -D warnings` clean; core-orch, contracts and core-audit 757 passed; core-authz `--lib` 166; prov (lib,
+  `module_record`, `module_lifecycle`, `module_lifecycle_properties`, `catalogue_snapshot`, `catalogue`,
+  `catalogue_advertisements`) 175; scenarios (lib, `assembly_real_wallet`, `simulated_faults`, `assembly_policy`,
+  `private_nodes`, `segments`, `module_scenarios`, `reopened`, `execution_routes`, `sim_providers`) 156; `invariants` on
+  seeds 11 to 15, 10; `plan-check --strict` 0 findings, `tag-check --strict` 2527 tests, 0 findings; the contract guard
+  against `origin/develop`: no violations. No `cargo doc` locally (the owner's rule): CI's doc step is the check.

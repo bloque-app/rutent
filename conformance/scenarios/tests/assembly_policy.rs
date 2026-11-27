@@ -902,6 +902,41 @@ fn policys_log_backed_answers_are_cores_and_the_assembly_supplies_only_the_deplo
         sources.supply(&need(&other, Source::Statement(statement.clone()))),
         Reply::Given(Said::No)
     );
+    // And a showing, a keeping and a keeping about another order are no one's: each answers no, so a source that said
+    // yes to anything would fail here (`T-020-65`, the reviewer's Low on one-sided sources).
+    let (showing_of, kept_about) = match (&cores[6].from, &cores[8].from) {
+        (
+            Source::Showing {
+                segment, showing, ..
+            },
+            Source::KeptAbout(commitment),
+        ) => ((segment.clone(), showing.clone()), commitment.clone()),
+        other => panic!("the showing and the keeping: {other:?}"),
+    };
+    let another_order = id("another-order");
+    assert_eq!(
+        sources.supply(&need(
+            &another_order,
+            Source::Showing {
+                order: another_order.clone(),
+                segment: showing_of.0,
+                showing: showing_of.1,
+                decided_at: core.clock.timestamp(),
+            },
+        )),
+        Reply::Given(Said::No),
+        "a showing of another order"
+    );
+    assert_eq!(
+        sources.supply(&need(&another_order, Source::Kept(kept_about.clone()))),
+        Reply::Given(Said::No),
+        "kept about another order"
+    );
+    assert_eq!(
+        sources.supply(&need(&another_order, Source::KeptAbout(kept_about))),
+        Reply::Given(Said::No),
+        "kept about another order"
+    );
     assert_eq!(
         sources.order_record(&order),
         Reply::Given(parties.clone()),
