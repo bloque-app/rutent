@@ -146,14 +146,9 @@ mod sandboxed {
                     .body;
             }
             let deployment = asked.flatten();
-            return self::provider(
-                held,
-                provider,
-                deployment.as_ref(),
-                None,
-            )
-            .answer(operation, &Behaviour::default())
-            .body;
+            return self::provider(held, provider, deployment.as_ref(), None)
+                .answer(operation, &Behaviour::default())
+                .body;
         };
         let (kind, dry_run) = kind_of(&operation.statement);
         let begun = ask(
@@ -166,12 +161,7 @@ mod sandboxed {
             .as_ref()
             .and_then(|b| b["opening"].as_str())
             .and_then(|text| text.parse::<u128>().ok());
-        let sim = self::provider(
-            held,
-            provider,
-            begun.as_ref(),
-            opening,
-        );
+        let sim = self::provider(held, provider, begun.as_ref(), opening);
         let provider = sim.spec().provider.clone();
         let behaviour = begun
             .as_ref()
@@ -240,8 +230,8 @@ mod sandboxed {
 #[cfg(feature = "outside")]
 mod outside {
     use rutent_conformance::sim::{
-        BEGIN, BOOK, BOOK_KEY, BOOK_LENGTH_KEY, CHAIN, CREDENTIAL, DEPLOYMENT_KEY, OPENING_KEY, PROTOCOL_KEY,
-        PRIVATE_NOTES_KEY, SETTLE, chain_host, rail_host, script_key,
+        BEGIN, BOOK, BOOK_KEY, BOOK_LENGTH_KEY, CHAIN, CREDENTIAL, DEPLOYMENT_KEY, OPENING_KEY,
+        PRIVATE_NOTES_KEY, PROTOCOL_KEY, SETTLE, chain_host, rail_host, script_key,
     };
     use serde_json::{Value, json};
 
