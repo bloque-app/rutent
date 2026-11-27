@@ -1605,6 +1605,8 @@ name = "rutent-scenarios"
 version = "0.0.0"
 dependencies = [
  "ed25519-dalek",
+ "rcgen",
+ "rustls",
  "rutent-conformance",
  "rutent-contracts",
  "rutent-core-audit",
@@ -1612,6 +1614,7 @@ dependencies = [
  "rutent-core-orch",
  "rutent-evidence",
  "rutent-prov",
+ "rutent-reader-host",
  "rutent-router",
  "rutent-stm",
  "serde_json",

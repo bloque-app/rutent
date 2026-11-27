@@ -825,10 +825,21 @@ fn reader_host_reaches_only_the_contracts_and_the_providers_egress_and_nothing_r
     let real = workspace();
     let all: Vec<&str> = real.keys().map(String::as_str).collect();
     assert_eq!(violations(&real, &all), vec![]);
+    // Nothing of ours depends on it but the scenario assembly's tests, as a dev-dependency (`T-024-25`).
+    for (krate, deps) in &real {
+        for dep in deps.iter().filter(|d| d.name == READER_HOST) {
+            assert!(
+                krate == "rutent-scenarios" && dep.dev,
+                "{krate} depends on the reader host: {dep:?}"
+            );
+        }
+    }
     assert!(
-        real.values()
-            .all(|deps| deps.iter().all(|d| d.name != READER_HOST)),
-        "nothing of ours depends on the reader host"
+        real["rutent-scenarios"].contains(&rutent_boundary_check::Dep {
+            name: READER_HOST.to_owned(),
+            dev: true
+        }),
+        "the scenario assembly's tests run the simulated networks' readers"
     );
 }
 
@@ -1073,6 +1084,62 @@ fn providers_admitted_paths_resolve_by_layout_to_the_items_their_files_define() 
         &format!("{prov_manifest}\n[lib]\npath = \"src/lib_wide.rs\"\n"),
     );
     refused("a [lib] table", "prov/Cargo.toml");
+    // The library's target, or a build script, set in any spelling TOML allows (#348's L9): each refused.
+    let (head, rest) = prov_manifest
+        .split_once("\n[")
+        .expect("a package table, then more");
+    for (what, manifest) in [
+        (
+            "a spaced lib table",
+            format!("{prov_manifest}\n[ lib ]\npath = \"src/lib_wide.rs\"\n"),
+        ),
+        (
+            "a quoted lib table",
+            format!("{prov_manifest}\n[\"lib\"]\npath = \"src/lib_wide.rs\"\n"),
+        ),
+        (
+            "a lib table's own table",
+            format!("{prov_manifest}\n[lib.x]\ny = 1\n"),
+        ),
+        (
+            "an inline lib table",
+            format!("lib = {{ path = \"src/lib_wide.rs\" }}\n{prov_manifest}"),
+        ),
+        (
+            "a dotted lib key",
+            format!("lib . path = \"src/lib_wide.rs\"\n{prov_manifest}"),
+        ),
+        (
+            "a quoted dotted lib key",
+            format!("\"lib\".path = \"src/lib_wide.rs\"\n{prov_manifest}"),
+        ),
+        (
+            "a build script in the package table",
+            format!("{head}\nbuild = \"gen.rs\"\n[{rest}"),
+        ),
+        (
+            "a build script switched off",
+            format!("{head}\nbuild = false\n[{rest}"),
+        ),
+        (
+            "a dotted build key",
+            format!("package.build = \"gen.rs\"\n{prov_manifest}"),
+        ),
+    ] {
+        sources.write("prov/Cargo.toml", &manifest);
+        refused(what, "prov/Cargo.toml");
+    }
+    sources.write("prov/Cargo.toml", &prov_manifest);
+    // A build script cargo runs unasked, at the package's root.
+    sources.write("prov/build.rs", "fn main() {}\n");
+    refused("a build.rs", "prov/build.rs");
+    std::fs::remove_file(sources.0.join("prov/build.rs")).unwrap();
+    // A target array builds a crate of its own, never the library: its path, however the table is spelled, passes.
+    sources.write(
+        "prov/Cargo.toml",
+        &format!("{prov_manifest}\n[[ bin ]]\nname = \"tool\"\npath = \"src/lib.rs\"\n[[\"test\"]]\nname = \"t\"\npath = \"tests/t.rs\"\n"),
+    );
+    assert_eq!(sources.findings(), vec![]);
     sources.write("prov/Cargo.toml", &prov_manifest);
     assert_eq!(sources.findings(), vec![]);
 
@@ -1117,6 +1184,24 @@ fn scenario_assembly_takes_the_reader_host_for_its_tests_only() {
     ]);
     let all: Vec<&str> = built.keys().map(String::as_str).collect();
     let pairs: Vec<_> = violations(&built, &all)
+        .into_iter()
+        .map(|v| (v.krate, v.dep))
+        .collect();
+    assert_eq!(
+        pairs,
+        [("rutent-scenarios".to_string(), READER_HOST.to_string())]
+    );
+    // The assembly's build script: refused too.
+    let scripted = fixture(&[
+        &contracts,
+        &host(allowed, ""),
+        &format!(
+            "{}\n[build-dependencies]\n{host_dep}\n",
+            manifest("rutent-scenarios", allowed, "")
+        ),
+    ]);
+    let all: Vec<&str> = scripted.keys().map(String::as_str).collect();
+    let pairs: Vec<_> = violations(&scripted, &all)
         .into_iter()
         .map(|v| (v.krate, v.dep))
         .collect();

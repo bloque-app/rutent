@@ -2188,3 +2188,173 @@ re-advertises), the bounded `WouldBlock` retry (it only shows as a flake).
 | the restore's raise of the attribution | `restore on a reopened account attributes what the wallet still holds` |
 
 **Run id.** Pending: CI's run on this row's pull request goes here.
+
+## T-024-25: the simulated networks' readers as reader services
+
+`DEC-28`, ADR-0007 as amended; issue #325. Cut from `m3-next` at `aea9488c` (`m3` `ce68f7a2` with `T-024-21`, #350),
+after `T-020-59` (the `reader` contract, `ListPublicNetwork`) and `T-015-04` (the reader host). It edits `conformance/`
+(`scenarios/src/sim/`, `scenarios/src/assembly/`, the scenarios' tests and a new example), `tools/boundary-check/` and
+the reader host's `src/link.rs` (both `DEC-20` paths, which the commit body names), and the root `Cargo.lock` (the
+scenarios' three new dev-dependency lines; every package was locked already, so `licences/RECORD` is untouched).
+
+### Design
+
+- **The listing** (`conformance/scenarios/src/sim/readers.rs`, the library). Every network a provider's tuples are on
+  (`sim::fleet::networks_of`) is listed by `readers::listing_of`: its identity, the reader's endpoint (the host
+  setting `sim-reader-host` and the reader's name, `{network}-reader`), its identity (the harness's test CA by digest,
+  `CA_SHA256`; the host's subject name `readers.rutent-scenarios.example`; the reader's statement key, drawn from its
+  name as every simulated key is), its version (`0.1.0`) and its trust rule. Two rules: the EVM rule for `polygon` and
+  `bsc` (chain ids 137 and 56), a pool of three endpoints (`rpc-{a,b,c}.{network}.chain.example`) with a quorum of two;
+  the Substrate rule for every other simulated network, a genesis hash drawn from its name, read by a light client
+  through one peer (`peer.{network}.chain.example`, p2p port 30333).
+- **Decided** (`Core::list_public_networks`, `assembly/mod.rs`). On a fresh assembly, after the grants and before the
+  clock moves to the scenario's start, the operator's login asks a `list_public_network` for each network
+  (`Fleet::public_networks`), policy decides it (the register permits the login `ListPublicNetwork`; policy's own rule
+  holds the change's provider to the caller's party), and Core appends its effect and its `done` result. A reopened or
+  restarted Core lists nothing again: the log holds them, `Core::relist` skips them (Core's catalogue takes nothing
+  from a listing until `T-020-60`), and `Core::public_networks` reads them back from the log.
+- **The endpoints the world serves** (`readers::Endpoints`, held by `SimWorld`). `SimWorld::serve_network` serves the
+  reader's endpoints with the network, each at an address of the readers' own range (`185.12.71.0/24`, apart from the
+  providers' hosts, whose addresses don't move). They answer one JSON-RPC request per exchange (a line, for the peer):
+  `eth_chainId` or `rutent_genesis`, `rutent_rules`, `rutent_movementStatus` and `rutent_movementsTo`, from the networks
+  and the delivered movements as the world last published them (`SimWorld::publish_to_readers`, which
+  `Readings::refresh` calls, so the readers read what Core's readings read). The world's faults planted at an endpoint
+  (`Endpoints::plant`): `Lies` and `Silent`.
+- **The reader** (`conformance/scenarios/examples/sim_reader.rs`, test code). It confines itself first
+  (`rutent_reader_host::jail::confine_reader`), speaks only the host's wire, checks its network's chain id (through the
+  pool's quorum) or genesis (through its peer) before it reports, and answers `network_rules`, `movement_status` and
+  `movement_of` from the network. By default `movement_of` ties the movement the transaction names, as `Readings`
+  does; `--match destination` ties the first movement to that destination of that amount, `Readings::tie_by_destination`
+  moved into the reader. Hostile acts: `crash`, `malformed`, `other-movement`, `undeclared` (asks the world's own host
+  for the network, `{network}.chain.example`, and a light client also port 8080).
+- **The harness** (`conformance/scenarios/tests/readers_support/`). `Readers::start` builds the reader host's
+  configuration from the log's listings, starts the host in the test process (`Host::start`) with its network over the
+  world's endpoints (`SimResolver`, `SimConnector`, `SimDialer` and a loopback `PeerServer` per light client) and a key
+  store of the harness's (`KeyStore`, `T-014-01`'s `Resolver`), and serves it on the host's own mTLS link
+  (`Link::serve`, `LinkTls`) under a leaf for the listed subject name. `TestCa` is the test CA: an Ed25519 key from a
+  fixed seed and fixed fields, so its certificate is the same at every run and the library lists it by digest without
+  making it. `Readers::ask` is Core's side: a request id drawn at random, an mTLS client holding the host to the test CA
+  and the listed subject name with a client certificate for `core.rutent-scenarios.example`, the answer's signature
+  verified and then `check_reader_answer` against the listing's key and version. `Plan` plants a reader's faults: `ties`,
+  hostile acts, a key the listing doesn't name.
+- **The boundary.** `rutent-scenarios` takes `rutent-reader-host`, `rustls` and `rcgen` as dev-dependencies only; the
+  library and the VOS scenarios crate that builds it have none of them. `tools/boundary-check` admitted that one edge
+  since `T-020-59`; its real-workspace test now holds it to exactly that (`rutent-scenarios`, a dev-dependency, and
+  nothing else of ours), and `scenario assembly takes the reader host for its tests only` also refuses it as a
+  build-dependency.
+- **The jail** runs as in production: on Linux the provider's namespaces and in-process layers, which the host holds
+  each reader to; on macOS the provider's `sandbox-exec` profile, which ran locally. No test-only switch to run a reader
+  unjailed was needed, and none exists.
+
+### Tests
+
+The four named tests, in `conformance/scenarios/tests/sim_readers.rs`, each with the row's tags:
+
+- `simulated reader answers as its simulated network does` [`REQ-ORD-39`, `DEC-28`]: a reserve and an exchange, one
+  order run; every network a provider's tuples are on is listed, as `listing_of` names it, one under each rule; each
+  network driven by hand (a final, a reorged-out, a pending and an unknown movement) beside the order's movements; each
+  reader's `network_rules` is the listing's identity and trust rule and the network's own finality and reorg rule,
+  `movement_status` is `SimulatedNetwork::status`, and `movement_of` is Core's public records' `movement`, over the same
+  world; all four standings answered. Core reopened lists the same networks and none anew.
+- `simulated reader reaches only the endpoints it declares` [`REQ-MDL-7`]: every call the host made for keeping readers
+  is to a declared destination (the pool's hosts, matched by name; the peer, on its p2p port), and the connector never
+  dialled another host; straying readers' calls to the world's own host are refused (`undeclared_destination`) and
+  recorded with the reader, its version and the request, the light client's port 8080 refused and recorded, nothing
+  reached, and every answer unreadable.
+- `simulated evm network with one lying rpc of three still answers and with two is unreadable` [`REQ-ORD-39`,
+  `DEC-28`]: one lying or one silent endpoint of three, and the reader answers what the network says; two lying, two
+  silent, or one of each, and it is unreadable; the pool whole again, and it answers.
+- `simulated reader that ties a deposit by destination and amount plants the shared movement fault` [`REQ-ORD-38`]:
+  `AC-31`'s scenario (two orders paid with one payment); the reader planted as the scenario planted its network ties
+  each deposit of that destination and amount to the first, as Core's public records do under the same fault, and a
+  reader that matches by transaction ties each to its own.
+
+Beside them: `hostile simulated reader leaves core nothing to settle on` [`REQ-ORD-39`, `DEC-28`] (a reader that
+crashes is `reader_crashed`, one that answers malformed or about another movement is signed unreadable, one whose host
+signs with a key the listing doesn't name is refused `SignedWithAnotherKey`), `harness ca is the one the listings name`
+[`DEC-28`], `sim::readers::tests::each_simulated_network_follows_one_rule_and_its_listing_holds_to_the_contract`
+[`DEC-28`], and the two Lows below.
+
+The code came first, so the rule-offs stand in for seeing each test red first.
+
+### Defaults, reversible, each failing closed
+
+1. The EVM rule for `polygon` and `bsc`, the simulated networks with EVM finality (two confirmations, a reorg depth of
+   two); the Substrate rule for every other (banks, ledgers, public nodes), each with a genesis of its own.
+2. Each listing's decision is asked under `list-{network}`, never an id drawn from Core's seeded source, so every id a
+   seeded scenario draws stays as it was. The listings land after the grants and before the scenario's start: three
+   entries more per network in every scenario's log.
+3. A lying endpoint lies about movements only, each in a lie of its own (its label in the destination, its own id from
+   `rutent_movementsTo`), and tells the truth about the network's identity and rules: its reader passes its checks,
+   and two liars disagree rather than agree on one lie. A silent endpoint gives no answer at once (`NoAnswer`), never a
+   wait.
+4. The test CA's key is a fixed seed in the harness, as every simulated key is drawn from a fixed seed; the digest the
+   library lists is held to it by a test.
+5. A light client's rule: p2p 30333 and `wss` 443, at most two connections; a straying reader strays on questions only,
+   so its start-up checks pass and the stray is what the host holds.
+6. In the harness, the world's own host for a network resolves (to `185.12.72.0/24`) and would answer as the network's
+   endpoint does, so a straying call is refused by its declaration, not by an unknown name.
+
+### Departures from the row, and gaps
+
+1. **Core still reads through `Readings`.** `Readings`' `impl PublicRecords` stays Core's path until `T-020-60`, as the
+   row says. The library assembly lists every network and never starts a reader: the host is a dev-dependency, so only
+   a test can run it. "Every simulated network a scenario routes through is listed with a reader service" holds as:
+   every assembled Core lists each network by a decided listing, and a test starts the host from exactly those
+   listings and asks each reader. Handing the assembly the host's address and Core's client certificate is
+   `T-020-60`'s, with Core's adapter.
+2. **The light client's relay** is `T-015-04`'s send-and-wait (its gap 2, owner `T-031-02`): the simulated peer answers
+   one JSON-RPC line per send, which fits it.
+3. **The ended-transaction half of `Platform::known_transactions` has no test** (#350's round-3 Low): v0's wallet
+   can't end a transaction, so no scenario reaches it. Owner: the row that lets the plain wallet end one (`F-016`).
+4. **#348's L9, the lint's limit.** A module alias made by a macro inside the code-owned
+   `components/prov/src/module/sandbox.rs` isn't seen by `tools/boundary-check`, which reads text and resolves paths by
+   file layout, not by the compiler's expansion. Accepted as the lint's limit: the file is a `DEC-20` path, and code
+   review is the control behind the lint.
+5. **#348's L9, the reading of "`[[bin]]` paths".** A target array (`[[bin]]`, `[[test]]`, `[[example]]`,
+   `[[bench]]`) builds a crate of its own, never `rutent_prov`, so its `path` can't widen what the reader host reaches:
+   such tables are matched in every spelling, so a `path` under one is never read as the library's, and pass. The
+   library target, in every spelling, and a build script are refused.
+6. **`tools/boundary-check` as a `DEC-20` path.** The lead's brief names it one, and this row's commit body says so;
+   `HOUSE-RULES.md`'s list and `.github/CODEOWNERS` don't hold it yet. Owner: the lead's plan follow-up, not changed here.
+
+### #348's L9 and L10, and #350's round-3 Lows
+
+- **L9** (`tools/boundary-check/src/lib.rs`, `moves_the_library`). Prov's manifest is read with its spaces and quotes
+  taken out, so every spelling meets one rule: a lib table (`[lib]`, `[ lib ]`, `["lib"]`, `[lib.x]`), a top-level key
+  naming it (`lib = { .. }`, `lib . path`, `"lib".path`), and a build script by `build` in the package table
+  (`[package] build = ..`, `build = false`, `package.build = ..`) are each refused, and so is a `build.rs` at prov's root,
+  outright (cargo runs one unasked; prov has none). Cases added to `providers admitted paths resolve by layout to the
+  items their files define`, with a `[[ bin ]]` and a `[["test"]]` path shown passing.
+- **L10** (`components/reader-host/src/link.rs`, `admit`). The link's per-source handshake count is taken through
+  `admit`, which inserts an entry only for a source it admits; one refused (over its share, or every slot taken) leaves
+  none, and `Shaking::release` removes an entry at zero as before, so the map holds at most the handshake slots' worth.
+  Test `link::tests::refused_sources_leave_no_entry_and_the_map_of_sources_stays_bounded` [`DEC-28`]: two slots taken,
+  a thousand sources more refused, two entries, and none once both handshakes end.
+- **#350, the holder and account filter on reserve sessions.** Test `reserve is told only its account holders
+  sessions on its account` [`REQ-CAT-3`] (`assembly_wiring.rs`): the customer's session, the account passed to another
+  party, that party's session on an account elsewhere opened through policy, and its session on the account: the
+  reserve is told the last alone.
+
+### Rule-off
+
+Each rule switched off alone in the source, the tests that hold it run, the source put back (by a scratch script of the
+author's, not kept). Every one went red on an assertion.
+
+| Rule switched off | Test | Red |
+|---|---|---|
+| The networks listed by a decided `list_public_network` | every test in `sim_readers` | `left: {}`, no network listed |
+| The reader ties by destination and amount (`--match destination` ignored) | `simulated reader that ties a deposit by destination and amount plants the shared movement fault` | the second deposit tied to its own movement, not the first |
+| An endpoint lies | `simulated evm network with one lying rpc of three still answers and with two is unreadable` | two "lying" endpoints answered, readable |
+| An endpoint goes silent | the same | two "silent" endpoints answered, readable |
+| `Readings::refresh` publishes to the readers' endpoints | `simulated reader answers as its simulated network does` | the network's rules answered unreadable: the endpoints held no network to read |
+| `Core::relist` skips a listing | the same | Core wasn't opened again: the log's `ListPublicNetwork` isn't replayed |
+| L10: no entry for a refused source (back to `entry(ip).or_insert(0)`) | `link::tests::refused_sources_leave_no_entry_and_the_map_of_sources_stays_bounded` | `left: 1002`, an entry per refused source |
+| L9: every spelling of the lib target (back to the old line check) | `providers admitted paths resolve by layout to the items their files define` | `a spaced lib table: []` |
+| L9: a build script by `build` in the package table | the same | the `build` key passed |
+| L9: a `build.rs` at prov's root | the same | `prov/build.rs` passed |
+| #350: the session's holder | `reserve is told only its account holders sessions on its account` | `left: ["conformance-session", "conformance-session-2"]` |
+| #350: the session's account | the same | `left: ["sess-elsewhere", "conformance-session-2"]` |
+| A build-dependency is no dev edge (build-dependencies read as dev) | `scenario assembly takes the reader host for its tests only` | `left: []`, the assembly's build script on the host passed |
+
+**Run id.** Pending: CI's run on this row's pull request goes here.

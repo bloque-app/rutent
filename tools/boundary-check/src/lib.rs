@@ -933,10 +933,50 @@ fn module_file(src: &Path, module: &str) -> Result<PathBuf, (PathBuf, usize)> {
     Ok(parent)
 }
 
+/// The lines of a manifest that set the library target or a build script, in any spelling TOML allows (#348's L9):
+/// a lib table however written (`[lib]`, `[ lib ]`, `["lib"]`, `[lib.x]`), a key that names it at the top level
+/// (`lib = { .. }`, `lib.path`, `"lib".path`), and a build script by `build` in the package table, however written
+/// (`[package] build = ..`, `package.build = ..`, `build = false` too). A target array (`[[bin]]`, `[[test]]`,
+/// `[[example]]`, `[[bench]]`, however spaced or quoted) is read as one, so its `path` is never taken for the
+/// library's: each of those builds a crate of its own, which never is `rutent_prov`, so it can't widen what the reader
+/// host reaches. Matched on the text with its spaces and quotes taken out, so every spelling meets the same rule; a
+/// comment is cut at its `#`, so a `#` inside a value makes the line read shorter, never longer.
+fn moves_the_library(manifest: &str) -> Vec<usize> {
+    let mut found = Vec::new();
+    let mut table = String::new();
+    for (n, raw) in manifest.lines().enumerate() {
+        let flat: String = raw
+            .split('#')
+            .next()
+            .unwrap_or("")
+            .chars()
+            .filter(|c| !c.is_whitespace() && *c != '"' && *c != '\'')
+            .collect();
+        let key = if let Some(header) = flat.strip_prefix('[') {
+            table = header.trim_matches(['[', ']']).to_owned();
+            table.clone()
+        } else if let Some((key, _)) = flat.split_once('=') {
+            if table.is_empty() {
+                key.to_owned()
+            } else {
+                format!("{table}.{key}")
+            }
+        } else {
+            continue;
+        };
+        let names = |name: &str| key == name || key.starts_with(&format!("{name}."));
+        if names("lib") || names("package.build") {
+            found.push(n + 1);
+        }
+    }
+    found
+}
+
 /// The findings, under the provider system's package `prov`, against what the reader host's
 /// admitted paths admit ([`PROV_CONFINE`], [`PROV_KEYS`]): each admitted file and every module on
 /// the way to what it re-exports is declared plainly and found by file layout alone, so no
-/// `#[path]` (or `include!`) anywhere under `src/` and no `[lib]` table in the manifest moves one;
+/// `#[path]` (or `include!`) anywhere under `src/`, no lib table or key in the manifest in any
+/// spelling and no build script ([`moves_the_library`]) moves one;
 /// each admitted file holds its re-exports and nothing more; and each name they re-export is
 /// defined in the file of the module it is re-exported from. A lint over the source, beside the
 /// code review that every one of these files gets as a `DEC-20` path.
@@ -944,11 +984,14 @@ fn admitted_path_findings(prov: &Path) -> std::io::Result<Vec<(PathBuf, usize)>>
     let mut found = Vec::new();
     let src = prov.join("src");
     let manifest = std::fs::read_to_string(prov.join("Cargo.toml"))?;
-    for (n, line) in manifest.lines().enumerate() {
-        let line = line.split('#').next().unwrap_or("").trim();
-        if line.starts_with("[lib]") || line.replace(' ', "").starts_with("lib.") {
-            found.push((prov.join("Cargo.toml"), n + 1));
-        }
+    for line in moves_the_library(&manifest) {
+        found.push((prov.join("Cargo.toml"), line));
+    }
+    // A build script runs at build time and can write the sources the library compiles, so prov has none: a
+    // `build.rs` at its root, which cargo runs unasked, is refused outright (#348's L9).
+    let script = prov.join("build.rs");
+    if script.exists() {
+        found.push((script, 1));
     }
     for file in rust_files(&src, &[])? {
         let text = std::fs::read_to_string(&file)?;
@@ -1001,7 +1044,8 @@ fn admitted_path_findings(prov: &Path) -> std::io::Result<Vec<(PathBuf, usize)>>
 ///   and any that names the provider system other than through its admitted paths
 ///   ([`PROV_PATHS`], `T-020-59`, `T-015-04`);
 /// - in the provider system, once the reader host is a member, anything that widens an admitted
-///   path: a `#[path]` or `include!` anywhere under `src/`, a `[lib]` table in its manifest, a
+///   path: a `#[path]` or `include!` anywhere under `src/`, the library target or a build script
+///   set in its manifest in any spelling, or a `build.rs` at its root ([`moves_the_library`]), a
 ///   module on the way declared other than plainly or found other than by file layout, an admitted
 ///   file that holds more or other than its re-exports, or a name they re-export that its source
 ///   file doesn't itself define ([`PROV_CONFINE`], [`PROV_KEYS`], [`holds_its_reexports`],

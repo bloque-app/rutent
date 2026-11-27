@@ -167,8 +167,10 @@ impl Readings {
         self.read.borrow().ties
     }
 
-    /// Reads `world` again: every network and book as it stands now.
+    /// Reads `world` again: every network and book as it stands now. The networks' readers read the same, published
+    /// to the endpoints the world serves them (`T-024-25`).
     pub(crate) fn refresh(&self, world: &SimWorld) {
+        world.publish_to_readers();
         let mut read = self.read.borrow_mut();
         for network in self.networks.iter() {
             if let Some(net) = world.network(network) {

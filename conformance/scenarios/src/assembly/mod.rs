@@ -1101,6 +1101,8 @@ impl Core {
                 CatalogueChange::DeclareExploited,
                 CatalogueChange::MarkStale,
                 CatalogueChange::ConfirmReleases,
+                // Each simulated network listed with its reader service (`T-024-25`, `DEC-28`).
+                CatalogueChange::ListPublicNetwork,
             ] {
                 r.permit(&kit::operator_login(), Permission::Change(change));
             }
@@ -1348,6 +1350,7 @@ impl Core {
         for one in &installed {
             core.grant(one)?;
         }
+        core.list_public_networks()?;
         core.clock.set_nanos(u128::from(kit::START) * 1_000_000_000);
         // The holdout's version is put in force until its cutover before its providers are listed, through the
         // operator's command as any setting is (`REQ-PRT-4`).
@@ -1934,6 +1937,112 @@ impl Core {
         Ok(())
     }
 
+    /// Lists each simulated network a provider's tuples are on with its reader service, as the operator does: a
+    /// `list_public_network` the operator's login asks for and policy decides, its effect and its result, one for each
+    /// network, before any order (`T-024-25`, `DEC-28`; [`Fleet::public_networks`]). Each decision is asked under an
+    /// id of the network's own (`list-{network}`), never one drawn from Core's source, so the listings leave every
+    /// identifier a scenario draws as it was.
+    fn list_public_networks(&mut self) -> Result<(), AssemblyError> {
+        let listing = |step: &str, e: AppendFailure| {
+            AssemblyError::Listing(format!("a public network's {step}: {e:?}"))
+        };
+        let decider = kit::operator_login();
+        for network in self.fleet.public_networks() {
+            let request = DecisionRequest {
+                request: kit::id(&format!("list-{}", network.network.as_str())),
+                caller: decider.clone(),
+                action: Action::ChangeCatalogue {
+                    change: CatalogueChange::ListPublicNetwork,
+                    provider: decider.party.clone(),
+                    version: None,
+                    tuple: None,
+                    class: None,
+                    advertising_keys: Vec::new(),
+                    statement_key: None,
+                    setting: None,
+                    versions: Vec::new(),
+                    public_network: Some(Box::new(network)),
+                },
+                at: self.clock.timestamp(),
+            };
+            let decision = rutent_contracts::core_internal::calls::Decisions::decide(
+                &mut self.policy,
+                &request,
+            )
+            .map_err(|e| listing("decision", e))?;
+            let permit = decision.permit().ok_or_else(|| {
+                AssemblyError::Listing(format!(
+                    "a public network's listing wasn't permitted: {:?}",
+                    decision.outcome
+                ))
+            })?;
+            let effect = self
+                .verified(
+                    What::Effect {
+                        action: request.action,
+                        decision: permit,
+                    },
+                    Outcome::ToTakeEffect {},
+                )
+                .map_err(|e| listing("effect", e))?;
+            self.verified(What::Result { effect }, Outcome::Done {})
+                .map_err(|e| listing("result", e))?;
+        }
+        Ok(())
+    }
+
+    /// Every public network the log lists, by a decided `list_public_network` carried out, in the order listed: what
+    /// names each network's reader service (`T-024-25`, `DEC-28`).
+    pub fn public_networks(&self) -> Vec<rutent_contracts::core_internal::PublicNetwork> {
+        let log = self.log.borrow();
+        let entries = log.entries();
+        let done: Vec<Receipt> = entries
+            .iter()
+            .filter_map(|(_, e)| match e {
+                Entry::Verified(VerifiedEntry {
+                    what: What::Result { effect },
+                    outcome: Outcome::Done {},
+                    ..
+                }) => Some(effect.clone()),
+                _ => None,
+            })
+            .collect();
+        entries
+            .iter()
+            .filter(|(receipt, _)| done.contains(receipt))
+            .filter_map(|(_, e)| match e {
+                Entry::Verified(VerifiedEntry {
+                    what:
+                        What::Effect {
+                            action:
+                                Action::ChangeCatalogue {
+                                    change: CatalogueChange::ListPublicNetwork,
+                                    public_network: Some(network),
+                                    ..
+                                },
+                            ..
+                        },
+                    ..
+                }) => Some((**network).clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Whether the planted fault ties a network's movements to segments by destination and amount
+    /// ([`Core::tie_payments_by_destination`]): what a simulated reader planted the same way matches by (`T-024-25`).
+    pub fn ties_by_destination(&self) -> bool {
+        self.readings.ties()
+    }
+
+    /// The public records Core reads now: the simulated networks as they stand, read again (`T-020-09`), through the
+    /// assembly's `impl PublicRecords` that `T-020-60` replaces with Core's reader adapter. What a simulated reader is
+    /// held to answer as (`T-024-25`).
+    pub fn public_records(&self) -> &dyn rutent_core_orch::closing::PublicRecords {
+        self.readings.refresh(&self.fleet.platform.world);
+        &self.readings
+    }
+
     /// A judgement's origin names its maker's release, so a verifier's accepted release is recorded; a reserve's is
     /// not, since recording one would add its calls figure to every snapshot (`T-024-12`).
     fn record_release(&mut self, installed: &Installed) {
@@ -2071,6 +2180,12 @@ impl Core {
             // The operator's confirmation of a provider's releases held after a platform's restart is the platform's to
             // hold, in its own record (`T-013-11`): Core's catalogue lists nothing for it (`T-024-21`).
             if *change == CatalogueChange::ConfirmReleases {
+                continue;
+            }
+            // A public network listed with its reader service (`T-024-25`): until `T-020-60` puts Core on its reader
+            // and the catalogue's public list on the listing, the log holds it and Core's catalogue takes nothing from
+            // it.
+            if change.is_about_a_public_network() {
                 continue;
             }
             // A verifier's class grant has no tuple to rebuild: the category grant is made where its advertisement is
