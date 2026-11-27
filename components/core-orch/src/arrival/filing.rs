@@ -374,7 +374,7 @@ impl Arrivals {
                 )?));
             }
         }
-        let order = desk.parts.fresh.id();
+        let order = crate::intake::draw_order(&mut *desk.parts.fresh).ok_or(ArrivalError::Fresh)?;
         if !self.fresh_order(desk, &order) {
             return Err(ArrivalError::Fresh);
         }
