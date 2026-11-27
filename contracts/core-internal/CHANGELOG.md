@@ -1,6 +1,9 @@
 # core-internal changelog
 
 ## 1.0.0
+- The rule switch is shared with router-api (`T-020-54`): `without_rule`'s thread-local list of switched-off rules is
+  read by router-api's checks too (`switched_off`, crate-visible), so one test helper reaches both contracts. No shape
+  or rule changed here. (DEC-4, DEC-20, T-020-54)
 - The contract round for `M3`'s milestone review of 2026-11-24 (`T-020-45`), folded into this unreleased version
   while `develop` holds none of it:
   - `T-020-48` (finding 4): `Difference::PairNotBuilt {order, segment, why}` (`pair_not_built`; `why`: `PairNotBuilt`,
