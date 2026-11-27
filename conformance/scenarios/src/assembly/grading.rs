@@ -1,17 +1,18 @@
 //! What the assembly's grading reads of the simulated world (`T-020-09`): each part runs under
-//! `closing::Evidenced`, over the simulated public networks the providers' movements are recorded on and the reserves'
-//! books, as they stood when Core last looked: at the start of each run and after each operation carried out. The
-//! world lives inside the platform, which the segments hold as their modules, so the readings are a copy, refreshed.
+//! `closing::Evidenced`, over the simulated public networks the providers' movements are recorded on, as they stood when
+//! Core last looked: at the start of each run and after each operation carried out. The world lives inside the
+//! platform, which the segments hold as their modules, so the readings are a copy, refreshed.
+//!
+//! The private nodes' books are no reading of the world (`T-020-58`): Core asks each publisher's provider for its record
+//! through the platform (`closing::publishers`) and hands what it took as a record to [`Readings`], which only keeps it
+//! for the closing to read ([`Books`]). The assembly chooses no node and no provider.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use rutent_conformance::signing::verify;
-use rutent_conformance::sim::{Entry as BookEntry, Spec, publishers_record};
-use rutent_contracts::provider_role::{
-    Advertisement, InnerSegments, KeyPurpose, Statement, check_inner_segments,
-};
+use rutent_conformance::sim::Spec;
+use rutent_contracts::provider_role::{InnerSegments, Statement};
 use rutent_contracts::router_api::Id;
 use rutent_core_orch::closing::{Books, Moved, PublicRecords, Recorded};
 use rutent_evidence::replay::RecordedSegment;
@@ -22,17 +23,40 @@ use crate::sim::{Installed, SimWorld};
 #[derive(Default)]
 struct Read {
     networks: BTreeMap<String, SimulatedNetwork>,
-    books: BTreeMap<String, Vec<BookEntry>>,
+    /// What each provider of a private node answered when Core last asked it for its record of the node, taken as one,
+    /// by provider and node (`T-020-58`).
+    records: BTreeMap<(String, String, String), Statement<InnerSegments>>,
+    /// Every record taken, the last for each provider, node and order, dropped never: what a scenario reads of what Core
+    /// took, which the books themselves forget once an order's segments have settled.
+    taken: BTreeMap<(String, String, String), Statement<InnerSegments>>,
+    /// Each question of a node's record Core put, as the platform carried it: the provider, the node and the
+    /// transaction.
+    asked: Vec<(String, String, String)>,
     /// Every movement recorded on each network, in the order first read, with where it went and how much: what a
     /// network that ties a deposit by its destination and amount reads.
     seen: BTreeMap<String, Vec<(MovementId, String, String)>>,
     /// The planted fault: a deposit tied to the first movement to its destination of its amount.
     ties: bool,
-    /// The providers whose record is altered after it was signed: a planted fault.
-    forged: BTreeSet<String>,
+    /// The providers whose answer to the question of their record is altered on its way to Core: a planted fault.
+    forged: BTreeMap<String, Tamper>,
 }
 
-/// The simulated networks and the reserves' books, as Core last read them.
+/// How a planted fault alters a provider's answer to the question of its record, between the platform and Core.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tamper {
+    /// A figure of the record is changed after the provider signed it, as a forger on the wire would.
+    Figure,
+    /// The provider signs a record of another publisher's, which its advertisement doesn't declare.
+    Publisher,
+    /// The provider signs a record of a node its advertisement doesn't declare.
+    Node,
+    /// The provider signs a record with a key its advertisement doesn't list.
+    Key,
+    /// The answer is altered after the provider signed it, the record in it untouched.
+    Answer,
+}
+
+/// The simulated networks, as Core last read them, and the records of the private nodes it took.
 #[derive(Clone, Default)]
 pub(crate) struct Readings {
     read: Rc<RefCell<Read>>,
@@ -41,8 +65,6 @@ pub(crate) struct Readings {
     /// Each provider that moves value, whose journal is its book and whose private node, where it has one, its
     /// publisher records the segments it serves in.
     movers: Rc<Vec<Spec>>,
-    /// Each mover's advertisement, the one its catalogue holds: what a record of its is held to.
-    advertisements: Rc<BTreeMap<String, Statement<Advertisement>>>,
 }
 
 impl Readings {
@@ -50,12 +72,7 @@ impl Readings {
     pub(crate) fn of(installed: &[Installed]) -> Self {
         let mut networks = Vec::new();
         let mut movers = Vec::new();
-        let mut advertisements = BTreeMap::new();
         for one in installed {
-            advertisements.insert(
-                one.spec.provider.clone(),
-                one.advertisement.statement().clone(),
-            );
             // The networks the fleet serves for the provider's tuples, as it serves them.
             networks.extend(crate::sim::fleet::networks_of(&one.spec));
             if one.spec.role.moves_value() {
@@ -68,7 +85,6 @@ impl Readings {
             read: Rc::default(),
             networks: Rc::new(networks),
             movers: Rc::new(movers),
-            advertisements: Rc::new(advertisements),
         }
     }
 
@@ -78,9 +94,72 @@ impl Readings {
         self.read.borrow_mut().ties = true;
     }
 
-    /// From now on, `provider`'s record is altered after it was signed.
-    pub(crate) fn forge(&self, provider: &str) {
-        self.read.borrow_mut().forged.insert(provider.to_owned());
+    /// From now on, `provider`'s answer to the question of its record is altered as `how` says.
+    pub(crate) fn forge(&self, provider: &str, how: Tamper) {
+        self.read
+            .borrow_mut()
+            .forged
+            .insert(provider.to_owned(), how);
+    }
+
+    /// Notes a question of `provider`'s record of `node` that Core put under `transaction`.
+    pub(crate) fn note_asked(&self, provider: &str, node: &str, transaction: &str) {
+        self.read.borrow_mut().asked.push((
+            provider.to_owned(),
+            node.to_owned(),
+            transaction.to_owned(),
+        ));
+    }
+
+    /// The records of the private node `node` Core took of its providers when it last read them, in the order the
+    /// providers are installed: what closing's books hold.
+    pub(crate) fn taken(&self, node: &str) -> Vec<Statement<InnerSegments>> {
+        let read = self.read.borrow();
+        Self::records_among(&read.taken, &self.movers, node)
+    }
+
+    /// What closing's books hold of `node` now: the records of the orders still in flight.
+    fn held_of(&self, node: &str) -> Vec<Statement<InnerSegments>> {
+        let read = self.read.borrow();
+        Self::records_among(&read.records, &self.movers, node)
+    }
+
+    fn records_among(
+        records: &BTreeMap<(String, String, String), Statement<InnerSegments>>,
+        movers: &[Spec],
+        node: &str,
+    ) -> Vec<Statement<InnerSegments>> {
+        movers
+            .iter()
+            .flat_map(|spec| {
+                records
+                    .iter()
+                    .filter(|((provider, at, _), _)| *provider == spec.provider && at == node)
+                    .map(|(_, record)| record.clone())
+            })
+            .collect()
+    }
+
+    /// How many records the books hold now.
+    pub(crate) fn held(&self) -> usize {
+        self.read.borrow().records.len()
+    }
+
+    /// Every question of a node's record Core put: the provider, the node and the transaction, in the order put.
+    pub(crate) fn asked(&self) -> Vec<(String, String, String)> {
+        self.read.borrow().asked.clone()
+    }
+
+    /// `answer`, `provider`'s answer to the question of its record as the platform passed it on, as the planted fault
+    /// alters it, if one is planted for `provider`.
+    pub(crate) fn tampered(&self, provider: &str, answer: Vec<u8>) -> Vec<u8> {
+        let Some(how) = self.read.borrow().forged.get(provider).copied() else {
+            return answer;
+        };
+        let Some(spec) = self.movers.iter().find(|s| s.provider == provider) else {
+            return answer;
+        };
+        tamper(spec, how, &answer).unwrap_or(answer)
     }
 
     /// Whether the planted fault ties movements by destination and amount.
@@ -109,12 +188,6 @@ impl Readings {
             if !seen.iter().any(|(i, ..)| *i == id) {
                 seen.push((id, m.destination, m.amount));
             }
-        }
-        for mover in self.movers.iter() {
-            read.books.insert(
-                mover.provider.clone(),
-                world.journal(&mover.provider).to_vec(),
-            );
         }
     }
 }
@@ -169,44 +242,43 @@ impl PublicRecords for Readings {
     }
 }
 
-impl Readings {
-    /// The record `provider`'s publisher keeps of the segments `provider` ran inside its private node, as the
-    /// publisher's own signed statement (`rutent_conformance::sim::publishers_record`), as Core reads it: held to its
-    /// maker's advertisement and to its signature, and refused, as no record at all, where it fails either. That its
-    /// segments add up, or hand on to the public exit, is not asked: it is the replay's (`REQ-ORD-41`).
-    pub(crate) fn published_by(&self, provider: &str) -> Option<Statement<InnerSegments>> {
-        let spec = self.movers.iter().find(|s| s.provider == provider)?;
-        let record = {
-            let read = self.read.borrow();
-            let mut record =
-                publishers_record(spec, &crate::assembly::context(), read.books.get(provider)?)?;
-            if read.forged.contains(provider)
-                && let Some(first) = record.statement.segments.first_mut()
-            {
-                first.amount_out.push('0');
-            }
-            record
-        };
-        accepted(&record, self.advertisements.get(provider)?).then_some(record)
+/// Each private node, as its publisher records the segments inside it (`REQ-ORD-41`): the records Core took of every
+/// provider that serves in it, for the transactions asked, in the order the providers are installed and the
+/// transactions are asked, each segment as its record states it.
+impl Books for Readings {
+    fn took(&self, provider: &str, node: &str, order: &str, record: Statement<InnerSegments>) {
+        let key = (provider.to_owned(), node.to_owned(), order.to_owned());
+        let mut read = self.read.borrow_mut();
+        read.taken.insert(key.clone(), record.clone());
+        read.records.insert(key, record);
     }
 
-    /// Every record published for the private node `node`, one for each provider that serves in it, in the order the
-    /// providers are installed.
-    pub(crate) fn published_in(&self, node: &str) -> Vec<Statement<InnerSegments>> {
-        self.movers
-            .iter()
-            .filter_map(|spec| self.published_by(&spec.provider))
-            .filter(|record| record.statement.node == node)
-            .collect()
+    fn forget(&self, order: &str, node: &str) {
+        self.read
+            .borrow_mut()
+            .records
+            .retain(|(_, n, o), _| n != node || o != order);
+    }
+
+    fn recorded(&self, node: &str, transactions: &[Id]) -> Option<Recorded> {
+        // Every order's record of the node, each provider's together, in the order the providers are installed: an order's
+        // transactions are listed in its own records alone, so an order reads its own.
+        self.read_of(self.held_of(node), transactions)
     }
 }
 
-/// Each private node, as its publisher records the segments inside it (`REQ-ORD-41`): the records of every provider
-/// that serves in it ([`Readings::published_in`]), for the transactions asked, in the order the transactions are asked,
-/// each segment as its record states it.
-impl Books for Readings {
-    fn recorded(&self, node: &str, transactions: &[Id]) -> Option<Recorded> {
-        let records = self.published_in(node);
+impl Readings {
+    /// What every record Core took of `node` gives for `transactions`, whether the books still hold it or not: what a
+    /// scenario asks of Core's books after the orders have settled (`T-024-14`).
+    pub(crate) fn recorded_ever(&self, node: &str, transactions: &[Id]) -> Option<Recorded> {
+        self.read_of(self.taken(node), transactions)
+    }
+
+    fn read_of(
+        &self,
+        records: Vec<Statement<InnerSegments>>,
+        transactions: &[Id],
+    ) -> Option<Recorded> {
         let mut segments = Vec::new();
         let mut read: Vec<Statement<InnerSegments>> = Vec::new();
         for transaction in transactions {
@@ -231,8 +303,8 @@ impl Books for Readings {
                     read.push(record.clone());
                 }
             }
-            // Every transaction asked ran inside the node, so one with no accepted segment is a record refused or
-            // never made: nothing recorded for the node, never the rest of it passed off as all of it.
+            // Every transaction asked ran inside the node, so one with no taken segment is a record refused or never
+            // made: nothing recorded for the node, never the rest of it passed off as all of it.
             if segments.len() == before {
                 return None;
             }
@@ -244,114 +316,49 @@ impl Books for Readings {
     }
 }
 
-/// Whether Core reads `record` as its maker's: signed with a key `advertisement`, its maker's, lists for statements and
-/// verifying under it, and held to that advertisement as the contract asks (`check_inner_segments`: its maker's own
-/// advertisement, its publisher the one the record names, its node among the maker's private nodes).
-fn accepted(record: &Statement<InnerSegments>, advertisement: &Statement<Advertisement>) -> bool {
-    let Ok(bytes) = serde_json::to_vec(record) else {
-        return false;
+/// `answer`, `spec`'s provider's answer to the question of its record, as the fault `how` alters it: a figure changed
+/// after it was signed, or the provider's own signature (it holds the statements key) over a record its advertisement
+/// doesn't permit it, the answer re-signed so only the record is in question.
+fn tamper(spec: &Spec, how: Tamper, answer: &[u8]) -> Option<Vec<u8>> {
+    use rutent_conformance::role::placeholder_key;
+    use rutent_conformance::signing::{another_key, real, sign_statement};
+    use rutent_contracts::provider_role::ResultBody;
+    let mut result: Statement<ResultBody> = serde_json::from_slice(answer).ok()?;
+    let ResultBody::InnerSegmentsQuery(inner) = &mut result.statement else {
+        return None;
     };
-    let listed = advertisement
-        .statement
-        .keys
-        .iter()
-        .any(|k| k.purpose == KeyPurpose::Statements && k.public_key == record.signature.key);
-    listed && verify(&bytes).is_ok() && check_inner_segments(record, advertisement).is_ok()
-}
-
-#[cfg(test)]
-mod tests {
-    use rutent_conformance::role::{RoleProvider, SuiteContext};
-    use rutent_conformance::signing::{Signing, another_key, sign_statement};
-    use rutent_conformance::sim::{Role, Spec};
-    use rutent_contracts::provider_role::{
-        INNER_SEGMENTS_SHAPE, InnerSegment, Signature, SignatureScheme, Standing,
+    let rutent_contracts::provider_role::InnerSegmentsOutcome::Answered(answered) =
+        &mut inner.outcome
+    else {
+        return None;
     };
-
-    use super::*;
-    use crate::sim::fleet::InProcess;
-
-    /// The reserve `spec`, as its advertisement lists it, and a record it signs of one segment inside its node.
-    fn record_of(
-        spec: &Spec,
-    ) -> (
-        Statement<Advertisement>,
-        Statement<InnerSegments>,
-        rutent_conformance::signing::Ed25519Key,
-    ) {
-        let context = SuiteContext::default();
-        let advertisement = Signing(InProcess(spec.make(&context)))
-            .advertisement()
-            .into_statement();
-        let key = rutent_conformance::role::placeholder_key(spec.seed());
-        let record = Statement {
-            deployment: context.deployment.clone(),
-            protocol_version: context.protocol_version.clone(),
-            shape: INNER_SEGMENTS_SHAPE.to_owned(),
-            maker: spec.provider.clone(),
-            made_at: advertisement.made_at.clone(),
-            signature: Signature {
-                scheme: SignatureScheme::Ed25519,
-                key: key.clone(),
-                value: rutent_conformance::role::placeholder_signature(),
-            },
-            statement: InnerSegments {
-                node: spec.ledger(),
-                publisher: spec.publisher(),
-                standing: Standing::PublishersWord,
-                segments: vec![InnerSegment {
-                    transaction: "tx-1".to_owned(),
-                    asset_in: "COP".to_owned(),
-                    amount_in: "1000".to_owned(),
-                    asset_out: "COP".to_owned(),
-                    amount_out: "990".to_owned(),
-                    fee: "10".to_owned(),
-                }],
-            },
-        };
-        let signing = rutent_conformance::signing::real(key.as_str());
-        let signed = sign_statement(&record, &signing);
-        (advertisement, signed, signing)
+    let key = placeholder_key(spec.seed());
+    match how {
+        Tamper::Figure => {
+            answered
+                .record
+                .statement
+                .segments
+                .first_mut()?
+                .amount_out
+                .push('0');
+            return serde_json::to_vec(&result).ok();
+        }
+        Tamper::Publisher => {
+            answered.record.statement.publisher = format!("{}-another", spec.publisher());
+            *answered.record = sign_statement(&answered.record, &real(key.as_str()));
+        }
+        Tamper::Node => {
+            answered.record.statement.node = format!("{}-another", spec.ledger());
+            *answered.record = sign_statement(&answered.record, &real(key.as_str()));
+        }
+        Tamper::Answer => {
+            result.made_at = "2026-11-06T15:04:06Z".to_owned();
+            return serde_json::to_vec(&result).ok();
+        }
+        Tamper::Key => {
+            *answered.record = sign_statement(&answered.record, &another_key());
+        }
     }
-
-    // verifies: REQ-ORD-41
-    #[test]
-    fn a_record_its_maker_signed_and_declared_is_read() {
-        let (advertisement, record, _) = record_of(&Spec::of(Role::Reserve, "sim-reserve-b"));
-        assert!(accepted(&record, &advertisement));
-    }
-
-    // verifies: REQ-ORD-41
-    #[test]
-    fn a_record_changed_after_it_was_signed_is_not_read() {
-        let (advertisement, mut record, _) = record_of(&Spec::of(Role::Reserve, "sim-reserve-b"));
-        record.statement.segments[0].amount_out = "999".to_owned();
-        assert!(!accepted(&record, &advertisement));
-    }
-
-    // verifies: REQ-ORD-41
-    #[test]
-    fn a_record_signed_with_a_key_its_maker_does_not_list_is_not_read() {
-        let (advertisement, record, _) = record_of(&Spec::of(Role::Reserve, "sim-reserve-b"));
-        let by_another = sign_statement(&record, &another_key());
-        assert!(!accepted(&by_another, &advertisement));
-    }
-
-    // verifies: REQ-ORD-41
-    #[test]
-    fn a_record_of_another_publisher_or_another_node_is_not_read() {
-        let (advertisement, record, key) = record_of(&Spec::of(Role::Reserve, "sim-reserve-b"));
-        let mut other_publisher = record.clone();
-        other_publisher.statement.publisher = "sim-reserve-a-publisher".to_owned();
-        assert!(!accepted(
-            &sign_statement(&other_publisher, &key),
-            &advertisement
-        ));
-        let mut other_node = record;
-        other_node.statement.node = "sim-reserve-a-ledger".to_owned();
-        assert!(!accepted(
-            &sign_statement(&other_node, &key),
-            &advertisement
-        ));
-    }
+    serde_json::to_vec(&sign_statement(&result, &real(key.as_str()))).ok()
 }

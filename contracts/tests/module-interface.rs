@@ -22,7 +22,7 @@ const TAKEN_AT: &str = "2026-11-06T15:04:05Z";
 
 /// Every schema the contract's shapes reach, by contract and name; each is registered by its `$id`,
 /// `urn:rutent:<contract>:<name>`. The provider-role schemas are referred to, never copied.
-const SCHEMAS: [(&str, &str); 21] = [
+const SCHEMAS: [(&str, &str); 22] = [
     ("module-interface", "common"),
     ("module-interface", "declaration"),
     ("module-interface", "outside-request"),
@@ -44,6 +44,7 @@ const SCHEMAS: [(&str, &str); 21] = [
     ("provider-role", "reversal-confirmation"),
     ("provider-role", "terms"),
     ("provider-role", "hold"),
+    ("provider-role", "inner-segments"),
 ];
 
 /// The shapes fixtures are written in. A fixture's shape is the longest of these its file name starts with,
@@ -483,6 +484,10 @@ fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
         ),
         (
             "declaration-call-of-hold",
+            one(RuleViolation::DeclaredCallOfAnOperatorsQuestion { call: 0 }),
+        ),
+        (
+            "declaration-call-of-inner-segments-query",
             one(RuleViolation::DeclaredCallOfAnOperatorsQuestion { call: 0 }),
         ),
         (

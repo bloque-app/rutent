@@ -12,8 +12,9 @@ use rutent_contracts::provider_role::{
     RuleViolation, Statement, StatementShape, Terms, TermsViolation, TransferOutcome, TupleTerms,
 };
 use rutent_contracts::provider_role::{
-    DepositDestination, HoldMismatch, HoldOutcome, HoldRequest, ProtocolVersions, StatusMismatch,
-    StatusOutcome, StatusQuery,
+    DepositDestination, HoldMismatch, HoldOutcome, HoldRequest, InnerSegmentsMismatch,
+    InnerSegmentsOutcome, InnerSegmentsQuery, ProtocolVersions, StatusMismatch, StatusOutcome,
+    StatusQuery,
 };
 use rutent_contracts::provider_role::{InnerSegments, InnerSegmentsViolation, Standing};
 use serde::de::DeserializeOwned;
@@ -43,7 +44,7 @@ const SCHEMAS: [&str; 15] = [
 /// followed by `-`. `successive-advertisements`, `answered-operation`, `arrival-notices` and
 /// `answered-arrival-question` are bundles of values, not schemas of their own: see [`SuccessiveAdvertisements`],
 /// [`AnsweredOperation`], [`ArrivalNotices`] and [`AnsweredArrivalQuestion`].
-const SHAPES: [&str; 17] = [
+const SHAPES: [&str; 18] = [
     "advertisement",
     "statement-envelope",
     "operation",
@@ -61,6 +62,7 @@ const SHAPES: [&str; 17] = [
     "published-inner-segments",
     "answered-status-query",
     "answered-hold",
+    "answered-inner-segments-query",
 ];
 
 /// The members of an `answered-status-query` bundle: the operator's enveloped status question and the provider's
@@ -76,6 +78,28 @@ const ANSWERED_HOLD_MEMBERS: [(&str, &str); 2] = [
     ("request", "urn:rutent:provider-role:operation"),
     ("answer", "urn:rutent:provider-role:result"),
 ];
+
+/// The members of an `answered-inner-segments-query` bundle: the operator's enveloped question of a private node's record
+/// and the provider's enveloped answer (`check_inner_segments_answer`, 4.0.0, `T-020-58`).
+const ANSWERED_INNER_SEGMENTS_QUERY_MEMBERS: [(&str, &str); 2] = [
+    ("question", "urn:rutent:provider-role:operation"),
+    ("answer", "urn:rutent:provider-role:result"),
+];
+
+/// An `answered-inner-segments-query` fixture.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AnsweredInnerSegmentsQuery {
+    question: Statement<Operation>,
+    answer: Statement<ResultBody>,
+}
+
+impl AnsweredInnerSegmentsQuery {
+    fn check(&self) -> Result<(), String> {
+        provider_role::check_inner_segments_answer(&self.question.statement, &self.answer)
+            .map_err(|v| format!("{v:?}"))
+    }
+}
 
 /// An `answered-status-query` fixture.
 #[derive(Debug, Serialize, Deserialize)]
@@ -219,6 +243,18 @@ fn schema_rule_fixtures() -> Vec<(&'static str, Vec<(&'static str, &'static str)
         ),
         (
             "operation-hold-without-its-validity",
+            vec![("/statement", "required")],
+        ),
+        (
+            "operation-inner-segments-query-without-the-node-asked-about",
+            vec![("/statement", "required")],
+        ),
+        (
+            "result-inner-segments-query-without-the-node-asked-about",
+            vec![("/statement", "required")],
+        ),
+        (
+            "operation-inner-segments-query-without-the-transactions-asked-about",
             vec![("/statement", "required")],
         ),
         (
@@ -851,7 +887,36 @@ fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
     let inner = |v: InnerSegmentsViolation| format!("{:?}", vec![v]);
     let status = |v: StatusMismatch| format!("{:?}", vec![v]);
     let hold = |v: HoldMismatch| format!("{:?}", vec![v]);
+    let record = |v: InnerSegmentsMismatch| format!("{:?}", vec![v]);
     vec![
+        (
+            "result-inner-segments-query-carrying-another-makers-record",
+            "NestedMaker".to_owned(),
+        ),
+        (
+            "answered-inner-segments-query-under-another-transaction",
+            record(InnerSegmentsMismatch::AnswersAnotherQuestion),
+        ),
+        (
+            "answered-inner-segments-query-about-another-node",
+            record(InnerSegmentsMismatch::OfAnotherNode),
+        ),
+        (
+            "answered-inner-segments-query-carrying-a-record-of-another-node",
+            record(InnerSegmentsMismatch::OfAnotherNode),
+        ),
+        (
+            "answered-inner-segments-query-by-another-provider",
+            record(InnerSegmentsMismatch::AnsweredByAnotherProvider),
+        ),
+        (
+            "answered-inner-segments-query-carrying-a-segment-not-asked",
+            record(InnerSegmentsMismatch::SegmentNotAsked),
+        ),
+        (
+            "answered-inner-segments-query-by-an-answer-to-another-question",
+            record(InnerSegmentsMismatch::NotAnInnerSegmentsQuestion),
+        ),
         (
             "result-status-query-carrying-another-makers-result",
             "NestedMaker".to_owned(),
@@ -1207,6 +1272,20 @@ fn rust_rules(shape: &str, value: &Value) -> Result<(), String> {
                 .map_err(|e| context_rule(&e))?;
             bundle.check()
         }
+        "answered-inner-segments-query" => {
+            let bundle: AnsweredInnerSegmentsQuery =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            bundle
+                .question
+                .check_signed_by_operator()
+                .map_err(|_| "NotSignedByOperator".to_owned())?;
+            let (versions, at) = own_context(&bundle.answer);
+            bundle
+                .answer
+                .check_context(&bundle.answer.deployment, &versions, &at)
+                .map_err(|e| context_rule(&e))?;
+            bundle.check()
+        }
         "answered-hold" => {
             let bundle: AnsweredHold =
                 serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
@@ -1437,6 +1516,7 @@ fn shape_errors(shape: &str, instance: &Value) -> Vec<(String, String)> {
         "published-inner-segments" => &PUBLISHED_INNER_SEGMENTS_MEMBERS,
         "answered-status-query" => &ANSWERED_STATUS_QUERY_MEMBERS,
         "answered-hold" => &ANSWERED_HOLD_MEMBERS,
+        "answered-inner-segments-query" => &ANSWERED_INNER_SEGMENTS_QUERY_MEMBERS,
         _ => return schema_errors(&validator(shape), instance),
     };
     let members = instance.as_object().cloned().unwrap_or_default();
@@ -1533,6 +1613,16 @@ fn through_rust(shape: &str, value: &Value) -> Result<Value, String> {
         }
         "answered-status-query" => {
             let bundle: AnsweredStatusQuery =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            bundle
+                .question
+                .check_shape()
+                .map_err(|e| format!("{e:?}"))?;
+            bundle.answer.check_shape().map_err(|e| format!("{e:?}"))?;
+            serde_json::to_value(&bundle).map_err(|e| e.to_string())
+        }
+        "answered-inner-segments-query" => {
+            let bundle: AnsweredInnerSegmentsQuery =
                 serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
             bundle
                 .question
@@ -2811,6 +2901,90 @@ fn status_question_is_answered_by_the_providers_own_result_for_the_transaction_a
         {
             assert_rule_rejects(name, &rule);
         }
+    }
+}
+
+/// The question of a private node's record is an operation of its own, asked under a transaction of its own and naming the
+/// node; its answer carries the provider's own record of that node whole, or says it holds none (`REQ-ORD-41`,
+/// `T-020-58`). An answer to another question, transaction, node or provider is no record of the node asked about.
+// verifies: REQ-ORD-41
+#[test]
+fn private_node_record_is_answered_by_the_providers_own_record_of_the_node_asked_about() {
+    let answered: AnsweredInnerSegmentsQuery = serde_json::from_value(fixture(
+        "valid",
+        "answered-inner-segments-query-by-the-providers-record",
+    ))
+    .expect("deserialises");
+    let (
+        Operation::InnerSegmentsQuery(InnerSegmentsQuery { node, .. }),
+        ResultBody::InnerSegmentsQuery(answer),
+    ) = (&answered.question.statement, &answered.answer.statement)
+    else {
+        panic!("a question of a node's record and its answer");
+    };
+    assert_eq!(answered.check(), Ok(()));
+    let InnerSegmentsOutcome::Answered(carried) = &answer.outcome else {
+        panic!("answered");
+    };
+    assert_eq!(&carried.record.statement.node, node);
+    assert_eq!(carried.record.maker, answered.answer.maker);
+    assert_eq!(
+        answered.answer.statement.transaction(),
+        Some(match &answered.question.statement {
+            Operation::InnerSegmentsQuery(q) => q.transaction.as_str(),
+            _ => unreachable!(),
+        })
+    );
+    assert_eq!(
+        rutent_contracts::module_interface::OperationKind::of(&answered.question.statement),
+        rutent_contracts::module_interface::OperationKind::InnerSegmentsQuery
+    );
+    let not_known: AnsweredInnerSegmentsQuery =
+        serde_json::from_value(fixture("valid", "answered-inner-segments-query-not-known"))
+            .expect("deserialises");
+    assert_eq!(not_known.check(), Ok(()));
+    // A record whose maker isn't the one that answers is refused here as well as by the context check, which reads it
+    // first where a reader runs both.
+    let mut other = answered.answer.clone();
+    if let ResultBody::InnerSegmentsQuery(a) = &mut other.statement
+        && let InnerSegmentsOutcome::Answered(c) = &mut a.outcome
+    {
+        c.record.maker = "other-co".to_owned();
+    }
+    assert_eq!(
+        provider_role::check_inner_segments_answer(&answered.question.statement, &other),
+        Err(vec![InnerSegmentsMismatch::RecordOfAnotherMaker])
+    );
+    // A question about nothing, or twice about one transaction, is none Rust holds an answer to, as the schemas hold.
+    for about in [vec![], vec!["tx-p1-s2".to_owned(), "tx-p1-s2".to_owned()]] {
+        let mut asked = answered.question.statement.clone();
+        if let Operation::InnerSegmentsQuery(q) = &mut asked {
+            q.about = about;
+        }
+        let Err(found) = provider_role::check_inner_segments_answer(&asked, &answered.answer)
+        else {
+            panic!(
+                "an answer to a question that asks about no transaction, or one twice, was held"
+            );
+        };
+        assert!(
+            found.contains(&InnerSegmentsMismatch::AboutNotAList),
+            "{found:?}"
+        );
+    }
+    for (name, rule) in rust_rule_fixtures() {
+        if name.starts_with("answered-inner-segments-query-")
+            || name == "result-inner-segments-query-carrying-another-makers-record"
+        {
+            assert_rule_rejects(name, &rule);
+        }
+    }
+    for name in [
+        "operation-inner-segments-query-without-the-node-asked-about",
+        "operation-inner-segments-query-without-the-transactions-asked-about",
+        "result-inner-segments-query-without-the-node-asked-about",
+    ] {
+        assert_schema_rejects(name);
     }
 }
 

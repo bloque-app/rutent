@@ -15,16 +15,16 @@ use rutent_contracts::provider_role::{
     BoundedAvailability, BoundedSlippage, Confirmed, ConversionOutcome, ConversionQuote,
     ConversionResult, ConversionSettlement, Declarations, Denomination, DepositDestination,
     EndUnits, Evidence, EvidenceGrade, EvidencePiece, ExchangeOffer, ExchangeTuple, Failure, Fee,
-    HoldOutcome, HoldResult, HoldingBalanceOutcome, HoldingBalanceResult, Inputs, JUDGEMENT_SHAPE,
-    Judged, Judgement, JudgementAnswer, JudgementOutcome, JudgementResult, KeyPurpose, LiftsAt,
-    MovementSettlement, NoDetail, NodeRef, Offers, Operation, OuterNode, PublicKey, RESULT_SHAPE,
-    REVERSAL_CONFIRMATION_SHAPE, RampOffer, RampTuple, Refusal, Refused, Reporting,
-    ReserveDeclaration, ReserveDryRunAnswer, ReserveMovementOutcome, ReserveMovementResult,
-    ReserveOffer, ReserveTuple, ResultBody, Reversal, ReversalConfirmation,
-    ReversalConfirmationOutcome, ReversalConfirmationResult, ReversalOutcome, ReversalResult,
-    ReversalSettlement, SafeInteger, Signature, SignatureScheme, SigningKey, Slippage, Statement,
-    StatusOutcome, StatusQueryResult, Terms, Tracking, TransferOutcome, TransferQuote,
-    TransferResult, Unbounded, Unknown, VerifierOffer, VoidedBy,
+    HoldOutcome, HoldResult, HoldingBalanceOutcome, HoldingBalanceResult, InnerSegmentsOutcome,
+    InnerSegmentsQueryResult, Inputs, JUDGEMENT_SHAPE, Judged, Judgement, JudgementAnswer,
+    JudgementOutcome, JudgementResult, KeyPurpose, LiftsAt, MovementSettlement, NoDetail, NodeRef,
+    Offers, Operation, OuterNode, PublicKey, RESULT_SHAPE, REVERSAL_CONFIRMATION_SHAPE, RampOffer,
+    RampTuple, Refusal, Refused, Reporting, ReserveDeclaration, ReserveDryRunAnswer,
+    ReserveMovementOutcome, ReserveMovementResult, ReserveOffer, ReserveTuple, ResultBody,
+    Reversal, ReversalConfirmation, ReversalConfirmationOutcome, ReversalConfirmationResult,
+    ReversalOutcome, ReversalResult, ReversalSettlement, SafeInteger, Signature, SignatureScheme,
+    SigningKey, Slippage, Statement, StatusOutcome, StatusQueryResult, Terms, Tracking,
+    TransferOutcome, TransferQuote, TransferResult, Unbounded, Unknown, VerifierOffer, VoidedBy,
 };
 
 use super::{
@@ -85,11 +85,6 @@ impl<T: Typed> RoleProvider for T {
 /// at the time a statement is taken, never at its own `made_at`, provider-role 4.0.0).
 const MADE_AT: &str = "2026-11-06T15:04:05Z";
 
-/// When the stand-ins make their statements.
-#[cfg(feature = "signing")]
-pub(crate) fn made_at() -> &'static str {
-    MADE_AT
-}
 /// Until when stand-ins' quotes and judgements hold, and when a lifting refusal lifts.
 const VALID_UNTIL: &str = "2026-11-13T15:04:05Z";
 /// The publisher behind every stand-in.
@@ -448,6 +443,13 @@ fn refuse_outside_role(operation: &Operation, refused: Refused) -> ResultBody {
             transaction: h.transaction.clone(),
             outcome: HoldOutcome::Refused(refused),
         }),
+        Operation::InnerSegmentsQuery(q) => {
+            ResultBody::InnerSegmentsQuery(InnerSegmentsQueryResult {
+                transaction: q.transaction.clone(),
+                node: q.node.clone(),
+                outcome: InnerSegmentsOutcome::Refused(refused),
+            })
+        }
     }
 }
 
@@ -2300,5 +2302,6 @@ fn transaction_of(body: &ResultBody) -> Option<String> {
         ResultBody::HoldingBalance(r) => Some(r.transaction.clone()),
         ResultBody::StatusQuery(r) => Some(r.transaction.clone()),
         ResultBody::Hold(r) => Some(r.transaction.clone()),
+        ResultBody::InnerSegmentsQuery(r) => Some(r.transaction.clone()),
     }
 }

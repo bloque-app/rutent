@@ -6,13 +6,13 @@ use rutent_contracts::provider_role::{
     ARRIVAL_QUESTION_SHAPE, Advertisement, AnswerMismatch, ArrivalAnswer, ArrivalNotice,
     ArrivalOutcome, ArrivalQuestion, BalanceOutcome, BalanceRefusal, BalanceRefused,
     BalanceVerification, Category, Conversion, ConversionOutcome, Credits, Denomination, Deposit,
-    Direction, EvidenceGrade, EvidencePiece, Fee, HoldOutcome, HoldingBalanceOutcome, Inputs,
-    JudgementOutcome, JudgementRequest, JudgementResult, KeyPurpose, NodeRef, OPERATION_SHAPE,
-    Operation, OuterNode, PublicKey, Refusal, ReserveMovementOutcome, ResultBody, Reversal,
-    ReversalConfirmationOutcome, ReversalConfirmationRequest, ReversalConfirmationResult,
-    ReversalOutcome, Signature, SignatureScheme, Slippage, Statement, StatementShape,
-    StatusOutcome, Terms, Tracking, Transfer, TransferOutcome, Withdrawal, check_amounts,
-    check_answer, check_one_credit, member, signing_input, validate_statement,
+    Direction, EvidenceGrade, EvidencePiece, Fee, HoldOutcome, HoldingBalanceOutcome,
+    InnerSegmentsOutcome, Inputs, JudgementOutcome, JudgementRequest, JudgementResult, KeyPurpose,
+    NodeRef, OPERATION_SHAPE, Operation, OuterNode, PublicKey, Refusal, ReserveMovementOutcome,
+    ResultBody, Reversal, ReversalConfirmationOutcome, ReversalConfirmationRequest,
+    ReversalConfirmationResult, ReversalOutcome, Signature, SignatureScheme, Slippage, Statement,
+    StatementShape, StatusOutcome, Terms, Tracking, Transfer, TransferOutcome, Withdrawal,
+    check_amounts, check_answer, check_one_credit, member, signing_input, validate_statement,
 };
 
 /// An operation, the result that answers it, and the terms of the tuple it runs through.
@@ -84,6 +84,8 @@ enum Kind {
     StatusQuery,
     /// A hold request (provider-role 4.0.0), which no stand-in role is asked yet.
     Hold,
+    /// The question of a private node's record (provider-role 4.0.0, `T-020-58`), which no stand-in role is asked yet.
+    InnerSegmentsQuery,
 }
 
 /// A refusal's class, whichever kind of refusal it is (`REQ-CAT-18`).
@@ -190,6 +192,7 @@ fn kind_of(operation: &Operation) -> (Kind, Option<&str>) {
         Operation::HoldingBalance(o) => (Kind::HoldingBalance, Some(&o.transaction)),
         Operation::StatusQuery(o) => (Kind::StatusQuery, Some(&o.transaction)),
         Operation::Hold(o) => (Kind::Hold, Some(&o.transaction)),
+        Operation::InnerSegmentsQuery(o) => (Kind::InnerSegmentsQuery, Some(&o.transaction)),
     }
 }
 
@@ -293,6 +296,16 @@ fn view_of(body: &ResultBody) -> View {
             match &r.outcome {
                 StatusOutcome::Refused(r) => Status::Refused((&r.refusal).into()),
                 StatusOutcome::Answered(_) | StatusOutcome::NotKnown(_) => Status::Answered,
+            },
+        ),
+        ResultBody::InnerSegmentsQuery(r) => (
+            Kind::InnerSegmentsQuery,
+            Some(&r.transaction),
+            match &r.outcome {
+                InnerSegmentsOutcome::Refused(r) => Status::Refused((&r.refusal).into()),
+                InnerSegmentsOutcome::Answered(_) | InnerSegmentsOutcome::NotKnown(_) => {
+                    Status::Answered
+                }
             },
         ),
         ResultBody::Hold(r) => (

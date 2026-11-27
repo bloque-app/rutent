@@ -2475,12 +2475,13 @@ fn is_an_answer(handled: &Handled) -> bool {
 /// The kinds that only ask: they move nothing, so asking one again, under the same transaction, is no repeat. A hold
 /// request among them (`T-020-56`'s review, finding 2): a held quote binds no provider and moves nothing, so the
 /// platform keeps no carried record of it, which no evidence window would ever free.
-const READ_ONLY_KINDS: [&str; 5] = [
+const READ_ONLY_KINDS: [&str; 6] = [
     "balance_verification",
     "judgement",
     "holding_balance",
     "status_query",
     "hold",
+    "inner_segments_query",
 ];
 
 /// The transaction an operation is a repeat under, if the platform carries out one operation of it only once: one
@@ -2505,10 +2506,13 @@ fn result_matches(result: &ResultBody, operation: &Operation) -> bool {
     ) else {
         return false;
     };
-    // A status answer is to the transaction it was asked about too, as to the one it was asked under.
+    // A status answer is to the transaction it was asked about too, as to the one it was asked under; an answer about a
+    // private node's record is of the node asked about (`T-020-58`). The question's own `about` (the transactions whose
+    // segments are asked for) is no field of its answer.
     result["kind"] == operation["kind"]
         && result["transaction"] == operation["transaction"]
-        && result["about"] == operation["about"]
+        && (operation["kind"] != "status_query" || result["about"] == operation["about"])
+        && (operation["kind"] != "inner_segments_query" || result["node"] == operation["node"])
 }
 
 fn unique() -> u64 {
@@ -3739,6 +3743,31 @@ mod tests {
         assert!(super::result_matches(&body(&answer), &question.statement));
         let mut other = answer.clone();
         other["statement"]["about"] = "tx-another".into();
+        assert!(!super::result_matches(&body(&other), &question.statement));
+    }
+
+    /// An answer about a private node's record is a result of the question only if it is of the node asked about, as well
+    /// as of the question's own transaction; the question's `about` (the segments asked for) is no field of its answer
+    /// (`T-020-58`).
+    // verifies: REQ-ORD-41
+    #[test]
+    fn an_answer_about_another_node_is_no_result_of_the_question_of_a_nodes_record() {
+        let fixture = |name: &str| -> serde_json::Value {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../contracts/provider-role/fixtures/valid")
+                .join(format!("{name}.json"));
+            serde_json::from_slice(&std::fs::read(path).expect("the fixture")).expect("JSON")
+        };
+        let question: rutent_contracts::provider_role::Statement<
+            rutent_contracts::provider_role::Operation,
+        > = serde_json::from_value(fixture("operation-inner-segments-query")).expect("a question");
+        let answer = fixture("result-inner-segments-query-not-known");
+        let body = |value: &serde_json::Value| -> rutent_contracts::provider_role::ResultBody {
+            serde_json::from_value(value["statement"].clone()).expect("a result")
+        };
+        assert!(super::result_matches(&body(&answer), &question.statement));
+        let mut other = answer.clone();
+        other["statement"]["node"] = "another-node".into();
         assert!(!super::result_matches(&body(&other), &question.statement));
     }
 

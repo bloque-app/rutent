@@ -804,6 +804,25 @@ pub enum Action {
         /// The fresh transaction it is asked under: never the segment's own, nor one any other entry named before.
         transaction: Id,
     },
+    /// Reading a private node's record from its publisher's provider (`REQ-ORD-41`, `T-020-58`), for the segments of an
+    /// order that pass the node: Core's closing takes it while it grades a segment, and Core's tick for an order still
+    /// unsettled at the node. A decided action, taken as an effect under a fresh transaction it names, appended before the
+    /// question is put, so the read is traceable from the log. What the provider answers is taken as its statement only as
+    /// the question's answer, and moves nothing.
+    ReadNodeRecord {
+        /// The order.
+        order: Id,
+        /// A segment of the order that passes the node.
+        segment: Id,
+        /// The private node whose record is read.
+        node: Id,
+        /// The provider of the node's publisher that is asked.
+        provider: Id,
+        /// The fresh transaction the question is asked under.
+        transaction: Id,
+        /// The transactions the read is about: the segments whose record is asked for, at least one.
+        about: Vec<Id>,
+    },
     /// The customer accepting a provider's showing that a failed segment's failure was its fault (`REQ-ORD-11`): a
     /// decision of policy's on the policy handle, as an order's authorisation is, asked by the order's requester in its
     /// open session and naming the showing it accepts, so it can't be read as accepting another. It takes no effect:

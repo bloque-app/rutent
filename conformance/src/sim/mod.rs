@@ -39,13 +39,9 @@ use crate::role::stand_in::{Exchange, Identity, Ramp, Reserve, Verifier, refusal
 
 pub use crate::role::stand_in::Shape;
 use crate::role::{Received, RoleHarness, RoleProvider, SuiteContext};
-#[cfg(feature = "signing")]
-use crate::role::{placeholder_key, placeholder_signature};
 use rutent_contracts::provider_role::{Advertisement, Operation, Statement};
-#[cfg(feature = "signing")]
 use rutent_contracts::provider_role::{
-    INNER_SEGMENTS_SHAPE, InnerSegment as RecordedInner, InnerSegments, Signature, SignatureScheme,
-    Standing,
+    INNER_SEGMENTS_SHAPE, InnerSegment as RecordedInner, InnerSegments, Standing,
 };
 
 /// The state key under which the platform's world keeps a simulated provider's journal: the JSON array of its
@@ -393,7 +389,8 @@ pub const GROSS_FEE: u128 = 5_000;
 /// - `sim-join-ramp`, from that node to the public node `sim-join-chain`, in USD, charging nothing and declaring
 ///   600 seconds; `sim-join-ramp-quick`, the same tuple at 5 000 a transfer and 30 seconds; `sim-join-ramp-steps`,
 ///   the first with internal steps (`REQ-CAT-21`);
-/// - `sim-join-out`, a reserve in USD between that public node and its own bank.
+/// - `sim-join-out`, a reserve in USD between that public node and its own bank;
+/// - `sim-join-cashier`, a reserve of the same publisher at the public node that declares no private node (`T-020-58`).
 ///
 /// The second is on-chain: no exchange, no local money (`AC-26`, `AC-27`), all in USDC at two decimals:
 ///
@@ -451,6 +448,14 @@ pub fn shape_of(provider: &str) -> Shape {
             node: Some("sim-join-chain".to_owned()),
             public_node: true,
             ..Shape::default()
+        },
+        // A provider of the same publisher that declares no private node: a reserve at the public node, in USD. Core asks
+        // for a private node's record of the providers that declare it only (`T-020-58`), never of this one.
+        "sim-join-cashier" => Shape {
+            asset: Some("USD".to_owned()),
+            node: Some("sim-join-chain".to_owned()),
+            public_node: true,
+            ..join("sim-join-chain")
         },
         // A route across two private nodes (`T-024-05`, `DEC-24`), in COP, two decimals, in four segments (the router
         // takes at most four): a withdrawal into A's node, a ramp from it onto the public node between the two, a ramp
@@ -997,6 +1002,17 @@ impl Simulated {
                 movements: Vec::new(),
             };
         }
+        // The question of a private node's record moves nothing: the provider that serves in the node answers with its
+        // own record of the segments its books hold, nested in its answer for the platform to sign; it says it holds none
+        // where its books hold no segment inside the node; any other provider refuses it (`REQ-ORD-41`, `T-020-58`).
+        if let Operation::InnerSegmentsQuery(q) = &operation.statement {
+            let body = self.inner_segments(operation, q);
+            return Answer {
+                body: serde_json::to_vec(&body).expect("a result serialises"),
+                entry: None,
+                movements: Vec::new(),
+            };
+        }
         // A hold request moves nothing: a reserve that declares it answers them holds the quote asked, its own hold of
         // exactly the request's transaction, record, candidate and whom it is for, until the validity asked, nested in
         // its answer for the platform to sign; any other refuses it (`REQ-QTE-15`, `T-020-56`).
@@ -1170,6 +1186,59 @@ impl Simulated {
                 "value": crate::role::placeholder_signature(),
             },
             "statement": statement,
+        })
+    }
+
+    /// The answer to the question of a private node's record: this provider's own record of the segments its books hold
+    /// inside its node, as the publisher states it (`REQ-ORD-41`, `REQ-ORD-3`), nested for the platform to sign; `not_known` where its books
+    /// hold none; a final refusal where it isn't the provider asked or doesn't serve in the node.
+    fn inner_segments(
+        &self,
+        operation: &Statement<Operation>,
+        question: &rutent_contracts::provider_role::InnerSegmentsQuery,
+    ) -> Value {
+        let node = self.spec.private_nodes().into_iter().next();
+        if question.provider != self.spec.provider || node.as_deref() != Some(&question.node) {
+            return serde_json::to_value(refusal_to(
+                &operation.statement,
+                crate::role::stand_in::RefusalClass::Final,
+            ))
+            .expect("a result serialises");
+        }
+        let segments: Vec<RecordedInner> = recorded_segments(&self.spec, &self.context, &self.log)
+            .into_iter()
+            // Only the segments the question is about: never the provider's whole book of its node (`T-020-58`, M2).
+            .filter(|s| question.about.contains(&s.transaction))
+            .map(|s| RecordedInner {
+                transaction: s.transaction,
+                asset_in: s.asset_in,
+                amount_in: s.amount_in,
+                asset_out: s.asset_out,
+                amount_out: s.amount_out,
+                fee: s.fee,
+            })
+            .collect();
+        let outcome = if segments.is_empty() {
+            serde_json::json!({ "status": "not_known" })
+        } else {
+            let record = self.nested(
+                operation,
+                INNER_SEGMENTS_SHAPE,
+                serde_json::to_value(InnerSegments {
+                    node: question.node.clone(),
+                    publisher: self.spec.publisher(),
+                    standing: Standing::PublishersWord,
+                    segments,
+                })
+                .expect("a record serialises"),
+            );
+            serde_json::json!({ "status": "answered", "record": record })
+        };
+        serde_json::json!({
+            "kind": "inner_segments_query",
+            "transaction": question.transaction,
+            "node": question.node,
+            "outcome": outcome,
         })
     }
 
@@ -1634,60 +1703,6 @@ pub fn recorded_segments(
         });
     }
     recorded
-}
-
-/// The record a provider's publisher keeps of the segments `journal` holds, as the publisher's own signed statement
-/// (`REQ-ORD-41`, `REQ-ORD-3`; provider-role's `inner-segments`): made by `spec`'s provider, which a publisher holds
-/// no key to do itself, stating for `spec.publisher()` about the private node the provider serves in, each segment
-/// that ran inside it with its transaction, asset and amount in and out and fee, labelled the publisher's word. It is
-/// signed with the statements key the provider's advertisement lists. `None` where the provider serves in no private
-/// node, or ran no segment inside it.
-///
-/// The record states what the books say, whatever they say: no figure is refused here, as the contract refuses none.
-#[cfg(feature = "signing")]
-pub fn publishers_record(
-    spec: &Spec,
-    context: &SuiteContext,
-    journal: &[Entry],
-) -> Option<Statement<InnerSegments>> {
-    let node = spec.private_nodes().into_iter().next()?;
-    let segments: Vec<RecordedInner> = recorded_segments(spec, context, journal)
-        .into_iter()
-        .map(|s| RecordedInner {
-            transaction: s.transaction,
-            asset_in: s.asset_in,
-            amount_in: s.amount_in,
-            asset_out: s.asset_out,
-            amount_out: s.amount_out,
-            fee: s.fee,
-        })
-        .collect();
-    if segments.is_empty() {
-        return None;
-    }
-    let key = placeholder_key(spec.seed());
-    let record = Statement {
-        deployment: context.deployment.clone(),
-        protocol_version: context.protocol_version.clone(),
-        shape: INNER_SEGMENTS_SHAPE.to_owned(),
-        maker: spec.provider.clone(),
-        made_at: crate::role::stand_in::made_at().to_owned(),
-        signature: Signature {
-            scheme: SignatureScheme::Ed25519,
-            key,
-            value: placeholder_signature(),
-        },
-        statement: InnerSegments {
-            node,
-            publisher: spec.publisher(),
-            standing: Standing::PublishersWord,
-            segments,
-        },
-    };
-    Some(crate::signing::sign_statement(
-        &record,
-        &crate::signing::real(record.signature.key.as_str()),
-    ))
 }
 
 /// The transaction an operation names, if it names one.

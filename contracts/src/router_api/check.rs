@@ -145,11 +145,12 @@ impl Operation {
         {
             broke("an operation names no call for a holding balance")?;
         }
-        if self
-            .calls
-            .iter()
-            .any(|c| matches!(c.kind, CallKind::StatusQuery | CallKind::Hold))
-        {
+        if self.calls.iter().any(|c| {
+            matches!(
+                c.kind,
+                CallKind::StatusQuery | CallKind::Hold | CallKind::InnerSegmentsQuery
+            )
+        }) {
             broke("an operation names no call for a status question or a hold")?;
         }
         if self.fee.asset != self.from.asset.id {
@@ -752,9 +753,12 @@ impl CatalogueSnapshot {
                     broke("a calls figure declares no call for a holding balance")?;
                 }
                 if calls.iter().any(|c| {
-                    c.kinds
-                        .iter()
-                        .any(|k| matches!(k, CallKind::StatusQuery | CallKind::Hold))
+                    c.kinds.iter().any(|k| {
+                        matches!(
+                            k,
+                            CallKind::StatusQuery | CallKind::Hold | CallKind::InnerSegmentsQuery
+                        )
+                    })
                 }) {
                     broke("a calls figure declares no call for a status question or a hold")?;
                 }

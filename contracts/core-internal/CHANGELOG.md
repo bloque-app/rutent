@@ -6,6 +6,15 @@
   (DEC-4, DEC-20, T-020-54)
 - The contract round for `M3`'s milestone review of 2026-11-24 (`T-020-45`), folded into this unreleased version
   while `develop` holds none of it:
+  - `T-020-58` (the review of `T-020-48`'s first build, S3, `REQ-ORD-41`, `REQ-AUZ-1`): `Action::ReadNodeRecord {order,
+    segment, node, provider, transaction, about}` (`read_node_record`), Core's read of a private node's record from its publisher's
+    provider (provider-role's `inner_segments_query`) for the segments of an order that pass the node, taken by closing while
+    it grades a segment and by the tick for an order still unsettled at the node: a decided action,
+    taken as an effect under a fresh transaction it names, appended before the question is put. Its transaction counts among
+    those `status-is-asked-under-a-fresh-transaction` reads an entry as naming, so a late status is never asked under it. No
+    relation of its own, so the relation count is unmoved. Fixtures: valid `decision-request-to-read-a-private-nodes-record`; invalid
+    `decision-request-to-read-a-private-nodes-record-without-its-node`, `--without-the-transactions-it-is-about`, `--naming-no-transactions` and `--naming-a-transaction-twice` (four schema rules more, the last two held by `Action::check` too). Ignorable: no, it is a decided
+    action a reader that ignored would carry out undecided.
   - `T-020-48` (finding 4): `Difference::PairNotBuilt {order, segment, why}` (`pair_not_built`; `why`: `PairNotBuilt`,
     `no_sent_report {segment}`, `no_flight`, `not_an_amount`, `refused`), a segment's pair of reports that was never built, so
     the comparison was never made (`REQ-ORD-9`, `ADR-0009`); `Comparisons::pair_not_built`. The one raise that may cite no
@@ -153,9 +162,9 @@
 
   Valid fixtures for each new shape and setting, an invalid one per rule broken, and admission cases for each new
   row and field. With `T-020-44`'s, `T-020-50`'s, `T-020-46`'s (five rounds), `T-021-16`'s, `T-020-51`'s, `T-020-52`'s,
-  `T-020-48`'s, `T-020-57`'s, `T-020-49`'s and `T-020-59`'s rounds, merged beside it: thirty schemas, 196 valid fixtures
-  and 212 invalid, 789 admission cases and 58 attribution cases (counted from the files); 120
-  relations and 5 closing ones, three stated. (DEC-4, DEC-20, DEC-28, REQ-QTE-10, REQ-AUZ-7, REQ-AUZ-6, REQ-AUZ-8, THR-3, GUA-1, REQ-ORD-20, T-020-45, T-020-59)
+  `T-020-48`'s, `T-020-57`'s, `T-020-49`'s, `T-020-58`'s and `T-020-59`'s rounds, merged beside it: thirty schemas, 197 valid fixtures
+  and 216 invalid, 789 admission cases and 58 attribution cases (counted from the files); 120
+  relations and 5 closing ones, three stated. (DEC-4, DEC-20, DEC-28, REQ-QTE-10, REQ-AUZ-7, REQ-AUZ-6, REQ-AUZ-8, THR-3, GUA-1, REQ-ORD-20, REQ-ORD-41, T-020-45, T-020-58, T-020-59)
 - The interfaces between `CMP-CORE-ORCH`, `CMP-CORE-AUTHZ` and `CMP-CORE-AUDIT`, settled as a sixth contract before the
   three parts are built side by side (`PLAN.md` §3, §4.4). From orchestration to policy: one decision call for every
   action that moves value, posts a route, changes the catalogue or moves a stuck order's value, answering permit, refuse
