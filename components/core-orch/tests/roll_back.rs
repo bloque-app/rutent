@@ -163,6 +163,7 @@ fn change(kind: CatalogueChange, version: &str) -> Action {
         statement_key: None,
         setting: None,
         versions: Vec::new(),
+        public_network: None,
     }
 }
 

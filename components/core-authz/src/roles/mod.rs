@@ -51,6 +51,11 @@
 //! (`Source::OfOperator`, `T-021-15`): a login of another party that the register lists in the operator's role holds no
 //! catalogue change and sets no setting.
 //!
+//! Listing a public network with the reader service that reads it, and delisting one (`list_public_network`,
+//! `delist_public_network`, `DEC-28`, `T-020-59`), are each a permission of its own beside the lifecycle permissions,
+//! held the same way. A reader is the operator's own, so the change names the operator's own party as its provider; one
+//! naming any other is refused before the register is asked.
+//!
 //! # Erasing a statement
 //!
 //! Erasing a kept statement's bytes is a permission of its own, [`Permission::EraseStatement`], held actor by actor as
@@ -233,6 +238,20 @@ fn needs_of(asked: Asked<'_>) -> Option<Needs> {
                 } => setting.as_ref().and_then(|setting| {
                     of_operator_holds(caller, Permission::Setting(setting.kind()))
                 }),
+                // Listing or delisting a public network with the reader service that reads it (`DEC-28`, `T-020-59`):
+                // a permission of its own apiece, beside the lifecycle permissions, for an operator's login the register
+                // lists for it and that is the deployment operator's (`Source::OfOperator`), and no other role. A reader
+                // is the operator's own, so the change names the operator's own party as its provider: one naming
+                // another party gets no rule, and so is refused before the register is asked.
+                Action::ChangeCatalogue {
+                    change:
+                        change @ (CatalogueChange::ListPublicNetwork
+                        | CatalogueChange::DelistPublicNetwork),
+                    provider,
+                    ..
+                } => (provider == &caller.party)
+                    .then(|| of_operator_holds(caller, Permission::Change(*change)))
+                    .flatten(),
                 Action::ChangeCatalogue { change, .. } => {
                     of_operator_holds(caller, Permission::Change(*change))
                 }

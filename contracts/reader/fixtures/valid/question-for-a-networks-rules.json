@@ -1,0 +1,9 @@
+{
+  "request": "9f3c2a7be14d4c0e8a51d6b07e2f9c13",
+  "reader": "kreivo-reader",
+  "network": "kreivo",
+  "deadline": "2026-11-27T10:00:05Z",
+  "asked": {
+    "question": "network_rules"
+  }
+}

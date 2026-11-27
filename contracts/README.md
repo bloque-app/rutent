@@ -4,12 +4,13 @@ The contracts every later module and runtime is written against (`PLAN.md` `DEC-
 freeze at `C1` (`T-006-01`); from then on a change needs a version bump, a changelog entry naming a `DEC-*`, and the
 owner's click (`DEC-20`).
 
-## The six contracts
+## The seven contracts
 
-All six live in one crate, `rutent-contracts`. Each has a directory for its language-neutral artefacts and a Rust
+All seven live in one crate, `rutent-contracts`. Each has a directory for its language-neutral artefacts and a Rust
 module for its types. The host contract sits inside the state-machine package (`DEC-3`) but has its own version and
 changelog. The sixth, `core-internal`, is the interfaces between Core's three parts (`T-020-01`, `PLAN.md` §4.4):
-it came after `C1`, at 1.0.0, under the same rules.
+it came after `C1`, at 1.0.0, under the same rules. The seventh, `reader`, is the protocol Core and a reader host
+speak over mTLS (`DEC-28`, ADR-0007 as amended, `T-020-59`), at 1.0.0 under the same rules too.
 
 | Contract | Artefacts | Rust module | Feature |
 |---|---|---|---|
@@ -19,6 +20,7 @@ it came after `C1`, at 1.0.0, under the same rules.
 | `state-machine` | `contracts/state-machine/` | `contracts/src/state_machine/` | `F-005` |
 | `host` | `contracts/state-machine/host/` | `contracts/src/state_machine/host/` | `F-005` |
 | `core-internal` | `contracts/core-internal/` | `contracts/src/core_internal/` | `F-020` |
+| `reader` | `contracts/reader/` | `contracts/src/reader/` | `F-020` |
 
 `contracts/CONTRACTS` lists the same mapping in a form tools read. A path belongs to the contract whose artefact or
 module directory is its longest matching prefix, so `contracts/state-machine/host/...` is the host contract's, not

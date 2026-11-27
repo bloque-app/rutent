@@ -1206,6 +1206,8 @@ mod tests {
             CatalogueChange::Promote,
             CatalogueChange::RollBack,
             CatalogueChange::ConfirmReleases,
+            CatalogueChange::ListPublicNetwork,
+            CatalogueChange::DelistPublicNetwork,
         ] {
             match change {
                 CatalogueChange::Grant
@@ -1219,7 +1221,9 @@ mod tests {
                 | CatalogueChange::SetSlippage
                 | CatalogueChange::Promote
                 | CatalogueChange::RollBack
-                | CatalogueChange::ConfirmReleases => {}
+                | CatalogueChange::ConfirmReleases
+                | CatalogueChange::ListPublicNetwork
+                | CatalogueChange::DelistPublicNetwork => {}
                 // An operator's setting is listed below, one for each (`T-021-15`).
                 CatalogueChange::SetSetting => unreachable!("listed below"),
             }
@@ -1242,7 +1246,20 @@ mod tests {
                 } else {
                     Vec::new()
                 },
+                public_network: None,
             });
+        }
+        // A public network listed with its reader service, and delisted (`T-020-59`), as the contract's fixtures name
+        // them: the generic changes above name no public network, which the contract refuses for these two.
+        actions.retain(|action| {
+            !matches!(action, Action::ChangeCatalogue { change, .. } if change.is_about_a_public_network())
+        });
+        for name in [
+            "decision-request-to-list-a-public-network-read-by-a-light-client",
+            "decision-request-to-delist-a-public-network",
+        ] {
+            let listed: DecisionRequest = fixture!(name);
+            actions.push(listed.action);
         }
         // Each of the operator's settings (`T-020-45`, `T-021-15`): one fixture of the contract for each.
         for name in [
@@ -1556,7 +1573,7 @@ mod tests {
     fn every_value_moving_action_is_refused_when_policy_denies() {
         let denies = || Service::ruling(Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted)));
         let actions = every_decided_action();
-        assert_eq!(actions.len(), 28);
+        assert_eq!(actions.len(), 30);
         let requests: Vec<DecisionRequest> = actions.iter().cloned().map(request).collect();
         let mut policy = Engine::with_policy(
             Guarded::with_a_decision_record(),
@@ -1599,10 +1616,11 @@ mod tests {
             let effect = policy.log.effect(action, permit);
             match action {
                 // Its permit holds, and the log goes on to want the authorisation and acceptance it rests on, or, for
-                // a reversal asked, a segment of this log that owes it.
+                // a reversal asked, a segment of this log that owes it, or, for a repeat, a segment of this log whose move has no outcome.
                 Action::MoveValue { .. }
                 | Action::AskReversal { .. }
-                | Action::AskStatus { .. } => assert!(
+                | Action::AskStatus { .. }
+                | Action::RepeatOperation { .. } => assert!(
                     matches!(effect, Err(AppendFailure::Refused(v)) if v.0 != RELATIONS[0].refusal)
                 ),
                 _ => assert!(effect.is_ok(), "{action:?}"),
@@ -1691,7 +1709,7 @@ mod tests {
         }
         assert_eq!(
             callers.len(),
-            3 * 28 + 2 * 3 + 3 + 3 + 3 + 3,
+            3 * 30 + 2 * 3 + 3 + 3 + 3 + 3,
             "the operator on every action, the user and Core on a move, Core on a reversal, a status, a balance read or a repeat asked"
         );
         let seen: Vec<Actor> = policy

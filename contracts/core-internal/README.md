@@ -476,7 +476,7 @@ can't state, each checked by the shape's `check`, which every enclosing shape's 
 |---|---|
 | `DecisionRequest` | it never asks for `resolve_stuck`, which travels only as a stuck move (the schema states it too) |
 | `Effect`, `What::Effect` | it never takes `accept_fault`: a customer's acceptance of fault is a decision alone, and takes no effect |
-| `Action` | a catalogue change names a version exactly when it is about a module release (`accept_module`, `revoke_release`, `mark_stale`, `declare_exploited`, `reinstate`, `withdraw_release`, `promote`, `roll_back`), a tuple exactly when it is about a tuple (`grant`, `revoke_grant`, `set_slippage`), the provider's advertising keys, at least one, each once, exactly when it is a `grant`, and the release's statement key exactly when it is `accept_module`; a `grant` or `revoke_grant` names a verifier's `class` in place of its tuple, never both, and no other change names a class (`T-020-30`); the versions it confirms, at least one, each once, exactly when it is `confirm_releases`, and a `cadence` setting names a provider only for `status_asks` (`T-020-49`) |
+| `Action` | a catalogue change names a version exactly when it is about a module release (`accept_module`, `revoke_release`, `mark_stale`, `declare_exploited`, `reinstate`, `withdraw_release`, `promote`, `roll_back`), a tuple exactly when it is about a tuple (`grant`, `revoke_grant`, `set_slippage`), the provider's advertising keys, at least one, each once, exactly when it is a `grant`, and the release's statement key exactly when it is `accept_module`; a `grant` or `revoke_grant` names a verifier's `class` in place of its tuple, never both, and no other change names a class (`T-020-30`); the versions it confirms, at least one, each once, exactly when it is `confirm_releases`, and a `cadence` setting names a provider only for `status_asks` (`T-020-49`); a public network exactly when it is `list_public_network` or `delist_public_network`, its listing exactly when it is listed, and a listing's identity is paired with its trust rule, which holds to the reader contract's rules (`T-020-59`) |
 | `SessionRequest` | a session ends after the time it is asked for |
 | `Charge` | work is charged to the accountable party its caller acts for |
 | `StuckDecide`, `PersonQuestion`, `MeasureRecord`, `Raise`, `What::Evidence` | the lists the schemas require non-empty and distinct are (the schemas state it too) |
@@ -520,6 +520,16 @@ accepted, so a fixture breaking two rules can't pass on its first refusal (`T-02
   action, `confirm_releases` (`CONFIRM_RELEASES`, `T-020-49`): it names the provider and the versions it puts back in
   force as the platform's record holds them (`versions`, at least one, each once), and no single release; no other
   change names versions.
+- **A public network's listing** (`list_public_network`, `delist_public_network`, `DEC-28`, `T-020-59`): a listing
+  names the network (`public_network.network`) and what lists it (`public_network.listing`): the network's identity
+  (a genesis hash or a chain id), the reader's endpoint (the host setting that says where its reader host is, and the
+  reader's name there), the reader's identity (the SHA-256 digest of the operator's CA certificate, the host's subject
+  name, a DNS name with no wildcard, and the reader's statement key, never the host's leaf certificate, so rotating it
+  needs no listing change), the reader's version and its trust rule. A delisting names the network alone. The network's
+  identity and the trust rule are the `reader` contract's shapes (`urn:rutent:reader:common`), paired: a chain id is read
+  from an RPC pool and a genesis hash by a light client. A reader is the operator's own, so the change's provider is
+  the caller's own party (the deployment operator's, or one of its desks'); policy refuses any other, and Core keys the
+  public list by the network, never by this provider.
 - **A provider's status cadence**: a `cadence` setting may name a `provider`, for the status question's job
   (`status_asks`, `STATUS_ASKS_JOB`) alone; the change's `provider` is then that provider (`T-020-49`).
 - **A filed order's read** (`Reads::FiledOrder {order, requester}`): the status of an order whose acceptance the log
