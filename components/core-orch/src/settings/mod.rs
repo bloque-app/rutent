@@ -584,7 +584,7 @@ impl Settings {
     pub fn apply_listings(&self, targets: &mut Targets<'_>) {
         if let Some(catalogue) = targets.catalogue.as_deref_mut() {
             for (node, set) in &self.public_nodes {
-                list(catalogue, node, set.listed);
+                let _ = list(catalogue, node, set.listed);
             }
         }
     }
