@@ -9434,7 +9434,7 @@ now the second comparison, is what each test's earlier raises are about).
 3. **`not_permitted`, `not_timed` and `not_registered` are three reasons of their own**, not `not_answered`: the operator reads
    a refusal by policy, a clock past year 9999 and a register that lost a wallet as three different things. Alternative: fold
    them into `not_answered` and lose that.
-4. **A job that failed is run again on the next tick.** `Job::HoldingCheck` is hourly by default and reads every account; one
+4. **(Withdrawn in review round 1: an unread account is read again alone, at its own cadence.)** ~~A job that failed is run again on the next tick.~~ `Job::HoldingCheck` is hourly by default and reads every account; one
    account unread (a module down for a day) makes the whole check run, and ask every account's module, on every tick that day.
    The raise is once a spell, so the operator is told once. Alternative: stamp `last` and keep a per-account retry, which the
    check's reading by account would carry; left out as more state for the schedule.
@@ -9517,6 +9517,55 @@ Core's own segments resting nothing at the wallet's node, so Core's comparison r
 and the raise states that figure. A holding difference is a figure the contract's raise carries; the scan now leaves those records
 out of its surfaces (and the one assertion that read the log whole), and finds a figure planted in any other record as before.
 Sorted as a test artefact, not a Core bug: the contract's `Difference::Holding` states `by`.
+### T-020-63, review round 1 (#347, CHANGES at `33355463`)
+
+- **M1: one unreadable account no longer keeps the whole check due.** Default 4 is withdrawn. The check counts as run at its
+  cadence whatever it found. An account it couldn't read or check is read again alone, at `HOLDING_RETRY_SECONDS` (five
+  minutes, a reading, reversible), and the accounts that were read keep their hour; a failure already raised in its spell is
+  not raised again (the spell guard), and a difference at an account read isn't raised again either, since it isn't read
+  again. `Schedule` holds the unread accounts (`unread`, by node, not rebuilt on reopening: a reopened Core's first tick reads
+  every account, as every job runs). `Duties::check_holdings` takes the nodes to read.
+- **M2: the repeat is a decided carry-out, on its provider's cadence.** The production `Platform::late_answers` no longer runs
+  a module: it hands over what is held. The module is run again by `Platform::repeat_operation`, which core-orch takes only as
+  a decided effect lets it: core-internal's `Action::RepeatOperation` (a `DEC-20` fold, fixtures, README, CHANGELOG, recounted:
+  199 valid, 199 invalid), core-authz's `RepeatOperation` permission (the operator's, which Core carries onward beside
+  `CarryOnward`), `Modules::repeat_operation`, `Segments::carry_again` (decide, effect, act once, hand over, result).
+  Which segments: those left unknown at a provider that declares a repeat safe and no status query (a provider with one is
+  asked where the segment stands, which `ask_status` decides), once per its status cadence (`Schedule::status_due`,
+  `note_asked`), so a hung provider is run once per cadence, not each tick. The repeat counts for nothing towards a
+  staging. The entry-point scan lists `repeat_operation` under `CARRY_OUT` (core-orch may call it only holding the effect) and
+  `late_answers` and `late_kept` as carrying nothing out. The simulated fleet's `sim-join-out-untracked` reserve (a `Shape`
+  with `untracked`) declares a safe repeat and no status query, so the scenarios can show it. Tests:
+  `unknown_segment_is_carried_out_again_on_a_decided_effect_at_its_providers_cadence`,
+  `late_answer_the_platform_receives_moves_nothing_twice` and `late_answer_the_log_could_not_record_is_kept_for_the_next_tick`
+  (now over that reserve), `an_operation_is_repeated_by_core_carrying_the_operators_permission_onward` (core-authz),
+  `a_repeat_of_an_unanswered_operation_counts_for_nothing_towards_a_staging` and the late-answer tests of `module_record.rs`.
+  **Gap (owner `T-025-05`, the form):** no relation of the log ties a `repeat_operation` effect to a segment left unknown at
+  that provider (`status-is-asked-of-the-segments-provider`'s sibling), so the log holds the effect to policy's decision and
+  to Core's own selection alone; a relation is a contract round of its own.
+- **M3: the scan leaves out a holding raise's `by`, and nothing else of it.** `without_the_difference` nulls that one value in
+  the records and in the log read back; `secret_planted_elsewhere_in_a_holding_raise_is_still_found` is the control (a secret in
+  another field of a holding raise is found, as is the balance itself put in another field). **Flag for the security review
+  (`T-025-05`, REQ-AUD-6):** where Core rests nothing at a node, a holding raise's `by` equals the account's balance, which
+  this row makes the routine case wherever a wallet holds value Core didn't bring (the three orders the scenarios land by
+  hand, a wallet the host topped up). The contract carries `by` as a difference; whether a difference that is the whole
+  balance is a balance in the log is the review's to rule, and not settled here.
+- **L1:** the late mark is in the `Ran` entry that holds the answer, so no stop falls between the two. **L2:** a segment's end
+  (`end_segment`, and the record's `ended` entry on reopening) keeps a late answer waiting for acknowledgement, and the record
+  keeps it past an `ended` entry (`carried_again`). **L4:** the unregistered-holder check walks the nodes Core rests value at;
+  one with no holder listed is raised with the provider `unregistered` (not exercised by a scenario: the catalogue's holder
+  list cannot be emptied without a hook, left out). **L6:** a clock that fails after a read's effect still has a `failed`
+  result recorded (`holding_balance_whose_clock_fails_after_its_effect_still_has_its_result_recorded`). **L3** is
+  `T-020-61`'s (`Reversals.later`), **L5** the PR body's: the commits that touch `platform.rs` now say so.
+
+Rule-off (each alone, the file restored): M1 (every tick, not its cadence; the whole check re-read; the old default of
+counting the check as not run) turn `an_unreadable_account_is_read_again_alone_at_its_own_cadence` and
+`one_unreadable_account_does_not_make_the_check_read_every_account_every_tick` red; M2's cadence turns
+`unknown_segment_is_carried_out_again_on_a_decided_effect_at_its_providers_cadence` red, and counting the repeat towards a
+staging `a_repeat_of_an_unanswered_operation_counts_for_nothing_towards_a_staging`; M3's whole-record exclusion
+`secret_planted_elsewhere_in_a_holding_raise_is_still_found`; L1 and L2 the two late-answer tests of `module_record.rs`; L6
+`holding_balance_whose_clock_fails_after_its_effect_still_has_its_result_recorded`.
+
 ## T-020-65: no provider held for good, and the public-node listing made a rule
 
 Branch `f-020/t-020-65`, from `2c86d6a9` (`origin/m3` with `T-020-49` merged), issue #341: the milestone reviewer's check of

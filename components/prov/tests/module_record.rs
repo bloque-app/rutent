@@ -319,6 +319,57 @@ fn late_answer_is_held_until_it_is_acknowledged_across_a_restart() {
     );
 }
 
+/// Core's repeat of an operation counts for nothing towards a staging (`T-013-11`, `T-020-63`; review M2): the staged
+/// version's counts after the repeat are the ones the record gave it, the repeat's answer among none of them.
+// verifies: REQ-MDL-4, NFR-6
+#[test]
+fn a_repeat_of_an_unanswered_operation_counts_for_nothing_towards_a_staging() {
+    let policy = Staging::new(100, 60, 2).expect("a policy");
+    let memory = MemoryRecord::new();
+    let mut s = Signed::on(
+        Box::new(StopsAt::new(&memory, "ran")),
+        TestWorld::default(),
+    );
+    admitted_as(&mut s, RAMP, "1.0.0");
+    s.platform.set_staging(Some(policy));
+    admitted_as(&mut s, RAMP, "1.1.0");
+    assert_eq!(
+        s.platform.begin_segment(RAMP, &tx(RAMP, 3)).as_deref(),
+        Ok("1.1.0")
+    );
+    // The staged version runs the operation and answers it; the record stops before it takes the run.
+    assert!(matches!(
+        s.platform.handle(RAMP, &withdrawal(RAMP, 3)),
+        Handled::Answered(_)
+    ));
+    let world = stop(s);
+    let mut s = Signed::on(Box::new(memory), world);
+    s.platform.set_staging(Some(policy));
+    for version in ["1.0.0", "1.1.0"] {
+        assert!(matches!(
+            readmitted(&mut s, RAMP, version),
+            Admitted::Artefact(_)
+        ));
+    }
+    s.platform
+        .confirm(RAMP, "test-operator", AT)
+        .expect("confirmed");
+    let counts = |s: &Signed| {
+        s.platform
+            .lifecycle()
+            .observation(RAMP)
+            .expect("staged")
+            .staged_counts
+    };
+    let before = counts(&s);
+    assert_eq!(before.answered, 0, "the run the record didn't take");
+    assert!(matches!(
+        s.platform.repeat_operation(RAMP, tx(RAMP, 3).as_str()),
+        Handled::Answered(_)
+    ));
+    assert_eq!(counts(&s), before, "the repeat is Core's retry, not traffic");
+}
+
 /// The end of a segment whose late answer waits for acknowledgement drops nothing of it, in memory or in the record
 /// (`T-020-63`, review L2).
 // verifies: NFR-6
