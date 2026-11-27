@@ -10924,6 +10924,15 @@ T-020-67 landed that still called the assembly's `run` move onto ticks.
   is read back and nothing is sent again` (`invariants.rs`, seed 116's pinned joined `RestartAfterEffect(1)`): the crash
   fell, `INV-8` holds (`moved_once`), the order completes, one `read_recorded_answer` effect at the exchange and no
   `repeat_operation` or `ask_status` of it.
+- **Rule-offs of this pass** (each alone, the file restored): the run's reversal step switched off
+  (`reverse_owed` returns nothing) turns `failed segment's reversal is owed asked and confirmed by core's run` red on its
+  first assertion (nothing owed); the recorded read switched off (carry-on waits at a provider with neither) turns `answer
+  the platform recorded before core lost it is read back and nothing is sent again` red (the caught order doesn't complete);
+  the run's own owed gate switched off alone leaves the H1 test green, the recalculations' rule answering the same.
+- **Local checks of this pass.** fmt; clippy `--workspace --all-targets -D warnings`; core-orch (lib and tests) and
+  core-authz `--lib` (171); contracts (`core-internal`, 108) and core-audit; prov's `module_record`; every scenario binary,
+  `invariants` (18) and `assembly` on seeds 11 to 15 and 113 to 119, `reopened` and `protocol_cutover`; the contract guard
+  against `origin/develop` and `origin/m3` (no violations); plan-check and tag-check `--strict` (0 findings).
 - **Not built yet in this pass, each owned by this row:** H2 (the linked order accepted by Core, its inputs logged and its
   authorisation under the customer's floor; test `linked order is accepted by core with the customer's inputs logged`); M3
   (open orders at a reserve, the reliance declarations, release acceptance through Core's decided path); M4's split-order
