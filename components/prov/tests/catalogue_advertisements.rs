@@ -959,6 +959,10 @@ fn change_adding_a_protection_binds_every_provider_from_its_cutover() {
         &reserve_key,
     );
     let reserve_new = advertisement_bytes(&reserve, None, Instant(2_001), &reserve_key);
+    // Until the date each provider on 3.0.0 is taken, so the change binds from the date and no earlier.
+    for holdout in [&ramp_old, &reserve_old] {
+        assert_eq!(catalogue.clone().join(holdout, Instant(4_999)), Ok(()));
+    }
     let at = Instant(5_000);
     for holdout in [&ramp_old, &reserve_old] {
         assert!(

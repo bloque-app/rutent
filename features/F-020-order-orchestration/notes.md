@@ -9355,3 +9355,26 @@ What the row's author built, on `T-020-45`'s shapes and `T-020-49`'s recorded cu
    row's: its row names `REQ-AUZ-9`.
 
 ### Rule-off
+
+Each rule was switched off once, by an edit reverted after, and its named test went red on an assertion (the guard's tests and the
+contracts' were first seen red before the code, on assertions, with the rule not yet built).
+
+| Rule switched off | Red |
+|---|---|
+| a version no release holds is taken as released (the fold rule) | `fold_into_an_unreleased_version_against_a_milestone_base_passes`, `milestone_base_still_refuses_a_version_that_went_down_or_has_been_released`, `readme_only_change_to_an_unreleased_version_needs_no_new_bullet_against_a_milestone_base` |
+| a README-only change needs its bullet on a milestone base | `readme_only_change_to_an_unreleased_version_needs_no_new_bullet_against_a_milestone_base` (run beside the row above) |
+| an `Ignorable: yes` entry isn't read against the older schema | `field_marked_ignorable_is_admitted_by_the_older_schema` |
+| the reserve declaration is closed again | `reserve_declaration_admits_a_field_a_later_version_adds` |
+| a rule's switch is ignored (a rule can't be switched off) | `each_router_api_invalid_fixture_breaks_only_the_rule_it_names` |
+| the catalogue puts no older version in force | `a_holdout_at_a_cutover_is_refused_after_its_date`, `providers_statements_under_both_versions_are_taken_before_the_cutover_date`, `change_adding_a_protection_binds_every_provider_from_its_cutover` |
+| the operator's cutover isn't applied to the catalogue | `a_cutover_the_operator_sets_is_the_catalogues_older_version_in_force` |
+| the log puts no older version in force | `log_takes_an_advertisement_under_an_older_version_only_before_its_cutover` |
+| a cutover whose result failed still counts | `log_takes_an_advertisement_under_an_older_version_only_before_its_cutover` |
+
+- **Local checks** (through the lock, `contracts/src/lib.rs` touched first, on `origin/m3` `2c86d6a9`): `fmt --check` and
+  workspace `clippy --all-targets -D warnings` clean; `rutent-contract-guard`, `rutent-contracts`, `rutent-prov`,
+  `rutent-core-audit` and `rutent-core-orch` tests pass; core-authz `--lib` 165; the contract guard against
+  `origin/develop`: no violations; against `origin/m3`: no violations (the fold rule's proof; before it, the guard was
+  red there on every fold into `core-internal` 1.0.0); `plan-check --strict` 0 findings; `tag-check --strict` 0 findings.
+  Not run locally: the scenario binaries and `rutent-conformance` (no simulated provider or stand-in changed), and the
+  doc check, which is CI's.
