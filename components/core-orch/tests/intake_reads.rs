@@ -800,3 +800,24 @@ fn no_order_is_drawn_a_name_a_refused_requests_record_could_take() {
     );
     assert_admitted(&env);
 }
+
+/// `told_error` returns `Conflicting { order: None }` as it is only because `open_inner` is its one source, through
+/// `open`, which holds an agent to the request's read check first (`T-020-66`, #342's review): intake builds it in
+/// `open_inner` alone, so no other step can hand an agent that answer unchecked.
+// verifies: REQ-AUZ-8
+#[test]
+fn conflicting_with_no_order_comes_only_from_open() {
+    let source = include_str!("../src/intake/mod.rs");
+    let built: Vec<usize> = source
+        .match_indices("Err(IntakeError::Conflicting {")
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(built.len(), 1, "one place builds it");
+    let before = &source[..built[0]];
+    let function = before.rfind("    fn ").expect("a function");
+    assert!(
+        before[function..].starts_with("    fn open_inner("),
+        "built in open_inner alone: {}",
+        &before[function..function + 40]
+    );
+}

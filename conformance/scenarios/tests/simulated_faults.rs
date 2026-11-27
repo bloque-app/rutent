@@ -1199,6 +1199,85 @@ fn stuck_watch_notices_pairs_and_checkpoints_run_on_cores_schedule() {
     admitted(&core);
 }
 
+/// The nodes of `provider`'s operation on the route Core last recorded, each by the name an unlist gives it.
+fn nodes_of(core: &Core, provider: &str) -> Vec<String> {
+    let record = core
+        .decision_records()
+        .last()
+        .cloned()
+        .expect("the route's record");
+    let operation = record.chosen().expect("a route").parts[0]
+        .operations
+        .iter()
+        .find(|o| o.provider.as_str() == provider)
+        .cloned()
+        .expect("the provider's operation");
+    [operation.from.node, operation.to.node]
+        .iter()
+        .map(|end| match end {
+            rutent_contracts::provider_role::NodeRef::Inner(id) => id.as_str().to_owned(),
+            rutent_contracts::provider_role::NodeRef::Outer(outer) => outer.network.clone(),
+        })
+        .collect()
+}
+
+/// The operator's unlist of `node` is refused as the unlist rule says: policy is asked (its decision is in the log, the
+/// attempt recorded), no `set_setting` effect is recorded, and the node's standing is unchanged.
+fn unlist_is_refused(core: &mut Core, node: &str) {
+    use rutent_contracts::core_internal::{Action, CatalogueChange, Entry};
+    use rutent_core_orch::settings::SettingRefused;
+    let listed = core.catalogue().nodes().is_public(node);
+    let counted = |core: &Core| {
+        let (mut decided, mut effects) = (0, 0);
+        for (_, entry) in core.log().entries() {
+            let Entry::Verified(v) = entry else { continue };
+            match &v.what {
+                What::Decide { request, .. }
+                    if matches!(
+                        request.action,
+                        Action::ChangeCatalogue {
+                            change: CatalogueChange::SetSetting,
+                            ..
+                        }
+                    ) =>
+                {
+                    decided += 1;
+                }
+                What::Effect {
+                    action:
+                        Action::ChangeCatalogue {
+                            change: CatalogueChange::SetSetting,
+                            ..
+                        },
+                    ..
+                } => effects += 1,
+                _ => {}
+            }
+        }
+        (decided, effects)
+    };
+    let (decided, effects) = counted(core);
+    let unlisted: rutent_contracts::core_internal::OperatorSetting = serde_json::from_value(
+        serde_json::json!({"setting": "public_node", "node": {"network": node}, "listed": false}),
+    )
+    .expect("a setting");
+    let refused = core.set_setting(&unlisted);
+    assert!(
+        matches!(&refused, Err(SettingRefused::Rests { node: n }) if n == node),
+        "{node}: {refused:?}"
+    );
+    assert_eq!(
+        counted(core),
+        (decided + 1, effects),
+        "{node}: policy asked, no effect recorded"
+    );
+    assert_eq!(
+        core.catalogue().nodes().is_public(node),
+        listed,
+        "{node}: unchanged"
+    );
+}
+
 /// The unlist rule holds for a segment in flight (`T-020-65`, `REQ-CAT-22`): the ramp's transfer is left unknown, so its
 /// segment is in flight at both its nodes; the operator's unlist of either is refused after policy is asked, no effect
 /// is recorded, and a node on the public list stays on it, so the segment is graded as it began, against its public
@@ -1206,38 +1285,43 @@ fn stuck_watch_notices_pairs_and_checkpoints_run_on_cores_schedule() {
 // verifies: REQ-CAT-22
 #[test]
 fn public_node_cannot_be_unlisted_while_a_segment_is_in_flight_there() {
-    use rutent_core_orch::settings::SettingRefused;
     let Failed { mut core, .. } = ramp_left_unknown();
-    let record = core
-        .decision_records()
-        .last()
-        .cloned()
-        .expect("the route's record");
-    let ramp = record.chosen().expect("a route").parts[0]
-        .operations
-        .iter()
-        .find(|o| o.provider.as_str() == QUICK)
-        .cloned()
-        .expect("the ramp's operation");
-    for end in [&ramp.from.node, &ramp.to.node] {
-        let node = match end {
-            rutent_contracts::provider_role::NodeRef::Inner(id) => id.as_str().to_owned(),
-            rutent_contracts::provider_role::NodeRef::Outer(outer) => outer.network.clone(),
-        };
-        let listed = core.catalogue().nodes().is_public(&node);
-        let unlisted: rutent_contracts::core_internal::OperatorSetting = serde_json::from_value(
-            serde_json::json!({"setting": "public_node", "node": {"network": node}, "listed": false}),
-        )
-        .expect("a setting");
-        let refused = core.set_setting(&unlisted);
-        assert!(
-            matches!(&refused, Err(SettingRefused::Rests { node: n }) if n == &node),
-            "{node}: {refused:?}"
-        );
-        assert_eq!(
-            core.catalogue().nodes().is_public(&node),
-            listed,
-            "{node}: unchanged"
-        );
+    for node in nodes_of(&core, QUICK) {
+        unlist_is_refused(&mut core, &node);
+    }
+}
+
+/// A public node can't be unlisted while a failed segment's reversal is owed there (`T-020-66`, `REQ-CAT-22`): the ramp's
+/// transfer failed, its reversal owed (`FailedReversalOwed`), so the value it took is still held for the order; the
+/// operator's unlist of either of its nodes is refused after policy is asked, with no effect recorded. A failed or
+/// refused segment counts until its reversal completes, as one waiting on a person or with no result does.
+// verifies: REQ-CAT-22
+#[test]
+fn public_node_cannot_be_unlisted_while_a_failed_segments_reversal_is_owed_there() {
+    let Failed {
+        mut core,
+        order,
+        ramp,
+        ..
+    } = ramp_failing("AC-4", Behaviour::act(Act::Fail));
+    assert_eq!(
+        segment_state(&core, &order, &ramp),
+        SegmentState::FailedReversalOwed
+    );
+    for node in nodes_of(&core, QUICK) {
+        unlist_is_refused(&mut core, &node);
+    }
+}
+
+/// A public node can't be unlisted while an order Core follows that hasn't ended names it on its route (`T-020-66`, #342's
+/// L2): accepted and not yet run, nothing of it is at the ramp's nodes, and its segments there are still to begin; the
+/// operator's unlist of either is refused, so the segments are graded on the standing they begin under.
+// verifies: REQ-CAT-22
+#[test]
+fn public_node_cannot_be_unlisted_while_an_open_orders_route_names_it() {
+    let (mut core, session) = core_with("AC-1", &[IN, EXCHANGE, QUICK, OUT]);
+    let _ = accepted(&mut core, across("req-planned", &session));
+    for node in nodes_of(&core, QUICK) {
+        unlist_is_refused(&mut core, &node);
     }
 }

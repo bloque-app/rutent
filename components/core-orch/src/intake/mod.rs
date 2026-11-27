@@ -683,8 +683,13 @@ impl Intake {
     ) -> IntakeError {
         let named = match &error {
             IntakeError::Conflicting { order: Some(named) } => Some(named),
-            // Asked of an agent by `open`, which knows the request (`T-020-64`).
-            IntakeError::Conflicting { order: None } => return error,
+            // Its one source is `open_inner`, through `open`, which names no order and has held an agent to the request's
+            // read check already (`T-020-64`): returned as it is. Were it ever to come with an order named, it is checked
+            // as any error about that order (fail closed, `T-020-66`).
+            IntakeError::Conflicting { order: None } => match order {
+                None => return error,
+                Some(order) => Some(order),
+            },
             IntakeError::NoSuchOrder
             | IntakeError::NotTheRequester
             | IntakeError::ReadRefused

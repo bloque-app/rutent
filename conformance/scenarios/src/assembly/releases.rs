@@ -205,4 +205,15 @@ impl Core {
     ) -> Result<Changed, ReleaseRefused> {
         self.change_release_as(&crate::kit::operator_login(), provider, change)
     }
+
+    /// Sets the deployment's staging policy (ADR-0014) on the platform, which keeps it across its restarts.
+    pub fn set_staging(&mut self, staging: Option<rutent_prov::module::lifecycle::Staging>) {
+        self.fleet.set_staging(staging);
+    }
+
+    /// The platform's host restarts it on its record (`Fleet::restart_platform`, `T-020-66`), unclean where `unclean`:
+    /// then every provider it held a release of waits for the operator's confirmation. Core goes on as it was.
+    pub fn restart_platform(&mut self, unclean: bool) {
+        self.fleet.restart_platform(unclean);
+    }
 }

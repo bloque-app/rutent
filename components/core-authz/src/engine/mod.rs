@@ -1327,6 +1327,15 @@ mod tests {
         entry_points::every_entry_point_of_core_holds();
     }
 
+    /// Rule 4's reach also finds a module-level `const` or `static` function pointer to a carrier, a permit taken and
+    /// dropped, and a permit taken only after the carrier (`T-020-66`, #342's review); a permit kept before it is the
+    /// decided path.
+    // verifies: REQ-AUZ-1
+    #[test]
+    fn scan_rule_four_finds_function_pointers_and_unchecked_permits() {
+        entry_points::pointers_and_unchecked_permits_are_found();
+    }
+
     /// Each lifecycle action on a release, `accept`, `withdraw`, `revoke`, `declare_exploited` and `mark_stale`, is
     /// listed among the methods that carry out a decided action, each with its own change, and is no longer a method
     /// that carries out nothing, so orchestration may call it only where the effect it rests on is in hand, and

@@ -26,6 +26,7 @@ use rutent_prov::catalogue::{
     Bond, Catalogue, Category, Grant, GrantTerms, Instant, ReversalCapacity, tuples_of,
 };
 use rutent_prov::module::platform::{OperationClock, Platform};
+use rutent_prov::module::record::{MemoryRecord, Record};
 use rutent_prov::module::types::{Admitted, Envelope, Handled};
 use rutent_prov::module::wire::sha256;
 use serde_json::json;
@@ -209,10 +210,45 @@ impl OperationClock for ScenarioClock {
     }
 }
 
+/// The platform's record, in memory, which a restart opens the platform on again ([`Fleet::restart_platform`]); it can
+/// be broken, as a disk that fills, so the platform ends with nothing of its closing written (`T-020-66`).
+#[derive(Debug, Clone, Default)]
+pub struct FleetRecord {
+    inner: MemoryRecord,
+    broken: Arc<AtomicBool>,
+}
+
+impl Record for FleetRecord {
+    fn load(&mut self) -> std::io::Result<Vec<String>> {
+        self.inner.load()
+    }
+
+    fn append(&mut self, line: &str) -> std::io::Result<()> {
+        if self.broken.load(Ordering::SeqCst) {
+            return Err(std::io::Error::other("the record is broken"));
+        }
+        self.inner.append(line)
+    }
+
+    fn replace(&mut self, lines: &[String]) -> std::io::Result<()> {
+        self.inner.replace(lines)
+    }
+}
+
 /// A platform over a [`SimWorld`], with the catalogue that vouches for its releases.
 pub struct Fleet {
     /// The platform. Its world is the simulation's: [`SimWorld`].
     pub platform: Platform<SimWorld>,
+    /// Its record, which a restart opens it on.
+    record: FleetRecord,
+    /// Every release asserted to the platform, in order, as received with its binaries: what a restarted platform is
+    /// handed again, as a deployment's start does.
+    admissions: Vec<(Vec<u8>, Parts<Vec<u8>>)>,
+    /// The operation deadline and the scenario clock's switch the platform runs under.
+    deadline: Duration,
+    wall_time: Arc<AtomicBool>,
+    /// The staging policy, the deployment's setting, set again on a restarted platform.
+    staging: Option<rutent_prov::module::lifecycle::Staging>,
     catalogue: Catalogue,
     listed: BTreeSet<String>,
     context: SuiteContext,
@@ -238,30 +274,88 @@ impl Fleet {
         let wall_time = Arc::new(AtomicBool::new(false));
         let mut world = SimWorld::new();
         world.wall_time = Some(wall_time.clone());
-        let mut platform = Platform::new(
-            disk::paths(),
-            world,
-            Envelope {
-                deployment: context.deployment.clone(),
-                protocol_version: context.protocol_version.clone(),
-            },
-        )
-        .expect("a platform");
-        platform.set_staging(None);
-        // Starting a simulated provider is the machine's work, which a stepped clock can't move: on a loaded machine
-        // it can pass the 10 s a production start is given, and no scenario is about start-up time.
-        platform.set_start_deadline(std::time::Duration::from_secs(120));
-        platform.set_operation_clock(Arc::new(ScenarioClock::new(wall_time)));
-        platform.set_deadline(deadline);
-        platform.set_output_limit(1 << 20);
+        let record = FleetRecord::default();
+        let platform = Self::opened(&context, world, &record, deadline, &wall_time, None);
         Self {
             platform,
+            record,
+            admissions: Vec::new(),
+            deadline,
+            wall_time,
+            staging: None,
             catalogue,
             listed: BTreeSet::new(),
             context,
             installed: BTreeMap::new(),
             seeds: BTreeMap::new(),
             late_taken: BTreeSet::new(),
+        }
+    }
+
+    /// A platform over `world`, opened on `record`, set as every scenario's is.
+    fn opened(
+        context: &SuiteContext,
+        world: SimWorld,
+        record: &FleetRecord,
+        deadline: Duration,
+        wall_time: &Arc<AtomicBool>,
+        staging: Option<rutent_prov::module::lifecycle::Staging>,
+    ) -> Platform<SimWorld> {
+        let mut platform = Platform::open(
+            disk::paths(),
+            world,
+            Envelope {
+                deployment: context.deployment.clone(),
+                protocol_version: context.protocol_version.clone(),
+            },
+            Box::new(record.clone()),
+        )
+        .expect("a platform");
+        platform.set_staging(staging);
+        // Starting a simulated provider is the machine's work, which a stepped clock can't move: on a loaded machine
+        // it can pass the 10 s a production start is given, and no scenario is about start-up time.
+        platform.set_start_deadline(std::time::Duration::from_secs(120));
+        platform.set_operation_clock(Arc::new(ScenarioClock::new(wall_time.clone())));
+        platform.set_deadline(deadline);
+        platform.set_output_limit(1 << 20);
+        platform
+    }
+
+    /// Sets the deployment's staging policy (ADR-0014), which a restarted platform is set to again.
+    pub fn set_staging(&mut self, staging: Option<rutent_prov::module::lifecycle::Staging>) {
+        self.staging = staging;
+        self.platform.set_staging(staging);
+    }
+
+    /// The platform stops and opens again on its record, as a restart of its host does (`T-020-66`): unclean where
+    /// `unclean`, its record breaking first so nothing of its closing is written, so the providers it held releases of
+    /// wait for the operator's confirmation. The world it reached stays. Every release asserted to it is handed to it
+    /// again, in order, as a deployment's start does: a release its record holds is put back as it stood, and a waiting
+    /// one, which no record holds, waits again.
+    pub fn restart_platform(&mut self, unclean: bool) {
+        let world = std::mem::take(&mut self.platform.world);
+        if unclean {
+            self.record.broken.store(true, Ordering::SeqCst);
+        }
+        let record = FleetRecord {
+            inner: self.record.inner.clone(),
+            broken: Arc::new(AtomicBool::new(false)),
+        };
+        let reopened = Self::opened(
+            &self.context,
+            world,
+            &record,
+            self.deadline,
+            &self.wall_time,
+            self.staging,
+        );
+        // The old platform is dropped here, its processes with it, its close refused by its broken record.
+        drop(std::mem::replace(&mut self.platform, reopened));
+        self.record = record;
+        for (received, binaries) in self.admissions.clone() {
+            let _ = self
+                .platform
+                .admit(&received, &binaries, &mut self.catalogue, ADMITTED_AT);
         }
     }
 
@@ -538,6 +632,7 @@ impl Fleet {
         binaries: &Parts<Vec<u8>>,
     ) -> Admitted {
         let received = serde_json::to_vec(assertion).expect("an assertion is JSON");
+        self.admissions.push((received.clone(), binaries.clone()));
         self.platform
             .admit(&received, binaries, &mut self.catalogue, ADMITTED_AT)
     }

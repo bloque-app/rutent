@@ -196,20 +196,23 @@ impl Settings {
         settings
     }
 
-    /// The settings rebuilt from Core's log, as [`Settings::reopened`] reads them, with the `done` result appended, by
-    /// `core`, for each `set_setting` effect the log holds no result of: the setting was in force when Core stopped, so
-    /// its result completes the log, and every later reopening reads it the same (M2 of #337's review).
+    /// The settings rebuilt from Core's log, with the result of each `set_setting` effect the log holds none of
+    /// completed, by `core`, from what its target answers now (`T-020-66`, the milestone reviewer's Low): the setting is
+    /// applied to `targets` again, `done` where they take it and `failed` where they refuse it (the catalogue won't list
+    /// a node a provider declared private), so a reopened Core holds what a Core that ran on would, never a listing the
+    /// catalogue refused as the operator's (M2 of #337's review completed every one `done`). Then the settings are
+    /// rebuilt from the completed log, as [`Settings::reopened`] reads it.
     ///
     /// # Errors
     ///
-    /// The log's, appending a missing result; the settings are rebuilt the same whatever it answers.
+    /// The log's, appending a missing result; the settings are rebuilt from what it took whatever it answers.
     pub fn reopen(
         log: &mut dyn Journal,
         clock: &dyn Clock,
         core: &Actor,
+        targets: &mut Targets<'_>,
     ) -> (Self, Result<usize, AppendFailure>) {
         let history = log.history();
-        let settings = Settings::reopened(&history);
         let resulted: std::collections::BTreeSet<String> = history
             .iter()
             .filter_map(|(_, entry)| match entry {
@@ -220,7 +223,7 @@ impl Settings {
                 _ => None,
             })
             .collect();
-        let unfinished: Vec<Receipt> = history
+        let unfinished: Vec<(Receipt, OperatorSetting)> = history
             .iter()
             .filter_map(|(receipt, entry)| match entry {
                 Entry::Verified(VerifiedEntry {
@@ -229,17 +232,24 @@ impl Settings {
                             action:
                                 Action::ChangeCatalogue {
                                     change: CatalogueChange::SetSetting,
+                                    setting: Some(setting),
                                     ..
                                 },
                             ..
                         },
                     ..
-                }) if !resulted.contains(&receipt_key(receipt)) => Some(receipt.clone()),
+                }) if !resulted.contains(&receipt_key(receipt)) => {
+                    Some((receipt.clone(), (**setting).clone()))
+                }
                 _ => None,
             })
             .collect();
         let completed = (|| {
-            for effect in &unfinished {
+            for (effect, setting) in &unfinished {
+                let outcome = match apply_one(setting, targets) {
+                    Ok(()) if !above_ceiling(setting) => Outcome::Done {},
+                    _ => Outcome::Failed {},
+                };
                 journal::append(
                     log,
                     journal::verified(
@@ -248,13 +258,13 @@ impl Settings {
                             effect: effect.clone(),
                         },
                         &now(clock)?,
-                        Outcome::Done {},
+                        outcome,
                     ),
                 )?;
             }
             Ok(unfinished.len())
         })();
-        (settings, completed)
+        (Settings::reopened(&log.history()), completed)
     }
 
     /// Sets `asked.setting`, as policy decides, by the decision's caller: Core asks the decision itself, records the

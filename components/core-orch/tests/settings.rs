@@ -310,14 +310,15 @@ fn setting_whose_result_the_log_did_not_take_stands_after_a_restart_and_its_resu
 
     // Reopened: the same setting, and its result completed once.
     cut.refuse_from = None;
-    let (reopened, completed) = Settings::reopen(&mut cut, &clock(), &core());
+    let (reopened, completed) =
+        Settings::reopen(&mut cut, &clock(), &core(), &mut Targets::default());
     assert_eq!(completed, Ok(1));
     assert_eq!(reopened, live, "it stands after the restart as before it");
     assert!(matches!(
         cut.entries.last(),
         Some((_, Entry::Verified(v))) if matches!(v.what, What::Result { .. }) && v.outcome == Outcome::Done {}
     ));
-    let (again, completed) = Settings::reopen(&mut cut, &clock(), &core());
+    let (again, completed) = Settings::reopen(&mut cut, &clock(), &core(), &mut Targets::default());
     assert_eq!(completed, Ok(0), "nothing more to complete");
     assert_eq!(again, live);
 
@@ -332,7 +333,8 @@ fn setting_whose_result_the_log_did_not_take_stands_after_a_restart_and_its_resu
         &fee("5"),
     )
     .unwrap();
-    let (reopened, completed) = Settings::reopen(&mut whole, &clock(), &core());
+    let (reopened, completed) =
+        Settings::reopen(&mut whole, &clock(), &core(), &mut Targets::default());
     assert_eq!((reopened, completed), (set_whole, Ok(0)));
 
     // A failed result sets nothing.

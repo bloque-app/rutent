@@ -9408,3 +9408,64 @@ Branch `f-020/t-020-65`, from `2c86d6a9` (`origin/m3` with `T-020-49` merged), i
   `private_nodes`, `segments`, `module_scenarios`, `reopened`, `execution_routes`, `sim_providers`) 156; `invariants` on
   seeds 11 to 15, 10; `plan-check --strict` 0 findings, `tag-check --strict` 2527 tests, 0 findings; the contract guard
   against `origin/develop`: no violations. No `cargo doc` locally (the owner's rule): CI's doc step is the check.
+
+## T-020-66: what the reviews of `T-020-65` left
+
+Branch `f-020/t-020-66`, from `f8bddbb4` (`origin/m3`), issue #344: the milestone reviewer's check of `T-020-65` at
+`ebf42c9c` and #342's review, with #337's round-2 Lows. Edits `components/core-orch/` (`segments/lifecycle.rs`,
+`segments/mod.rs`, `settings/`, `intake/`), `components/core-authz/` (the scan, a `DEC-20` path), `tools/licence-check/`
+(`artifact.rs`, a `DEC-20` path), and the `F-024` files the commit body names (the fleet's platform restart in
+`sim/fleet.rs`, the assembly's `mod.rs` and `releases.rs`, the scenario tests). No prov source changed: the platform
+already answers `is_accepted`.
+
+- **(1) A stale mark refused while a release is staged holds its provider no more.** `standing_of` completes a stale mark's
+  missing result `failed` where nothing is marked and a release is staged: the platform refuses a stale mark while a
+  release is staged, and one taken before the staging would have been recorded and restored with it. Test `stale mark
+  refused while a release is staged does not hold its provider after core restarts` (`module_scenarios.rs`): the
+  scenario fleet now restarts its platform on its record (`Fleet::restart_platform`, a `FleetRecord` that can break, and
+  every release asserted handed to it again), the assembly leaves a decided effect without its result
+  (`Core::effect_without_its_result`, the fault of Core stopping between the two), and Core reopens through the
+  assembly's restart, whose `reopen_lifecycle` appends the result `failed`; the operator's confirmation then confirms
+  the provider. Red first on the result missing.
+- **(2) The unlist rule counts what still waits.** `touches_node` counts every outcome but the final ones (`Settled`,
+  `NotPermitted`, `NotHandedOver`, `WithdrawalCancelled`): a `Failed` or `Refused` segment counts until its reversal
+  completes, and one waiting on a person, with no result or waiting for its evidence counts. It also counts every order
+  Core follows that hasn't ended (complete, ended without completing, failed, handed on) whose route names the node: a
+  segment still to begin, or a private run whose grading reads its public entry (`closing`'s `movement_into`, #342's
+  L2). Test `public node cannot be unlisted while a failed segment's reversal is owed there` (`simulated_faults.rs`), red
+  first; the in-flight test now asserts that policy was asked and no effect recorded.
+- **(3) The Lows.**
+  - *A stale mark of a version the platform holds no release of stays open* (`Releases::is_accepted`): neither the
+    reopening, which reads one platform for every provider in the log, nor a confirmation records it `failed`.
+  - *Grading reads a node's standing as it stood when the segment began.* By the rule: no unlist of a node that an
+    order Core follows names is permitted until that order ends, and a listing can't change a node an open order routes
+    through (a node a publisher declares private is refused a listing, and one not listed was left out of the route's
+    snapshot), so the standing a segment is graded on is the one it began under. No standing is stored beside a segment.
+  - *A withdrawal is never taken again at a confirmation*, and its missing result is never completed from the platform's
+    standing: a confirmation follows an unclean end, which drops every waiting release, so a release waiting then was
+    admitted after the withdrawal, under a digest the effect (which names a version) can't tell apart; and a withdrawal
+    the platform took is in its withdrawn set, recorded before it was taken. No contract field. Test `withdrawal is not
+    taken again for a release resubmitted under a new digest` (core-orch `tests/lifecycle.rs`; its first run picked up the
+    fix mid-build, so its red is the rule-off below).
+  - *Scan rule 4's reach* reads module-level `const` and `static` items as nodes, and a call is guarded only where the
+    function asks policy and keeps the permit it takes before that call (`let _ = ..permit()` and a bare
+    `..permit();` keep nothing). Its doc says what stays out of reach for v0: a carrier inside a `macro_rules!` body, and a
+    decision and a permit on unrelated values. Test `scan_rule_four_finds_function_pointers_and_unchecked_permits`.
+  - *`Settings::reopen` completes a missing result from what its targets answer*: applied again, `done` where taken,
+    `failed` where refused (a listing of a node a provider declared private), so a reopened Core never holds a refused
+    listing as the operator's. Test `listing the catalogue refused is not completed done on reopen` (`private_nodes.rs`,
+    through the assembly's reopen).
+  - *The later private claim through Core.* The rule now refuses an unlist while any open order names the node, and the
+    catalogue joins a private claim only once the node is unlisted (`T-020-65`'s `private_claim_of_a_node_is_joined_only_once_the_operator_unlisted_it`):
+    a claim can follow only an unlist Core permitted, which `public_node_cannot_be_unlisted_while_a_segment_or_holding_rests_there`
+    shows through Core.
+  - *The differing repeat over the real engine* (`assembly_intake.rs`): scoped, the agent is told the repeat conflicts;
+    unscoped, `ReadRefused`; the read checked and recorded each time.
+  - *`told_error`'s raw `Conflicting { order: None }`*: built in `open_inner` alone (test
+    `conflicting_with_no_order_comes_only_from_open`), and checked as any error about an order were it ever to come with
+    one named.
+  - *The licence check orders an `OR` expression's operands* before comparing (`canon`); one with `AND`, `WITH` or
+    parentheses compares as written. Test `or_operands_compare_in_any_order`.
+- **Defaults** (reversible, fail closed). (1) An unlist is refused while any order Core follows that hasn't ended names the
+  node. (2) A withdrawal with no result stays without one. (3) The fleet's restart re-asserts every release, waiting ones
+  included, as a deployment's start would.

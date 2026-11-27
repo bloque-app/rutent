@@ -1006,10 +1006,16 @@ impl Segments {
         landing::totals(resting)
     }
 
-    /// Whether anything of Core's is at `node` now (`T-020-65`): value of an order it follows resting there (a settled
-    /// segment's, or one a reversal brought back), or a segment in flight, its outcome not final or not known, whose
-    /// route moves value from or to the node. What an unlist of a public node is held to: while either holds, changing
-    /// the node's standing would change how that value is graded.
+    /// Whether anything of Core's is at `node` now (`T-020-65`, `T-020-66`): what an unlist of a public node is held to,
+    /// so a node's standing never changes under an order that may still be graded on it:
+    ///
+    /// - value of an order it follows resting there (a settled segment's, or one a reversal brought back);
+    /// - a segment moving value from or to it whose outcome isn't final: every outcome but `Settled`, `NotPermitted`,
+    ///   `NotHandedOver` and `WithdrawalCancelled` counts (one not known, waiting on a person, with no result or waiting
+    ///   for its evidence), and a `Failed` or `Refused` one counts until its reversal completes;
+    /// - an order it follows that hasn't ended (complete, ended without completing, failed or handed on) whose route
+    ///   names the node: a segment of it still to begin, or one that began and that grading reads the node for, as a
+    ///   private run's public entry (`closing`'s `movement_into`), is graded on the standing it began under.
     pub fn touches_node(&self, node: &str) -> bool {
         let rests = self
             .values_at_nodes()
@@ -1019,21 +1025,49 @@ impl Segments {
             rutent_contracts::provider_role::NodeRef::Inner(id) => id.as_str() == node,
             rutent_contracts::provider_role::NodeRef::Outer(outer) => outer.network == node,
         };
+        let segment_of = |order: &str, segment: &str| {
+            self.orders.get(order).and_then(|tracked| {
+                tracked
+                    .order
+                    .parts
+                    .iter()
+                    .flat_map(|part| &part.segments)
+                    .find(|s| s.segment_id.as_str() == segment)
+            })
+        };
         let in_flight = self.flights.iter().any(|((order, segment), flight)| {
-            matches!(flight.outcome, None | Some(SegmentOutcome::Unknown(_)))
-                && self.orders.get(order).is_some_and(|tracked| {
-                    tracked
-                        .order
-                        .parts
-                        .iter()
-                        .flat_map(|part| &part.segments)
-                        .any(|s| {
-                            s.segment_id.as_str() == segment
-                                && (names(&s.from.node) || names(&s.to.node))
-                        })
-                })
+            let Some(planned) = segment_of(order, segment) else {
+                return false;
+            };
+            let open = match &flight.outcome {
+                Some(
+                    SegmentOutcome::Settled { .. }
+                    | SegmentOutcome::NotPermitted(_)
+                    | SegmentOutcome::NotHandedOver(_)
+                    | SegmentOutcome::WithdrawalCancelled,
+                ) => false,
+                Some(SegmentOutcome::Failed | SegmentOutcome::Refused(_)) => {
+                    planned.state != stm::SegmentState::ReversalComplete
+                }
+                _ => true,
+            };
+            open && (names(&planned.from.node) || names(&planned.to.node))
         });
-        rests || in_flight
+        let routed = self.orders.values().any(|tracked| {
+            !matches!(
+                tracked.order.state,
+                OrderState::Complete
+                    | OrderState::EndedWithoutCompleting
+                    | OrderState::Failed
+                    | OrderState::HandedOn
+            ) && tracked
+                .order
+                .parts
+                .iter()
+                .flat_map(|part| &part.segments)
+                .any(|s| names(&s.from.node) || names(&s.to.node))
+        });
+        rests || in_flight || routed
     }
 
     /// What a Core that reopened finds of the landings its segments owed (`T-020-46`): the landing record is in no
