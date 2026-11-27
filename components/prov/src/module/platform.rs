@@ -3730,6 +3730,7 @@ mod tests {
                     answer: None,
                     free_at: None,
                     version: None,
+                    late: false,
                 },
             );
         }
