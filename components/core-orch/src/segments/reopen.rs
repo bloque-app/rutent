@@ -71,6 +71,8 @@ struct Handed<'a> {
     segment: &'a Id,
     provider: &'a Id,
     effect: Effect,
+    /// The log's cutovers, to read what the segment began under.
+    timeline: &'a crate::settings::CutoverTimeline,
     at: usize,
 }
 
@@ -163,6 +165,45 @@ impl Segments {
                 });
             }
         }
+        // The reads of private nodes' records the log holds, each a try for its segment, node and provider, and when the
+        // last was put: a Core that reopens neither asks again before the retry cadence has passed nor past the cap
+        // (`T-020-67`). A read whose record the log holds is the exception: the books it fed were lost with the restart, so it
+        // is read again at once, once, as before (`T-020-58`), and counts from then.
+        for (_, entry) in history {
+            let Entry::Verified(verified) = entry else {
+                continue;
+            };
+            let What::Effect {
+                action:
+                    Action::ReadNodeRecord {
+                        order,
+                        segment,
+                        node,
+                        provider,
+                        ..
+                    },
+                ..
+            } = &verified.what
+            else {
+                continue;
+            };
+            if segments.records_held.iter().any(|held| {
+                held.order == order.as_str()
+                    && held.node == node.as_str()
+                    && held.maker == provider.as_str()
+            }) {
+                continue;
+            }
+            segments.note_record_try(
+                (
+                    order.as_str().to_owned(),
+                    segment.as_str().to_owned(),
+                    node.as_str().to_owned(),
+                    provider.as_str().to_owned(),
+                ),
+                0,
+            );
+        }
         for input in &inputs {
             if let (Observed::StuckResolved { .. }, Some(part)) =
                 (&input.observed, &input.subject.part)
@@ -210,6 +251,8 @@ impl Segments {
                 segments.mark_resolved(order, &part);
             }
         }
+        // The log's cutovers, folded once: each segment began under what stood before its start effect.
+        let timeline = crate::settings::Settings::cutover_timeline(history);
         let mut holds = BTreeMap::new();
         for (receipt, entry) in history {
             let Entry::Verified(verified) = entry else {
@@ -230,6 +273,7 @@ impl Segments {
                             segment,
                             provider,
                             effect: effect_of(action.clone(), decision.clone(), receipt.clone()),
+                            timeline: &timeline,
                             at: history
                                 .iter()
                                 .position(|(r, _)| r == receipt)
@@ -550,7 +594,7 @@ impl Segments {
             // What it began under, derived from the log's settings as they stood before its start effect.
             began: Began::from_log(
                 &statement.made_at,
-                history,
+                handed.timeline,
                 handed.at,
                 statement.protocol_version.as_str(),
                 clock.now().floor(),
@@ -1263,7 +1307,7 @@ fn settled_result(
                 at,
                 &Began::from_log(
                     &statement.made_at,
-                    history,
+                    handed.timeline,
                     handed.at,
                     statement.protocol_version.as_str(),
                     at,

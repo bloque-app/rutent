@@ -801,23 +801,46 @@ fn no_order_is_drawn_a_name_a_refused_requests_record_could_take() {
     assert_admitted(&env);
 }
 
-/// `told_error` returns `Conflicting { order: None }` as it is only because `open_inner` is its one source, through
-/// `open`, which holds an agent to the request's read check first (`T-020-66`, #342's review): intake builds it in
-/// `open_inner` alone, so no other step can hand an agent that answer unchecked.
+/// An agent its party didn't scope to read is told no `Conflicting`, in either shape, and no other answer that shows an
+/// order, by anything it does: a differing repeat of a refused request (which names no order), a differing repeat of an
+/// order that stands (which names one), and an accept and a quote of it. Every error it is told is `ReadRefused`, so the
+/// raw `Conflicting { order: None }` `told_error` lets through unchecked reaches no agent that policy would have
+/// withheld it from, by whichever step builds it (`T-020-66`, #342's review; `T-020-67` replaces the source search that
+/// guarded it with the behaviour).
 // verifies: REQ-AUZ-8
 #[test]
-fn conflicting_with_no_order_comes_only_from_open() {
-    let source = include_str!("../src/intake/mod.rs");
-    let built: Vec<usize> = source
-        .match_indices("Err(IntakeError::Conflicting {")
-        .map(|(at, _)| at)
-        .collect();
-    assert_eq!(built.len(), 1, "one place builds it");
-    let before = &source[..built[0]];
-    let function = before.rfind("    fn ").expect("a function");
-    assert!(
-        before[function..].starts_with("    fn open_inner("),
-        "built in open_inner alone: {}",
-        &before[function..function + 40]
+fn conflicting_with_no_order_is_told_no_agent_unscoped_to_read() {
+    use rutent_contracts::core_internal::OrderRefusalClass;
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    // A refused request, and an order that stands, each under the agent's own identifiers.
+    let mut refused = order_request("client-req-bad", agent());
+    refused.session = id("session-nobody-opened");
+    assert_eq!(
+        env.open(&mut sim, &refused),
+        Ok(Told::Refused {
+            class: OrderRefusalClass::RefusedByPolicy
+        })
     );
+    let standing = order_request("client-req-ok", agent());
+    let (order, digest) = env.quoted(&mut sim, &standing);
+    env.reads.scoped.clear();
+    let mut told = Vec::new();
+    let mut again = refused.clone();
+    again.route = route("999");
+    told.push(env.open(&mut sim, &again));
+    let mut differing = standing.clone();
+    differing.route = route("999");
+    told.push(env.open(&mut sim, &differing));
+    env.book.borrow_mut().fail_next = Some("acceptance");
+    told.push(env.accept(&mut sim, &order, &agent(), &digest));
+    env.book.borrow_mut().fail_next = Some("shown");
+    told.push(env.quote_by(&mut sim, &agent(), &order));
+    for answer in told {
+        assert!(
+            matches!(answer, Err(IntakeError::ReadRefused)),
+            "an agent unscoped to read is told {answer:?}"
+        );
+    }
+    assert_admitted(&env);
 }

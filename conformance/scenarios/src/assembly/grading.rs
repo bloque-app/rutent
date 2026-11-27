@@ -54,6 +54,9 @@ pub enum Tamper {
     Key,
     /// The answer is altered after the provider signed it, the record in it untouched.
     Answer,
+    /// The provider says, in an answer it signs, that it holds no record of the node, for a transaction Core ran there
+    /// (`T-020-67`).
+    NotKnown,
 }
 
 /// The simulated networks, as Core last read them, and the records of the private nodes it took.
@@ -160,6 +163,28 @@ impl Readings {
             return answer;
         };
         tamper(spec, how, &answer).unwrap_or(answer)
+    }
+
+    /// `answer`, a provider's answer to the question of its record, as it is when the provider made it `seconds` after it
+    /// was asked: its time put later and the answer signed again, as the provider that is slow to answer would sign it
+    /// (`T-020-67`). An answer that isn't one of a record is left as it is.
+    pub(crate) fn made_later(&self, provider: &str, answer: Vec<u8>, seconds: u64) -> Vec<u8> {
+        use rutent_conformance::role::placeholder_key;
+        use rutent_conformance::signing::{real, sign_statement};
+        let Some(spec) = self.movers.iter().find(|s| s.provider == provider) else {
+            return answer;
+        };
+        let restamped = || -> Option<Vec<u8>> {
+            let mut result: Statement<rutent_contracts::provider_role::ResultBody> =
+                serde_json::from_slice(&answer).ok()?;
+            let asked = rutent_contracts::router_api::Timestamp::new(result.made_at.clone())?;
+            let secs = u64::try_from(asked.unix_nanos() / 1_000_000_000).ok()?;
+            result.made_at =
+                rutent_prov::catalogue::Instant(secs.checked_add(seconds)?).rfc3339()?;
+            let key = placeholder_key(spec.seed());
+            serde_json::to_vec(&sign_statement(&result, &real(key.as_str()))).ok()
+        };
+        restamped().unwrap_or(answer)
     }
 
     /// Whether the planted fault ties movements by destination and amount.
@@ -327,12 +352,18 @@ fn tamper(spec: &Spec, how: Tamper, answer: &[u8]) -> Option<Vec<u8>> {
     let ResultBody::InnerSegmentsQuery(inner) = &mut result.statement else {
         return None;
     };
+    let key = placeholder_key(spec.seed());
+    if how == Tamper::NotKnown {
+        inner.outcome = rutent_contracts::provider_role::InnerSegmentsOutcome::NotKnown(
+            rutent_contracts::provider_role::NoDetail {},
+        );
+        return serde_json::to_vec(&sign_statement(&result, &real(key.as_str()))).ok();
+    }
     let rutent_contracts::provider_role::InnerSegmentsOutcome::Answered(answered) =
         &mut inner.outcome
     else {
         return None;
     };
-    let key = placeholder_key(spec.seed());
     match how {
         Tamper::Figure => {
             answered
@@ -359,6 +390,7 @@ fn tamper(spec: &Spec, how: Tamper, answer: &[u8]) -> Option<Vec<u8>> {
         Tamper::Key => {
             *answered.record = sign_statement(&answered.record, &another_key());
         }
+        Tamper::NotKnown => unreachable!("answered above"),
     }
     serde_json::to_vec(&sign_statement(&result, &real(key.as_str()))).ok()
 }

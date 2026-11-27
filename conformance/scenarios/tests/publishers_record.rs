@@ -1115,3 +1115,230 @@ fn publishers_records_are_read_through_the_platform_for_an_order_unsettled_at_th
     let round = core.tick();
     assert!(round.published_in(NODE).is_empty());
 }
+
+/// How many `read_node_record` effects the log holds for `segment` of `order`, put to `provider`.
+fn reads_by(core: &Core, order: &Id, segment: &Id, provider: &str) -> usize {
+    entries(core)
+        .into_iter()
+        .filter(|v| {
+            matches!(
+                &v.what,
+                What::Effect {
+                    action: rutent_contracts::core_internal::Action::ReadNodeRecord {
+                        order: o,
+                        segment: s,
+                        provider: p,
+                        ..
+                    },
+                    ..
+                } if o == order && s == segment && p.as_str() == provider
+            )
+        })
+        .count()
+}
+
+/// A segment that waits is graded again each time its order runs, but a provider that says it holds no record of the node
+/// is not asked at each: Core asks again on the retry cadence, a bounded number of times, counting the entries the log
+/// holds, and past that it asks no more and the segment waits, across a restart too (`REQ-ORD-41`, `NFR-5`, `T-020-67`).
+// verifies: REQ-ORD-41, NFR-5
+#[test]
+fn segment_graded_many_times_while_it_waits_asks_a_publisher_answering_not_known_a_bounded_number_of_times()
+ {
+    use rutent_conformance::sim::Behaviour;
+    use rutent_core_orch::segments::MAX_RECORD_TRIES;
+    use rutent_scenarios::assembly::Tamper;
+    let cap = MAX_RECORD_TRIES as usize;
+    let names = [IN, EXCHANGE, QUICK, OUT, RESERVE];
+    let (mut core, session) = core_over(&names);
+    // The reserve holds no record of what it ran, and says so; the last deposit never reaches the bank's record, so
+    // it waits and is graded again each run.
+    core.tamper_with_record_of(RESERVE, Tamper::NotKnown);
+    core.world().script_for(
+        RESERVE,
+        "deposit",
+        Behaviour {
+            unrecorded: true,
+            ..Behaviour::default()
+        },
+    );
+    let (order, ran) = run(
+        &mut core,
+        within("req-waits", &session, AMOUNT, RESERVE, OTHER),
+    );
+    let waiting = accounted(&ran).to_vec();
+    assert_eq!(waiting.len(), 2, "{waiting:?}");
+    assert!(
+        !matches!(waiting[1].outcome, SegmentOutcome::Settled { .. }),
+        "the deposit waits for its public record: {:?}",
+        waiting[1].outcome
+    );
+    let segment = waiting[1].segment.clone();
+    let reads = |core: &Core| reads_by(core, &order, &segment, RESERVE);
+    assert_eq!(reads(&core), 1, "asked at the first grading");
+
+    // Graded again and again within the hour: asked no more, and the log holds no more of it.
+    let (entries_before, effects_before) = (entries(&core).len(), read_effects_of(&core));
+    for _ in 0..20 {
+        core.run(&order).expect("the order runs again");
+    }
+    assert_eq!(reads(&core), 1, "not at every grading");
+    assert_eq!(read_effects_of(&core), effects_before);
+    assert!(
+        entries(&core).len() <= entries_before + 20 * 2,
+        "the log grew by what the runs themselves write, not by a read each: {} -> {}",
+        entries_before,
+        entries(&core).len()
+    );
+
+    // An hour on, once: the cadence.
+    core.advance(3600);
+    core.run(&order).expect("the order runs again");
+    assert_eq!(reads(&core), 2, "asked again an hour on");
+    core.run(&order).expect("the order runs again");
+    assert_eq!(reads(&core), 2, "and once");
+
+    // However long it waits, no more than the cap.
+    for _ in 0..cap + 5 {
+        core.advance(3600);
+        core.run(&order).expect("the order runs again");
+    }
+    assert_eq!(reads(&core), cap, "bounded");
+    assert!(
+        !matches!(
+            state(&mut core, &order),
+            rutent_contracts::state_machine::OrderState::Complete
+        ),
+        "the order waits"
+    );
+
+    // A restart: the cap is the log's, so the reopened Core doesn't start the count again.
+    let mut core = rutent_scenarios::harness::Scenario::new("execution", "AC-35", given(&names))
+        .reopen(core, 1, &mut rutent_scenarios::assembly::machine::Reference);
+    for _ in 0..3 {
+        core.advance(3600);
+        core.run(&order)
+            .expect("the order runs again after the restart");
+    }
+    assert_eq!(
+        reads_by(&core, &order, &segment, RESERVE),
+        cap,
+        "the cap is rebuilt from the log"
+    );
+}
+
+/// A publisher that answers `not_known` for a transaction Core ran at its node leaves closing with nothing recorded for the
+/// node: the order is not stopped, and the replay says no record was had (`REQ-ORD-41`, `T-020-67`).
+// verifies: REQ-ORD-41
+#[test]
+fn publisher_answering_not_known_for_a_transaction_core_ran_there_leaves_closing_with_nothing_recorded()
+ {
+    use rutent_scenarios::assembly::Tamper;
+    let (mut core, session) = core_over(&[IN, EXCHANGE, QUICK, OUT, RESERVE]);
+    core.tamper_with_record_of(IN, Tamper::NotKnown);
+    let (order, segments) = joined(&mut core, &session);
+    let asked: Vec<Id> = segments[..3].iter().map(transaction).collect();
+    assert!(
+        core.publishers_asked()
+            .iter()
+            .any(|(provider, node, tx)| provider == IN
+                && node == NODE
+                && *tx == transaction_read_by(&core, IN)),
+        "the publisher was asked"
+    );
+    assert_eq!(core.books_for(NODE, &asked), None);
+    let found = replays(&core, &order);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(
+        matches!(&found[0].2, ReplayFound::NothingRecorded { nodes } if nodes.iter().map(|n| n.as_str()).eq([NODE])),
+        "{:?}",
+        found[0].2
+    );
+}
+
+/// The transaction of the first read Core put to `provider`.
+fn transaction_read_by(core: &Core, provider: &str) -> String {
+    core.publishers_asked()
+        .into_iter()
+        .find(|(p, _, _)| p == provider)
+        .map(|(_, _, tx)| tx)
+        .expect("asked")
+}
+
+/// An answer that is made a little after its question, as a provider takes a moment to answer, is judged at the time Core
+/// got it, not at the question's own: a catalogue that allows two seconds of skew doesn't refuse an answer made five
+/// seconds after the question as dated too far ahead. One that came after the question's deadline (ten seconds) is judged at
+/// the deadline, so it is dated beyond it, and refused (`REQ-ORD-41`, `T-020-67`).
+// verifies: REQ-ORD-41
+#[test]
+fn node_record_answer_made_a_little_after_its_question_is_judged_at_the_time_core_got_it() {
+    let taken = |after: u64, skew: u64| {
+        let (mut core, session) = core_over(&[IN, EXCHANGE, QUICK, OUT, RESERVE]);
+        core.set_clock_skew(skew);
+        core.faults.record_answered_after = after;
+        let (_, segments) = joined(&mut core, &session);
+        let asked: Vec<Id> = segments[..3].iter().map(transaction).collect();
+        core.books_for(NODE, &asked).is_some()
+    };
+    assert!(taken(0, 2), "an answer at once is taken");
+    assert!(
+        taken(5, 2),
+        "an answer five seconds after its question, with two seconds of skew, is taken"
+    );
+    assert!(
+        !taken(60, 2),
+        "an answer a minute after it, past the deadline, is judged at the deadline and refused"
+    );
+    assert!(
+        taken(60, 300),
+        "unless the catalogue's skew allows it, which is its own rule"
+    );
+}
+
+/// How often a read Core didn't take is asked again is the operator's `publishers_records` cadence, not a constant: set to
+/// a minute, it is asked again a minute on and not before, and the setting stands across a restart, rebuilt from the log
+/// (`REQ-ORD-41`, `NFR-5`, `T-020-67`).
+// verifies: REQ-ORD-41, NFR-5
+#[test]
+fn read_not_taken_is_asked_again_at_the_operators_publishers_records_cadence_across_a_restart() {
+    use rutent_conformance::sim::Behaviour;
+    use rutent_core_orch::schedule::Job;
+    use rutent_scenarios::assembly::Tamper;
+    let names = [IN, EXCHANGE, QUICK, OUT, RESERVE];
+    let (mut core, session) = core_over(&names);
+    core.set_cadence(Job::PublishersRecords, 60);
+    core.tamper_with_record_of(RESERVE, Tamper::NotKnown);
+    core.world().script_for(
+        RESERVE,
+        "deposit",
+        Behaviour {
+            unrecorded: true,
+            ..Behaviour::default()
+        },
+    );
+    let (order, ran) = run(
+        &mut core,
+        within("req-cadence", &session, AMOUNT, RESERVE, OTHER),
+    );
+    let segment = accounted(&ran)[1].segment.clone();
+    let reads = |core: &Core| reads_by(core, &order, &segment, RESERVE);
+    assert_eq!(reads(&core), 1);
+    core.advance(30);
+    core.run(&order).expect("runs");
+    assert_eq!(reads(&core), 1, "not before the minute");
+    core.advance(30);
+    core.run(&order).expect("runs");
+    assert_eq!(reads(&core), 2, "a minute on, not an hour");
+    let mut core = rutent_scenarios::harness::Scenario::new("execution", "AC-35", given(&names))
+        .reopen(core, 1, &mut rutent_scenarios::assembly::machine::Reference);
+    // The planted fault is the test's, not the log's: put it again on the reopened Core.
+    core.tamper_with_record_of(RESERVE, Tamper::NotKnown);
+    core.run(&order).expect("runs after the restart");
+    let after_restart = reads_by(&core, &order, &segment, RESERVE);
+    core.advance(60);
+    core.run(&order).expect("runs");
+    assert_eq!(
+        reads_by(&core, &order, &segment, RESERVE),
+        after_restart + 1,
+        "the cadence was rebuilt from the log's setting"
+    );
+}

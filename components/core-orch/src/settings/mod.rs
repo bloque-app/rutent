@@ -213,6 +213,49 @@ impl Settings {
         settings
     }
 
+    /// The cutovers the log holds, folded once in log order ([`CutoverTimeline`]), so what each segment began under is read
+    /// from it without folding the log's settings again for each segment (`T-020-67`, the milestone reviewer's check of
+    /// `T-020-54`).
+    pub fn cutover_timeline(history: &[(Receipt, Entry)]) -> CutoverTimeline {
+        let mut failed_at: BTreeMap<String, usize> = BTreeMap::new();
+        for (at, (_, entry)) in history.iter().enumerate() {
+            if let Entry::Verified(VerifiedEntry {
+                what: What::Result { effect },
+                outcome: Outcome::Failed {},
+                ..
+            }) = entry
+            {
+                failed_at.entry(receipt_key(effect)).or_insert(at);
+            }
+        }
+        let mut steps = Vec::new();
+        for (at, (receipt, entry)) in history.iter().enumerate() {
+            if let Entry::Verified(VerifiedEntry {
+                what:
+                    What::Effect {
+                        action:
+                            Action::ChangeCatalogue {
+                                change: CatalogueChange::SetSetting,
+                                setting: Some(setting),
+                                ..
+                            },
+                        ..
+                    },
+                ..
+            }) = entry
+                && let OperatorSetting::Cutover { version, cutover } = &**setting
+            {
+                steps.push(CutoverStep {
+                    at,
+                    version: version.as_str().to_owned(),
+                    cutover: cutover.as_str().to_owned(),
+                    failed_at: failed_at.get(&receipt_key(receipt)).copied(),
+                });
+            }
+        }
+        CutoverTimeline { steps }
+    }
+
     /// The settings rebuilt from Core's log, with the result of each `set_setting` effect the log holds none of
     /// completed, by `core`, from what its target answers now (`T-020-66`, the milestone reviewer's Low): the setting is
     /// applied to `targets` again, `done` where they take it and `failed` where they refuse it (the catalogue won't list
@@ -710,4 +753,41 @@ fn now(clock: &dyn Clock) -> Result<Timestamp, AppendFailure> {
         .now()
         .timestamp()
         .ok_or(AppendFailure::Refused(journal::NO_TIME))
+}
+
+/// One cutover setting the log holds: where its effect is, and where its result says `failed`, if it does.
+#[derive(Debug, Clone)]
+struct CutoverStep {
+    at: usize,
+    version: String,
+    cutover: String,
+    failed_at: Option<usize>,
+}
+
+/// The cutovers the log holds, in log order: what a segment whose start effect is at an index began under is what stood
+/// before it ([`CutoverTimeline::versions_at`]), the same as folding `Settings::reopened` over the log up to that index.
+#[derive(Debug, Clone, Default)]
+pub struct CutoverTimeline {
+    steps: Vec<CutoverStep>,
+}
+
+impl CutoverTimeline {
+    /// The protocol versions in force as the log stood before the entry at `start`: `current`, and each older one until the
+    /// cutover set then (a later setting of one version standing, one whose result was `failed` before `start` not).
+    pub fn versions_at(
+        &self,
+        start: usize,
+        current: &str,
+    ) -> rutent_contracts::provider_role::ProtocolVersions {
+        let mut standing: BTreeMap<&str, &str> = BTreeMap::new();
+        for step in self.steps.iter().take_while(|step| step.at < start) {
+            if step.failed_at.is_none_or(|failed| failed >= start) {
+                standing.insert(&step.version, &step.cutover);
+            }
+        }
+        standing.into_iter().fold(
+            rutent_contracts::provider_role::ProtocolVersions::only(current),
+            |versions, (version, cutover)| versions.with_older(version, cutover),
+        )
+    }
 }

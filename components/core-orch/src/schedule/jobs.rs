@@ -1230,7 +1230,7 @@ impl Duties for Jobs<'_> {
                     operator: &actors.operator,
                     core: &actors.core,
                 };
-                if let crate::segments::Read::Answered(question, bytes) =
+                if let crate::segments::Read::Answered(question, bytes, _) =
                     segments.read_node_record(parts, &read)
                 {
                     answers.push((order.clone(), node.clone(), question, bytes));

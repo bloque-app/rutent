@@ -9,15 +9,41 @@
 //! `closing::publishers::taken` allows. A refusal by policy asks nothing and the grading reads no record of that
 //! provider: it fails closed. A read is always recorded to its result: where the result can't be written the answer is
 //! not used.
+//!
+//! **Asked again, but not at every grading** (`T-020-67`). A publisher may not have its record yet, so a read whose answer
+//! Core did not take (`not_known`, an answer the binding checks refuse, a read that failed) is asked again, but only once
+//! the retry cadence has passed since the last (the schedule's own for the publishers' records, [`Job::PublishersRecords`]:
+//! [`Segments::set_record_retry_seconds`] sets another), and no more than [`MAX_RECORD_TRIES`] times for a segment, node and
+//! provider. Past that Core asks no more, and the segment waits on what it waits on, which the stuck check reports. The
+//! tries are the log's `read_node_record` effects, so a Core that reopens counts them again from the log
+//! ([`Segments::reopened`](super::Segments::reopened)).
 
 use rutent_contracts::core_internal::{Action, DecisionRequest, Effect, Outcome, What};
 use rutent_contracts::provider_role::{Operation, Statement};
 use rutent_contracts::router_api::Id;
 
+use rutent_contracts::router_api::Timestamp;
+
 use super::journal;
 use super::ports::{Answered, ToGrade};
 use super::{Parts, Segments, now, sign};
 use crate::closing::publishers;
+use crate::schedule::Job;
+
+/// The most times Core asks one provider for one node's record on behalf of one segment (`T-020-67`): at the retry cadence
+/// of an hour, a day's worth. Counted from the log's `read_node_record` effects, so it holds across a restart.
+pub const MAX_RECORD_TRIES: u32 = 24;
+
+/// What the log says of the reads of one segment, node and provider: how many Core put, and when the last was, in whole
+/// seconds of Core's clock.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct Tries {
+    pub(super) count: u32,
+    pub(super) last: u64,
+}
+
+/// A key of the tries: order, segment, node, provider.
+type Key = (String, String, String, String);
 
 /// One read of a private node's record: whose it is for (an order's segment that passes the node, which the action
 /// names), the node and the provider asked, the transactions asked about, the bounds the question is made in, the
@@ -49,14 +75,55 @@ pub enum Read {
     Denied,
     /// It couldn't be done now (an entry the log couldn't take, no answer from the platform): worth trying again.
     Failed,
-    /// The question as put and the answer as the platform passed it on.
-    Answered(Box<Statement<Operation>>, Vec<u8>),
+    /// The question as put, the answer as the platform passed it on, and Core's time when it got it.
+    Answered(Box<Statement<Operation>>, Vec<u8>, Timestamp),
 }
 
 impl Segments {
+    /// How often a node-record read Core didn't take is asked again, in seconds: the deployment's setting, else the
+    /// schedule's cadence for the publishers' records.
+    pub fn record_retry_seconds(&self) -> u64 {
+        self.record_retry
+            .unwrap_or(Job::PublishersRecords.default_seconds())
+    }
+
+    /// Sets how often a node-record read Core didn't take is asked again (the operator's `publishers_records` cadence).
+    pub fn set_record_retry_seconds(&mut self, seconds: u64) {
+        self.record_retry = Some(seconds);
+    }
+
+    /// How many times Core has put the read of `node`'s record to `provider` for `segment` of `order`, as the log holds it.
+    pub fn record_tries(&self, order: &Id, segment: &Id, node: &str, provider: &str) -> u32 {
+        self.record_tries
+            .get(&(
+                order.as_str().to_owned(),
+                segment.as_str().to_owned(),
+                node.to_owned(),
+                provider.to_owned(),
+            ))
+            .map_or(0, |tries| tries.count)
+    }
+
+    /// Notes a read put at `at` (whole seconds of Core's clock): counted once its effect is in the log.
+    pub(super) fn note_record_try(&mut self, key: Key, at: u64) {
+        let tries = self.record_tries.entry(key).or_default();
+        tries.count = tries.count.saturating_add(1);
+        tries.last = tries.last.max(at);
+    }
+
+    /// Whether a read for `key` may be put at `now`: its record isn't taken, fewer than [`MAX_RECORD_TRIES`] have been put,
+    /// and the retry cadence has passed since the last (a clock that went back makes it due: it fails closed on the side
+    /// of asking, as the status cadence does, but never past the cap).
+    fn record_due(&self, key: &Key, now: u64) -> bool {
+        self.record_tries.get(key).is_none_or(|tries| {
+            tries.count < MAX_RECORD_TRIES
+                && (now < tries.last || now - tries.last >= self.record_retry_seconds())
+        })
+    }
+
     /// Asks for each record the grading of `settled` reads, and hands the grading what came back. A read is not asked
     /// again for the segment once policy refused it or its record was taken; a failed one, or an answer that was no record
-    /// yet, is tried again the next time the segment is graded.
+    /// yet, is tried again only once the retry cadence has passed, and up to [`MAX_RECORD_TRIES`] times (`T-020-67`).
     pub(super) fn read_records(
         &mut self,
         parts: &mut Parts<'_>,
@@ -73,6 +140,13 @@ impl Segments {
             if self.records_read.contains(&asked) {
                 continue;
             }
+            let Ok(at) = now(parts.clock) else {
+                continue;
+            };
+            let seconds = u64::try_from(at.unix_nanos() / 1_000_000_000).unwrap_or(0);
+            if !self.record_due(&asked, seconds) {
+                continue;
+            }
             let about: Vec<Id> = wanted.about.iter().filter_map(Id::new).collect();
             let read = RecordRead {
                 order: live.order,
@@ -86,13 +160,20 @@ impl Segments {
             };
             let done = match self.read_node_record(parts, &read) {
                 Read::Denied => true,
-                Read::Failed => parts.grading.record_read(live.order, &wanted, None) && false,
-                Read::Answered(question, bytes) => parts.grading.record_read(
+                Read::Failed => {
+                    parts.grading.record_read(live.order, &wanted, None, &at);
+                    false
+                }
+                Read::Answered(question, bytes, received) => parts.grading.record_read(
                     live.order,
                     &wanted,
                     Some((&question, bytes.as_slice())),
+                    &received,
                 ),
             };
+            // Asked now, whatever came of it: a read that left no effect (nothing could be written) waits its cadence too.
+            let tries = self.record_tries.entry(asked.clone()).or_default();
+            tries.last = tries.last.max(seconds);
             if done {
                 self.records_read.insert(asked);
             }
@@ -151,6 +232,16 @@ impl Segments {
         ) else {
             return Read::Failed;
         };
+        // The read is the log's from here: it counts as a try, which a restart counts again from the effect.
+        self.note_record_try(
+            (
+                read.order.as_str().to_owned(),
+                read.segment.as_str().to_owned(),
+                read.node.to_owned(),
+                read.provider.to_owned(),
+            ),
+            u64::try_from(effect_at.unix_nanos() / 1_000_000_000).unwrap_or(0),
+        );
         let effect = Effect {
             action,
             decision: permit,
@@ -199,10 +290,11 @@ impl Segments {
             )
             .ok()
         });
-        // An answer is used only once the entry that records how the read came out is in the log.
-        match (question, answered, wrote) {
-            (Some(question), Answered::Bytes(bytes), Some(_)) => {
-                Read::Answered(Box::new(question), bytes)
+        // An answer is used only once the entry that records how the read came out is in the log, and it is judged at the
+        // time Core got it (`T-020-67`).
+        match (question, answered, wrote, now(parts.clock)) {
+            (Some(question), Answered::Bytes(bytes), Some(_), Ok(received)) => {
+                Read::Answered(Box::new(question), bytes, received)
             }
             _ => Read::Failed,
         }

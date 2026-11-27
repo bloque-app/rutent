@@ -417,14 +417,17 @@ pub trait Grading {
 
     /// What came back of a record `wanted`: the question as put and the answer as received, or `None` where nothing
     /// came back. Whether the answer was taken as a record: where it wasn't, the read is tried again when the segment is
-    /// graded again, and a read that came to nothing changes nothing the grading holds.
+    /// graded again (at the retry cadence, and no more than [`MAX_RECORD_TRIES`](super::MAX_RECORD_TRIES) times,
+    /// `T-020-67`), and a read that came to nothing changes nothing the grading holds. `received` is Core's time when the
+    /// answer came: the time it is judged at, as far as the question's own deadline allows.
     fn record_read(
         &mut self,
         order: &Id,
         wanted: &RecordWanted,
         answer: Option<(&Statement<Operation>, &[u8])>,
+        received: &Timestamp,
     ) -> bool {
-        let _ = (order, wanted, answer);
+        let _ = (order, wanted, answer, received);
         true
     }
 

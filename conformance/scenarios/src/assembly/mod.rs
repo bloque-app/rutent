@@ -348,6 +348,9 @@ pub struct Faults {
     /// How many seconds Core's clock moves on while each operation is carried out (`T-024-06`): what a provider's
     /// segment takes, so the settlements Core learns its p99 from have a duration.
     pub operation_takes: u64,
+    /// How many seconds after the question a provider answers the question of a private node's record, and Core gets the
+    /// answer: the answer is made, and Core's clock stands, that long after the question was put (`T-020-67`).
+    pub record_answered_after: u64,
 }
 
 /// The platform, as the segments carry an operation out: at Core's clock, with the faults planted at it.
@@ -449,14 +452,25 @@ impl Modules for Running<'_> {
     ) -> rutent_core_orch::segments::Answered {
         use rutent_core_orch::segments::Answered;
         self.platform.world.set_clock(self.clock.instant());
+        let after = self.faults.record_answered_after;
         if let Operation::InnerSegmentsQuery(q) = &question.statement {
             self.readings
                 .note_asked(provider.as_str(), &q.node, &q.transaction);
         }
         // The production platform carries it; only the fault a scenario planted on the answer's way to Core is added.
-        match Modules::ask_for_record(self.platform, effect, provider, question) {
+        let answered = Modules::ask_for_record(self.platform, effect, provider, question);
+        // A provider that answers a little late: its answer is made, and reaches Core, `after` seconds on.
+        if after > 0 {
+            self.clock.advance(after);
+        }
+        match answered {
             Answered::Bytes(bytes) => {
-                Answered::Bytes(self.readings.tampered(provider.as_str(), bytes))
+                let bytes = self.readings.tampered(provider.as_str(), bytes);
+                Answered::Bytes(if after > 0 {
+                    self.readings.made_later(provider.as_str(), bytes, after)
+                } else {
+                    bytes
+                })
             }
             refused => refused,
         }
@@ -1188,6 +1202,9 @@ impl Core {
                     platform: Some(&mut core.fleet.platform),
                     segments: None,
                 });
+            // The operator's `publishers_records` cadence, rebuilt from the log's settings, is also how often the segments ask
+            // again for a node's record Core didn't take (`T-020-67`).
+            core.sync_record_retry();
             // A restrictive lifecycle effect whose result the log never took is completed from what the platform holds
             // (`T-020-65`), as a setting's is.
             {
@@ -1343,6 +1360,16 @@ impl Core {
         self.readings.held()
     }
 
+    /// Core's clock moved on by `seconds`: the time that passes between one call a scenario makes and the next.
+    pub fn advance(&self, seconds: u64) {
+        self.clock.advance(seconds);
+    }
+
+    /// Sets how far ahead of Core's clock a statement may be dated before the catalogue refuses it, in seconds.
+    pub fn set_clock_skew(&mut self, seconds: u64) {
+        self.catalogue.set_clock_skew(seconds);
+    }
+
     /// The records of the private node `node` Core took of its providers, as closing's books hold them (`T-020-58`).
     pub fn records_taken(
         &self,
@@ -1479,7 +1506,18 @@ impl Core {
             },
         );
         self.bounds = self.settings.bounds(&self.base_bounds);
+        self.sync_record_retry();
         set
+    }
+
+    /// The segments' retry of a node-record read Core didn't take is the operator's `publishers_records` cadence
+    /// (`T-020-67`): set from the schedule's cadences wherever a setting is taken or the settings are rebuilt.
+    fn sync_record_retry(&mut self) {
+        let seconds = self
+            .schedule
+            .cadences()
+            .of(rutent_core_orch::schedule::Job::PublishersRecords);
+        self.segments.set_record_retry_seconds(seconds);
     }
 
     /// The operator's settings, as Core holds them (`T-020-49`).

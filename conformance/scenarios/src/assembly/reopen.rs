@@ -281,6 +281,8 @@ impl Core {
             )
         };
         self.segments = segments;
+        // The retry of a node-record read belongs to the segments, which were just rebuilt (`T-020-67`).
+        self.sync_record_retry();
         self.exposures = exposures;
         // The routes handed on whose start the holding account's record proved (`T-020-26`), and the hand-ons the log
         // holds half of.

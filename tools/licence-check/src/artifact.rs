@@ -303,16 +303,22 @@ pub fn check_artifacts(
 /// A licence text for comparison: a `/` read as ` OR `, runs of whitespace as one space, and the operands of an
 /// expression that is only `OR`s of licence identifiers put in order, so that `Apache-2.0/MIT`, `Apache-2.0 OR MIT` and
 /// `MIT OR Apache-2.0` are the same text (`T-020-66`, #342's review). An expression with `AND`, `WITH` or parentheses
-/// keeps its order: two of them are the same only as written (it fails closed).
+/// keeps its order: two of them are the same only as written (it fails closed). An operator is known in any case
+/// (`and`, `With`): one not written in upper case is no operand either, and it keeps the expression as written too
+/// (`T-020-67`, the milestone reviewer's check of `T-020-66`).
 fn canon(licence: &str) -> String {
     let words: Vec<String> = licence
         .replace('/', " OR ")
         .split_whitespace()
         .map(str::to_owned)
         .collect();
-    let plain_or = !words
-        .iter()
-        .any(|w| w == "AND" || w == "WITH" || w.contains('(') || w.contains(')'));
+    let plain_or = !words.iter().any(|w| {
+        w.eq_ignore_ascii_case("AND")
+            || w.eq_ignore_ascii_case("WITH")
+            || (w.eq_ignore_ascii_case("OR") && w != "OR")
+            || w.contains('(')
+            || w.contains(')')
+    });
     if plain_or && words.iter().any(|w| w == "OR") {
         let mut operands: Vec<&str> = words
             .iter()
@@ -588,6 +594,19 @@ mod tests {
         assert_ne!(
             canon("Apache-2.0 WITH LLVM-exception OR MIT"),
             canon("MIT OR Apache-2.0 WITH LLVM-exception")
+        );
+        // An operator in any other case is an operator, not an operand: the expression keeps its order.
+        assert_ne!(
+            canon("MIT OR Apache-2.0 and BSD-3-Clause"),
+            canon("BSD-3-Clause and Apache-2.0 OR MIT")
+        );
+        assert_ne!(
+            canon("Apache-2.0 With LLVM-exception OR MIT"),
+            canon("MIT OR Apache-2.0 With LLVM-exception")
+        );
+        assert_ne!(
+            canon("MIT or Apache-2.0 OR BSD-3-Clause"),
+            canon("BSD-3-Clause OR Apache-2.0 or MIT")
         );
     }
 }
