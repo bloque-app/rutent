@@ -631,11 +631,18 @@ fn public_nodes_balance_is_checked_against_what_cores_segments_rest_there() {
         held.against_wallet.is_none(),
         "the host's record is Core's: nothing more to compare"
     );
-    assert!(
-        core.raised().is_empty(),
-        "a match raises nothing: {:?}",
+    let differences = |core: &Core| {
         core.raised()
-    );
+            .into_iter()
+            .filter(|r| {
+                !matches!(
+                    r.difference,
+                    rutent_contracts::core_internal::Difference::HoldingNotRead { .. }
+                )
+            })
+            .count()
+    };
+    assert_eq!(differences(core), 0, "a match raises no difference");
 
     // The wallet takes a hundred more for an order Core's segments never brought: the host's record and the wallet's
     // balance agree with each other, and not with what Core rests. The wallet's record alone would call it a match.
@@ -664,7 +671,12 @@ fn public_nodes_balance_is_checked_against_what_cores_segments_rest_there() {
         "the host's record names both orders"
     );
     second.check.as_ref().expect("recorded too");
-    let raised = core.raised();
+    // The holders the register doesn't name are raised too (`T-020-67`); the difference this is about is the one.
+    let raised: Vec<_> = core
+        .raised()
+        .into_iter()
+        .filter(|r| !matches!(r.difference, Difference::HoldingNotRead { .. }))
+        .collect();
     assert_eq!(raised.len(), 1, "{raised:?}");
     assert!(
         matches!(
@@ -739,14 +751,53 @@ fn holder_the_register_does_not_name_is_raised_as_not_read() {
             _ => None,
         })
         .collect();
-    assert_eq!(
-        unread,
-        [(NODE.to_owned(), HoldingNotRead::NotRegistered {})]
+    // The catalogue lists the kit's other holders too, which no register names: each is raised (`T-020-67`), the order's
+    // node among them.
+    assert!(
+        unread.contains(&(NODE.to_owned(), HoldingNotRead::NotRegistered {})),
+        "{unread:?}"
     );
     // Once in a spell: the next tick raises no more.
+    let raised = core.raised().len();
     core.clock.advance(60);
     core.tick();
-    assert_eq!(core.raised().len(), 1);
+    assert_eq!(core.raised().len(), raised);
+}
+
+/// A holding account the catalogue lists that the deployment's register doesn't name is raised to the operator as not read
+/// whether or not Core's segments rest value at its node: a scenario that has run no order raises each, once, and asks
+/// nothing of any module (`REQ-AUD-15`, `T-020-63`, `T-020-67`).
+// verifies: REQ-AUD-15
+#[test]
+fn holder_the_register_does_not_name_is_raised_where_no_value_rests_too() {
+    use rutent_contracts::core_internal::{Difference, HoldingNotRead};
+    use rutent_core_orch::schedule::Job;
+    let (mut core, _) = core_with("AC-6", &[CHAIN_IN, RAMP_B, OUT_B]);
+    core.set_cadence(Job::HoldingCheck, 0);
+    let listed: Vec<String> = core
+        .catalogue()
+        .nodes()
+        .holders()
+        .map(|(node, _)| node.to_owned())
+        .collect();
+    assert!(listed.contains(&NODE.to_owned()), "{listed:?}");
+    core.tick();
+    let unread: Vec<String> = core
+        .raised()
+        .into_iter()
+        .filter_map(|r| match r.difference {
+            Difference::HoldingNotRead {
+                node,
+                why: HoldingNotRead::NotRegistered {},
+                ..
+            } => Some(node.as_str().to_owned()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        unread.contains(&NODE.to_owned()),
+        "the node's holder is raised though nothing rests there: {unread:?}"
+    );
 }
 
 /// A public node's reading is stated in the decimals the deployment's register of holding accounts gives its asset, not in

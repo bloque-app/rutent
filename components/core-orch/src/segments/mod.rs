@@ -151,7 +151,7 @@ pub use ports::{
     Answered, Graded, Grading, Kept, Modules, NoProxy, ProvidersWord, RaiseDesk, RecordWanted,
     Short, ToGrade, ToKeep, Uses,
 };
-pub use records::{Read, RecordRead};
+pub use records::{MAX_RECORD_TRIES, MAX_TICK_TRIES, Read, RecordRead};
 pub use reopen::Reopening;
 pub use repeats::{RepeatOf, Repeated};
 pub use sign::Unwritten;
@@ -712,6 +712,21 @@ pub struct Segments {
     /// a segment graded again while it waits asks nothing and appends nothing more (`T-020-58`). A Core that reopens
     /// asks again, once.
     records_read: BTreeSet<(String, String, String, String)>,
+    /// How often each node-record read was tried, by order, segment, node and provider: the reads the log holds as
+    /// `read_node_record` effects, and when the last was put (`T-020-67`). A read Core didn't take is asked again only when
+    /// the retry cadence has passed, and no more than [`MAX_RECORD_TRIES`] times; a Core that reopens rebuilds it from the
+    /// log's effects, so a restart neither starts the count again nor presses a publisher before its cadence.
+    record_tries: BTreeMap<(String, String, String, String), records::Tries>,
+    /// How often a node-record read Core didn't take is asked again, in seconds, where the deployment sets it
+    /// ([`Segments::set_record_retry_seconds`]); the schedule's own cadence for the publishers' records otherwise.
+    record_retry: Option<u64>,
+    /// How often the tick asked each read, by order, segment, node and provider, while this Core lives (its own bound).
+    tick_tries: BTreeMap<(String, String, String, String), u32>,
+    /// When the tick last asked each read, in whole seconds: the tick's own due time.
+    tick_last: BTreeMap<(String, String, String, String), u64>,
+    /// The reads whose record the tick took: it asks for no more of them (the grading, which the tick's answer feeds, asks
+    /// for none either).
+    tick_done: BTreeSet<(String, String, String, String)>,
     /// The publishers' records of private nodes the log held when Core reopened, by what they say (`T-020-58`): a record
     /// read again after a restart, signed afresh, that says the same of the same order and node is not kept a second
     /// time, and cites the receipt the log gave the first.
@@ -1039,6 +1054,30 @@ impl Segments {
         landing::totals(resting)
     }
 
+    /// [`Segments::resting_totals`] by node, order and asset: a holding account holds one asset, so at a node where two rest
+    /// each account is held to its own (`INV-1`'s second half, `REQ-AUD-6`, `T-020-67`).
+    pub fn resting_totals_by_asset(&self) -> BTreeMap<(String, String, String), Amount> {
+        let values = self.values_at_nodes();
+        type Resting<'a> = Vec<((String, String), &'a Amount)>;
+        let mut by_asset: BTreeMap<&str, Resting<'_>> = BTreeMap::new();
+        for ((order, _), node, asset, amount, at) in &values {
+            if *at != AtNode::Rests {
+                continue;
+            }
+            by_asset
+                .entry(asset.as_str())
+                .or_default()
+                .push(((node.clone(), order.clone()), amount));
+        }
+        let mut totals = BTreeMap::new();
+        for (asset, resting) in by_asset {
+            for ((node, order), amount) in landing::totals(resting) {
+                totals.insert((node, order, asset.to_owned()), amount);
+            }
+        }
+        totals
+    }
+
     /// Whether anything of Core's is at `node` now (`T-020-65`, `T-020-66`): what an unlist of a public node is held to,
     /// so a node's standing never changes under an order that may still be graded on it:
     ///
@@ -1073,21 +1112,7 @@ impl Segments {
             let Some(planned) = segment_of(order, segment) else {
                 return false;
             };
-            let open = match &flight.outcome {
-                Some(
-                    SegmentOutcome::Settled { .. }
-                    | SegmentOutcome::NotPermitted(_)
-                    | SegmentOutcome::NotHandedOver(_)
-                    | SegmentOutcome::WithdrawalCancelled,
-                ) => false,
-                // Counted while a reversal is owed: until it completes, and never for a deposit, whose reversal never
-                // applies, so a failed deposit's nodes aren't held for ever once its order ends (#346's review, L1).
-                Some(SegmentOutcome::Failed | SegmentOutcome::Refused(_)) => {
-                    planned.kind != rutent_contracts::router_api::OperationKind::Deposit
-                        && planned.state != stm::SegmentState::ReversalComplete
-                }
-                _ => true,
-            };
+            let open = holds_its_nodes(flight.outcome.as_ref(), planned.kind, planned.state);
             open && (names(&planned.from.node) || names(&planned.to.node))
         });
         let routed = self.orders.values().any(|tracked| {
@@ -2624,6 +2649,18 @@ impl Segments {
             }
             return Err(failure);
         }
+        // What it began under is read at the point a reopened Core reads it, just before its start effect is appended, not
+        // when a first try built it: a try that failed before the effect and was taken up later began under the versions
+        // then (`T-020-67`, `T-020-54`).
+        if self.flight(at)?.effect.is_none() {
+            let started = parts.clock.now().floor();
+            let current = self.flight(at)?.statement.protocol_version.clone();
+            let versions = parts.catalogue.protocol_versions().unwrap_or_else(|| {
+                rutent_contracts::provider_role::ProtocolVersions::only(&current)
+            });
+            let flight = self.flight_mut(at)?;
+            flight.began = Began::of(&flight.statement.made_at, versions, started);
+        }
         // The effect's entry and its receipt, before anything takes effect (`INV-7`).
         let receipt = match self.step(parts.log, at, "effect") {
             Ok(receipt) => receipt,
@@ -3496,15 +3533,18 @@ impl Segments {
             .map(|f| f.began.clone())
     }
 
-    /// What the earliest segment of `order` began under: a statement about the order after it ended is read by the
-    /// versions that segment began under.
-    pub fn began_of_order(&self, order: &Id) -> Option<Began> {
-        self.flights
-            .iter()
-            .filter(|((o, _), _)| o == order.as_str())
-            .map(|(_, f)| &f.began)
-            .min_by_key(|b| b.at.0)
-            .cloned()
+    /// What a statement about `order` by `maker`, made after its segments, is read by (`T-020-54`, `T-020-67`): the versions
+    /// `maker`'s own latest segment of the order began under, else the latest segment's of the order, so a provider whose
+    /// segment began after a cutover has no old-version statement taken past it (`THR-64`). `None` where Core holds
+    /// no segment of the order: the catalogue's current table reads it.
+    pub fn began_of_maker(&self, order: &Id, maker: Option<&Id>) -> Option<Began> {
+        began_for(
+            self.flights
+                .iter()
+                .filter(|((o, _), _)| o == order.as_str())
+                .map(|(_, f)| (&f.provider, &f.began)),
+            maker,
+        )
     }
 
     fn flight(&self, at: &(String, String)) -> Result<&InFlight, SegmentsError> {
@@ -4156,6 +4196,133 @@ fn append_all(log: &mut dyn Log, steps: &mut [Step]) -> Result<(), SegmentsError
         }
     }
     Ok(())
+}
+
+/// Whether a segment whose outcome is `outcome` still holds the nodes it names against an unlist: every outcome but the
+/// final ones (`Settled`, `NotPermitted`, `NotHandedOver`, `WithdrawalCancelled`) does, and a `Failed` or `Refused` one
+/// holds them while its reversal is owed (until it completes), and never for a deposit, whose reversal never applies, so a
+/// failed deposit's nodes aren't held for ever once its order ends (#346's review, L1). A function of its own, so the arm
+/// is tested alone: no history of a whole order shows it apart from the route rule (`T-020-67`).
+fn holds_its_nodes(
+    outcome: Option<&SegmentOutcome>,
+    kind: rutent_contracts::router_api::OperationKind,
+    state: stm::SegmentState,
+) -> bool {
+    match outcome {
+        Some(
+            SegmentOutcome::Settled { .. }
+            | SegmentOutcome::NotPermitted(_)
+            | SegmentOutcome::NotHandedOver(_)
+            | SegmentOutcome::WithdrawalCancelled,
+        ) => false,
+        Some(SegmentOutcome::Failed | SegmentOutcome::Refused(_)) => {
+            kind != rutent_contracts::router_api::OperationKind::Deposit
+                && state != stm::SegmentState::ReversalComplete
+        }
+        _ => true,
+    }
+}
+
+#[cfg(test)]
+mod holds_its_nodes_tests {
+    use super::*;
+    use rutent_contracts::router_api::OperationKind;
+    use stm::SegmentState;
+
+    /// A failed or refused segment holds its nodes while its reversal is owed, and not once it completes, nor ever for a
+    /// deposit; a segment still waiting holds them, and a final one doesn't (`REQ-CAT-22`, `T-020-67`: the owed-reversal
+    /// arm of `touches_node` alone, which no scenario shows apart from the route rule).
+    // verifies: REQ-CAT-22
+    #[test]
+    fn failed_segment_holds_its_nodes_only_while_its_reversal_is_owed() {
+        let owed = SegmentState::FailedReversalOwed;
+        let failed = SegmentOutcome::Failed;
+        assert!(holds_its_nodes(Some(&failed), OperationKind::Route, owed));
+        assert!(
+            !holds_its_nodes(
+                Some(&failed),
+                OperationKind::Route,
+                SegmentState::ReversalComplete
+            ),
+            "released once its reversal completes"
+        );
+        assert!(
+            !holds_its_nodes(Some(&failed), OperationKind::Deposit, owed),
+            "a deposit owes no reversal"
+        );
+        assert!(
+            holds_its_nodes(None, OperationKind::Route, owed),
+            "no result yet"
+        );
+        assert!(!holds_its_nodes(
+            Some(&SegmentOutcome::WithdrawalCancelled),
+            OperationKind::Withdrawal,
+            owed
+        ));
+    }
+}
+
+/// The versions a statement by `maker` is read by, among an order's segments `(provider, began)`: its own latest, else the
+/// latest of them all.
+fn began_for<'a>(
+    segments: impl Iterator<Item = (&'a Id, &'a Began)> + Clone,
+    maker: Option<&Id>,
+) -> Option<Began> {
+    let latest = |own: bool| {
+        segments
+            .clone()
+            .filter(|(provider, _)| !own || Some(*provider) == maker)
+            .map(|(_, began)| began)
+            .max_by_key(|b| b.at.0)
+            .cloned()
+    };
+    latest(true).or_else(|| latest(false))
+}
+
+#[cfg(test)]
+mod began_for_tests {
+    use super::*;
+    use rutent_contracts::provider_role::ProtocolVersions;
+    use rutent_prov::catalogue::Instant;
+
+    /// A statement about an order by a provider whose segment began after the cutover is read by the versions that segment
+    /// began under, where the order's earliest segment began before it: the old version is void for it. A maker with no
+    /// segment of the order is read by the latest segment's, and none held means the catalogue's table (`REQ-PRT-2`,
+    /// `THR-64`).
+    // verifies: REQ-PRT-2, THR-64
+    #[test]
+    fn statement_about_an_order_by_a_provider_whose_segment_began_after_the_cutover_is_void_under_the_old_version()
+     {
+        let (first, later) = (Id::new("early-co").unwrap(), Id::new("late-co").unwrap());
+        let before = Began {
+            at: Instant(100),
+            versions: ProtocolVersions::only("2.0.0").with_older("1.0.0", "1970-01-01T00:10:00Z"),
+        };
+        let after = Began {
+            at: Instant(900),
+            versions: ProtocolVersions::only("2.0.0"),
+        };
+        let segments = [(&first, &before), (&later, &after)];
+        let read = |maker: Option<&Id>| began_for(segments.iter().copied(), maker);
+        assert_eq!(read(Some(&later)), Some(after.clone()));
+        assert_eq!(read(Some(&first)), Some(before.clone()));
+        // The old version, in force when the first began, is not for the later provider: voided as of 1970-01-01T00:15.
+        let void = |began: &Began| {
+            began
+                .versions
+                .in_force("1.0.0", "1970-01-01T00:15:00Z")
+                .is_err()
+        };
+        assert!(void(&read(Some(&later)).unwrap()));
+        let stranger = Id::new("other-co").unwrap();
+        assert_eq!(
+            read(Some(&stranger)),
+            Some(after.clone()),
+            "the latest of the order's"
+        );
+        assert_eq!(read(None), read(Some(&stranger)));
+        assert_eq!(began_for(std::iter::empty(), Some(&first)), None);
+    }
 }
 
 fn now(clock: &dyn Clock) -> Result<Timestamp, AppendFailure> {

@@ -124,6 +124,9 @@ pub enum CatalogueError {
 #[derive(Debug, Clone)]
 struct Joined {
     advertisement: Advertisement,
+    /// The protocol version its envelope was made under: past that version's cutover its tuples leave routing
+    /// (`REQ-PRT-4`, `T-020-67`).
+    protocol_version: String,
     /// When it was made, to the whole second: its figures' age counts from here (`REQ-QTE-4`).
     made_at: Instant,
 }

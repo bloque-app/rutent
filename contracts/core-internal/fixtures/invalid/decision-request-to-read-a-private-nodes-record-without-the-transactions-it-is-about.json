@@ -12,7 +12,8 @@
     "segment": "p1-s3",
     "node": "acme-ledger",
     "provider": "acme-internal-rail",
-    "transaction": "tx-record-1"
+    "transaction": "tx-record-1",
+    "by": "grading"
   },
   "at": "2026-11-10T09:00:00Z"
 }

@@ -2360,9 +2360,14 @@ impl Reversals {
             .entry(order.as_str().to_owned())
             .or_default();
         if !kept.iter().any(|a| a.bytes == bytes && a.event == event) {
-            // Read by the versions the order's earliest segment began under (`T-020-54`), where Core holds one.
+            // Read by the versions the maker's own segment of the order began under, else the order's latest (`T-020-54`,
+            // `T-020-67`): never the earliest segment's, which would let a provider whose segment began after a cutover
+            // have an old-version statement taken past it (`THR-64`).
             let now = parts.clock.now().floor();
-            match parts.segments.began_of_order(order) {
+            match parts
+                .segments
+                .began_of_maker(order, journal::maker_named(bytes).as_ref())
+            {
                 Some(began) => {
                     parts
                         .catalogue
