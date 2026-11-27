@@ -36,7 +36,7 @@ use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::PublicKey;
 use rutent_contracts::router_api::Id;
 use rutent_prov::catalogue::{Catalogue, Instant};
-use rutent_prov::module::lifecycle::LifecycleRefusal;
+use rutent_prov::module::lifecycle::{LifecycleRefusal, Mark};
 use rutent_prov::module::platform::{Platform, World};
 
 use super::{Segments, journal, key, now};
@@ -145,6 +145,12 @@ pub trait Releases {
 
     /// The provider's staged version, if one is (`Lifecycle::staged`).
     fn staged(&self, provider: &Id) -> Option<String>;
+
+    /// The mark the platform holds on the provider's `version` (stale, revoked, exploited), if any (`Lifecycle::mark`).
+    fn mark(&self, provider: &Id, version: &Id) -> Option<Mark>;
+
+    /// The provider's version in force, if one is (`Lifecycle::in_force`).
+    fn in_force(&self, provider: &Id) -> Option<String>;
 
     /// Ends the provider's staging, the version in force kept (`Platform::roll_back`): the version whose staging ended.
     ///
@@ -269,6 +275,19 @@ impl<W: World> Releases for Judged<'_, W> {
         self.platform
             .lifecycle()
             .staged(provider.as_str())
+            .map(str::to_owned)
+    }
+
+    fn mark(&self, provider: &Id, version: &Id) -> Option<Mark> {
+        self.platform
+            .lifecycle()
+            .mark(provider.as_str(), version.as_str())
+    }
+
+    fn in_force(&self, provider: &Id) -> Option<String> {
+        self.platform
+            .lifecycle()
+            .in_force(provider.as_str())
             .map(str::to_owned)
     }
 
@@ -589,6 +608,111 @@ fn logged_effect(action: &Action, decision: &Permit, receipt: &Receipt) -> Effec
     }
 }
 
+/// What the platform's standing says of the restriction `effect`, whose result Core's log doesn't hold: `done` where it
+/// holds now, `failed` where it can't have taken effect, `None` where the platform's standing can't tell (it fails
+/// closed: the effect stays without a result and the confirmation takes it again).
+fn standing_of(releases: &dyn Releases, effect: &Effect) -> Option<Outcome> {
+    let Action::ChangeCatalogue {
+        change,
+        provider,
+        version: Some(version),
+        ..
+    } = &effect.action
+    else {
+        return None;
+    };
+    let mark = releases.mark(provider, version);
+    match change {
+        CatalogueChange::DeclareExploited => {
+            matches!(mark, Some(Mark::Exploited)).then_some(Outcome::Done {})
+        }
+        CatalogueChange::RevokeRelease => {
+            matches!(mark, Some(Mark::Revoked | Mark::Exploited)).then_some(Outcome::Done {})
+        }
+        CatalogueChange::MarkStale => match (mark, releases.in_force(provider)) {
+            // Marked already, however: marking it stale holds nothing more.
+            (Some(_), _) => Some(Outcome::Done {}),
+            // Nothing newer in force to move its segments to: the platform refuses a stale mark there, so it never
+            // took effect.
+            (None, None) => Some(Outcome::Failed {}),
+            (None, Some(in_force)) if in_force == version.as_str() => Some(Outcome::Failed {}),
+            (None, Some(_)) => None,
+        },
+        // The staging, or the waiting release, it ends is gone: no such release runs or waits.
+        CatalogueChange::RollBack => (releases.staged(provider).as_deref()
+            != Some(version.as_str()))
+        .then_some(Outcome::Done {}),
+        CatalogueChange::WithdrawRelease => releases
+            .waiting(provider)
+            .is_none_or(|w| w.version != version.as_str())
+            .then_some(Outcome::Done {}),
+        _ => None,
+    }
+}
+
+/// Appends, by `core`, the result the platform's standing gives each restrictive lifecycle effect Core's log holds with
+/// none, of `provider` or of every provider ([`standing_of`]). How many it appended.
+fn complete_restrictions(
+    log: &mut dyn Journal,
+    releases: &dyn Releases,
+    provider: Option<&Id>,
+    clock: &dyn Clock,
+    core: &Actor,
+) -> Result<usize, AppendFailure> {
+    let history = log.history();
+    let resulted: Vec<&Receipt> = history
+        .iter()
+        .filter_map(|(_, e)| match e {
+            Entry::Verified(VerifiedEntry {
+                what: What::Result { effect },
+                ..
+            }) => Some(effect),
+            _ => None,
+        })
+        .collect();
+    let mut completed = Vec::new();
+    for (receipt, entry) in &history {
+        let Entry::Verified(VerifiedEntry {
+            what: What::Effect { action, decision },
+            ..
+        }) = entry
+        else {
+            continue;
+        };
+        let Action::ChangeCatalogue {
+            change,
+            provider: p,
+            ..
+        } = action
+        else {
+            continue;
+        };
+        if !RESTRICTIVE.contains(change)
+            || resulted.contains(&receipt)
+            || provider.is_some_and(|provider| provider != p)
+        {
+            continue;
+        }
+        if let Some(outcome) = standing_of(releases, &logged_effect(action, decision, receipt)) {
+            completed.push((receipt.clone(), outcome));
+        }
+    }
+    for (effect, outcome) in &completed {
+        journal::append(
+            log,
+            journal::verified(
+                core,
+                What::Result {
+                    effect: effect.clone(),
+                },
+                &now(clock)?,
+                *outcome,
+            ),
+        )?;
+    }
+    Ok(completed.len())
+}
+
 /// Takes the restriction `effect`, one Core's log holds done, again on the platform, by `by`, as a reopened platform
 /// that lost it must hold it before its provider's releases come back into force. One the platform holds already (the
 /// version marked, nothing of it known, its staging or its waiting release gone) needs nothing; any other refusal is the
@@ -721,6 +845,25 @@ pub(crate) fn carry_out_release_change(
 }
 
 impl Segments {
+    /// Completes, as a Core that reopens does, the result of each restrictive lifecycle effect Core's log holds with
+    /// none (`T-020-65`, the milestone reviewer's check of `T-020-49`), from what the platform holds now, as
+    /// `Settings::reopen` completes a setting's: `done` where the restriction holds, `failed` where the platform's
+    /// standing means it never took effect (a version marked stale with nothing newer in force to move to), and nothing
+    /// where it can't tell (fail closed: the confirmation takes it again). It reads the platform and carries nothing out.
+    /// How many results it appended.
+    ///
+    /// # Errors
+    ///
+    /// The log's, appending a result.
+    pub fn reopen_lifecycle(
+        log: &mut dyn Journal,
+        releases: &dyn Releases,
+        clock: &dyn Clock,
+        core: &Actor,
+    ) -> Result<usize, AppendFailure> {
+        complete_restrictions(log, releases, None, clock, core)
+    }
+
     /// Carries out one of a release's lifecycle actions, as policy decides, by the decision's caller (`REQ-AUZ-6`,
     /// `REQ-MDL-5`, `REQ-MDL-20`, `T-020-49`): Core asks the decision first, before it reads anything of the platform's
     /// releases, so a refused caller is told the same whatever is there and its attempt is recorded; then, permitted,
@@ -753,6 +896,9 @@ impl Segments {
         // have lost a restriction it took but couldn't write: each restriction Core's log holds done for the provider is
         // taken again first, so it holds after the crash (gap 3 of `T-020-49`'s first build).
         if matches!(asked.change, ReleaseChange::Confirm { .. }) {
+            // A restriction whose result was never written is completed first from the platform's standing, so one that
+            // never took effect is `failed` and holds the provider no more (`T-020-65`).
+            complete_restrictions(log, releases, Some(asked.provider), clock, asked.core)?;
             let history = log.history();
             for (restriction, by) in restrictions(&history, asked.provider) {
                 let by = by.unwrap_or_else(|| request.caller.acts.clone());

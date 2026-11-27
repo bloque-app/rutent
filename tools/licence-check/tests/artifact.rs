@@ -2,7 +2,7 @@
 
 use rutent_licence_check::{
     ArtifactInput, ArtifactReason, ArtifactViolation, LockFile, Member, Reason, Violation, check,
-    check_artifacts, check_locks, is_permissive,
+    check_artifacts, check_artifacts_with, check_locks, is_permissive,
 };
 
 const VOS_PROGRAM: &str = "components/stm/vos-program/Cargo.lock";
@@ -184,9 +184,58 @@ fn metadata_in(
     )
 }
 
+/// Runs the artifact check, adding a root lock whose members are the record's `@core` and `@noncore` crates when no
+/// input is the root lock (the check needs one); the violations of that added root are dropped.
+fn check_with_root(
+    inputs: Vec<ArtifactInput>,
+    record: &str,
+) -> Result<Vec<ArtifactViolation>, String> {
+    check_with_root_files(inputs, record, &|_| None)
+}
+
+/// As [`check_with_root`], reading licence files through `read`.
+fn check_with_root_files(
+    mut inputs: Vec<ArtifactInput>,
+    record: &str,
+    read: &dyn Fn(&str) -> Option<String>,
+) -> Result<Vec<ArtifactViolation>, String> {
+    let added = !inputs.iter().any(|i| i.lockfile == "Cargo.lock");
+    if added {
+        let names: Vec<&str> = record
+            .lines()
+            .filter_map(|l| {
+                let mut f = l.split_whitespace();
+                match f.next()? {
+                    "@core" | "@noncore" => f.next(),
+                    _ => None,
+                }
+            })
+            .collect();
+        let pkgs: Vec<P> = names
+            .iter()
+            .map(|n| {
+                (
+                    &*Box::leak(n.to_string().into_boxed_str()),
+                    "0.0.0",
+                    Some("MIT"),
+                )
+            })
+            .collect();
+        inputs.push(ArtifactInput {
+            lockfile: "Cargo.lock".into(),
+            metadata: metadata_in("", &pkgs, &names, &[]),
+        });
+    }
+    let mut got = check_artifacts_with(&inputs, record, read)?;
+    if added {
+        got.retain(|v| v.lockfile != "Cargo.lock");
+    }
+    Ok(got)
+}
+
 fn artifacts(lockfile: &str, metadata: String, record: &str) -> Vec<ArtifactViolation> {
-    check_artifacts(
-        &[ArtifactInput {
+    check_with_root(
+        vec![ArtifactInput {
             lockfile: lockfile.into(),
             metadata,
         }],
@@ -349,8 +398,8 @@ fn malformed_directives_and_metadata_are_errors() {
         "a `@holds` for no package line"
     );
     assert!(
-        check_artifacts(
-            &[ArtifactInput {
+        check_with_root(
+            vec![ArtifactInput {
                 lockfile: "Cargo.lock".into(),
                 metadata: "{".into()
             }],
@@ -359,8 +408,8 @@ fn malformed_directives_and_metadata_are_errors() {
         .is_err()
     );
     assert!(
-        check_artifacts(
-            &[ArtifactInput {
+        check_with_root(
+            vec![ArtifactInput {
                 lockfile: "Cargo.lock".into(),
                 metadata: "{\"packages\":[],\"workspace_members\":[],\"resolve\":null}".into()
             }],
@@ -451,6 +500,8 @@ fn a_dependency_is_read_as_the_stricter_of_its_record_and_its_manifest() {
         artifacts(VOS_PROGRAM, metadata(&pkgs, &["host"], &edges), &record)
             .iter()
             .map(|v| v.reason)
+            // The mismatch itself is its own rule's failure; this test is about which licence decides.
+            .filter(|r| *r != ArtifactReason::LicenceMismatch)
             .collect::<Vec<_>>()
     };
     assert_eq!(run("MIT", "MIT"), vec![]);
@@ -479,8 +530,8 @@ fn an_exception_holds_in_the_lock_it_names_only() {
          @exception stm-inside-agpl-program {VOS_PROGRAM} host rutent-stm,rutent-contracts\n"
     );
     let run = |lock: &str, dir: &str| {
-        check_artifacts(
-            &[ArtifactInput {
+        check_with_root(
+            vec![ArtifactInput {
                 lockfile: lock.into(),
                 metadata: metadata_in(dir, &PKGS, &["host"], &edges),
             }],
@@ -513,8 +564,8 @@ fn a_same_named_artifact_of_another_lock_does_not_speak_for_a_path_package() {
         )
     };
     let run = |helper_lock: &str| {
-        check_artifacts(
-            &[ArtifactInput {
+        check_with_root(
+            vec![ArtifactInput {
                 lockfile: "tools/x/Cargo.lock".into(),
                 metadata: metadata_in("tools/x", &pkgs, &["host"], &edges),
             }],
@@ -560,5 +611,217 @@ fn the_locks_the_tool_reads_are_the_locks_git_lists() {
     assert_eq!(
         read, listed,
         "the tool must read exactly the locks of the repository"
+    );
+}
+
+// verifies: REQ-MOD-5
+#[test]
+fn dependency_whose_record_licence_differs_from_its_manifest_fails_the_licence_check() {
+    let pkgs: [P; 2] = [
+        ("host", "0.0.0", Some("MIT")),
+        ("dep", "1.0.0", Some("MIT OR Apache-2.0")),
+    ];
+    let edges = [("host", "dep", None)];
+    let record = |recorded: &str| {
+        format!(
+            "@core rutent-stm\n@artifact {VOS_PROGRAM} host MIT\ndep 1.0.0 {recorded} permitted licence-permissive-standing\n"
+        )
+    };
+    let run = |recorded: &str| {
+        artifacts(
+            VOS_PROGRAM,
+            metadata(&pkgs, &["host"], &edges),
+            &record(recorded),
+        )
+    };
+    assert_eq!(run("MIT OR Apache-2.0"), vec![]);
+    // Both permissive, so only the mismatch rule can catch it: in every lock, for a dependency.
+    let got = run("MIT");
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(got[0].reason, ArtifactReason::LicenceMismatch);
+    assert_eq!(got[0].artifact, "dep");
+}
+
+// verifies: REQ-MOD-5
+#[test]
+fn artifact_with_only_a_licence_file_is_checked_or_fails_closed() {
+    let meta = |license_file: &str| {
+        format!(
+            "{{\"packages\":[{{\"id\":\"host 0.0.0\",\"name\":\"host\",\"version\":\"0.0.0\",\"license\":null,\"license_file\":\"{license_file}\",\"source\":null,\"manifest_path\":\"/repo/tools/x/host/Cargo.toml\"}}],\"workspace_root\":\"/repo/tools/x\",\"workspace_members\":[\"host 0.0.0\"],\"resolve\":{{\"nodes\":[{{\"id\":\"host 0.0.0\",\"deps\":[]}}],\"root\":null}}}}"
+        )
+    };
+    let input = |license_file: &str| {
+        vec![ArtifactInput {
+            lockfile: "tools/x/Cargo.lock".into(),
+            metadata: meta(license_file),
+        }]
+    };
+    let root = "@core rutent-stm\n@artifact tools/x/Cargo.lock host MIT\n";
+    let with = |license_file: &str, files: &'static [(&str, &str)]| {
+        let mut inputs = input(license_file);
+        inputs.push(ArtifactInput {
+            lockfile: "Cargo.lock".into(),
+            metadata: metadata_in(
+                "",
+                &[("rutent-stm", "0.0.0", Some("MIT"))],
+                &["rutent-stm"],
+                &[],
+            ),
+        });
+        let read = move |p: &str| {
+            files
+                .iter()
+                .find(|(f, _)| *f == p)
+                .map(|(_, t)| (*t).to_string())
+        };
+        check_artifacts_with(
+            &inputs,
+            &format!("{root}@artifact Cargo.lock rutent-stm MIT\n"),
+            &read,
+        )
+        .expect("fixture parses")
+        .into_iter()
+        .map(|v| v.reason)
+        .collect::<Vec<_>>()
+    };
+    // The header matches the record, relative to the manifest's directory.
+    let ok: &'static [(&str, &str)] = &[(
+        "/repo/tools/x/host/LICENSE",
+        "/* SPDX-License-Identifier: MIT */\n",
+    )];
+    assert_eq!(with("LICENSE", ok), vec![]);
+    // The header differs from the record.
+    let other: &'static [(&str, &str)] = &[(
+        "/repo/tools/x/host/LICENSE",
+        "SPDX-License-Identifier: AGPL-3.0-or-later\n",
+    )];
+    assert_eq!(
+        with("LICENSE", other),
+        vec![ArtifactReason::LicenceMismatch]
+    );
+    // No header, or no file: it fails closed.
+    let bare: &'static [(&str, &str)] = &[(
+        "/repo/tools/x/host/LICENSE",
+        "Permission is hereby granted\n",
+    )];
+    assert_eq!(
+        with("LICENSE", bare),
+        vec![ArtifactReason::LicenceFileUnread]
+    );
+    assert_eq!(with("MISSING", ok), vec![ArtifactReason::LicenceFileUnread]);
+    // `check_artifacts` reads no file, so it fails closed too.
+    let got = check_with_root(
+        input("LICENSE"),
+        "@core rutent-stm\n@artifact tools/x/Cargo.lock host MIT\n",
+    )
+    .expect("fixture parses");
+    assert_eq!(
+        got.iter().map(|v| v.reason).collect::<Vec<_>>(),
+        vec![ArtifactReason::LicenceFileUnread]
+    );
+}
+
+// verifies: REQ-MOD-5
+#[test]
+fn core_lists_check_without_the_root_lock_is_an_error() {
+    let pkgs: [P; 1] = [("host", "0.0.0", Some("MIT"))];
+    let got = check_artifacts(
+        &[ArtifactInput {
+            lockfile: VOS_PROGRAM.into(),
+            metadata: metadata(&pkgs, &["host"], &[]),
+        }],
+        &format!("@core rutent-stm\n@artifact {VOS_PROGRAM} host MIT\n"),
+    );
+    assert!(
+        matches!(&got, Err(e) if e.contains("root lock")),
+        "no root lock must be an error, got {got:?}"
+    );
+}
+
+/// A `cargo metadata` text with a path package `host` (MIT) that depends on the registry package `dep`, which gives
+/// no `license` and the `license_file` `LICENSE`.
+fn dep_with_licence_file_metadata() -> String {
+    "{\"packages\":[\
+{\"id\":\"host 0.0.0\",\"name\":\"host\",\"version\":\"0.0.0\",\"license\":\"MIT\",\"source\":null,\"manifest_path\":\"/repo/tools/x/host/Cargo.toml\"},\
+{\"id\":\"dep 1.0.0\",\"name\":\"dep\",\"version\":\"1.0.0\",\"license\":null,\"license_file\":\"LICENSE\",\"source\":\"registry+https://github.com/rust-lang/crates.io-index\",\"manifest_path\":\"/reg/dep-1.0.0/Cargo.toml\"}],\
+\"workspace_root\":\"/repo/tools/x\",\"workspace_members\":[\"host 0.0.0\"],\"resolve\":{\"nodes\":[\
+{\"id\":\"host 0.0.0\",\"deps\":[{\"pkg\":\"dep 1.0.0\",\"name\":\"dep\",\"dep_kinds\":[{\"kind\":null,\"target\":null}]}]},\
+{\"id\":\"dep 1.0.0\",\"deps\":[]}],\"root\":null}}"
+        .to_string()
+}
+
+// verifies: REQ-MOD-5
+#[test]
+fn dependency_with_only_a_licence_file_is_checked_or_fails_closed() {
+    let record = "@core rutent-stm\n@artifact tools/x/Cargo.lock host MIT\n\
+                  dep 1.0.0 MIT permitted licence-permissive-standing\n";
+    let run = |files: &'static [(&str, &str)]| {
+        let read = move |p: &str| {
+            files
+                .iter()
+                .find(|(f, _)| *f == p)
+                .map(|(_, t)| (*t).to_string())
+        };
+        check_with_root_files(
+            vec![ArtifactInput {
+                lockfile: "tools/x/Cargo.lock".into(),
+                metadata: dep_with_licence_file_metadata(),
+            }],
+            record,
+            &read,
+        )
+        .expect("fixture parses")
+        .into_iter()
+        .map(|v| (v.artifact, v.reason))
+        .collect::<Vec<_>>()
+    };
+    let ok: &'static [(&str, &str)] =
+        &[("/reg/dep-1.0.0/LICENSE", "# SPDX-License-Identifier: MIT\n")];
+    assert_eq!(run(ok), vec![]);
+    // The header says another licence than the record: a mismatch, for a dependency.
+    let other: &'static [(&str, &str)] = &[(
+        "/reg/dep-1.0.0/LICENSE",
+        "SPDX-License-Identifier: AGPL-3.0-or-later\n",
+    )];
+    assert_eq!(
+        run(other),
+        vec![("dep".to_string(), ArtifactReason::LicenceMismatch)]
+    );
+    // No file or no header: the record is not trusted unchecked.
+    assert_eq!(
+        run(&[]),
+        vec![("dep".to_string(), ArtifactReason::LicenceFileUnread)]
+    );
+}
+
+// verifies: REQ-MOD-5
+#[test]
+fn licence_file_with_two_distinct_headers_fails_closed() {
+    let record = "@core rutent-stm\n@artifact tools/x/Cargo.lock host MIT\n\
+                  dep 1.0.0 MIT permitted licence-permissive-standing\n";
+    let run = |text: &'static str| {
+        let read = move |_: &str| Some(text.to_string());
+        check_with_root_files(
+            vec![ArtifactInput {
+                lockfile: "tools/x/Cargo.lock".into(),
+                metadata: dep_with_licence_file_metadata(),
+            }],
+            record,
+            &read,
+        )
+        .expect("fixture parses")
+        .into_iter()
+        .map(|v| v.reason)
+        .collect::<Vec<_>>()
+    };
+    // The first header is the recorded one; a second, different one must not be skipped.
+    assert_eq!(
+        run("SPDX-License-Identifier: MIT\n...\nSPDX-License-Identifier: AGPL-3.0-or-later\n"),
+        vec![ArtifactReason::LicenceFileUnread]
+    );
+    // The same header twice (any spelling of a `/`) is one header.
+    assert_eq!(
+        run("SPDX-License-Identifier: MIT\n...\nSPDX-License-Identifier:   MIT\n"),
+        vec![]
     );
 }
