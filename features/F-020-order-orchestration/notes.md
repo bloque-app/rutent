@@ -9540,9 +9540,13 @@ Sorted as a test artefact, not a Core bug: the contract's `Difference::Holding` 
   `late_answer_the_platform_receives_moves_nothing_twice` and `late_answer_the_log_could_not_record_is_kept_for_the_next_tick`
   (now over that reserve), `an_operation_is_repeated_by_core_carrying_the_operators_permission_onward` (core-authz),
   `a_repeat_of_an_unanswered_operation_counts_for_nothing_towards_a_staging` and the late-answer tests of `module_record.rs`.
-  **Gap (owner `T-025-05`, the form):** no relation of the log ties a `repeat_operation` effect to a segment left unknown at
-  that provider (`status-is-asked-of-the-segments-provider`'s sibling), so the log holds the effect to policy's decision and
-  to Core's own selection alone; a relation is a contract round of its own.
+  **Closed (the coordinator's ruling): core-internal's row `repeat-is-of-an-unsettled-segment-at-its-provider`** (121
+  relations) refuses a `repeat_operation` effect unless its provider is the one the segment's `move_value` went to and that move
+  has no final result nor a permitted confirmation; admission cases `world--decide_repeat`, `world--effect_repeat`, `--missing`
+  (another provider) and `--a-settled-segment`, test `repeat_of_a_segment_that_already_has_an_outcome_is_refused_by_the_log`.
+  The third condition asked for, that the provider declares a safe repeat and no status query, the log can't read: an
+  advertisement is held by commitment alone. Core selects on it (`Jobs::repeat_unknown`, from the catalogue's accepted
+  declaration) and the platform refuses a repeat the provider doesn't declare (`DuplicateTransaction`).
 - **M3: the scan leaves out a holding raise's `by`, and nothing else of it.** `without_the_difference` nulls that one value in
   the records and in the log read back; `secret_planted_elsewhere_in_a_holding_raise_is_still_found` is the control (a secret in
   another field of a holding raise is found, as is the balance itself put in another field). **Flag for the security review
@@ -9564,7 +9568,7 @@ counting the check as not run) turn `an_unreadable_account_is_read_again_alone_a
 `unknown_segment_is_carried_out_again_on_a_decided_effect_at_its_providers_cadence` red, and counting the repeat towards a
 staging `a_repeat_of_an_unanswered_operation_counts_for_nothing_towards_a_staging`; M3's whole-record exclusion
 `secret_planted_elsewhere_in_a_holding_raise_is_still_found`; L1 and L2 the two late-answer tests of `module_record.rs`; L6
-`holding_balance_whose_clock_fails_after_its_effect_still_has_its_result_recorded`.
+`holding_balance_whose_clock_fails_after_its_effect_still_has_its_result_recorded`. The new relation, each half alone (the provider, the outcome) turns `repeat_of_a_segment_that_already_has_an_outcome_is_refused_by_the_log` red.
 
 ## T-020-65: no provider held for good, and the public-node listing made a rule
 
