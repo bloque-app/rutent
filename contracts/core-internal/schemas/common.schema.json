@@ -1330,7 +1330,8 @@
         "node",
         "provider",
         "transaction",
-        "about"
+        "about",
+        "by"
       ],
       "properties": {
         "kind": {
@@ -1363,6 +1364,13 @@
           "items": {
             "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
           }
+        },
+        "by": {
+          "description": "Who asked: a segment's grading, or the tick's read of the publishers' records (T-020-67). Kept in the log so a reopened Core counts what each has asked.",
+          "enum": [
+            "grading",
+            "tick"
+          ]
         }
       }
     }

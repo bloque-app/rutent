@@ -1495,3 +1495,60 @@ fn listing_the_catalogue_refused_is_not_completed_done_on_reopen() {
         "no setting of the operator's"
     );
 }
+
+/// A listing the catalogue takes is completed `done` on reopen (`T-020-67`, the milestone reviewer's check of `T-020-66`:
+/// the converse of the refused listing): the operator's listing of a node nobody claims is decided and its effect appended,
+/// and Core stops before its result. The reopened Core completes the result from what the catalogue answers, which lists
+/// it: `done`, the node public, and the setting the operator's.
+// verifies: NFR-6
+#[test]
+fn listing_the_catalogue_took_is_completed_done_on_reopen() {
+    use rutent_contracts::core_internal::{
+        Action, CatalogueChange, Entry, OperatorSetting, Outcome, What,
+    };
+    const FREE: &str = "sim-free-network";
+    let scenario = rutent_scenarios::harness::Scenario::new(
+        "private nodes",
+        "AC-29",
+        given(&[IN, EXCHANGE, RAMP, OUT]),
+    );
+    let (core, _) = scenario.core(1, &mut rutent_scenarios::assembly::machine::Reference);
+    let mut core = core;
+    assert!(!core.catalogue().nodes().is_public(FREE));
+    let listed: OperatorSetting = serde_json::from_value(serde_json::json!({
+        "setting": "public_node", "node": { "network": FREE }, "listed": true,
+    }))
+    .expect("a setting");
+    let effect = core
+        .effect_without_its_result(Action::ChangeCatalogue {
+            change: CatalogueChange::SetSetting,
+            provider: rutent_scenarios::kit::operator_login().party,
+            version: None,
+            tuple: None,
+            class: None,
+            advertising_keys: Vec::new(),
+            statement_key: None,
+            setting: Some(Box::new(listed)),
+            versions: Vec::new(),
+            public_network: None,
+        })
+        .expect("decided, its effect appended");
+    let core = scenario.reopen(core, 1, &mut rutent_scenarios::assembly::machine::Reference);
+    let completed = core.log().entries().iter().find_map(|(_, e)| match e {
+        Entry::Verified(v) => match &v.what {
+            What::Result { effect: e } if *e == effect => Some(v.outcome),
+            _ => None,
+        },
+        Entry::Stated(_) => None,
+    });
+    assert_eq!(
+        completed,
+        Some(Outcome::Done {}),
+        "completed from the catalogue's taking it"
+    );
+    assert!(core.catalogue().nodes().is_public(FREE), "listed");
+    assert!(
+        core.settings().public_node(FREE).is_some(),
+        "the setting is the operator's"
+    );
+}

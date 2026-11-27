@@ -83,6 +83,12 @@ pub trait Modules {
         Answered::Refused(PlatformRefusal::NotHandled)
     }
 
+    /// The longest an operation may take on this platform: the bound an answer is judged within from its question's time
+    /// (`T-020-67`). The platform's own default unless the deployment's differs.
+    fn operation_deadline(&self) -> std::time::Duration {
+        rutent_prov::module::platform::OPERATION_DEADLINE
+    }
+
     /// Hands the module of `provider` `question`, the operator's question of its record of a private node, in its
     /// envelope signed with the operator key, as `effect` (the permitted `read_node_record`) lets (`REQ-ORD-41`,
     /// `REQ-AUZ-1`, `T-020-58`). The question moves nothing; Core holds the answer to it with
@@ -146,6 +152,10 @@ pub trait Modules {
 }
 
 impl<W: World> Modules for Platform<W> {
+    fn operation_deadline(&self) -> std::time::Duration {
+        Platform::deadline(self)
+    }
+
     fn begin_segment(
         &mut self,
         provider: &Id,
@@ -417,14 +427,17 @@ pub trait Grading {
 
     /// What came back of a record `wanted`: the question as put and the answer as received, or `None` where nothing
     /// came back. Whether the answer was taken as a record: where it wasn't, the read is tried again when the segment is
-    /// graded again, and a read that came to nothing changes nothing the grading holds.
+    /// graded again (at the retry cadence, and no more than [`MAX_RECORD_TRIES`](super::MAX_RECORD_TRIES) times,
+    /// `T-020-67`), and a read that came to nothing changes nothing the grading holds. `received` is Core's time when the
+    /// answer came: the time it is judged at, as far as the question's own deadline allows.
     fn record_read(
         &mut self,
         order: &Id,
         wanted: &RecordWanted,
         answer: Option<(&Statement<Operation>, &[u8])>,
+        received: &Timestamp,
     ) -> bool {
-        let _ = (order, wanted, answer);
+        let _ = (order, wanted, answer, received);
         true
     }
 

@@ -181,6 +181,8 @@ struct Fake {
     record_questions: usize,
     /// The log refuses the result entry of a read of a private node's record.
     refuse_read_results: bool,
+    /// How far Core's clock moves between one run of the part and the next, in seconds.
+    step_between_runs: u64,
 }
 
 impl Modules for Fake {
@@ -342,6 +344,7 @@ fn fake() -> Fake {
         unknown: false,
         record_questions: 0,
         refuse_read_results: false,
+        step_between_runs: 0,
     }
 }
 
@@ -547,6 +550,7 @@ fn run_over_each_with(
 ) -> (Vec<Ran>, KeptLog) {
     let record = record_naming_a_call();
     let clock = std::rc::Rc::clone(&modules.clock);
+    let modules_step = modules.step_between_runs;
     let mut log = KeptLog(Vec::new(), modules.refuse_read_results);
     let mut store = Store::default();
     let mut key = TestKey(SigningKey::from_bytes(&[7; 32]));
@@ -608,6 +612,8 @@ fn run_over_each_with(
             channel: &mut rutent_core_orch::notice::Unbuilt,
         };
         ran.push(segments.run_part(&mut parts, &live).unwrap());
+        let now = clock.0.get();
+        clock.0.set(Reading::at(now.seconds + modules_step));
     }
     (ran, log)
 }
@@ -946,6 +952,7 @@ impl Grading for ReadsTwiceOver {
         _: &Id,
         _: &RecordWanted,
         answer: Option<(&Statement<Operation>, &[u8])>,
+        _: &rutent_contracts::router_api::Timestamp,
     ) -> bool {
         self.reads.push(answer.is_some());
         answer.is_some()
@@ -986,14 +993,15 @@ impl Decisions for RefusingReads {
     }
 }
 
-/// A read of a private node's record that came to nothing is tried again when its segment is graded again, and one that
-/// was taken is not; a read policy refused is not asked again either (`REQ-ORD-41`, `T-020-58`, the review's M1).
+/// A read of a private node's record that came to nothing is tried again when its segment is graded again once the retry
+/// cadence has passed (an hour: the runs here are an hour apart), and one that was taken is not; a read policy refused is not asked again either (`REQ-ORD-41`, `T-020-58`, the review's M1).
 // verifies: REQ-ORD-41
 #[test]
 fn a_read_that_failed_is_tried_again_and_one_taken_or_refused_is_not() {
     // The first question gets no answer, the second is taken: asked twice over three gradings, and no third time.
     let mut modules = fake();
     modules.settles_the_withdrawal = true;
+    modules.step_between_runs = 3600;
     let mut grading = ReadsTwiceOver {
         graded: 0,
         reads: Vec::new(),
@@ -1011,6 +1019,7 @@ fn a_read_that_failed_is_tried_again_and_one_taken_or_refused_is_not() {
     // Refused by policy: decided once, never asked, never decided again.
     let mut modules = fake();
     modules.settles_the_withdrawal = true;
+    modules.step_between_runs = 3600;
     let mut grading = ReadsTwiceOver {
         graded: 0,
         reads: Vec::new(),
@@ -1033,6 +1042,7 @@ fn a_read_that_failed_is_tried_again_and_one_taken_or_refused_is_not() {
     // read is tried again next time.
     let mut modules = fake();
     modules.settles_the_withdrawal = true;
+    modules.step_between_runs = 3600;
     modules.refuse_read_results = true;
     let mut grading = ReadsTwiceOver {
         graded: 0,
@@ -1050,6 +1060,67 @@ fn a_read_that_failed_is_tried_again_and_one_taken_or_refused_is_not() {
         "an answer is used only once its result is in the log: {:?}",
         grading.reads
     );
+}
+
+/// A grading that reads one private node's record at each grading, takes no answer as a record, and holds the segment.
+struct NeverTakes;
+
+impl Grading for NeverTakes {
+    fn records_wanted(&mut self, _: &ToGrade<'_>) -> Vec<RecordWanted> {
+        vec![RecordWanted {
+            node: "ledger-in".into(),
+            provider: "reserve-bank-co".into(),
+            about: vec!["tx-about".into()],
+        }]
+    }
+
+    fn record_read(
+        &mut self,
+        _: &Id,
+        _: &RecordWanted,
+        _: Option<(&Statement<Operation>, &[u8])>,
+        _: &rutent_contracts::router_api::Timestamp,
+    ) -> bool {
+        false
+    }
+
+    fn grade(&mut self, _: &ToGrade<'_>) -> Graded {
+        Graded::Waits(Short::Unreadable)
+    }
+}
+
+/// Over how many gradings, `step` seconds apart, a read that is never taken is put.
+fn questions_over(gradings: usize, step: u64) -> usize {
+    let mut modules = fake();
+    modules.settles_the_withdrawal = true;
+    modules.step_between_runs = step;
+    run_over_each_with(
+        &mut modules,
+        (0..gradings).map(|_| admitting()).collect(),
+        &mut NeverTakes,
+        &mut Permitting(0),
+    );
+    modules.record_questions
+}
+
+/// A read whose answer Core didn't take is asked again on the retry cadence, not at every grading: a segment graded ten
+/// times within the hour puts it once, and one graded ten times an hour apart puts it ten times (`REQ-ORD-41`, `NFR-5`,
+/// `T-020-67`).
+// verifies: REQ-ORD-41, NFR-5
+#[test]
+fn a_read_not_taken_is_asked_again_on_the_retry_cadence_and_not_at_every_grading() {
+    assert_eq!(questions_over(10, 0), 1, "within the hour: asked once");
+    assert_eq!(questions_over(10, 60), 1, "ten minutes on: still once");
+    assert_eq!(questions_over(10, 3600), 10, "an hour apart: each time");
+}
+
+/// A read whose answer Core never takes is asked no more than the cap, however long the segment waits (`REQ-ORD-41`,
+/// `NFR-5`, `T-020-67`).
+// verifies: REQ-ORD-41, NFR-5
+#[test]
+fn a_read_not_taken_is_asked_no_more_than_the_cap_however_long_the_segment_waits() {
+    let cap = rutent_core_orch::segments::MAX_RECORD_TRIES as usize;
+    assert_eq!(questions_over(cap + 10, 3600), cap);
 }
 
 /// How many withdrawals the log records as done: a result that counted.

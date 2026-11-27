@@ -199,3 +199,116 @@ fn reversal_of_a_segment_begun_before_a_cutover_is_taken_when_a_holdouts_answer_
         "the failed provider's answer under the old version is taken: {asked:?}"
     );
 }
+
+/// A reserve's deposit result that says the payment came back, signed with its statements key under protocol `version`.
+fn returned_under(core: &rutent_scenarios::assembly::Core, version: &str) -> Vec<u8> {
+    let mut statement = serde_json::json!({
+        "deployment": rutent_scenarios::assembly::context().deployment,
+        "protocol_version": version,
+        "shape": rutent_contracts::provider_role::RESULT_SHAPE,
+        "maker": RESERVE,
+        "made_at": core.clock.timestamp().as_str(),
+        "signature": { "scheme": "ed25519", "key": "", "value": "" },
+        "statement": {
+            "kind": "deposit",
+            "transaction": "tx-returned",
+            "outcome": {
+                "status": "failed",
+                "evidence": [{ "grade": 3, "reference": format!("{RESERVE}:returned-1"), "by": RESERVE }],
+            },
+        },
+    });
+    rutent_conformance::signing::sign_value(&mut statement, &statements_key(RESERVE));
+    serde_json::to_vec(&statement).expect("bytes")
+}
+
+/// A statement about an order by a provider whose own segment of it began after a cutover is void under the old version,
+/// though the order's first segment began before it (`REQ-PRT-2`, `THR-64`, `T-020-54`, `T-020-67`): read by the versions the
+/// maker's segment began under, the old version is past its date; read by the earliest segment's, as it was, it was still in
+/// force and the statement was taken. The same statement under the current version is taken.
+// verifies: REQ-PRT-2, THR-64
+#[test]
+fn statement_about_an_order_by_a_provider_whose_segment_began_after_the_cutover_is_void_under_the_old_version_end_to_end()
+ {
+    use rutent_core_orch::reversal::ReversalError;
+    use rutent_scenarios::assembly::StepError;
+    let (mut core, session) = core_with("AC-5", &[RESERVE]);
+    // The old version is in force until the cutover, which falls between the order's two segments: the first begins
+    // before it, and the deposit, which begins after the first has taken its 400 s, after it.
+    let t0 = core.clock.instant().0;
+    core.set_setting(&cutover(
+        &rutent_prov::catalogue::Instant(t0 + 200)
+            .rfc3339()
+            .expect("a time"),
+    ))
+    .expect("the operator sets the cutover");
+    core.faults.operation_takes = 400;
+    let (order, _) = run(
+        &mut core,
+        within("req-between", &session, AMOUNT, RESERVE, OTHER),
+    );
+    core.faults.operation_takes = 0;
+    assert_eq!(
+        state(&mut core, &order),
+        rutent_contracts::state_machine::OrderState::Complete
+    );
+    let old = core.returned(&order, &returned_under(&core, OLD));
+    assert!(
+        matches!(old, Err(StepError::Reversal(ReversalError::Unattributable))),
+        "the old version is past its date for the maker's later segment: {old:?}"
+    );
+    core.returned(
+        &order,
+        &returned_under(&core, rutent_contracts::provider_role::VERSION),
+    )
+    .expect("the same statement under the current version is taken");
+}
+
+/// The original run's own late answer, not a repeat's: a reserve that declares a status query (so Core asks, never repeats)
+/// answers its deposit late; the date passes, and the answer Core gets to its status question, under the old version the
+/// holdout provider speaks, is taken for a segment begun before the date (`REQ-PRT-2`, `REQ-PRT-4`, `T-020-54`,
+/// `T-020-67`). The holdout is the fleet's one reserve, `RESERVE`, whose answer is the one asserted on.
+// verifies: REQ-PRT-2, REQ-PRT-4
+#[test]
+fn status_answer_of_a_holdouts_late_deposit_is_taken_after_the_cutover_for_a_segment_begun_before_it()
+ {
+    let scenario = Scenario::new("cutover", "AC-5", given(&[RESERVE])).holdout(OLD, &at(3_600));
+    let (mut core, _) = scenario.core(1, &mut Reference);
+    let session = core.open_session(&kit::customer()).expect("a session");
+    assert!(
+        core.catalogue().accepted_advertisement(RESERVE).is_some(),
+        "the holdout's advertisement was taken before its cutover"
+    );
+    let order = accepted(
+        &mut core,
+        within("req-late-status", &session, AMOUNT, RESERVE, OTHER),
+    );
+    core.world()
+        .script_for(RESERVE, "deposit", Behaviour::late());
+    let ran = core.run(&order).expect("the order ran");
+    let segments = segments_of(&ran);
+    assert!(
+        matches!(segments[0].outcome, SegmentOutcome::Settled { .. }),
+        "{segments:?}"
+    );
+    assert!(
+        matches!(segments[1].outcome, SegmentOutcome::Unknown(_)),
+        "{segments:?}"
+    );
+    core.set_setting(&cutover(&at(0)))
+        .expect("the operator moves the cutover");
+    core.clock.advance(7_200);
+    core.set_cadence(rutent_core_orch::schedule::Job::StatusAsks, 0);
+    core.set_cadence(rutent_core_orch::schedule::Job::StuckReports, u64::MAX);
+    let round = core.tick();
+    let tried = round
+        .statuses
+        .iter()
+        .find(|t| t.unknown.provider == RESERVE)
+        .expect("the holdout's unknown deposit is asked its status");
+    assert!(tried.asked.is_ok(), "{tried:?}");
+    assert!(
+        tried.kept.is_some(),
+        "the holdout's answer, under the old version, is kept for a segment begun before the date: {tried:?}"
+    );
+}

@@ -1161,6 +1161,11 @@ impl<W: World> Platform<W> {
         }
     }
 
+    /// The operation deadline: [`OPERATION_DEADLINE`] unless [`Platform::set_deadline`] set another.
+    pub fn deadline(&self) -> Duration {
+        self.deadline
+    }
+
     /// Sets the operation deadline, [`OPERATION_DEADLINE`] by default.
     pub fn set_deadline(&mut self, deadline: Duration) {
         self.deadline = deadline;

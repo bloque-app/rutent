@@ -885,6 +885,44 @@ fn a_holdout_at_a_cutover_is_refused_after_its_date() {
     ));
 }
 
+/// An advertisement accepted before its version's cutover leaves routing at the date: its tuples are in the snapshot's
+/// left-out list as past the cutover from then on, and not before, so a holdout that never re-advertised isn't routed through
+/// (`REQ-PRT-4`, `THR-64`, `T-020-67`).
+// verifies: REQ-PRT-4, THR-64
+#[test]
+fn old_version_advertisement_accepted_before_its_cutover_is_dropped_from_routing_at_the_date() {
+    use rutent_prov::catalogue::LeftOutReason;
+    let ad = under(
+        "3.0.0",
+        &bytes(keys_of_bridge_pay(), 2_001, &advertising_key("bridge-pay")),
+        &advertising_key("bridge-pay"),
+    );
+    let mut catalogue = trusting();
+    catalogue.set_cutover("3.0.0", &Instant(5_000).rfc3339().unwrap());
+    assert_eq!(catalogue.join(&ad, Instant(4_999)), Ok(()));
+    let past = |at: u64| -> Vec<LeftOutReason> {
+        catalogue
+            .snapshot("snap-1", Instant(at))
+            .expect("a snapshot")
+            .left_out
+            .into_iter()
+            .map(|l| l.reason)
+            .filter(|r| matches!(r, LeftOutReason::PastCutover(_)))
+            .collect()
+    };
+    assert!(
+        past(4_999).is_empty(),
+        "before the date it is routed as any"
+    );
+    let after = past(5_000);
+    assert!(!after.is_empty(), "from the date it is left out");
+    assert!(
+        after
+            .iter()
+            .all(|r| *r == LeftOutReason::PastCutover("3.0.0".into()))
+    );
+}
+
 /// Until the cutover date a provider is read under either version, so it re-signs under the current one at its own
 /// pace (`REQ-PRT-4`).
 // verifies: REQ-PRT-4

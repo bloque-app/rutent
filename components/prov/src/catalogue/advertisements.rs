@@ -314,6 +314,7 @@ impl Catalogue {
             ad.provider.clone(),
             Joined {
                 advertisement: ad.clone(),
+                protocol_version: statement.protocol_version.clone(),
                 made_at: Instant(made_at.secs),
             },
         );

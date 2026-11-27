@@ -1,6 +1,12 @@
 # core-internal changelog
 
 ## 1.0.0
+- `T-020-67` (the milestone reviewer's check of `T-020-58`, review round 2 of #351; `REQ-ORD-41`, `NFR-5`):
+  `Action::ReadNodeRecord` gains `by` (`grading` or `tick`, `ReadBy`), who asked: a segment's grading, or the tick's read of the
+  publishers' records, so a reopened Core counts each one's reads from the log and a restart after many tick reads leaves
+  the grading its tries. Required; folded into this unreleased version. Fixtures: valid `decision-request-to-read-a-private-nodes-record-by-the-tick`;
+  invalid `…-without-who-asked` and `…-naming-another-asker` (two schema rules more). No relation of its own, so the relation
+  count is unmoved. Ignorable: no. (DEC-4, DEC-20, T-020-67)
 - The rule switch is the crate's own (`T-020-54`): `without_rule` is re-exported from `rule_switch`, which router-api's checks
   read too, so one test helper reaches both contracts and neither names the other. No shape or rule changed here.
   (DEC-4, DEC-20, T-020-54)

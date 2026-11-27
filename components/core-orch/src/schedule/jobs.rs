@@ -459,13 +459,17 @@ struct ToCheck {
     wallet: Option<HoldingReading>,
 }
 
-/// What Core's segments rest at `node` for each order (`Segments::resting_totals`): each order once, as its name and its
-/// amount.
-fn held_by(resting: &BTreeMap<(String, String), Amount>, node: &str) -> Vec<(String, String)> {
+/// What Core's segments rest at `node` in `asset` for each order (`Segments::resting_totals_by_asset`): each order once, as
+/// its name and its amount. A holding account holds one asset, so it is held to its own (`T-020-67`).
+fn held_by(
+    resting: &BTreeMap<(String, String, String), Amount>,
+    node: &str,
+    asset: &str,
+) -> Vec<(String, String)> {
     resting
         .iter()
-        .filter(|((at, _), _)| at == node)
-        .map(|((_, order), amount)| (order.clone(), amount.as_str().to_owned()))
+        .filter(|((at, _, held_asset), _)| at == node && held_asset == asset)
+        .map(|((_, order, _), amount)| (order.clone(), amount.as_str().to_owned()))
         .collect()
 }
 
@@ -511,14 +515,14 @@ impl Jobs<'_> {
             .map(|a| a.node)
             .chain(self.ports.publisher_accounts().into_iter().map(|a| a.node))
             .collect();
-        let resting = self.ports.segments().resting_totals();
+        let resting = self.ports.segments().resting_totals_by_asset();
         let mut checks = Vec::new();
         for account in public {
             let reading = match &at {
                 Some(at) => self
                     .read_balance(&account.node, &account.provider, &account.asset)
                     .and_then(|balance| {
-                        let core = held_by(&resting, &account.node);
+                        let core = held_by(&resting, &account.node, &account.asset);
                         reading_of(
                             &account.node,
                             &account.provider,
@@ -544,7 +548,8 @@ impl Jobs<'_> {
                         .iter()
                         .map(|h| (h.order.clone(), h.amount.to_string()))
                         .collect();
-                    let core: Vec<(String, String)> = held_by(&resting, &account.node);
+                    let core: Vec<(String, String)> =
+                        held_by(&resting, &account.node, &account.asset);
                     let same = total(host.iter().map(|(_, a)| a.as_str()))
                         == total(core.iter().map(|(_, a)| a.as_str()))
                         && total(core.iter().map(|(_, a)| a.as_str())).is_some();
@@ -587,7 +592,7 @@ impl Jobs<'_> {
                             account.decimals,
                             &balance,
                             Word::Publisher,
-                            &held_by(&resting, &account.node),
+                            &held_by(&resting, &account.node, &account.asset),
                             at,
                         )
                         .ok_or((
@@ -604,14 +609,19 @@ impl Jobs<'_> {
                 wallet: None,
             });
         }
-        // The register is the definition of what is checked: a node where Core's own segments rest value, which the
-        // register names in neither list, is raised as not read, never silently left out (`T-020-63`). The nodes walked
-        // are the ones Core rests value at, not the catalogue's holders: value at a node with no holder listed is
-        // checked by nothing else. A node where Core rests nothing is not: the scenario kit lists a holder at every
-        // node its providers reach, which no register names, and a check of an account Core rests nothing in is a check
-        // of nothing.
-        let resting_nodes: BTreeSet<&str> = resting.keys().map(|(node, _)| node.as_str()).collect();
-        for node in resting_nodes {
+        // The register is the definition of what is checked: a holding account the catalogue lists, or a node where Core's
+        // own segments rest value, which the register names in neither list, is raised as not read, never silently left
+        // out, whether or not value rests there (`T-020-63`, `T-020-67`).
+        let mut unregistered: BTreeSet<String> =
+            resting.keys().map(|(node, _, _)| node.clone()).collect();
+        unregistered.extend(
+            self.ports
+                .catalogue()
+                .nodes()
+                .holders()
+                .map(|(node, _)| node.to_owned()),
+        );
+        for node in &unregistered {
             if registered_all.contains(node) || !wanted(node) {
                 continue;
             }
@@ -620,11 +630,11 @@ impl Jobs<'_> {
                 |holder| holder.reference.clone(),
             );
             checks.push(ToCheck {
-                node: node.to_owned(),
+                node: node.clone(),
                 provider,
                 reading: Err((
                     HoldingNotRead::NotRegistered {},
-                    "Core rests value at a node the register of holding accounts doesn't name"
+                    "the register of holding accounts doesn't name a holding account the catalogue lists, or a node where Core rests value"
                         .to_owned(),
                 )),
                 wallet: None,
@@ -1230,31 +1240,62 @@ impl Duties for Jobs<'_> {
                     operator: &actors.operator,
                     core: &actors.core,
                 };
-                if let crate::segments::Read::Answered(question, bytes) =
-                    segments.read_node_record(parts, &read)
+                // Held to its own due time and bound, and not asked once the tick has taken the record
+                // (`T-020-67`).
+                if let Some(crate::segments::Read::Answered(question, bytes, received)) =
+                    segments.read_node_record_on_tick(parts, &read)
                 {
-                    answers.push((order.clone(), node.clone(), question, bytes));
+                    // What the tick read is the grading's books' too: a segment that waits long is graded with the record
+                    // the publisher has by then, whatever the grading's own reads came to.
+                    let wanted = crate::segments::RecordWanted {
+                        node: node.clone(),
+                        provider: provider.clone(),
+                        about: about.iter().map(|t| t.as_str().to_owned()).collect(),
+                    };
+                    let fed = parts.grading.record_read(
+                        order,
+                        &wanted,
+                        Some((&question, bytes.as_slice())),
+                        &received,
+                    );
+                    answers.push((
+                        order.clone(),
+                        segment.clone(),
+                        node.clone(),
+                        provider.clone(),
+                        question,
+                        bytes,
+                        fed,
+                    ));
                 }
             }
         });
         let at = self.ports.clock().now().floor();
-        answers
-            .into_iter()
-            .filter_map(|(order, node, question, bytes)| {
-                crate::closing::publishers::taken(
-                    self.ports.catalogue(),
-                    at,
-                    &question.statement,
-                    &bytes,
-                )
-                .ok()
-                .map(|record| Published {
+        let mut published = Vec::new();
+        let mut taken = Vec::new();
+        for (order, segment, node, provider, question, bytes, fed) in answers {
+            if let Ok(record) = crate::closing::publishers::taken(
+                self.ports.catalogue(),
+                at,
+                &question.statement,
+                &bytes,
+            ) {
+                if fed {
+                    taken.push((order.clone(), segment, node.clone(), provider));
+                }
+                published.push(Published {
                     order,
                     node,
                     record,
-                })
-            })
-            .collect()
+                });
+            }
+        }
+        self.ports.with_segments(&mut |segments, _| {
+            for (order, segment, node, provider) in &taken {
+                segments.note_record_taken(order, segment, node, provider);
+            }
+        });
+        published
     }
 
     fn unknown_segments(&self) -> Vec<Unknown> {
@@ -1706,14 +1747,12 @@ mod tests {
     }
 
     /// A node the catalogue lists a holding account at that the deployment's register doesn't name is raised as not
-    /// read only where Core's own segments rest value there: where they rest none, nothing is read or raised, as the
-    /// scenario kit lists a holder at every node its providers reach, which no register names. With value resting there,
-    /// it is raised (the assembled Core's `holder_the_register_does_not_name_is_raised_as_not_read`,
-    /// `REQ-AUD-15`, `T-020-63`).
+    /// read whether or not Core's own segments rest value there: the register is the definition of what is checked, and
+    /// what it leaves out is said, not skipped. Nothing of its module is asked (`REQ-AUD-15`, `T-020-63`, `T-020-67`: the
+    /// first build raised it only where value rested).
     // verifies: REQ-AUD-15
     #[test]
-    fn holder_with_nothing_of_cores_resting_in_it_is_not_raised_though_the_register_does_not_name_it()
-     {
+    fn holder_with_nothing_of_cores_resting_in_it_is_raised_though_the_register_does_not_name_it() {
         let mut deployment = bare();
         deployment.register = false;
         deployment
@@ -1730,7 +1769,47 @@ mod tests {
             .expect("its holding account");
         let mut schedule = Schedule::new();
         let round = schedule.tick(1_764_000_000, &mut Jobs::new(&mut deployment));
-        assert!(round.holding.is_empty(), "{:?}", round.holding);
-        assert!(deployment.told.unread.is_empty());
+        assert_eq!(round.holding.len(), 1, "{:?}", round.holding);
+        assert_eq!(round.holding[0].node, "bank-ledger");
+        assert!(round.holding[0].reading.is_err(), "{:?}", round.holding);
+        assert_eq!(deployment.told.unread.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod held_by_tests {
+    use super::*;
+
+    fn amount(text: &str) -> Amount {
+        Amount::new(text).expect("an amount")
+    }
+
+    /// At a node resting two assets, each holding account is compared with what rests in its own asset, not the sum of both:
+    /// a short in one is not hidden behind an over in the other, nor a difference raised for the sum (`REQ-AUD-6`,
+    /// `INV-1`, `T-020-67`).
+    // verifies: REQ-AUD-6
+    #[test]
+    fn holding_check_at_a_node_resting_two_assets_compares_each_account_with_its_own_asset() {
+        let resting: BTreeMap<(String, String, String), Amount> = [
+            (("ledger", "ord-1", "COP"), "500"),
+            (("ledger", "ord-1", "USDC"), "70"),
+            (("ledger", "ord-2", "COP"), "100"),
+            (("other", "ord-1", "COP"), "9"),
+        ]
+        .into_iter()
+        .map(|((n, o, a), v)| ((n.to_owned(), o.to_owned(), a.to_owned()), amount(v)))
+        .collect();
+        assert_eq!(
+            held_by(&resting, "ledger", "COP"),
+            [
+                ("ord-1".to_owned(), "500".to_owned()),
+                ("ord-2".to_owned(), "100".to_owned())
+            ]
+        );
+        assert_eq!(
+            held_by(&resting, "ledger", "USDC"),
+            [("ord-1".to_owned(), "70".to_owned())]
+        );
+        assert!(held_by(&resting, "ledger", "EUR").is_empty());
     }
 }

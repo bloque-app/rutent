@@ -1,0 +1,22 @@
+{
+  "request": "req-101",
+  "caller": {
+    "party": "operator",
+    "acts": "rutent-operator",
+    "role": "operator",
+    "kind": "component"
+  },
+  "action": {
+    "kind": "read_node_record",
+    "order": "ord-1",
+    "segment": "p1-s3",
+    "node": "acme-ledger",
+    "provider": "acme-internal-rail",
+    "transaction": "tx-record-1",
+    "about": [
+      "tx-p1-s3"
+    ],
+    "by": "the-operator"
+  },
+  "at": "2026-11-10T09:00:00Z"
+}

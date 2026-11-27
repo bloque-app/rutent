@@ -9070,7 +9070,8 @@ below), `components/prov/src/proxy/` (`signing.rs`, `calls.rs`) and `components/
   not an answer to this kind of question). It takes the question, not its signed statement, so Core's tick, which hands the
   assembly an operation to sign, needs no envelope to hold an answer. That the record is signed with a key its maker
   lists, and the node and publisher are ones its maker declares, stay `check_inner_segments`'s. Fixtures: five valid,
-  eight invalid; the changelog entry says `Ignorable: no`.
+  eight invalid at the first build, ten in round 4 (counted from the files, as round 4 says); the changelog entry says
+  `Ignorable: no`.
 - **Where the other contracts follow.** `OperationKind::InnerSegmentsQuery` (module-interface 5.0.0, so a module can list it
   in `handles`), barred from a declaration's `calls` (`DeclaredCallOfAnOperatorsQuestion`), and from router-api's `call_kind`
   and its two checks, each with one invalid fixture. These are forced by the exhaustive matches the variant breaks and by
@@ -9123,9 +9124,9 @@ below), `components/prov/src/proxy/` (`signing.rs`, `calls.rs`) and `components/
 
 1. A record that isn't taken leaves the node with nothing recorded (`NothingRecorded`); a provider's answer that isn't the
    record of the node asked is never partly used.
-2. Core asks every provider of the publisher whose advertisement declares the node, at each grading of a segment that
-   reads it, and on each tick for each node of a started order's route: no cadence, no cache. Reversible by giving the
-   question a cadence (the schedule's cadences are `T-020-48`'s).
+2. Core asks every provider of the publisher whose advertisement declares the node, at the first grading of a segment that
+   reads it and again, where the answer wasn't taken, on a cadence and up to a cap (gap 5, `T-020-67`; the first build
+   asked at every grading), and on each tick for each node of a started order's route.
 3. Providers come in name order (the catalogue's), so a round's records are in that order, where the world read gave
    install order; `Books::recorded` still reads them in install order.
 4. A question a module can't answer (a refusal, no answer, `NotHandled`) is no record, and no raise: the replay's
@@ -9138,8 +9139,8 @@ gap is fixed now), below.
 
 1. **`holding_balance` has the same assembly-only gap, not fixed here.** Core's reads of a holding account's balance go
    through `Ports::ask_as_operator`, which the assembly answers with `Platform::handle`: no decided action, no effect, and
-   no production path in core-orch. Routed to `T-020-63`, the holding-check row. `ask_as_operator` serves no read of a
-   private node's record any more (round 3 below).
+   no production path in core-orch. Closed by `T-020-63` (its section below: `Segments::read_holding_balance`, decided as
+   Core). `ask_as_operator` serves no read of a private node's record any more (round 3 below).
 2. `T-020-59` and `T-020-60` still add their kinds to the three call lists; no fold collision beyond those lines.
 3. `Tamper::Node` is refused by the answer's own node check before `check_inner_segments`, so the declared-node rule is
    reached by `Tamper::Publisher` only.
@@ -9147,10 +9148,22 @@ gap is fixed now), below.
    the node (the publishers' register does, in Core's catalogue, when Core chooses the providers), nor that its
    transaction is fresh beyond `status-is-asked-under-a-fresh-transaction` counting it among those named. A relation
    would need the catalogue's declarations in the log's reading, which `T-020-54`'s sources don't carry. Owner: the lead.
-5. A segment is asked about once for each node and provider while a Core lives (`Segments::records_read`), so a segment
-   graded again while it waits appends nothing (`closing.rs`'s "nothing appended while it waits" holds). The books keep what
-   was read; a record that changes while the segment waits is read at the next segment's grading, and a reopened Core reads
-   again, once. Default, reversible: re-reading on each grading would give a fresher record at the cost of an entry triple a try.
+5. **A read Core didn't take is asked again on a cadence, a bounded number of times** (`T-020-67`; the first build marked a read
+   done only when policy refused it or a record was taken, so a `not_known`, a refused answer or a failed read was asked
+   at every grading, an entry triple a try, for as long as the segment waited). A read taken or refused by policy is
+   asked once for each segment, node and provider while a Core lives (`Segments::records_read`), so a segment graded again
+   while it waits appends nothing for it. A read whose answer wasn't taken is asked again only once the retry cadence has
+   passed since the last (`Segments::record_retry_seconds`: the schedule's own for the publishers' records, 3600 s, or the
+   deployment's `set_record_retry_seconds`), and no more than `MAX_RECORD_TRIES` (24) times for a segment, node and
+   provider, counted from the log's `read_node_record` effects (`Segments::record_tries`), so a reopened Core rebuilds
+   the count from the log and doesn't start again; it asks once at once after a restart (the books were lost with it), then
+   by the cadence. Past the
+   cap Core asks no more and the segment waits on what it waits on, which the stuck check reports. A record the log holds for the order, node and maker
+   doesn't count toward the cap after a restart. The tick's read (`Job::PublishersRecords`) is on its own cadence and not capped; its
+   reads count toward the same segment's tries when it names that segment. The books keep what was read; a record that
+   changes while the segment waits is read at the next segment's grading. Default, reversible. The retry is the
+   operator's `publishers_records` cadence, set on the segments wherever a setting is taken and again on reopen from
+   the settings the log holds (`Core::sync_record_retry` in the assembly: a deployment does the same).
 6. The planted crashes (`Fault::CrashAfterRecord { call: "effect", .. }`) count move effects only: a `read_node_record`
    effect is no move (`durable.rs`).
 
@@ -9159,8 +9172,10 @@ gap is fixed now), below.
 - **`Action::ReadNodeRecord {order, segment, node, provider, transaction}`** (`read_node_record`), folded into core-internal's
   unreleased 1.0.0 with a valid and an invalid fixture, a schema definition, a CHANGELOG entry (`Ignorable: no`), a README
   line and `action_transactions` counting its transaction (a late status is never asked under it). No new relation, one schema rule more.
-- **core-authz.** `Permission::ReadNodeRecord`, held to the operator alone (`roles`: `operator_holds`, no
-  `CarryOnward` for Core), `Scope::ReadNodeRecord`, the entry-point scan's `handle` row naming the action. Tests:
+- **core-authz.** `Permission::ReadNodeRecord`, held by the operator, and by Core only as it carries the operator's
+  standing permission onward (`roles`: `operator_holds` for the operator; for Core its actor listed for `CarryOnward` and
+  for this permission both, as every other decision Core starts is asked as Core; the first build said "no `CarryOnward`
+  for Core", which was wrong: the segments' read is decided as Core), `Scope::ReadNodeRecord`, the entry-point scan's `handle` row naming the action. Tests:
   `a_private_nodes_record_is_read_by_the_operator_alone` (REQ-AUZ-1, REQ-ORD-41), and the sweeps' counts moved (26
   decided actions, 36 permissions, 39 calls, 90 callers).
 - **core-orch.** The grading no longer asks: `Grading::records_wanted` names the reads (which node, which provider) and
@@ -9401,7 +9416,7 @@ and `components/prov/src/module/platform.rs` with `record.rs` (the partial confi
 `Job::PublishersRecords` no longer asks through `Ports::ask_as_operator`. It names each private node an order Core
 started passes, from the started order's plan (the first of its segments that passes the node is the segment the action
 names), and for each provider of the node's publisher that declares it calls `Segments::read_node_record`
-(`segments/records.rs`, lent through `Ports::with_segments`): policy decides `read_node_record` as the operator, the effect
+(`segments/records.rs`, lent through `Ports::with_segments`): policy decides `read_node_record` as Core, which carries the operator's standing permission onward, the effect
 is recorded before the question, the question goes through `Modules::ask_for_record`, the result is recorded, and
 `closing::publishers::taken` takes the answer. Closing's read is the same function. The tick reads on each run (its
 cadence is `T-020-48`'s), so each tick records a decision, an effect and a result for each provider and node; closing's
@@ -9656,7 +9671,7 @@ now the second comparison, is what each test's earlier raises are about).
 
 ### Defaults, reversible, each failing closed
 
-1. **A holder the register doesn't name is raised only where Core's segments rest value at its node.** The row says "a catalogue
+1. **(Changed by `T-020-67`, item 4: a holder the register doesn't name is raised whether or not value rests at its node; this was the default as built.) A holder the register doesn't name is raised only where Core's segments rest value at its node.** The row says "a catalogue
    node with a holder and no register entry". The scenario kit (`kit::join`) lists a placeholder holder at every private node
    its providers declare and the operator's wallet at every public node their tuples reach, which no scenario registers (a
    scenario that wants a wallet installs one, and the register names it): raising each every spell would put a
@@ -10646,3 +10661,195 @@ R3-1 is closed except for the hand-on take (R4-1).
   version read of `judge`/`attributable` (`confirmation_judge_reads_...` red).
 - **R4-1.** The mover's hand-on take (`Delivering::withdrawn`) reads `HandFlight.began` and has no holdout test: its route
   (a linked order handed on from a node) has no holdout fleet here. R4-2: `show_fault`, `after` as above.
+
+## T-020-67: what the checks of `T-020-58` and `T-020-54` left
+
+Branch `f-020/t-020-67`, issue #349, from `19e6984d` (`m3-next`). Edits `components/core-orch/` (`segments/`, `closing/`,
+`reversal/`, `settings/`, `schedule/jobs.rs` by one pattern), the `F-024` files (`conformance/scenarios/src/assembly/`, the
+scenario tests) and `tools/licence-check/src/artifact.rs`, a `DEC-20` path. No other `DEC-20` path is touched.
+
+- **(1) A node-record read Core didn't take is asked on a cadence and up to a cap.** Gap 5 of `T-020-58` above is made
+  exact. `Segments::record_due` holds a read to the retry cadence (the operator's `publishers_records` cadence: the
+  assembly sets `Segments::set_record_retry_seconds` wherever a setting is taken and again when the settings are rebuilt
+  on reopen, from the schedule's cadences, so it stands across a restart; 3600 s until set) and to `MAX_RECORD_TRIES`
+  (24) tries for a segment, node and provider, counted in `read_node_record` as each effect is appended and rebuilt in
+  `Segments::reopened` from the log's effects. A reopened Core asks once at once (its books were lost), then by the
+  cadence; a record the log holds doesn't count toward the cap. Past the cap Core asks no more and the segment waits on
+  what it waits on, which the stuck check reports. The tick's read (`Job::PublishersRecords`) is not capped; it is on its
+  own cadence. Tests: `segment_graded_many_times_while_it_waits_asks_a_publisher_answering_not_known_a_bounded_number_of_times`
+  (counts the log's entries over 20 gradings, an hour apart for the cap, and across a restart),
+  `read_not_taken_is_asked_again_at_the_operators_publishers_records_cadence_across_a_restart`, and in core-orch
+  `a_read_not_taken_is_asked_again_on_the_retry_cadence_and_not_at_every_grading` and
+  `a_read_not_taken_is_asked_no_more_than_the_cap_however_long_the_segment_waits`. `T-020-58`'s
+  `a_read_that_failed_is_tried_again_and_one_taken_or_refused_is_not` now runs its gradings an hour apart.
+- **(2) The Lows of `T-020-58`.** `record_read` takes Core's time when the answer came (`Read::Answered`'s third member)
+  and judges at the earlier of that and the question's `made_at` plus `OPERATION_DEADLINE` (10 s): test
+  `node_record_answer_made_a_little_after_its_question_is_judged_at_the_time_core_got_it` (a fault, `Faults::record_answered_after`,
+  makes the answer later and signs it again). The production platform stamps an answer with its question's `made_at`, so
+  the case comes only of a provider's own clock; the rule is for that. `answer_to_another_question_is_not_taken_as_a_private_node_record`
+  moved to `tests/closing.rs`, where a catalogue holding the maker's advertisement takes a signed good answer beside every
+  refusal, `RecordOfAnotherMaker` and `SegmentNotAsked` included. `publisher_answering_not_known_for_a_transaction_core_ran_there_leaves_closing_with_nothing_recorded`
+  uses a new `Tamper::NotKnown`. `sim_providers`' read of the world (`recorded_segments`) is named in its test as the fleet
+  self-test's exception. `measures_called` asserts the count of `ReadNodeRecord` entries. The `T-020-58` notes are made
+  exact above (gap 1's pointer, ten fixtures, Core carrying the operator's permission onward, `Segments::read_node_record`).
+- **(3) The check of `T-020-54`.** `Reversals::after` reads a maker's statement about an order by the versions its own latest
+  segment of the order began under (`Segments::began_of_maker`), else the order's latest segment's, else the catalogue's
+  table; not the earliest segment's, which let a provider whose segment began after a cutover have an old-version statement
+  taken past it (`THR-64`). The named test `statement_about_an_order_by_a_provider_whose_segment_began_after_the_cutover_is_void_under_the_old_version`
+  is at the choice's own level (`began_for`, in `segments/mod.rs`): an end-to-end one needs a fleet whose second provider signs
+  an old-version statement after its segment began past the cutover, which no stand-in does (a gap; owner: the `F-024` fleet).
+  The reopen folds the log's cutovers once, in log order (`Settings::cutover_timeline`, `CutoverTimeline::versions_at`), not
+  once per segment. Live and reopened segments take their versions at the same point: live, when the question and the start
+  effect are built, with no call between them and the append; reopened, from the log as it stood before that effect.
+  A change marked not ignorable is not read at runtime: a cutover binds every provider from its date, which is what
+  `change_adding_a_protection_binds_every_provider_from_its_cutover` shows. Router-api's 21 exempted fixtures are debt:
+  `ALSO_BREAK` (14: batched-payout naming an operation before the last, candidate with a gap between operations, void reason
+  naming a statement valid here, drop reason naming a figure its candidate doesn't cite, quote voided by a condition it
+  doesn't name, quote voided by an unchanged amount, operation citing another provider's tuple, operation citing a tuple with
+  other ends, over a ceiling at other decimals, refused dry run moved to the deposit, over a ceiling the bounds lack, no price
+  naming an operation before the last, confirmed by an answer made before the shortlist, refining a shortlist taken after its
+  snapshot) and `UNSWITCHABLE` (7: held quote of a record choosing nothing, naming a call without its calls figure, citing a
+  calls figure and naming no call, catalogue snapshot price for a missing figure, catalogue snapshot price of a price, stale
+  reason naming a missing figure, operation citing no tuple). A stale local `develop` can make a released version look
+  unreleased to the contract guard: fetch it first. **Not done:** an old-version advertisement accepted before a cutover is
+  not dropped from routing at the date: `Catalogue::snapshot` (`prov/src/catalogue/snapshot.rs`, a `DEC-20` path outside this
+  row's edits) would need the joined advertisement's envelope version and a left-out reason; owner: the next `prov` catalogue row.
+- **(4) The six Lows of the check of `T-020-66`.** The owed-reversal arm is its own function, `holds_its_nodes`, with a unit
+  test (`failed_segment_holds_its_nodes_only_while_its_reversal_is_owed`) that goes red with the arm alone. A later private claim
+  through Core is not tested: it needs the fleet to install a provider whose ledger the operator listed and a join that
+  returns its refusal (`kit::join` panics on one); owner: the `F-024` assembly. An open order can hold an unlist indefinitely:
+  while any order Core follows names a node and hasn't ended, the unlist is refused, so a stuck or waiting order keeps the
+  node on the public list until it ends (default, fail closed; the operator ends the order). The restart with a `done`
+  completion is `listing_the_catalogue_took_is_completed_done_on_reopen`. `told_error`'s guard is the behaviour test
+  `conflicting_with_no_order_is_told_no_agent_unscoped_to_read`, not a source search. The licence check's `canon` reads
+  `AND`, `WITH` and `OR` in any case, and an operator not written in upper case keeps the expression as written.
+- **Defaults** (reversible, fail closed). The cap is 24 and the retry cadence the operator's, 3600 s until set; the tick's
+  read is uncapped; after a restart one read is made at once.
+- **Rule-offs** (each alone, the file restored, `ruleoff.py` in the row's scratch folder; every red an assertion):
+
+  | Rule switched off | Red |
+  |---|---|
+  | R1: the retry cadence | `a_read_not_taken_is_asked_again_on_the_retry_cadence_and_not_at_every_grading` |
+  | R2: the cap | `a_read_not_taken_is_asked_no_more_than_the_cap_however_long_the_segment_waits` |
+  | R3: the count rebuilt on reopen | `segment_graded_many_times_while_it_waits_…` |
+  | R4: judged at the question's time | `node_record_answer_made_a_little_after_its_question_is_judged_at_the_time_core_got_it` |
+  | R5: a failed segment holds its nodes for ever | `failed_segment_holds_its_nodes_only_while_its_reversal_is_owed` |
+  | R6: `canon` case-sensitive | `or_operands_compare_in_any_order` |
+  | R7: an unscoped agent told the raw `Conflicting` | `conflicting_with_no_order_is_told_no_agent_unscoped_to_read` |
+  | R8: a maker read by the order's latest segment rather than its own | `statement_about_an_order_by_a_provider_whose_segment_began_after_the_cutover_is_void_under_the_old_version` |
+  | R9: the cadence not wired to the segments | `read_not_taken_is_asked_again_at_the_operators_publishers_records_cadence_across_a_restart` |
+
+- **Local checks** (through the lock, the stand-ins and plain wallet built privately from this tree): fmt, workspace clippy
+  `-D warnings`, core-orch, core-authz `--lib` 171, licence-check, `publishers_record` 20, `private_nodes`, `measures_called`,
+  `sim_providers`, `invariants` and `assembly` under seeds 11 to 15, plan-check and tag-check `--strict` 0 findings.
+  `protocol_cutover`'s `old_version_provider_survives_its_cutover_and_a_reopen_by_the_version_its_segment_began_under` fails
+  (`one late answer: []`) on `19e6984d` itself, without this row's changes; not this row's (reported to the coordinator;
+  stale sim guests are the suspect).
+
+### T-020-67, review round 1 (#351's review at `8c8577e8`)
+
+- **M1: the tick's reads are held to a due time and a bound of their own, apart from the grading's.** `Segments::read_node_record_on_tick`
+  (used by `Job::PublishersRecords`) puts a read only when the retry cadence has passed since the tick's last read of the key,
+  only while fewer than `MAX_TICK_TRIES` (72, three days at the hourly retry) have been put by the tick in
+  this Core's life, and never once the tick has taken the key's record (`note_record_taken`, called for each record it took, which also stops the grading's reads of it).
+  Its reads are not counted among the grading's `MAX_RECORD_TRIES` (24), so the tick can't spend the grading's tries; the
+  grading's own bound is as before. The tick's count is not rebuilt on a restart (the cadence bounds it between restarts).
+  Tick and grading each put at most one read an hour. What the tick takes it hands to the grading's books too (`Grading::record_read`), so a segment that waits more than a
+  day is still graded with a record the publisher has by then, whatever the grading's own tries came to: test
+  `segment_waiting_more_than_a_day_is_graded_with_the_record_the_publisher_has_by_then_and_the_ticks_reads_stay_bounded`.
+- **L1: the restart exemption is per segment.** Of the reads of a segment, node and provider in the log, the last doesn't
+  count where the log holds that provider's record of the node for the order, since it produced it (`rebuilt_tries`); a
+  second segment's reads at the same node count in full. Test `restart_exemption_of_a_held_record_is_one_read_of_each_segment_and_not_all_of_a_second`.
+- **L2 and item (c): the end-to-end `THR-64` test** `statement_about_an_order_by_a_provider_whose_segment_began_after_the_cutover_is_void_under_the_old_version_end_to_end`
+  (`protocol_cutover.rs`): the cutover falls between an order's two segments (`Faults::operation_takes`), and the reserve's
+  old-version statement about the order is refused `Unattributable`, taken under the current version.
+- **Item (a): an old-version advertisement accepted before a cutover leaves routing at the date.** The catalogue keeps the
+  protocol version of each joined advertisement, and `admit` leaves its tuples out as `LeftOutReason::PastCutover` once the
+  version is past its cutover (`prov/src/catalogue/`, a `DEC-20` path; not a contract). Test
+  `old_version_advertisement_accepted_before_its_cutover_is_dropped_from_routing_at_the_date`. The platform's `deadline()`
+  accessor (`prov/src/module/platform.rs`, also `DEC-20`) is new.
+- **L3: the answer-time cap is the platform's configured deadline.** `Modules::operation_deadline` (the platform's
+  `deadline()`, the default for the others) bounds the time an answer is judged at, in the segments; `record_read` uses the
+  time it is handed.
+- **L4: the restriction case of done-on-reopen** is `lifecycle_effect_the_platform_already_took_is_completed_done_on_reopen`
+  (`module_scenarios.rs`): a roll-back of a staging the platform has already ended, its result missing, is completed `done`.
+- **L5: live and reopened versions are taken at the same point**, just before the start effect is appended: a first try that
+  failed before it no longer leaves the versions it built. No test of its own (it needs a first try to fail between a cutover
+  and the effect); owner: the `F-024` fleet's fault hooks.
+- **L6.** Gap 5 above no longer says the cadence isn't wired. `sim_providers`' comment says other tests read the world too
+  where no Core asks. `or_operands_compare_in_any_order` asserts `MIT AND Apache-2.0` compares as written.
+- **Item (b): a later private claim through Core** stays an owned gap: the fleet must install a provider whose ledger the
+  operator listed and a join must return its refusal (`kit::join` panics on one); owner: `F-024`'s assembly.
+- **Rule-offs, round 1** (each alone, the file restored; every red an assertion):
+
+  | Rule switched off | Red |
+  |---|---|
+  | R12: the tick's due time | `segment_waiting_more_than_a_day_is_graded_with_the_record_…` |
+  | R13: the restart exemption per segment | `restart_exemption_of_a_held_record_is_one_read_of_each_segment_…` |
+  | R14: the answer's judging time held to the platform's deadline | `node_record_answer_made_a_little_after_its_question_is_judged_at_the_time_core_got_it` |
+  | R15: a past-cutover advertisement dropped from routing | `old_version_advertisement_accepted_before_its_cutover_is_dropped_from_routing_at_the_date` |
+  | R16: a maker read by the order's earliest segment | `…_is_void_under_the_old_version_end_to_end` (and the unit test) |
+  | R17: a roll-back already ended completed `done` | `lifecycle_effect_the_platform_already_took_is_completed_done_on_reopen` |
+
+  Not switched off: the tick's bound and its stop once taken (the order has completed by then, so no tick reads either way),
+  and L5's refresh of the versions (no test). `protocol_cutover`'s
+  `old_version_provider_survives_its_cutover_…` fails here as on `19e6984d`; its fix is `de9d9728`, not yet in `m3`.
+
+### T-020-67, item (4): the milestone reviewer's check of `T-020-63` at `be306133`
+
+- **Low-Medium: each holding account is held to its own asset.** `Segments::resting_totals_by_asset` keys by node, order and
+  asset, and the schedule's `held_by` matches an account's node and asset, so at a node resting two assets each account is
+  compared with its own, never the sum of both (which raised false differences and could hide a short in one asset behind an
+  over in the other). `resting_totals` (by node and order) stays for the landings and the stuck mover, which don't need the
+  asset. Test `holding_check_at_a_node_resting_two_assets_compares_each_account_with_its_own_asset` (`schedule/jobs.rs`, at
+  `held_by`: no fleet rests two assets at one node).
+- **Low: an unregistered holder is raised whether or not value rests there.** The nodes walked are Core's resting nodes and
+  every node the catalogue lists a holder at; each the register names in neither list is raised `not_registered`, once a
+  spell. Default 1 of `T-020-63` above (conditional on value) is changed; the scenario kit's placeholder holders, which no
+  scenario registers, are now raised too. Test `holder_the_register_does_not_name_is_raised_where_no_value_rests_too`.
+- **Low: the original late answer.** `status_answer_of_a_holdouts_late_deposit_is_taken_after_the_cutover_for_a_segment_begun_before_it`
+  keeps a test of the holdout's own answer (here to Core's status question, `RESERVE` the only reserve of the fleet) beside
+  the decided repeat's, which `old_version_provider_survives_its_cutover_…` shows through `OUT_UNTRACKED`. The platform
+  holds no original late answer since `T-020-63`; Core gets one by a status question or a repeat.
+
+### T-020-67, review round 2 (#351's review at `d55dea48`)
+
+- **H1.** The tick asks under the order's first segment at the node (already settled), the grading under the waiting
+  deposit, so they never share a key. What the tick takes is handed to the grading's books (`Grading::record_read`), which
+  are by provider, node and order, not by segment, so closing finds it whatever the waiting segment's own tries came to.
+  `segment_waiting_more_than_a_day_is_graded_with_the_record_…` counts reads per segment (the waiting deposit at the grading's
+  cap of 24, the first segment at 30 to 32 tick reads) and asserts closing records `ConsistentWithTheExit`.
+- **H2 (a deliberate change of contract).** `T-020-58`'s `ticks_reads_stay_bounded_over_many_ticks` changed: the tick no longer
+  asks the providers whose record it took, so at cadence 0 the first tick asks the six pairs and each later one the four
+  that gave none (`(6, 6)` then `(4, 4)`). `ticks_question_about_a_private_node_is_decided_and_recorded_and_a_denial_asks_nothing`
+  passes unchanged.
+- **H3.** The fleets' platform deadline is 2 s (`harness.rs`), so the judging-time test answers 3 s after its question, past
+  the deadline and within the catalogue's 2 s of skew (a 5 s answer is refused by design).
+- **M2: the log says who asked.** `Action::ReadNodeRecord` gains `by` (`grading` or `tick`, `ReadBy`; `contracts/core-internal`,
+  folded into the unreleased 1.0.0, a `DEC-20` path: schema, two fixtures more (valid `…-by-the-tick`, invalid
+  `…-without-who-asked` and `…-naming-another-asker`), the CHANGELOG bullet, the Rust type). The rebuild counts the grading's
+  reads alone (`rebuilt_tries`), so the earlier fallback that never rebuilt a key at the cap is gone; test
+  `restart_after_many_tick_reads_leaves_the_grading_its_tries` (40 tick reads under one key, then the grading's own three).
+  core-authz's scan and policy needed nothing beyond the field (its tests read the fixture).
+- **L4.** The done-on-reopen test is a roll-back of a staging the platform has already ended. A restriction the platform
+  actually holds can't be left without its result through the assembly: the result of a revocation or mark taken through
+  `change_release` is written by Core, and a second, unresulted effect for it is refused on reopen as a change `relist`
+  doesn't replay; only a crash between the platform's taking it and the append leaves it so, which the fleet has no hook for
+  (owner: `F-024`'s fleet, with L5).
+- **The `T-020-63` default and its tests.** Raising an unregistered holder wherever the catalogue lists one changed three
+  tests that counted raises: `holder_the_register_does_not_name_is_raised_as_not_read`, `public_nodes_balance_is_checked_…`
+  (`assembly_real_wallet.rs`) and `pairs_a_restart_dropped_reach_the_operator_…` (`report_pairs.rs`), which now look at the
+  difference they are about.
+
+- **Rule-offs, against the green tree (the table of `d55dea48` is void).** R13 to R19 each red on an assertion: R13 the
+  per-segment exemption (`restart_exemption_of_a_held_record_…`), R14 the judging deadline, R15 the past-cutover drop, R16 the
+  earliest-segment read, R17 the roll-back completion, R18 `held_by` ignoring the asset
+  (`holding_check_at_a_node_resting_two_assets_compares_each_account_with_its_own_asset`), R19 the unregistered holder raised
+  only where value rests (`holder_the_register_does_not_name_is_raised_where_no_value_rests_too`). R12, the tick's own due time,
+  is not red alone: the job's own cadence (`PublishersRecords`, the same setting) already keeps the tick to it. Checks: the
+  whole `rutent-scenarios` package (57 test binaries), core-orch, `invariants` and `assembly` on seeds 11 to 15, core-authz
+  `--lib`, licence-check, prov, conformance, plan-check and tag-check `--strict`, fmt and clippy `-D warnings`.
+- **R20** (the tick's reads counted as the grading's in the rebuild) is red on `restart_after_many_tick_reads_leaves_the_grading_its_tries`.
+  Checks of the `by` change: `rutent-contracts`, `rutent-core-audit`, core-orch, core-authz `--lib`, the whole scenarios package,
+  `invariants` and `assembly` on seeds 11 to 15, prov, conformance, `role_suite`, licence-check, the contract guard against
+  `origin/develop` (2202 paths) and `origin/m3` (32): no violations; plan-check and tag-check `--strict`; fmt; clippy.
