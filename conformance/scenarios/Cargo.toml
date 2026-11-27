@@ -31,4 +31,8 @@ rutent-router = { path = "../../components/router" }
 ed25519-dalek = "2.2.0"
 
 [dev-dependencies]
+# With its test-support feature, in the tests only (`T-024-21`): the platform's hook that reports a process id of a test's
+# choosing, so a module restarted under the process id it had is shown seen as restarted all the same. Never in the
+# library, so a build of it alone has none of the hook.
+rutent-prov = { path = "../../components/prov", features = ["test-support"] }
 rutent-core-orch = { path = "../../components/core-orch", features = ["test-support"] }

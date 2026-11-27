@@ -248,6 +248,22 @@ impl SimWorld {
         self.clock = Some(at);
     }
 
+    /// `statement`, a JSON statement, signed anew with the statement key the world holds for `provider`, as the
+    /// provider's module would sign it (`T-024-21`): a scenario's stand-in for a provider that later states something
+    /// else about what it did. False, and nothing signed, where the world holds no key for it.
+    pub fn sign_as(&self, provider: &str, statement: &mut serde_json::Value) -> bool {
+        let Some(bytes) = self
+            .statement_keys
+            .get(provider)
+            .and_then(|key| rutent_core_audit::log::kept::from_base64url(key))
+            .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+        else {
+            return false;
+        };
+        rutent_conformance::signing::sign_value(statement, &Ed25519Key::from_bytes(&bytes));
+        true
+    }
+
     /// Holds `key` as `provider`'s statement key.
     pub fn hold_statement_key(&mut self, provider: &str, key: &Ed25519Key) {
         self.statement_keys

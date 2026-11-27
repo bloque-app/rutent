@@ -236,12 +236,14 @@ impl<W: World, O: Operator> Landings for Landing<'_, W, O> {
         {
             return Landed::Unconfirmed;
         }
-        // Under a transaction derived from the node, the order and the module's process now (`T-020-46`).
+        // Under a transaction derived from the node, the order and the module's start now (`T-020-46`, `T-024-21`). A
+        // module that runs no process now, one whose releases a restarted platform holds until the operator confirms
+        // them among others, was asked nothing: nothing took effect, and it is asked again once it runs.
         let Some(transaction) = self
             .holdings
             .restore_transaction(self.platform, node, order)
         else {
-            return Landed::Unconfirmed;
+            return Landed::NotNow;
         };
         answered(
             self.holdings
@@ -357,6 +359,43 @@ impl Core {
     /// The operator's holding accounts, which a stuck order's hand-on withdraws from.
     pub fn holdings(&mut self) -> std::cell::RefMut<'_, Holdings> {
         self.holdings.borrow_mut()
+    }
+
+    /// The host's holding accounts opened again after a restart of Core and its platform (`T-024-21`): nothing of the
+    /// host's memory survives, so each account the deployment's register names is opened from the register (its node,
+    /// wallet and asset) and the platform's record (the transactions it asked under), its attribution empty until Core
+    /// restores what the log holds for each order there (`Segments::reconcile_landings`), and its wallet taken as
+    /// restarted until it confirms a movement.
+    pub(super) fn reopen_holdings(&mut self) {
+        let accounts: Vec<(String, String, String)> = {
+            let registers = self.deployed.registers.borrow();
+            registers
+                .holding_accounts
+                .iter()
+                .filter_map(|(node, provider)| {
+                    let asset = registers.holding_assets.get(node)?;
+                    Some((node.clone(), provider.clone(), asset.clone()))
+                })
+                .collect()
+        };
+        let mut holdings = self.holdings.borrow_mut();
+        for (node, provider, asset) in accounts {
+            holdings.reopen_account(&self.fleet.platform, &node, &asset, &provider);
+        }
+    }
+
+    /// Whether `node`'s holding account's module restarted since it last confirmed a movement, as the host reads it
+    /// from the platform's report of the module's start (`Holdings::restarted`, `T-024-21`).
+    pub fn holding_account_restarted(&self, node: &str) -> bool {
+        self.holdings.borrow().restarted(&self.fleet.platform, node)
+    }
+
+    /// The transaction a restore at `node`'s holding account for `order` would go under now
+    /// (`Holdings::restore_transaction`, `T-020-46`, `T-024-21`).
+    pub fn restore_transaction(&self, node: &str, order: &str) -> Option<String> {
+        self.holdings
+            .borrow()
+            .restore_transaction(&self.fleet.platform, node, order)
     }
 
     /// A hand-on's withdrawal of `amount` of `order`'s value for `route`, through Core's own [`Wallets`], as the mover
@@ -672,6 +711,11 @@ impl Core {
             .borrow_mut()
             .holding_accounts
             .insert(node.to_owned(), wallet.provider.clone());
+        self.deployed
+            .registers
+            .borrow_mut()
+            .holding_assets
+            .insert(node.to_owned(), asset.to_owned());
         self.deployed
             .registers
             .borrow_mut()

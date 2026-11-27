@@ -162,6 +162,13 @@ mod sandboxed {
             .and_then(|b| b["opening"].as_str())
             .and_then(|text| text.parse::<u128>().ok());
         let sim = self::provider(held, provider, begun.as_ref(), opening);
+        // The sessions the holder's register issued, as the world holds them (`T-024-21`).
+        let sessions: Vec<String> = begun
+            .as_ref()
+            .and_then(|b| b["sessions"].as_str())
+            .and_then(|text| serde_json::from_str(text).ok())
+            .unwrap_or_default();
+        sim.open_sessions(&sessions);
         let provider = sim.spec().provider.clone();
         let behaviour = begun
             .as_ref()
@@ -231,7 +238,7 @@ mod sandboxed {
 mod outside {
     use rutent_conformance::sim::{
         BEGIN, BOOK, BOOK_KEY, BOOK_LENGTH_KEY, CHAIN, CREDENTIAL, DEPLOYMENT_KEY, OPENING_KEY,
-        PRIVATE_NOTES_KEY, PROTOCOL_KEY, SETTLE, chain_host, rail_host, script_key,
+        PRIVATE_NOTES_KEY, PROTOCOL_KEY, SESSIONS_KEY, SETTLE, chain_host, rail_host, script_key,
     };
     use serde_json::{Value, json};
 
@@ -269,6 +276,7 @@ mod outside {
                         "deployment": state::read(DEPLOYMENT_KEY),
                         "protocol": state::read(PROTOCOL_KEY),
                         "opening": state::read(OPENING_KEY),
+                        "sessions": state::read(SESSIONS_KEY),
                     })
                 }
                 BOOK => json!({ "book": state::read(BOOK_KEY) }),

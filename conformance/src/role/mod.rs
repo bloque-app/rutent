@@ -155,6 +155,14 @@ pub struct BankCredit {
 /// fabricate the reserve's word (ADR-0008). Each hook returns false if the provider can't be driven that way; the
 /// answers it provokes are then uncovered, and the provider doesn't pass.
 pub trait RoleHarness: RoleProvider {
+    /// Tells the provider of a session the holder's register issued besides the one it was built with, `session`, in
+    /// which it answers a check of the holder's account as in its own (`T-024-21`): a deployment whose sessions don't
+    /// all bear one id. False where the provider holds no sessions.
+    fn open_session(&mut self, session: &str) -> bool {
+        let _ = session;
+        false
+    }
+
     /// Makes the provider's next real operation end with outcome unknown.
     fn force_outcome_unknown(&mut self) -> bool {
         false

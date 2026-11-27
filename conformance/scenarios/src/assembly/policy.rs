@@ -62,6 +62,9 @@ pub struct Registers {
     /// provider whose wallet holds its account, as the operator installed it. The deployment's own configuration, kept
     /// across a reopen as the deployment keeps it, never read from the host's holdings Core carries across one.
     pub holding_accounts: BTreeMap<String, String>,
+    /// The asset each of those nodes' accounts holds, as the operator installed the wallet (`T-024-21`): with the
+    /// node and the provider, what a host that restarted opens each account again from, the register's own record.
+    pub holding_assets: BTreeMap<String, String>,
     /// The decimals the register gives the asset of each public node's holding account, set beside it (`T-020-63`): what
     /// the schedule's readings of the account are stated in. A node the register names with none is not read, and says so.
     pub holding_decimals: BTreeMap<String, u8>,

@@ -27,7 +27,7 @@ use rutent_prov::catalogue::{
     Bond, Catalogue, Category, Grant, GrantTerms, Instant, ReversalCapacity, tuples_of,
 };
 use rutent_prov::module::platform::{OperationClock, Platform};
-use rutent_prov::module::record::{MemoryRecord, Record};
+use rutent_prov::module::record::{FileRecord, Record};
 use rutent_prov::module::types::{Admitted, Envelope, Handled};
 use rutent_prov::module::wire::sha256;
 use serde_json::json;
@@ -213,11 +213,11 @@ impl OperationClock for ScenarioClock {
     }
 }
 
-/// The platform's record, in memory, which a restart opens the platform on again ([`Fleet::restart_platform`]); it can
-/// be broken, as a disk that fills, so the platform ends with nothing of its closing written (`T-020-66`).
-#[derive(Debug, Clone, Default)]
-pub struct FleetRecord {
-    inner: MemoryRecord,
+/// The platform's record, on a file of its own (`T-013-10`, `T-024-21`), which a restart opens the platform on again
+/// ([`Fleet::restart_platform`]); it can be broken, as a disk that fills, so the platform ends with nothing of its closing
+/// written (`T-020-66`).
+struct FleetRecord {
+    inner: FileRecord,
     broken: Arc<AtomicBool>,
 }
 
@@ -242,8 +242,10 @@ impl Record for FleetRecord {
 pub struct Fleet {
     /// The platform. Its world is the simulation's: [`SimWorld`].
     pub platform: Platform<SimWorld>,
-    /// Its record, which a restart opens it on.
-    record: FleetRecord,
+    /// The file its record is kept on, which a restart opens it on again.
+    record: RecordFile,
+    /// Whether the record the platform runs on is broken ([`Fleet::with_record_broken`]).
+    broken: Arc<AtomicBool>,
     /// Every release asserted to the platform, in order, as received with its binaries: what a restarted platform is
     /// handed again, as a deployment's start does.
     admissions: Vec<(Vec<u8>, Parts<Vec<u8>>)>,
@@ -258,6 +260,58 @@ pub struct Fleet {
     installed: BTreeMap<String, Installed>,
     /// The placeholder-key seeds in use, each with the provider that holds it.
     seeds: BTreeMap<u8, String>,
+}
+
+/// The file the platform's record is kept in, in a directory of its own, removed with the fleet (`T-024-21`).
+struct RecordFile {
+    dir: std::path::PathBuf,
+}
+
+impl RecordFile {
+    /// A new, empty record in a fresh directory.
+    fn create() -> (Self, FileRecord) {
+        use std::sync::atomic::AtomicU64;
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "rutent-scenarios-record-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a directory for the platform's record");
+        let file = RecordFile { dir };
+        let record = FileRecord::create(file.path()).expect("the platform's record is created");
+        (file, record)
+    }
+
+    fn path(&self) -> std::path::PathBuf {
+        self.dir.join("record")
+    }
+
+    /// The record opened again. Its lock is `flock`'s, shared by every copy of the descriptor: a module process forked
+    /// while the last platform held it keeps a copy until its `exec`, so the lock comes free a moment after that
+    /// platform drops, not at it. Asked again on `WouldBlock`, a bounded number of times, as `record.rs`'s own test
+    /// does (`T-013-10`, 9462a3a8); a lock that stays held still fails.
+    fn open(&self) -> FileRecord {
+        let path = self.path();
+        let mut opened = FileRecord::open(&path);
+        for _ in 0..250 {
+            match &opened {
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(20));
+                    opened = FileRecord::open(&path);
+                }
+                _ => break,
+            }
+        }
+        opened.unwrap_or_else(|e| panic!("the platform's record opens again: {e}"))
+    }
+}
+
+impl Drop for RecordFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
 }
 
 impl Fleet {
@@ -275,11 +329,24 @@ impl Fleet {
         let wall_time = Arc::new(AtomicBool::new(false));
         let mut world = SimWorld::new();
         world.wall_time = Some(wall_time.clone());
-        let record = FleetRecord::default();
-        let platform = Self::opened(&context, world, &record, deadline, &wall_time, None);
+        // On a record of its own, on a file, which a restarted platform opens again (`T-024-21`).
+        let (record, file) = RecordFile::create();
+        let broken = Arc::new(AtomicBool::new(false));
+        let platform = Self::opened(
+            &context,
+            world,
+            FleetRecord {
+                inner: file,
+                broken: broken.clone(),
+            },
+            deadline,
+            &wall_time,
+            None,
+        );
         Self {
             platform,
             record,
+            broken,
             admissions: Vec::new(),
             deadline,
             wall_time,
@@ -296,7 +363,7 @@ impl Fleet {
     fn opened(
         context: &SuiteContext,
         world: SimWorld,
-        record: &FleetRecord,
+        record: FleetRecord,
         deadline: Duration,
         wall_time: &Arc<AtomicBool>,
         staging: Option<rutent_prov::module::lifecycle::Staging>,
@@ -308,7 +375,7 @@ impl Fleet {
                 deployment: context.deployment.clone(),
                 protocol_version: context.protocol_version.clone(),
             },
-            Box::new(record.clone()),
+            Box::new(record),
         )
         .expect("a platform");
         platform.set_staging(staging);
@@ -327,31 +394,51 @@ impl Fleet {
         self.platform.set_staging(staging);
     }
 
-    /// The platform stops and opens again on its record, as a restart of its host does (`T-020-66`): unclean where
-    /// `unclean`, its record breaking first so nothing of its closing is written, so the providers it held releases of
-    /// wait for the operator's confirmation. The world it reached stays. Every release asserted to it is handed to it
-    /// again, in order, as a deployment's start does: a release its record holds is put back as it stood, and a waiting
-    /// one, which no record holds, waits again.
+    /// The platform stops and opens again on its record, as a restart of its host does (`T-020-66`, `T-024-21`;
+    /// `NFR-6`, `INV-8`): its process gone, and every value it held in memory with it, its modules' processes and what
+    /// each held in its instance among them (a plain wallet's record of its account). Unclean where `unclean`, as a
+    /// crash: its record breaks first so nothing of its closing is written, and the providers it held releases of wait
+    /// for the operator's confirmation (`Platform::confirm`, `T-013-11`). What survives is what a platform keeps beyond
+    /// its memory: its carried-out record, on its file, opened again (`FleetRecord`, with a bounded retry on the lock),
+    /// and the releases the deployment admitted, each handed to it again in order, as a deployment's start does: a
+    /// release its record holds is put back as it stood, and a waiting one, which no record holds, waits again. The
+    /// world it reached, the providers' books, rails, networks and the keys the deployment keeps, stays, and so does
+    /// the catalogue its admissions are judged against, the deployment's; so do its settings, staging among them.
+    ///
+    /// # Panics
+    ///
+    /// If the record can't be opened again or the platform refuses it.
     pub fn restart_platform(&mut self, unclean: bool) {
         let world = std::mem::take(&mut self.platform.world);
         if unclean {
-            self.record.broken.store(true, Ordering::SeqCst);
+            self.broken.store(true, Ordering::SeqCst);
         }
-        let record = FleetRecord {
-            inner: self.record.inner.clone(),
-            broken: Arc::new(AtomicBool::new(false)),
-        };
-        let reopened = Self::opened(
+        // The old platform goes first, its processes with it, its close refused by its broken record where unclean: its
+        // record's lock is free only once it is gone.
+        drop(std::mem::replace(
+            &mut self.platform,
+            Platform::new(
+                disk::paths(),
+                SimWorld::new(),
+                Envelope {
+                    deployment: self.context.deployment.clone(),
+                    protocol_version: self.context.protocol_version.clone(),
+                },
+            )
+            .expect("a placeholder platform"),
+        ));
+        self.broken = Arc::new(AtomicBool::new(false));
+        self.platform = Self::opened(
             &self.context,
             world,
-            &record,
+            FleetRecord {
+                inner: self.record.open(),
+                broken: self.broken.clone(),
+            },
             self.deadline,
             &self.wall_time,
             self.staging,
         );
-        // The old platform is dropped here, its processes with it, its close refused by its broken record.
-        drop(std::mem::replace(&mut self.platform, reopened));
-        self.record = record;
         for (received, binaries) in self.admissions.clone() {
             let _ = self
                 .platform
@@ -366,7 +453,7 @@ impl Fleet {
         &mut self,
         decide: impl FnOnce(&mut Platform<SimWorld>) -> R,
     ) -> R {
-        self.record.broken.store(true, Ordering::SeqCst);
+        self.broken.store(true, Ordering::SeqCst);
         decide(&mut self.platform)
     }
 
@@ -646,6 +733,27 @@ impl Fleet {
             &format!("{WALLET_CREDIT_PREFIX}{segment}"),
             &json!({ "asset": asset, "amount": amount }).to_string(),
         );
+    }
+
+    /// The providers whose releases the platform holds until the operator confirms them, each with the versions it
+    /// holds them at, in the order their releases were first admitted (`T-013-11`, `T-024-21`): after a restart whose
+    /// record didn't end whole, every one with a release in force.
+    pub fn held(&self) -> Vec<(String, BTreeSet<String>)> {
+        let mut seen = BTreeSet::new();
+        self.admissions
+            .iter()
+            .filter_map(|(received, _)| {
+                let assertion: serde_json::Value = serde_json::from_slice(received).ok()?;
+                let provider = assertion["statement"]["declaration"]["provider"]
+                    .as_str()?
+                    .to_owned();
+                if !seen.insert(provider.clone()) {
+                    return None;
+                }
+                let versions = self.platform.awaiting_confirmation(&provider)?;
+                Some((provider, versions))
+            })
+            .collect()
     }
 
     /// Admits one release.

@@ -1089,3 +1089,124 @@ fn restore_transaction_is_new_for_each_process_of_the_wallets_module() {
             .is_none()
     );
 }
+
+/// An account opened again after the host and its platform restarted takes up the host's transactions after the highest
+/// the platform's record knows of, however many numbers before it were drawn and never reached the platform
+/// (`T-024-21`, `INV-8`): one landing taken, twenty refused before anything of them ran (the wallet's statement key
+/// unavailable, so the record knows none of them), one more taken, and after the restart the next landing goes under
+/// the number after the last taken, never one the record holds.
+// verifies: INV-8, REQ-ORD-43
+#[test]
+fn reopened_account_takes_up_its_transactions_after_the_highest_the_record_knows() {
+    let record = rutent_prov::module::record::MemoryRecord::new();
+    let mut s = Signed::on(Box::new(record.clone()), common::TestWorld::default());
+    run_wallet(&mut s, POLYGON_WALLET, "1.0.0");
+    let mut holdings = Holdings::default();
+    holdings
+        .register(
+            &mut s.catalogue,
+            &s.platform,
+            "polygon",
+            POLYGON_WALLET,
+            "USDC",
+        )
+        .expect("registered");
+    let land = |s: &mut Signed, holdings: &mut Holdings, amount: &str| {
+        holdings.land(
+            &mut s.platform,
+            &TestOperator,
+            "polygon",
+            "USDC",
+            "o-1",
+            amount,
+        )
+    };
+    land(&mut s, &mut holdings, "100").expect("the first landing");
+    s.platform.world.make_key_store_unavailable(POLYGON_WALLET);
+    for _ in 0..20 {
+        assert!(
+            land(&mut s, &mut holdings, "1").is_err(),
+            "refused: the wallet's statement key is unavailable"
+        );
+    }
+    s.platform.world.make_key_store_available(POLYGON_WALLET);
+    land(&mut s, &mut holdings, "50").expect("the last landing before the restart");
+    let last = format!("{POLYGON_WALLET}-deposit-22");
+    assert!(
+        s.platform.carries(&last),
+        "the last landing went under {last}"
+    );
+
+    // The host and its platform restart: nothing of the host's memory goes on.
+    let world = std::mem::take(&mut s.platform.world);
+    drop(s);
+    let mut s = Signed::on(Box::new(record), world);
+    run_wallet(&mut s, POLYGON_WALLET, "1.0.0");
+    let mut holdings = Holdings::default();
+    holdings.reopen_account(&s.platform, "polygon", "USDC", POLYGON_WALLET);
+    land(&mut s, &mut holdings, "10").expect("a landing after the restart");
+    let next = format!("{POLYGON_WALLET}-deposit-23");
+    assert!(
+        s.platform.carries(&next),
+        "the landing after the restart went under {next}, after the highest the record knows"
+    );
+}
+
+/// A host that restarted restores what the log holds for an order in a wallet that still holds it (`T-024-21`): the
+/// wallet is asked, nothing is landed again, and the host's attribution, empty on the reopened account, is raised to
+/// the log's figure, so the order's value is the host's again and never twice.
+// verifies: INV-1, REQ-ORD-43
+#[test]
+fn restore_on_a_reopened_account_attributes_what_the_wallet_still_holds() {
+    let mut s = Signed::new();
+    run_wallet(&mut s, POLYGON_WALLET, "1.0.0");
+    let mut before = Holdings::default();
+    before
+        .register(
+            &mut s.catalogue,
+            &s.platform,
+            "polygon",
+            POLYGON_WALLET,
+            "USDC",
+        )
+        .expect("registered");
+    before
+        .land(
+            &mut s.platform,
+            &TestOperator,
+            "polygon",
+            "USDC",
+            "o-1",
+            "100",
+        )
+        .expect("landed");
+    // The host opened again on the same platform: its attribution is empty.
+    let mut holdings = Holdings::default();
+    holdings.reopen_account(&s.platform, "polygon", "USDC", POLYGON_WALLET);
+    assert_eq!(
+        holdings.attributions(),
+        [("polygon".to_owned(), Vec::new())]
+    );
+    let landed = holdings
+        .restore(
+            &mut s.platform,
+            &TestOperator,
+            "polygon",
+            "o-1",
+            "100",
+            "restore-o-1",
+        )
+        .expect("restored");
+    assert_eq!(landed, 0, "the wallet still holds it: nothing landed again");
+    let held: Vec<(String, u128)> = holdings
+        .attributions()
+        .into_iter()
+        .flat_map(|(_, held)| held)
+        .map(|h| (h.order, h.amount))
+        .collect();
+    assert_eq!(
+        held,
+        [("o-1".to_owned(), 100)],
+        "attributed at the log's figure, once"
+    );
+}

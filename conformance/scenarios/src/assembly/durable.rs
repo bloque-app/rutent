@@ -66,6 +66,12 @@ impl Disk {
         self.crash.set(Some(crash));
     }
 
+    /// Takes back a planted crash that hasn't fallen, if one is planted: the process stops nowhere from now on
+    /// (`T-024-21`, a run that restarts where its crash never fell).
+    pub fn unplant(&self) {
+        self.crash.set(None);
+    }
+
     /// Makes the log's store turn away the next `times` appends of a record whose `call` is `call` (or, for a stated
     /// record, whose statement's shape is `call`), as a store that can't take them now does: nothing is written, and the
     /// log may try again (`AppendFailure::Unavailable`).

@@ -33,6 +33,10 @@ required-features = ["jail-layers"]
 # nothing but the command line of the job that runs the probes (no feature, no dependent crate and no dev-dependency
 # names it: `tools/boundary-check` refuses a package that depends on itself), so a release build has none of it.
 jail-layers = []
+# Test-only (`T-024-21`): `Platform::report_process_as`, which has the platform report a process id of the test's
+# choosing, so a test shows a module restarted under the process id it had is still seen as restarted. Never a
+# default; only `rutent-scenarios`'s dev-dependencies turn it on, so no build but a test build has it.
+test-support = []
 
 [dependencies]
 ed25519-dalek = { version = "2.2.0", default-features = false }

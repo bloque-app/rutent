@@ -129,7 +129,7 @@ impl WalletHolding {
             reference,
         };
         self.ledger = next;
-        self.process = platform.process(&self.provider);
+        self.start = platform.start_of(&self.provider);
         Ok((record, transaction, answer))
     }
 }
