@@ -694,3 +694,15 @@ fn reader_host_refuses_a_restart_delay_of_zero() {
     let refused = host_config(vec![reader]).check().unwrap_err();
     assert!(refused.0.contains("every bound is above zero"), "{refused}");
 }
+
+// verifies: REQ-MDL-11
+#[test]
+fn reader_host_refuses_more_questions_waiting_than_its_cap() {
+    use rutent_reader_host::config::MAX_PENDING;
+    let mut reader = rpc_reader("base", &[]);
+    reader.limits.pending = MAX_PENDING;
+    assert!(host_config(vec![reader.clone()]).check().is_ok());
+    reader.limits.pending = MAX_PENDING + 1;
+    let refused = host_config(vec![reader]).check().unwrap_err();
+    assert!(refused.0.contains("MAX_PENDING"), "{refused}");
+}

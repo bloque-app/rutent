@@ -513,17 +513,19 @@ declaration in `components/prov/src/proxy/mod.rs`), `tools/boundary-check/` and 
    endpoints agreed on what the host fetched, not what the reader then says they said. A hostile reader can make one
    harmless agreed call and answer a fabricated movement: that is within `DEC-28`'s trust in the operator's own
    reader, whose program is the operator's (part 5 of `lib.rs` says so).
-2. **`rutent_prov::keys` is a facade** over a role's statement keys. It re-exports `Resolver`, `ResolveError`,
-   `StatementKeys`, and the settings that build it (`RoleSettings`, `StoreAddress`, `StoreScheme`, `Server`,
-   `InvalidSettings`), and no longer `Bucket`, `kv_bucket`, `KvResolver`, `KvConfig`, `InvalidConfig`, `Token`,
-   `HttpsTransport` or `TransportError`. `StatementKeys::for_role(role, token)` takes the token's text and builds
-   the role's keys resolver alone, over HTTPS (or plain HTTP to loopback), and holds it behind a private boxed
-   `Resolver`: no resolver for the role's `secrets` path is built, and nothing gives back the token or the transport.
-   `tools/boundary-check` holds `keys` to it: `PROV_KEYS` names those items only, and the facade's own file
-   (`PROV_KEYS_FACADE`) has no public item, field, trait impl, associated type or re-export naming what it keeps
-   inside (`PROV_KEYS_WITHHELD`, read by `public_items_naming_any`, the conformance rule's reader generalised to a
-   list of names). The token's scope is still the role's: a deployment gives the reader host a role of its own whose
-   token reaches the readers' keys alone (gap for `F-030`'s deployment, beside L8 above).
+2. **`rutent_prov::keys` is a facade** over a key store's statement keys. It re-exports `Resolver`, `ResolveError`,
+   `StatementKeys`, its settings `KeyStoreSettings`, and what they are made of (`StoreAddress`, `StoreScheme`,
+   `Server`, `InvalidSettings`). It does not re-export `RoleSettings` (since #354's review, L1, below), `Bucket`,
+   `kv_bucket`, `KvResolver`, `KvConfig`, `InvalidConfig`, `Token`, `HttpsTransport` or `TransportError`.
+   `StatementKeys::new(settings, token)` takes the token's text and builds one resolver, for the settings' keys path,
+   over HTTPS (or plain HTTP to loopback). It holds the resolver behind a private boxed `Resolver`, so nothing gives
+   back the token or the transport. `KeyStoreSettings` names the store, the mount and the keys' path, and no `secrets`
+   path: a settings file that names one is refused (`deny_unknown_fields`). `tools/boundary-check` holds `keys` to
+   this: `PROV_KEYS` names those items only, and no public item, field, trait impl, associated type or re-export of
+   the facade's own file (`PROV_KEYS_FACADE`) may name what it keeps inside (`PROV_KEYS_WITHHELD`, read by
+   `public_items_naming_any`, the conformance rule's reader generalised to a list of names). Which paths the token
+   itself may read is the store's policy, not the facade's: a deployment gives the reader host a token whose policy
+   reaches the readers' keys alone (gap for `F-030`'s deployment, beside L8 above).
 3. **A handshake slot kept for Core.** `LinkLimits::reserved_for_core` (default `RESERVED_FOR_CORE`, 1): past the
    overall and per-source bounds, a connection from a source Core has authenticated from (the latest `CORE_SOURCES`,
    8, remembered once a handshake holds Core's certificate) takes a kept slot no other source can take. Before a
@@ -612,3 +614,44 @@ commit. The test reads every expectation before it fails, so run 46060498666 sho
 |---|---|---|
 | The host's launcher sets `RLIMIT_AS` | `reader_that_skips_its_own_memory_limit_is_refused_by_the_hosts_check` | the hosted reader's limit was `unlimited unlimited`, not the bound |
 | The check reads `/proc/<pid>/limits` | the same | the unbounded reader was refused only as `reader_not_confined`, never for its address space |
+
+### The review of #354 at `6e33c11b`
+
+Approved, with no High or Medium findings. The reviewer found two Lows, both fixed in this row:
+
+- **L1: the keys facade could be bypassed.** `RoleSettings` came through `keys` with its public `secrets` and `keys`
+  paths, and `StatementKeys::for_role` built its resolver from `role.keys`. Setting `role.keys = role.secrets.clone()`
+  read a declared secret, and the boundary check stayed green. Now:
+  - The facade is built from `KeyStoreSettings`, defined in the facade's own file (`proxy/statement_keys.rs`). It
+    names one path, `keys`, and no `secrets` path; JSON that names one is refused. `--key-store` reads that shape
+    (default, reversible: a process role's settings file is refused rather than read with its `secrets` path
+    ignored).
+  - `RoleSettings` and `ProxySettings` leave `PROV_KEYS` and join `PROV_KEYS_WITHHELD`. The boundary check refuses
+    them re-exported through `keys`, and refuses a public item of the facade naming them (a `for_role(&RoleSettings)`
+    again), or naming `secrets` (a settings field for that path).
+  - The claims are made true or softened. The facade's documentation and `main.rs` now say the settings name no path
+    but the keys', and that which paths the token may read is the store's policy, the deployment's.
+  - Tests: `key_store_settings_that_name_a_secrets_path_are_refused` [`REQ-MDL-6`] (prov's unit test), and the
+    bypass's cases in `providers_keys_path_is_a_facade_over_statement_keys_that_gives_back_nothing_it_keeps_inside`.
+    With `RoleSettings` out of `keys`, the reviewer's bypass no longer compiles in the reader host.
+- **L2: the worker could overflow its stack.** The worker dropped each dead question by calling `next()`, which
+  called `ask()` again, so a queue of expired questions recursed once per question, bounded only by an uncapped
+  `pending`. A stack overflow aborts the whole host. Now:
+  - `next()` is a loop: `ask()` says whether it handed the question over, and `next()` takes the next until one is
+    handed over or none waits.
+  - `HostConfig::check` refuses `pending` above `MAX_PENDING` (4096).
+  - Tests: `thousands_of_expired_questions_behind_a_slow_one_are_dropped_without_growing_the_workers_stack`
+    [`REQ-MDL-11`] (worker's unit test: 4095 dead questions behind a slow one whose answer arrives, on a thread with a
+    256 KiB stack) and `reader_host_refuses_more_questions_waiting_than_its_cap` [`REQ-MDL-11`].
+- `link.rs` is unchanged by these fixes. #353 (`T-024-25`) also edits `link.rs`, these notes and boundary-check's
+  tests, and merges after this row.
+
+Rule-offs for the two fixes, each alone and put back:
+
+| Rule switched off | Test | Red |
+|---|---|---|
+| `RoleSettings` not admitted through `keys` (added to `PROV_KEYS`) | `providers_keys_path_is_a_facade_over_statement_keys_that_gives_back_nothing_it_keeps_inside` | `left == right` failed: the admitted list no longer matched the facade-only `keys.rs` |
+| No public item of the facade names `RoleSettings` (taken out of `PROV_KEYS_WITHHELD`) | the same | `left: []`: `for_role(&RoleSettings)` on the facade passed |
+| Key store settings refuse an unknown field | `key_store_settings_that_name_a_secrets_path_are_refused` | `unwrap_err()` on `Ok`: settings with a `secrets` path were read |
+| `next()` is a loop (recursion per dead question put back) | `thousands_of_expired_questions_behind_a_slow_one_are_dropped_without_growing_the_workers_stack` | `has overflowed its stack`, the test process aborted (`SIGABRT`): what aborted the host |
+| `pending` capped at `MAX_PENDING` | `reader_host_refuses_more_questions_waiting_than_its_cap` | `unwrap_err()` on `Ok`: 4097 questions waiting passed |

@@ -66,30 +66,28 @@ pub const PROV_CONFINE: &[(&str, &[&str])] = &[(
 )];
 
 /// What `rutent_prov::keys` (`components/prov/src/keys.rs`) re-exports, and nothing more: the
-/// resolver interface, the facade over a process role's statement keys ([`PROV_KEYS_FACADE`]),
-/// and the settings it is built from, each from the module that defines it (`T-015-05`). The
-/// bucket, its resolvers, its token and its transport ([`PROV_KEYS_WITHHELD`]) are not among them.
+/// resolver interface, the facade over a key store's statement keys and its settings
+/// ([`PROV_KEYS_FACADE`]), and what those settings are made of, each from the module that defines
+/// it (`T-015-05`). A process role's settings, which name its declared secrets' path, the bucket,
+/// its resolvers, its token and its transport ([`PROV_KEYS_WITHHELD`]) are not among them.
 pub const PROV_KEYS: &[(&str, &[&str])] = &[
     ("proxy::kv", &["Server"]),
     ("proxy::resolver", &["ResolveError", "Resolver"]),
     (
         "proxy::settings",
-        &[
-            "InvalidSettings",
-            "RoleSettings",
-            "StoreAddress",
-            "StoreScheme",
-        ],
+        &["InvalidSettings", "StoreAddress", "StoreScheme"],
     ),
-    (PROV_KEYS_FACADE, &["StatementKeys"]),
+    (PROV_KEYS_FACADE, &["KeyStoreSettings", "StatementKeys"]),
 ];
 
-/// The module of the facade `rutent_prov::keys` re-exports (`T-015-05`): a process role's
-/// statement keys, and nothing else of its bucket.
+/// The module of the facade `rutent_prov::keys` re-exports (`T-015-05`): a key store's statement
+/// keys and the settings that name their path alone, and nothing else of a bucket.
 pub const PROV_KEYS_FACADE: &str = "proxy::statement_keys";
 
-/// What the facade keeps inside (`T-015-05`): the bucket and its declared secrets, the vault
-/// resolver and its configuration, the store's token and the transport to the store. No public
+/// What the facade keeps inside (`T-015-05`): a process role's settings (and the proxy's, which
+/// hold them), whose `secrets` path the host could point the keys' resolver at; the bucket and its
+/// declared secrets; the vault resolver and its configuration; the store's token and the transport
+/// to the store. No public
 /// item of the facade's file names one of them, in a signature, a public type's fields or variants,
 /// a trait impl (an associated type included), or a `pub use`, `pub type`, `pub const` or
 /// `pub static` ([`public_items_naming_any`]): so a field, a getter or a `Deref` can't hand one
@@ -99,6 +97,8 @@ pub const PROV_KEYS_WITHHELD: &[&str] = &[
     "HttpsTransport",
     "KvConfig",
     "KvResolver",
+    "ProxySettings",
+    "RoleSettings",
     "Token",
     "Transport",
     "kv_bucket",

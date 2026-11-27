@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use common::*;
-use rutent_prov::keys::{RoleSettings, Server, StatementKeys, StoreAddress, StoreScheme};
+use rutent_prov::keys::{KeyStoreSettings, Server, StatementKeys, StoreAddress, StoreScheme};
 use rutent_reader_host::egress::Network;
 use rutent_reader_host::records::MemoryRecords;
 use rutent_reader_host::{Host, Services};
@@ -87,7 +87,7 @@ fn reader_never_holds_its_statement_key() {
         reader.statement_key.as_str()
     );
     let store = Store::serve(path.clone(), secret.as_str().to_owned());
-    let role = RoleSettings {
+    let store_settings = KeyStoreSettings {
         server: Server::Vault,
         store: StoreAddress {
             scheme: StoreScheme::Http,
@@ -96,12 +96,11 @@ fn reader_never_holds_its_statement_key() {
         },
         ca_file: None,
         mount: "secret".to_owned(),
-        secrets: "rutent/readers/secrets".to_owned(),
         keys: "rutent/readers/keys".to_owned(),
         namespace: None,
     };
-    // The facade over the role's statement keys alone (`T-015-05`): the bucket's secrets are never reached.
-    let keys = StatementKeys::for_role(&role, token.to_owned()).unwrap();
+    // The facade over the store's statement keys alone (`T-015-05`): its settings name no secrets path.
+    let keys = StatementKeys::new(&store_settings, token.to_owned()).unwrap();
 
     let host = Host::start(
         host_config(vec![reader.clone()]),

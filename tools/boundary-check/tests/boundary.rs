@@ -347,17 +347,18 @@ const PROV_CONFINE_FILE: &str = "//! The jail.\n\
 const PROV_KEYS_FILE: &str = "//! The keys.\n\
     pub use crate::proxy::kv::Server;\n\
     pub use crate::proxy::resolver::{ResolveError, Resolver};\n\
-    pub use crate::proxy::settings::{InvalidSettings, RoleSettings, StoreAddress, StoreScheme};\n\
-    pub use crate::proxy::statement_keys::StatementKeys;\n";
+    pub use crate::proxy::settings::{InvalidSettings, StoreAddress, StoreScheme};\n\
+    pub use crate::proxy::statement_keys::{KeyStoreSettings, StatementKeys};\n";
 /// The facade over a role's statement keys, as the real crate writes it: what it wraps is named in its private
 /// imports and bodies alone.
 const PROV_FACADE_FILE: &str = "//! The facade.\n\
     use super::kv::{KvConfig, KvResolver, Token};\n\
     use super::resolver::Resolver;\n\
-    use super::settings::{InvalidSettings, RoleSettings};\n\
+    use super::settings::{InvalidSettings, StoreAddress};\n\
+    pub struct KeyStoreSettings {\n    pub store: StoreAddress,\n    pub mount: String,\n    pub keys: String,\n}\n\
     pub struct StatementKeys {\n    keys: Box<dyn Resolver + Send + Sync>,\n}\n\
     impl StatementKeys {\n\
-    \x20   pub fn for_role(role: &RoleSettings, token: String) -> Result<Self, InvalidSettings> {\n\
+    \x20   pub fn new(settings: &KeyStoreSettings, token: String) -> Result<Self, InvalidSettings> {\n\
     \x20       let _ = (KvConfig::new(Token::new(token)), KvResolver::vault());\n\
     \x20       todo!()\n\
     \x20   }\n\
@@ -1060,7 +1061,7 @@ fn providers_admitted_paths_resolve_by_layout_to_the_items_their_files_define() 
     }
     sources.write(
         "prov/src/proxy/settings.rs",
-        &format!("{}pub mod RoleSettings {{}}\n", PROV_MODULES[6].1),
+        &format!("{}pub mod StoreAddress {{}}\n", PROV_MODULES[6].1),
     );
     refused("a module beside a function", "prov/src/proxy/settings.rs");
     sources.write("prov/src/proxy/settings.rs", PROV_MODULES[6].1);
@@ -1134,7 +1135,7 @@ fn providers_keys_path_is_a_facade_over_statement_keys_that_gives_back_nothing_i
     sources.write("components/reader-host/Cargo.toml", &host);
     sources.write(
         "components/reader-host/src/lib.rs",
-        "use rutent_prov::keys::{Resolver, StatementKeys};\n",
+        "use rutent_prov::keys::{KeyStoreSettings, Resolver, StatementKeys};\n",
     );
     assert_eq!(sources.findings(), vec![]);
 
@@ -1149,6 +1150,22 @@ fn providers_keys_path_is_a_facade_over_statement_keys_that_gives_back_nothing_i
     ] {
         let keys = format!("{PROV_KEYS_FILE}{widened}");
         sources.write("prov/src/keys.rs", &keys);
+        expect(
+            sources.findings(),
+            &[("prov/src/keys.rs", 1, Why::WidensAnAdmittedPath)],
+        );
+    }
+    // A process role's settings, or the proxy's that hold them, beside the others from their file: a role's settings
+    // carry its `secrets` path, which the keys' resolver could be pointed at (the bypass of the first facade, #354's
+    // review, L1).
+    for role in ["RoleSettings", "ProxySettings"] {
+        sources.write(
+            "prov/src/keys.rs",
+            &PROV_KEYS_FILE.replace(
+                "{InvalidSettings, StoreAddress",
+                &format!("{{InvalidSettings, {role}, StoreAddress"),
+            ),
+        );
         expect(
             sources.findings(),
             &[("prov/src/keys.rs", 1, Why::WidensAnAdmittedPath)],
@@ -1181,6 +1198,12 @@ fn providers_keys_path_is_a_facade_over_statement_keys_that_gives_back_nothing_i
             2,
         ),
         ("pub type Store = Bucket<u8>;\n", 1),
+        // The facade built from a process role's settings again, or its settings given a `secrets` path: L1's bypass.
+        (
+            "impl StatementKeys {\n    pub fn for_role(role: &RoleSettings) -> u8 { todo!() }\n}\n",
+            2,
+        ),
+        ("pub struct Settings {\n    pub secrets: String,\n}\n", 2),
         (
             "pub fn bucket() -> u8 {\n    kv_bucket()\n}\npub const T: Token = todo!();\n",
             4,

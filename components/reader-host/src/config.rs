@@ -110,6 +110,7 @@ pub struct ReaderLimits {
     /// milliseconds.
     pub start_within_ms: u64,
     /// The most questions waiting for the reader, the one it is on included; one more is answered unreadable at once.
+    /// At most [`MAX_PENDING`].
     pub pending: u32,
     /// How long the host waits before it starts a reader again after a crash, a hang, a limit hit or failed checks,
     /// in milliseconds. Above zero, as every bound is, so a reader that fails at once isn't restarted in a hot loop.
@@ -124,6 +125,10 @@ pub struct ReaderLimits {
     /// question, or over its start-up checks; one more is a limit hit.
     pub calls_per_question: u32,
 }
+
+/// The most questions a reader's configuration may let wait for it ([`ReaderLimits::pending`]): each holds an asker,
+/// and the worker drops the dead ones among them in turn (`T-015-05`).
+pub const MAX_PENDING: u32 = 4096;
 
 /// The most frames from one reader waiting for the host to read them.
 pub const READ_FRAMES: usize = 64;
@@ -233,6 +238,12 @@ impl HostConfig {
                 || l.calls_per_question == 0
             {
                 return bad(&reader.name, "every bound is above zero");
+            }
+            if l.pending > MAX_PENDING {
+                return bad(
+                    &reader.name,
+                    "at most MAX_PENDING (4096) questions wait for a reader",
+                );
             }
         }
         Ok(())
