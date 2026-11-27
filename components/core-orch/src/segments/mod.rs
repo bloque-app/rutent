@@ -90,6 +90,7 @@ pub mod lifecycle;
 mod measured;
 mod pairs;
 mod ports;
+mod records;
 mod reopen;
 #[cfg(test)]
 mod returned;
@@ -142,9 +143,10 @@ pub use judge::{Counted, NotCounted, Quoted, Units, judge};
 pub use landing::{Landed, Landings};
 pub use pairs::{Unbuilt, UnbuiltPair};
 pub use ports::{
-    Answered, Graded, Grading, Kept, Modules, NoProxy, ProvidersWord, RaiseDesk, Short, ToGrade,
-    ToKeep, Uses,
+    Answered, Graded, Grading, Kept, Modules, NoProxy, ProvidersWord, RaiseDesk, RecordWanted,
+    Short, ToGrade, ToKeep, Uses,
 };
+pub use records::{Read, RecordRead};
 pub use reopen::Reopening;
 pub use sign::Unwritten;
 pub(crate) use sign::sign as sign_operation;
@@ -223,6 +225,17 @@ pub struct Live<'a> {
     /// route was evaluated with whole: what the measure records of those answers cite besides the segment's own
     /// entries (`T-020-31`). `None` where the caller can't name it: those records cite the segment's entries alone.
     pub record_entry: Option<&'a Receipt>,
+}
+
+/// A record of a private node's segments the log held when Core reopened: whose it is, what it says, and the receipt of
+/// its stated entry.
+#[derive(Debug, Clone)]
+pub(crate) struct HeldRecord {
+    pub(crate) order: String,
+    pub(crate) node: String,
+    pub(crate) maker: String,
+    pub(crate) body: rutent_contracts::provider_role::InnerSegments,
+    pub(crate) receipt: Receipt,
 }
 
 /// A provider's statement, labelled as its word: what Core passes on of it is its maker's, never rutent's
@@ -683,6 +696,14 @@ struct Tracked {
 #[derive(Debug, Clone, Default)]
 pub struct Segments {
     acted: BTreeSet<String>,
+    /// The records of private nodes already asked for while a segment was graded, by order, segment, node and provider:
+    /// a segment graded again while it waits asks nothing and appends nothing more (`T-020-58`). A Core that reopens
+    /// asks again, once.
+    records_read: BTreeSet<(String, String, String, String)>,
+    /// The publishers' records of private nodes the log held when Core reopened, by what they say (`T-020-58`): a record
+    /// read again after a restart, signed afresh, that says the same of the same order and node is not kept a second
+    /// time, and cites the receipt the log gave the first.
+    records_held: Vec<HeldRecord>,
     /// The receipt of the platform's record that the operation of a transaction ended with no answer.
     unanswered: BTreeMap<String, Receipt>,
     transactions: BTreeSet<String>,
@@ -3476,6 +3497,23 @@ impl Segments {
         Ok((self.step(log, at, name)?, true))
     }
 
+    /// The receipt of the record the log held when Core reopened that is `one`'s, signed afresh: the same order and node,
+    /// the same maker and the same things said (`T-020-58`, the review's L-d).
+    fn held_record(&self, one: &ToKeep) -> Option<Receipt> {
+        let record: Statement<rutent_contracts::provider_role::InnerSegments> =
+            serde_json::from_slice(&one.bytes).ok()?;
+        let (order, node) = (one.about.order.as_ref()?, one.about.node.as_ref()?);
+        self.records_held
+            .iter()
+            .find(|held| {
+                held.order == order.as_str()
+                    && held.node == node.as_str()
+                    && held.maker == record.maker
+                    && held.body == record.statement
+            })
+            .map(|held| held.receipt.clone())
+    }
+
     /// Keeps and appends the statements the segment's grading asks for, each once under its key, and answers each
     /// with its receipt. Asked of the grading only the first time; a retry appends what is not appended yet.
     fn keep_asked(
@@ -3488,6 +3526,9 @@ impl Segments {
         // Asked every time the segment is graded, until it settles: a statement the grading couldn't read at one try
         // (a book empty then) is asked for again at the next, and one kept already is kept once. Only steps are cached;
         // an empty answer caches nothing, so the grading is never left holding "asked" for what it didn't have.
+        // The records the grading reads are asked for first, each decided and taken as an effect (`REQ-ORD-41`,
+        // `T-020-58`), so what it reads is what the providers state now.
+        self.read_records(parts, live, settled);
         let asked = parts.grading.statements(settled);
         for one in asked {
             if self
@@ -3499,6 +3540,7 @@ impl Segments {
             {
                 continue;
             }
+            let held = self.held_record(&one);
             let received_at = now(parts.clock)?;
             let entry = journal::stated_entry(
                 parts.evidence,
@@ -3516,6 +3558,7 @@ impl Segments {
             })?;
             entry.check().map_err(AppendFailure::Refused)?;
             let entry = GeneralEntry::try_from(entry).map_err(AppendFailure::Refused)?;
+            // A record the log holds already, saying the same, is cited at the receipt it has: never kept twice.
             self.flight_mut(at)?
                 .kept
                 .get_or_insert_with(Vec::new)
@@ -3523,7 +3566,7 @@ impl Segments {
                     one.key,
                     Step {
                         entry,
-                        receipt: None,
+                        receipt: held,
                     },
                 ));
         }

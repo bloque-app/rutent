@@ -215,10 +215,14 @@ pub fn judge_call(
     // transaction and a hold request are Core's own questions to a provider too (provider-role 4.0.0): the contracts
     // refuse a declaration or a route that lists either (`DeclaredCallOfAnOperatorsQuestion`), and the platform's
     // own judgement of a call refuses them however they are named, so a module can't ask another where a
-    // transaction stands or have a reserve hold a quote (`T-013-11`, `T-020-45`'s gap 6).
+    // transaction stands, have a reserve hold a quote or ask for a private node's record (`T-013-11`, `T-020-45`'s gap 6,
+    // `T-020-58`).
     let barred = matches!(
         asked.kind,
-        OperationKind::HoldingBalance | OperationKind::StatusQuery | OperationKind::Hold
+        OperationKind::HoldingBalance
+            | OperationKind::StatusQuery
+            | OperationKind::Hold
+            | OperationKind::InnerSegmentsQuery
     );
     let naming = routes
         .naming(asked.transaction, asked.caller, asked.callee, asked.kind)

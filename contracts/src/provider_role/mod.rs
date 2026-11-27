@@ -15,7 +15,9 @@
 //! ([`ArrivalQuestion`], [`ArrivalAnswer`], [`check_answer`]). A publisher's record of the segments inside its
 //! private node ([`InnerSegments`], [`check_inner_segments`]) is labelled its publisher's word
 //! ([`Standing::PublishersWord`]). A status question ([`StatusQuery`], [`check_status_answer`]) and a hold request
-//! ([`HoldRequest`], [`check_hold_answer`]) are operations of their own (4.0.0), and a reader takes statements under
+//! ([`HoldRequest`], [`check_hold_answer`]) are operations of their own (4.0.0), and so is the question of a private
+//! node's record ([`InnerSegmentsQuery`], [`check_inner_segments_answer`]), which a publisher's provider answers with
+//! its [`InnerSegments`] (`T-020-58`), and a reader takes statements under
 //! the protocol versions in force ([`ProtocolVersions`], [`Statement::check_context`]).
 //! `contracts/provider-role/README.md` lists which rule lives where, and what the catalogue must hold.
 

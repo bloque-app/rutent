@@ -179,18 +179,14 @@ pub fn run(core: &mut Core, request: OrderRequest) -> (Id, Vec<Ran>) {
     (order, ran)
 }
 
-/// The records the publishers keep of the segments inside the private node `node`, as Core's schedule reads them
-/// (`REQ-ORD-41`, `T-020-48`): one tick, over the platform.
+/// The records the publishers keep of the segments inside the private node `node`, as Core took them when its closing last
+/// read them (`REQ-ORD-41`, `T-020-58`): one for each provider that served in it, in the order the providers are installed.
 pub fn published(
     core: &mut Core,
     node: &str,
 ) -> Vec<rutent_contracts::provider_role::Statement<rutent_contracts::provider_role::InnerSegments>>
 {
-    core.tick()
-        .published_in(node)
-        .into_iter()
-        .cloned()
-        .collect()
+    core.records_taken(node)
 }
 
 /// Where the order stands, as the customer reads it.

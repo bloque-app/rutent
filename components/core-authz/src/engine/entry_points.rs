@@ -55,7 +55,7 @@ pub(super) const CARRY_OUT: &[(&str, &str, &str)] = &[
     (
         "handle",
         "prov/src/module/platform.rs",
-        "move_value, resolve_stuck",
+        "move_value, resolve_stuck, read_node_record",
     ),
     (
         "accept",

@@ -32,7 +32,8 @@
             "reversal_confirmation",
             "holding_balance",
             "status_query",
-            "hold"
+            "hold",
+            "inner_segments_query"
           ]
         }
       },
@@ -200,6 +201,21 @@
           },
           "then": {
             "$ref": "#/$defs/hold_result"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "inner_segments_query"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/inner_segments_query_result"
           }
         }
       ]
@@ -1860,6 +1876,126 @@
         "hold": {
           "description": "The reserve's own signed hold, whole, made by the answer's maker.",
           "$ref": "urn:rutent:provider-role:hold"
+        }
+      }
+    },
+    "inner_segments_query_result": {
+      "description": "A provider's answer to the question of a private node's record (REQ-ORD-41; 4.0.0): the question's transaction, the node asked about, and the record, or why there is none.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "transaction",
+        "node",
+        "outcome"
+      ],
+      "properties": {
+        "kind": {
+          "const": "inner_segments_query"
+        },
+        "transaction": {
+          "description": "The transaction this result answers: the question's own.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "node": {
+          "description": "The private node asked about.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "outcome": {
+          "$ref": "#/$defs/inner_segments_outcome"
+        }
+      }
+    },
+    "inner_segments_outcome": {
+      "description": "The provider's own record of the node's segments, whole; none; or a refusal.",
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "answered",
+            "not_known",
+            "refused"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "answered"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/inner_segments_answered"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "not_known"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/inner_segments_not_known"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "refused"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/refused"
+          }
+        }
+      ]
+    },
+    "inner_segments_answered": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "record"
+      ],
+      "properties": {
+        "status": {
+          "const": "answered"
+        },
+        "record": {
+          "description": "The provider's own signed record of the private node, whole, made by the answer's maker (REQ-ORD-41).",
+          "$ref": "urn:rutent:provider-role:inner-segments"
+        }
+      }
+    },
+    "inner_segments_not_known": {
+      "description": "The provider has recorded no segment inside the node. It says nothing else.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "const": "not_known"
         }
       }
     }

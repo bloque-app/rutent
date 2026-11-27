@@ -209,7 +209,7 @@
       ]
     },
     "action": {
-      "description": "An action policy decides: one that moves value, posts a route, changes the catalogue, moves a stuck order's value or erases a kept statement (REQ-AUZ-1, REQ-AUD-13).",
+      "description": "An action policy decides: one that moves value, posts a route, changes the catalogue, moves a stuck order's value, erases a kept statement or reads a private node's record (REQ-AUZ-1, REQ-AUD-13, REQ-ORD-41).",
       "type": "object",
       "required": [
         "kind"
@@ -225,7 +225,8 @@
             "refile_arrival",
             "accept_fault",
             "erase_statement",
-            "resolve_stuck"
+            "resolve_stuck",
+            "read_node_record"
           ]
         }
       },
@@ -363,6 +364,21 @@
           },
           "then": {
             "$ref": "#/$defs/action_resolve_stuck"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "read_node_record"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/action_read_node_record"
           }
         }
       ]
@@ -1203,6 +1219,53 @@
         "seconds": {
           "description": "How long an order filed on an automatic deposit waits for its customer to accept a quote shown without a firm rate, in whole seconds from the first quote shown (REQ-QTE-10, T-020-51).",
           "$ref": "#/$defs/count"
+        }
+      }
+    },
+    "action_read_node_record": {
+      "description": "Asking a private node's publisher's provider for its record of the node, for the segments of an order that pass it (REQ-ORD-41, T-020-58): a decided action, taken as an effect under a fresh transaction, which it names, before the question is put, so the read is traceable from the log. Core's closing takes it while it grades a segment and Core's tick takes it for an order still unsettled at the node. What the provider answers is taken as its statement only as the question's answer, and moves nothing.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "order",
+        "segment",
+        "node",
+        "provider",
+        "transaction",
+        "about"
+      ],
+      "properties": {
+        "kind": {
+          "const": "read_node_record"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "description": "A segment of the order that passes the node.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "node": {
+          "description": "The private node whose record is read.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "description": "The provider of the node's publisher that is asked.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "transaction": {
+          "description": "The fresh transaction the question is asked under.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "about": {
+          "description": "The transactions the read is about: the segments whose record is asked for, at least one (the question's `about`).",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+          }
         }
       }
     }

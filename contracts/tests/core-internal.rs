@@ -365,7 +365,7 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 145] = [
+const SCHEMA_RULES: [SchemaRule; 149] = [
     (
         "decision-request-to-list-a-public-network-under-a-hexadecimal-ip-subject-name",
         &[("/action/public_network/listing/reader/subject_name", "not")],
@@ -497,6 +497,26 @@ const SCHEMA_RULES: [SchemaRule; 145] = [
         "decision-request-to-ask-a-late-status-without-its-transaction",
         &[("/action", "required")],
         "missing field `transaction`",
+    ),
+    (
+        "decision-request-to-read-a-private-nodes-record-without-its-node",
+        &[("/action", "required")],
+        "missing field `node`",
+    ),
+    (
+        "decision-request-to-read-a-private-nodes-record-naming-no-transactions",
+        &[("/action/about", "minItems")],
+        "a read of a private node's record names the transactions it is about, at least one, each once",
+    ),
+    (
+        "decision-request-to-read-a-private-nodes-record-naming-a-transaction-twice",
+        &[("/action/about", "uniqueItems")],
+        "a read of a private node's record names the transactions it is about, at least one, each once",
+    ),
+    (
+        "decision-request-to-read-a-private-nodes-record-without-the-transactions-it-is-about",
+        &[("/action", "required")],
+        "missing field `about`",
     ),
     (
         "stated-entry-naming-a-node-for-a-result",
@@ -3418,6 +3438,20 @@ fn a_refiling_rests_on_policys_permitted_decision_to_file_the_arrival_anew() {
 #[test]
 fn an_order_refused_for_an_input_policy_could_not_read_is_told_its_class() {
     assert_accepted_by_both("verified-entry-of-a-refusal-for-an-input-policy-could-not-read");
+}
+
+// verifies: REQ-ORD-41, REQ-AUZ-1
+#[test]
+fn request_to_read_a_private_nodes_record_names_its_node_and_provider() {
+    assert_accepted_by_both("decision-request-to-read-a-private-nodes-record");
+    assert_rejected("decision-request-to-read-a-private-nodes-record-without-its-node");
+    for name in [
+        "decision-request-to-read-a-private-nodes-record-without-the-transactions-it-is-about",
+        "decision-request-to-read-a-private-nodes-record-naming-no-transactions",
+        "decision-request-to-read-a-private-nodes-record-naming-a-transaction-twice",
+    ] {
+        assert_rejected(name);
+    }
 }
 
 // verifies: REQ-ORD-1, INV-4
