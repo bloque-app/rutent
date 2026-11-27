@@ -414,6 +414,72 @@ fn owed_reversal_refused_short_or_unknown_past_its_window_makes_its_order_stuck(
     }
 }
 
+/// An owed reversal at a tuple that never settles, with no history of its own and no time its record declares, is held
+/// to the floor window on Core's own tick, and its order goes stuck past twice it: the schedule's watch, not a test's,
+/// times it (`INV-3`, `REQ-ORD-29`, `T-020-63`; the milestone reviewer's check of `T-020-48`). The call is on record with
+/// a basis of its own, the floor, not an advertised time nothing advertised.
+// verifies: INV-3, REQ-ORD-29
+#[test]
+fn owed_reversal_at_a_never_settling_tuple_goes_stuck_on_cores_tick() {
+    use rutent_contracts::core_internal::StuckBasis;
+    use rutent_core_orch::stuck::{FLOOR_SECONDS, Watch};
+    let mut failed = ramp_failing("AC-4", Behaviour::act(Act::Fail));
+    let Failed {
+        core, order, ramp, ..
+    } = &mut failed;
+    core.owe_reversal(order, ramp).expect("owed");
+    core.world()
+        .script_for(QUICK, "reversal", Behaviour::act(Act::Refuse));
+    let asked = core.ask_reversal(order, ramp).expect("asked");
+    assert!(asked.completed.is_none(), "the reversal stays owed");
+    assert!(
+        core.plant_unpriced_route(order),
+        "the order's record declares no settlement time"
+    );
+    // Inside twice the floor nothing is declared, however many ticks; it takes the schedule, not a call, to time it.
+    core.clock.advance(2 * FLOOR_SECONDS - 120);
+    let round = core.tick();
+    assert!(
+        round.watched.iter().all(|w| &w.order != order),
+        "still running: {:?}",
+        round.watched
+    );
+    assert_eq!(state(core, order), OrderState::FirstSegmentSettled);
+    core.clock.advance(240);
+    let round = core.tick();
+    let called = round
+        .watched
+        .iter()
+        .find_map(|w| match &w.found {
+            Ok(Watch::Stuck(called)) if &w.order == order => Some(called.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the tick declared it stuck: {:?}", round.watched));
+    assert_eq!(
+        called.segment, *ramp,
+        "the owed reversal's segment is the one timed"
+    );
+    assert_eq!(called.basis, StuckBasis::Floor);
+    assert_eq!(called.figure_seconds, FLOOR_SECONDS);
+    assert!(called.held_seconds > 2 * FLOOR_SECONDS, "{called:?}");
+    assert_eq!(state(core, order), OrderState::Stuck);
+    assert_eq!(
+        segment_state(core, order, ramp),
+        SegmentState::FailedReversalOwed,
+        "still owed, and now to the stuck order's resolution"
+    );
+    // The figures behind the call are on record, with the floor as their basis.
+    assert!(
+        entries(core).iter().any(|v| matches!(
+            &v.what,
+            What::StuckCall { basis: StuckBasis::Floor, figure_seconds, .. }
+                if u64::from(*figure_seconds) == FLOOR_SECONDS
+        )),
+        "the stuck call's figures name the floor"
+    );
+    admitted(core);
+}
+
 /// What the ramp's transfer, left unknown by a ramp that says later that it failed, comes to: Core's run asks the ramp,
 /// which declares a status query, where it stands, and the answer, a failed result of the transfer's own transaction,
 /// is kept as the ramp's statement.
@@ -824,6 +890,52 @@ fn unknown_segment_already_asked_is_not_asked_again_after_core_reopens() {
     admitted(&core);
 }
 
+/// The schedule's own state survives a restart: a provider asked where a segment stands is not asked again by the first
+/// tick of a Core that reopened, until its cadence has passed from the question the log holds (`NFR-6`, `REQ-ORD-1`,
+/// `T-020-63`; the milestone reviewer's check of `T-020-48`). A schedule that forgot it would press every provider again
+/// at each restart.
+// verifies: NFR-6
+#[test]
+fn first_tick_after_a_restart_keeps_each_providers_ask_cadence() {
+    use rutent_core_orch::schedule::Job;
+    let Failed {
+        mut core,
+        order,
+        ramp,
+        ..
+    } = ramp_left_unknown();
+    // The step that left the ramp unknown asked its provider once, now; its cadence is ten minutes.
+    core.set_status_cadence(QUICK, 600);
+    assert_eq!(status_asks(&core), 1);
+    core.clock.advance(100);
+    let given = execution_support::given(&[IN, EXCHANGE, QUICK, OUT]);
+    let mut core = Scenario::new("execution", "AC-5", given).reopen(core, 1, &mut Reference);
+    assert!(
+        core.is_unknown(&order, &ramp),
+        "still unknown after the restart"
+    );
+    // The reopened Core's first tick runs every job, the status question's among them, and presses nobody.
+    let round = core.tick();
+    assert!(round.did(Job::StatusAsks));
+    assert!(
+        round.statuses.is_empty(),
+        "asked a hundred seconds ago: {:?}",
+        round.statuses
+    );
+    assert_eq!(status_asks(&core), 1);
+    // Ten minutes from the question the log holds, it is asked again, once.
+    core.clock.advance(500);
+    assert!(core.tick().statuses.is_empty(), "599 seconds on, not yet");
+    core.clock.advance(1);
+    // Due again from the question the log holds, as the first tick would have asked it had the schedule forgotten. The
+    // question itself isn't put: a reopened Core holds no taken answer of an unknown segment (`NotAnswered`), a gap
+    // `T-020-61`'s resume closes, so it is tried again each tick until then; what this shows is that it is tried now.
+    let round = core.tick();
+    assert_eq!(round.statuses.len(), 1, "{:?}", round.statuses);
+    assert_eq!(round.statuses[0].unknown.segment, ramp);
+    admitted(&core);
+}
+
 /// What Core keeps of a segment's result after its status question is that one answer: another statement of the segment's
 /// result handed to it later, made at another time, is the same result held, never a second result statement for the
 /// segment (`INV-4`, `T-020-47`).
@@ -1109,6 +1221,74 @@ fn late_answer_the_platform_receives_moves_nothing_twice() {
         core.world().journal(RESERVE).len(),
         2,
         "the provider's books grew only by its own withdrawal and deposit"
+    );
+    admitted(&core);
+}
+
+/// A late answer Core couldn't record now (its log can't take the entry) is not dropped: the platform holds it until Core
+/// says it kept it, and hands it over again the next tick, when it is kept once (`NFR-6`, `AC-5`, `T-020-63`; the
+/// milestone reviewer's check of `T-020-48`). The platform's one delivery of it was the first build's only.
+// verifies: NFR-6
+#[test]
+fn late_answer_the_log_could_not_record_is_kept_for_the_next_tick() {
+    use rutent_core_orch::schedule::Job;
+    // The ramp's transfer is left unknown, and Core's status question brings the provider's word that it failed; the
+    // provider's own late answer says another thing, so it is a further statement Core keeps beside it (`T-020-47`), and
+    // its first record in the log is the one the log is made unable to take.
+    let (mut core, session) = core_with("AC-5", &[IN, EXCHANGE, QUICK, OUT]);
+    core.world().script_for(
+        QUICK,
+        "transfer",
+        Behaviour {
+            late: true,
+            ..Behaviour::unknown_that_failed()
+        },
+    );
+    let (order, ran) = run(&mut core, across("req-late-log", &session));
+    assert!(
+        matches!(segments_of(&ran)[2].outcome, SegmentOutcome::Unknown(_)),
+        "the transfer's outcome is not known: {ran:?}"
+    );
+    core.set_cadence(rutent_core_orch::schedule::Job::StatusAsks, u64::MAX);
+    core.set_cadence(rutent_core_orch::schedule::Job::StuckReports, u64::MAX);
+    let statements = |core: &Core| {
+        core.log()
+            .entries()
+            .iter()
+            .filter(|(_, e)| {
+                matches!(e, rutent_contracts::core_internal::Entry::Stated(s)
+                    if s.what.statement.as_str().ends_with("result")
+                        && s.about.as_ref().and_then(|a| a.order.as_ref()) == Some(&order))
+            })
+            .count()
+    };
+    let before = statements(&core);
+    // The log can take no result statement now: three tries are three refusals.
+    core.refuse_log_appends(
+        rutent_contracts::provider_role::RESULT_SHAPE,
+        rutent_core_orch::segments::APPEND_TRIES,
+    );
+    let round = core.tick();
+    assert!(round.did(Job::LateAnswers));
+    assert_eq!(round.late.len(), 1, "one late answer: {:?}", round.late);
+    assert!(
+        round.late[0].kept.is_err(),
+        "the log couldn't take it: {:?}",
+        round.late[0]
+    );
+    assert_eq!(statements(&core), before, "nothing was recorded");
+    // The platform hands it over again, and this time it is kept, once.
+    let round = core.tick();
+    assert_eq!(
+        round.late.len(),
+        1,
+        "the same answer again: {:?}",
+        round.late
+    );
+    assert!(round.late[0].kept.is_ok(), "{:?}", round.late[0]);
+    assert!(
+        core.tick().late.is_empty(),
+        "and the platform holds it no more"
     );
     admitted(&core);
 }

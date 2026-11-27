@@ -672,6 +672,11 @@ impl Core {
             .borrow_mut()
             .holding_accounts
             .insert(node.to_owned(), wallet.provider.clone());
+        self.deployed
+            .registers
+            .borrow_mut()
+            .holding_decimals
+            .insert(node.to_owned(), super::schedule::DECIMALS);
         // The node listed for its wallet gives way to the operator's own setting of it (L2 of #337's review).
         self.reapply_catalogue_settings();
         Ok(wallet)

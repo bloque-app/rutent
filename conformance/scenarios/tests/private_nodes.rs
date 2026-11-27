@@ -547,23 +547,54 @@ fn shared_holding_account_raises_on_a_difference_and_only_then() {
         .install_wallet(WALLET_NODE, "USDC")
         .expect("the wallet is installed");
     three_orders_hold(&mut core);
+    let raised_by = |core: &Core, direction: Direction| -> Vec<String> {
+        core.raised()
+            .into_iter()
+            .filter_map(|r| match r.difference {
+                Difference::Holding {
+                    direction: d, by, ..
+                } if d == direction => Some(by.amount().as_str().to_owned()),
+                _ => None,
+            })
+            .collect()
+    };
 
-    // The balance matches the sum its three orders hold: the check is recorded and nothing is raised.
+    // The three orders were landed by the host alone, not by a segment of Core's: what Core's own segments rest at the node
+    // is nothing, so the balance the wallet gives is more than Core attributes (`T-020-63`), by all of it, and that is the
+    // one raise. The host's record, the second comparison, names the three orders and matches the balance.
     let round = checked(&mut core, WALLET_NODE);
     let reading = round.reading.expect("the account is read");
     assert_eq!(reading.balance.as_str(), "4000");
-    assert_eq!(reading.held_for.len(), 3);
+    assert!(
+        reading.held_for.is_empty(),
+        "Core's segments rest nothing there"
+    );
     assert_eq!(reading.word, Word::Checked);
     round.check.expect("the check is recorded");
-    assert!(core.raised().is_empty(), "a match raises nothing");
+    let hosts = round
+        .against_wallet
+        .expect("the host's record differs from Core's");
+    assert_eq!(hosts.reading.balance.as_str(), "4000");
+    assert_eq!(hosts.reading.held_for.len(), 3);
+    hosts.check.expect("the host's check is recorded too");
     assert_eq!(
-        checks_and_raises(&core),
-        [(format!("holding-{WALLET_NODE}"), None)],
-        "the log holds the check, and not the balance"
+        raised_by(&core, Direction::Over),
+        ["4000"],
+        "{:?}",
+        core.raised()
+    );
+    assert!(raised_by(&core, Direction::Short).is_empty());
+    assert_eq!(
+        checks_and_raises(&core)
+            .iter()
+            .filter(|(account, _)| !account.is_empty())
+            .count(),
+        2,
+        "the log holds the two checks, and not the balance"
     );
 
-    // Short: the wallet gave 500 out that the host attributes to an order. The operator is raised, by how much and
-    // whose word; the attribution and the log's earlier entries are as they were.
+    // Short: the wallet gave 500 out that the host attributes to an order. The host's record says so: the operator is
+    // raised, by how much and whose word; the attribution and the log's earlier entries are as they were.
     ask_directly(&mut core, &wallet.provider, "withdrawal", "ord-2", "500");
     let attributed = core.holdings().attributions();
     let before = entries(&core);
@@ -573,27 +604,18 @@ fn shared_holding_account_raises_on_a_difference_and_only_then() {
         "3500"
     );
     round.check.expect("the check is recorded");
-    let raised = core.raised();
-    assert_eq!(raised.len(), 1, "{raised:?}");
-    assert!(
-        matches!(
-            &raised[0].difference,
-            Difference::Holding { direction: Direction::Short, by, word: Word::Checked, .. } if by.amount().as_str() == "500"
-        ),
-        "{:?}",
-        raised[0].difference
+    assert_eq!(
+        raised_by(&core, Direction::Short),
+        ["500"],
+        "short of what the host attributes, whose word it is"
     );
+    assert_eq!(raised_by(&core, Direction::Over), ["4000", "3500"]);
     assert_eq!(
         core.holdings().attributions(),
         attributed,
         "nothing else changes"
     );
     assert_eq!(&entries(&core)[..before.len()], &before[..]);
-    // The log's record of the check is one per account and reading's content: the same check recorded again is the same
-    // entry, so what the short added is the raise.
-    let added: Vec<_> = checks_and_raises(&core).split_off(1);
-    assert_eq!(added.len(), 1, "the raise: {added:?}");
-    assert!(matches!(added[0], (_, Some(Difference::Holding { .. }))));
 
     // Over: the wallet took 700 more than the host attributes.
     ask_directly(&mut core, &wallet.provider, "deposit", "ord-1", "1200");
@@ -603,15 +625,10 @@ fn shared_holding_account_raises_on_a_difference_and_only_then() {
         "4700"
     );
     round.check.expect("the check is recorded");
-    let raised = core.raised();
-    assert_eq!(raised.len(), 2, "{raised:?}");
-    assert!(
-        matches!(
-            &raised[1].difference,
-            Difference::Holding { direction: Direction::Over, by, .. } if by.amount().as_str() == "700"
-        ),
-        "{:?}",
-        raised[1].difference
+    assert_eq!(
+        raised_by(&core, Direction::Over),
+        ["4000", "3500", "4700", "700"],
+        "Core's, then the host's: 700 more than the host attributes"
     );
 }
 
@@ -653,7 +670,9 @@ fn holding_account_check_runs_on_cores_schedule_and_a_difference_raises_the_oper
         "4000"
     );
     public.check.as_ref().expect("checked");
-    assert!(core.raised().is_empty(), "a match raises nothing");
+    // The three orders were landed by the host alone, so what Core's segments rest at the node is nothing: the one raise
+    // is that the wallet holds more than Core attributes (`T-020-63`). The private node's account, empty, matches.
+    assert_eq!(core.raised().len(), 1, "{:?}", core.raised());
 
     // The check runs hourly by default: a tick before then reads no account and asks no module.
     core.clock.advance(3599);
@@ -662,7 +681,7 @@ fn holding_account_check_runs_on_cores_schedule_and_a_difference_raises_the_oper
     assert!(round.holding.is_empty());
     ask_directly(&mut core, &wallet.provider, "withdrawal", "ord-2", "500");
     let between = asked(&core);
-    assert_eq!(core.raised().len(), 0, "nothing is checked between");
+    assert_eq!(core.raised().len(), 1, "nothing is checked between");
 
     // Due: the account is asked again, its own figure is what the check reads, and the short is raised.
     core.clock.advance(1);
@@ -677,17 +696,23 @@ fn holding_account_check_runs_on_cores_schedule_and_a_difference_raises_the_oper
         Some("3500".to_owned()),
         "the module's figure, not one the schedule was handed"
     );
+    // Core's comparison says the wallet holds 3500 where Core attributes nothing; the host's record, the second, says it
+    // holds 500 less than the host attributes.
     let raised = core.raised();
-    assert_eq!(raised.len(), 1, "{raised:?}");
+    assert_eq!(raised.len(), 3, "{raised:?}");
     assert!(matches!(
-        &raised[0].difference,
+        &raised[1].difference,
+        Difference::Holding { direction: Direction::Over, by, .. } if by.amount().as_str() == "3500"
+    ));
+    assert!(matches!(
+        &raised[2].difference,
         Difference::Holding { direction: Direction::Short, by, .. } if by.amount().as_str() == "500"
     ));
     // The operator's cadence is the job's: set to a day, an hour's ticks check nothing.
     core.set_cadence(Job::HoldingCheck, 86_400);
     core.clock.advance(3600);
     assert!(!core.tick().did(Job::HoldingCheck));
-    assert_eq!(core.raised().len(), 1);
+    assert_eq!(core.raised().len(), 3);
 }
 
 /// A holding account whose module doesn't give its balance is raised to the operator, never left silent: once in a
@@ -777,6 +802,99 @@ fn holding_reading_a_module_does_not_give_is_raised_to_the_operator() {
             .count()
             >= 1
     );
+}
+
+/// A holding account's balance is read as any action policy decides is (`REQ-AUZ-1`, `REQ-AUD-15`, `INV-7`, `T-020-63`):
+/// each read is a permitted `read_holding_balance` whose effect is in the log, and its result recorded, before and after
+/// the module is asked, and where policy no longer permits it the module is asked nothing and the account is raised as not
+/// read, once. Nothing reaches a holding account's module through the platform undecided.
+// verifies: REQ-AUZ-1, REQ-AUD-15
+#[test]
+fn holding_balance_is_read_on_a_decision_and_refused_where_policy_refuses() {
+    use rutent_contracts::core_internal::{Action, HoldingNotRead, Outcome};
+    let (mut core, _) = core_with("AC-39", &[IN]);
+    let wallet = core
+        .install_publisher_account(NODE, PUBLISHER, "USDC")
+        .expect("the publisher's account is installed");
+    core.set_cadence(Job::HoldingCheck, 0);
+    let reads = |core: &Core| -> Vec<(String, String, String, Outcome)> {
+        let all = entries(core);
+        all.iter()
+            .enumerate()
+            .filter_map(|(at, v)| match &v.what {
+                What::Effect {
+                    action:
+                        Action::ReadHoldingBalance {
+                            node,
+                            provider,
+                            asset,
+                            ..
+                        },
+                    ..
+                } => {
+                    // The effect's result is the next entry that names it: `done` once the module was asked.
+                    let result = all[at + 1..].iter().find_map(|r| match &r.what {
+                        What::Result { .. } => Some(r.outcome),
+                        _ => None,
+                    })?;
+                    Some((
+                        node.as_str().to_owned(),
+                        provider.as_str().to_owned(),
+                        asset.as_str().to_owned(),
+                        result,
+                    ))
+                }
+                _ => None,
+            })
+            .collect()
+    };
+
+    // Permitted: the read's effect and its result are in the log, the module was asked once, and the reading is the one
+    // the module's answer gives.
+    let asked = core.operations_received(&wallet.provider);
+    let round = core.tick();
+    let held = round.holding_of(NODE).expect("the account is read");
+    assert!(held.reading.is_ok(), "{held:?}");
+    assert_eq!(core.operations_received(&wallet.provider), asked + 1);
+    assert_eq!(
+        reads(&core),
+        [(
+            NODE.to_owned(),
+            wallet.provider.clone(),
+            "USDC".to_owned(),
+            Outcome::Done {}
+        )]
+    );
+
+    // Refused: Core's actor no longer holds the permission the operator's it carries onward. Nothing is asked of the
+    // module, no effect is recorded, and the account is raised as not read, for want of a permit.
+    core.registers().permissions.retain(|(acts, p)| {
+        !(acts == kit::core().acts.as_str()
+            && *p == rutent_core_authz::roles::Permission::ReadHoldingBalance)
+    });
+    core.clock.advance(60);
+    let asked = core.operations_received(&wallet.provider);
+    let round = core.tick();
+    let held = round
+        .holding_of(NODE)
+        .expect("the account is still in the round");
+    assert!(held.reading.is_err() && held.check.is_err(), "{held:?}");
+    assert!(matches!(held.not_read, Some(Ok(_))), "{held:?}");
+    assert_eq!(
+        core.operations_received(&wallet.provider),
+        asked,
+        "asked nothing"
+    );
+    assert_eq!(reads(&core).len(), 1, "and recorded no effect");
+    let unread: Vec<_> = core
+        .raised()
+        .into_iter()
+        .filter_map(|r| match r.difference {
+            Difference::HoldingNotRead { why, .. } => Some(why),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(unread, [HoldingNotRead::NotPermitted {}]);
 }
 
 /// The private nodes' publisher accounts are the deployment's register's, which goes on across a restart: a reopened

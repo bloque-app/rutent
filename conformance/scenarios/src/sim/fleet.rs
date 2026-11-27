@@ -557,6 +557,12 @@ impl Fleet {
         )
     }
 
+    /// That Core has done with the late answer to `transaction`: kept, or refused for good. [`Fleet::late_answers`] hands
+    /// it over no more.
+    pub fn late_kept(&mut self, transaction: &str) {
+        self.late_taken.insert(transaction.to_owned());
+    }
+
     /// The platform's releases as Core's decided lifecycle actions reach them (`T-020-49`): the platform, with the
     /// catalogue it judges a waiting release's assertion by again when it is accepted.
     pub fn releases(&mut self) -> rutent_core_orch::segments::lifecycle::Judged<'_, SimWorld> {
@@ -568,9 +574,11 @@ impl Fleet {
 
     /// The answers simulated providers give past their deadline, for the operations named by `transactions`
     /// (`T-024-23`, `AC-5`): each provider whose books hold an operation it answered late, one it took effect on and
-    /// never answered within its deadline, answers it now, as the module that served it signs it, once. The platform
-    /// ends a call at its deadline and kills the process, so an answer that comes after is the provider's own repeat of
-    /// what it did, which the platform takes: provider, transaction and the signed answer.
+    /// never answered within its deadline, answers it now, as the module that served it signs it. The platform ends a
+    /// call at its deadline and kills the process, so an answer that comes after is the provider's own repeat of what it
+    /// did, which the platform takes: provider, transaction and the signed answer. It hands each over again, every time it
+    /// is asked, until Core says it kept it ([`Fleet::late_kept`], `T-020-63`): an answer Core couldn't record now (its log
+    /// down) is never lost, and a restart of Core loses none.
     pub fn late_answers(
         &mut self,
         transactions: &BTreeSet<String>,
@@ -595,7 +603,6 @@ impl Fleet {
                 if let Handled::Answered(result) = self.platform.handle(&provider, &operation)
                     && let Ok(bytes) = serde_json::to_vec(&*result)
                 {
-                    self.late_taken.insert(transaction.clone());
                     answers.push((provider.clone(), transaction, bytes));
                 }
             }

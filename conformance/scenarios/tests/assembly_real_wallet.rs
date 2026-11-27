@@ -571,7 +571,14 @@ fn value_settled_at_a_public_node_held_by_a_holding_account_lands_in_it() {
     assert_eq!(
         stuck.core.operations_received(&wallet.provider),
         2,
-        "one deposit into the account, and the balance question of the tick's check"
+        "one deposit into the account, and the balance question of the tick's check: {:?}",
+        stuck
+            .core
+            .world()
+            .journal(&wallet.provider)
+            .iter()
+            .map(|e| serde_json::to_value(&e.operation.statement).unwrap()["kind"].clone())
+            .collect::<Vec<_>>()
     );
     let held = stuck.core.holdings().attributions();
     assert_eq!(
@@ -588,6 +595,182 @@ fn value_settled_at_a_public_node_held_by_a_holding_account_lands_in_it() {
     assert_eq!(stuck.core.tick().landed, 0);
     assert_eq!(stuck.core.operations_received(&wallet.provider), 2);
     assert_eq!(stuck.core.holdings().attributions(), held);
+}
+
+/// The holding check at a public node sets the module's balance beside what Core's own segments rest there, as it does at
+/// a private node, and the wallet host's record is a second comparison (`INV-1`'s second half, `REQ-AUD-15`, `T-020-63`;
+/// the milestone reviewer's check of `T-020-48`): a difference between what Core attributes and what the wallet holds is
+/// raised even where the wallet's own record agrees with its balance, which the first build never compared.
+// verifies: INV-1, REQ-AUD-15
+#[test]
+fn public_nodes_balance_is_checked_against_what_cores_segments_rest_there() {
+    use rutent_contracts::core_internal::{Difference, Direction, Word};
+    use rutent_core_orch::schedule::Job;
+    let mut stuck = stuck_at_the_public_node();
+    let (order, wallet) = (stuck.order.clone(), stuck.wallet.clone());
+    let core = &mut stuck.core;
+    core.set_cadence(Job::HoldingCheck, 0);
+
+    // What Core rests there is what the wallet holds, and its host's record says the same: a match, one comparison.
+    let round = core.tick();
+    let held = round.holding_of(NODE).expect("the account is read");
+    let reading = held.reading.as_ref().expect("read");
+    assert_eq!(reading.balance.as_str(), AMOUNT);
+    assert_eq!(reading.word, Word::Checked);
+    assert_eq!(
+        reading
+            .held_for
+            .iter()
+            .map(|h| (h.order.as_str(), h.amount.amount().as_str()))
+            .collect::<Vec<_>>(),
+        [(order.as_str(), AMOUNT)],
+        "what Core's segments rest at the node"
+    );
+    assert!(
+        held.against_wallet.is_none(),
+        "the host's record is Core's: nothing more to compare"
+    );
+    assert!(
+        core.raised().is_empty(),
+        "a match raises nothing: {:?}",
+        core.raised()
+    );
+
+    // The wallet takes a hundred more for an order Core's segments never brought: the host's record and the wallet's
+    // balance agree with each other, and not with what Core rests. The wallet's record alone would call it a match.
+    core.land(NODE, "USDC", "ord-elsewhere", "100")
+        .expect("the wallet takes the value");
+    let round = core.tick();
+    let held = round.holding_of(NODE).expect("the account is read");
+    let reading = held.reading.as_ref().expect("read");
+    assert_eq!(
+        reading.balance.as_str(),
+        "1100".replace("1100", &(AMOUNT.parse::<u128>().unwrap() + 100).to_string())
+    );
+    assert_eq!(
+        reading.held_for.len(),
+        1,
+        "Core attributes the one order's value: {reading:?}"
+    );
+    held.check.as_ref().expect("the check is recorded");
+    let second = held
+        .against_wallet
+        .as_ref()
+        .expect("the host's record, whose total isn't Core's, is a second comparison");
+    assert_eq!(
+        second.reading.held_for.len(),
+        2,
+        "the host's record names both orders"
+    );
+    second.check.as_ref().expect("recorded too");
+    let raised = core.raised();
+    assert_eq!(raised.len(), 1, "{raised:?}");
+    assert!(
+        matches!(
+            &raised[0].difference,
+            Difference::Holding { direction: Direction::Over, by, word: Word::Checked, .. } if by.amount().as_str() == "100"
+        ),
+        "the wallet holds more than Core attributes: {:?}",
+        raised[0].difference
+    );
+
+    // The wallet then gives five hundred out that neither record knows of: short of both, each comparison says so, by
+    // what it is short of.
+    let statement = serde_json::json!({
+        "kind": "withdrawal", "transaction": "direct-withdrawal-1", "provider": wallet.provider,
+        "origin": { "network": wallet.provider }, "destination": NODE, "asset": "USDC",
+        "amount": "500", "dry_run": false, "inputs": { "order": order.as_str() },
+    });
+    let operation: Operation = serde_json::from_value(statement).expect("an operation");
+    core.ask_wallet(&wallet.provider, operation)
+        .expect("the wallet answers the operator");
+    core.tick();
+    let shorts: Vec<String> = core
+        .raised()
+        .iter()
+        .filter_map(|r| match &r.difference {
+            Difference::Holding {
+                direction: Direction::Short,
+                by,
+                ..
+            } => Some(by.amount().as_str().to_owned()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        shorts,
+        ["400", "500"],
+        "short of what Core attributes by 400, of what the host's record says by 500"
+    );
+}
+
+/// A holding account the catalogue lists at a node where Core's segments rest value, and the deployment's register of holding
+/// accounts doesn't name, is raised to the operator as not read, once, and nothing is asked of its module: the register is the
+/// definition of what is checked, and what it leaves out is said, not skipped (`REQ-AUD-15`, `INV-1`, `T-020-63`).
+// verifies: REQ-AUD-15, INV-1
+#[test]
+fn holder_the_register_does_not_name_is_raised_as_not_read() {
+    use rutent_contracts::core_internal::{Difference, HoldingNotRead};
+    use rutent_core_orch::schedule::Job;
+    let mut stuck = stuck_at_the_public_node();
+    let wallet = stuck.wallet.clone();
+    let core = &mut stuck.core;
+    core.set_cadence(Job::HoldingCheck, 0);
+    // The deployment's configuration lost the wallet's entry; the catalogue still lists it, and the order's value rests there.
+    core.registers().holding_accounts.remove(NODE);
+    let asked = core.operations_received(&wallet.provider);
+    let round = core.tick();
+    let held = round
+        .holding_of(NODE)
+        .expect("the node's account is in the round, not left out");
+    assert!(held.reading.is_err() && held.check.is_err(), "{held:?}");
+    assert!(matches!(held.not_read, Some(Ok(_))), "{held:?}");
+    assert_eq!(
+        core.operations_received(&wallet.provider),
+        asked,
+        "its module is asked nothing"
+    );
+    let unread: Vec<_> = core
+        .raised()
+        .into_iter()
+        .filter_map(|r| match r.difference {
+            Difference::HoldingNotRead { node, why, .. } => Some((node.as_str().to_owned(), why)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        unread,
+        [(NODE.to_owned(), HoldingNotRead::NotRegistered {})]
+    );
+    // Once in a spell: the next tick raises no more.
+    core.clock.advance(60);
+    core.tick();
+    assert_eq!(core.raised().len(), 1);
+}
+
+/// A public node's reading is stated in the decimals the deployment's register of holding accounts gives its asset, not in
+/// a figure of the schedule's own (`REQ-AUD-15`, `T-020-63`; the milestone reviewer's check of `T-020-48`, its Low on
+/// `DECIMALS`).
+// verifies: REQ-AUD-15
+#[test]
+fn public_nodes_reading_is_stated_in_the_decimals_the_register_gives_its_asset() {
+    use rutent_core_orch::schedule::Job;
+    let mut stuck = stuck_at_the_public_node();
+    let core = &mut stuck.core;
+    core.set_cadence(Job::HoldingCheck, 0);
+    let round = core.tick();
+    let reading = round
+        .holding_of(NODE)
+        .and_then(|h| h.reading.as_ref().ok())
+        .expect("the account is read");
+    assert_eq!(reading.asset.decimals, 2, "as the register was given them");
+    core.registers().holding_decimals.insert(NODE.to_owned(), 6);
+    let round = core.tick();
+    let reading = round
+        .holding_of(NODE)
+        .and_then(|h| h.reading.as_ref().ok())
+        .expect("the account is read");
+    assert_eq!(reading.asset.decimals, 6, "as the register now gives them");
 }
 
 /// The stuck order's value is handed on through the real plain wallet: the operator decides and another desk moves it,

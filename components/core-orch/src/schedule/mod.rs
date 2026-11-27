@@ -11,9 +11,12 @@
 //!    `THR-14`), and the orders that completed closed, each reporting its executed price once ([`Job::Close`],
 //!    `REQ-QTE-7`);
 //! 3. the check of each holding account ([`Job::HoldingCheck`], `REQ-AUD-15`, `AC-39`, `INV-1`'s second half): its
-//!    reading is taken through the platform (the account's module's `holding_balance` at a public node, its
-//!    publisher's signed word at a private node), never handed in, and goes to the log's checks; an account whose
-//!    module gives no balance is raised to the operator (`holding_not_read`);
+//!    balance is read by Core itself, a decided read recorded as an effect before the module is asked
+//!    (`read_holding_balance`, `T-020-63`: the account's module's `holding_balance` at a public node, its publisher's
+//!    signed word at a private node), never handed in. It is set beside what Core's own segments rest at the node
+//!    (`INV-1`'s second half), a public node's beside the wallet host's own record too, and goes to the log's checks. An
+//!    account whose module gives no balance, one policy didn't let Core read, one Core's clock couldn't time, and a holding
+//!    account the catalogue lists that the register doesn't name, is raised to the operator (`holding_not_read`);
 //! 4. the publishers' records of their private nodes' segments ([`Job::PublishersRecords`], `REQ-ORD-41`; read as the
 //!    scenario world holds them until `T-020-58` gives the platform a question for them);
 //! 5. a status question again for each segment still unknown, at its provider's cadence ([`Job::StatusAsks`],
@@ -29,15 +32,18 @@
 //!
 //! **The schedule decides when; each job's body is Core's** ([`jobs`]): the schedule adds a cadence for each job, an
 //! operator's setting with a default ([`Cadences`]; `T-020-49` makes it a decided one), and the time each job last ran,
-//! which a restart forgets, so a reopened Core runs every job on its first tick (it fails closed: a job done twice is
-//! done once, as the jobs' own rules say). What each job does is [`jobs::Jobs`]'s, over [`jobs::Ports`], which the
+//! stamped only once the job succeeded, so a job that failed is tried again on the next tick and not after its whole
+//! cadence. A restart forgets when each job last ran, so a reopened Core runs every job on its first tick (it fails
+//! closed: a job done twice is done once, as the jobs' own rules say); it doesn't forget when each segment was last asked
+//! its status, which [`Schedule::recorded`] rebuilds from the log's `ask_status` effects, so the first tick presses no
+//! provider again (`T-020-63`). What each job does is [`jobs::Jobs`]'s, over [`jobs::Ports`], which the
 //! deployment answers with what only it has (the platform, its register of holding accounts, the log, the evidence
 //! store, the notices channel, the clock, policy) and which decide nothing. [`Duties`] is the seam between the two, for
 //! the schedule's own tests.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use rutent_contracts::core_internal::{HoldingReading, Receipt};
+use rutent_contracts::core_internal::{Action, Entry, HoldingReading, Receipt, What};
 use rutent_contracts::provider_role::{InnerSegments, Statement};
 use rutent_contracts::router_api::Id;
 
@@ -49,7 +55,7 @@ use crate::stuck::Watch;
 pub mod jobs;
 
 pub use jobs::{
-    AccountRead, Actors, Jobs, NotConfirmed, Placed, Ports, PublisherAccount, Started, StuckLent,
+    Actors, Jobs, NotConfirmed, Placed, Ports, PublicAccount, PublisherAccount, Started, StuckLent,
     confirm_reported_failure,
 };
 
@@ -218,14 +224,30 @@ pub struct LateTaken {
 pub struct HoldingChecked {
     /// The node the account is at.
     pub node: String,
-    /// What the account's module (public node) or its publisher (private node) stated, with what the orders hold
-    /// there, or why it could not be read. It goes to the log's check and is not itself logged (`REQ-AUD-6`).
+    /// What the account's module (public node) or its publisher (private node) stated, with what Core's segments rest
+    /// there for each order (`INV-1`'s second half), or why it could not be read. It goes to the log's check and is not
+    /// itself logged (`REQ-AUD-6`).
     pub reading: Result<HoldingReading, String>,
     /// The receipt of the check's record, where there was a reading and the log took the check, or why it didn't.
     pub check: Result<Receipt, String>,
     /// Where the module gave no balance: the receipt of the raise to the operator (`holding_not_read`), or why none
     /// was raised now (one was, earlier in this spell of failure). `None` where the account was read.
     pub not_read: Option<Result<Receipt, String>>,
+    /// At a public node, the same balance beside the wallet host's own record of what each order holds there, a second
+    /// comparison, where that record's total isn't what Core's segments rest at the node (`T-020-63`). Where the two
+    /// totals are the same, the second comparison could only say what the first did, and none is made. `None` at a private
+    /// node, and where the account was not read.
+    pub against_wallet: Option<WalletCompared>,
+}
+
+/// A public node's balance read against the wallet host's own record (`T-020-63`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WalletCompared {
+    /// The balance with what the wallet host's record says each order holds there. It goes to the log's check and is not
+    /// itself logged (`REQ-AUD-6`).
+    pub reading: HoldingReading,
+    /// The receipt of the check's record, or why the log didn't take it.
+    pub check: Result<Receipt, String>,
 }
 
 /// A publisher's signed record of the segments inside one of its private nodes, as Core read it.
@@ -408,6 +430,33 @@ impl Schedule {
         Self::default()
     }
 
+    /// A schedule rebuilt from the log a Core reopens on (`NFR-6`, `T-020-63`): when each segment was last asked its
+    /// status, from the log's `ask_status` effects, so the first tick after a restart keeps each provider's cadence and
+    /// presses none. The time of an ask is its effect's entry's, which Core's clock gave it, in whole seconds. Every job's
+    /// own last run is not recorded anywhere, so each runs on the first tick, as before (the jobs are fail-closed: one done
+    /// twice is done once). The cadences themselves are the operator's settings, rebuilt by `Settings::reopen`
+    /// (`T-020-49`).
+    pub fn recorded(history: &[(Receipt, Entry)]) -> Self {
+        let mut schedule = Self::default();
+        for (_, entry) in history {
+            let Entry::Verified(verified) = entry else {
+                continue;
+            };
+            let What::Effect {
+                action: Action::AskStatus { order, segment, .. },
+                ..
+            } = &verified.what
+            else {
+                continue;
+            };
+            let at = u64::try_from(verified.when.at.unix_nanos() / 1_000_000_000).unwrap_or(0);
+            let key = (order.as_str().to_owned(), segment.as_str().to_owned());
+            let last = schedule.asked.entry(key).or_insert(at);
+            *last = (*last).max(at);
+        }
+        schedule
+    }
+
     /// The cadences, to read.
     pub fn cadences(&self) -> &Cadences {
         &self.cadences
@@ -458,13 +507,29 @@ impl Schedule {
             if !self.due(job, now) {
                 continue;
             }
-            self.last.insert(job, now);
             round.ran.push(job);
-            match job {
-                Job::LateAnswers => round.late = duties.late_answers(),
-                Job::LandSettled => round.landed = duties.land_settled(),
-                Job::WriteMeasures => round.measures = duties.write_measures(),
-                Job::WritePairs => round.pairs = Some(duties.write_pairs()),
+            // A job counts as run, and waits its cadence, only once it succeeded: one that failed (a holding account not
+            // read or not checked, a comparison, a notice or a checkpoint the log or the store didn't take) is due again
+            // on the next tick, never held off for a whole cadence (`T-020-63`).
+            let succeeded = match job {
+                Job::LateAnswers => {
+                    round.late = duties.late_answers();
+                    round.late.iter().all(|late| late.kept.is_ok())
+                }
+                Job::LandSettled => {
+                    round.landed = duties.land_settled();
+                    true
+                }
+                Job::WriteMeasures => {
+                    round.measures = duties.write_measures();
+                    true
+                }
+                Job::WritePairs => {
+                    let pairs = duties.write_pairs();
+                    let succeeded = pairs.is_ok();
+                    round.pairs = Some(pairs);
+                    succeeded
+                }
                 Job::Close => {
                     round.priced = duties.close_completed();
                     round.closed = round
@@ -473,22 +538,50 @@ impl Schedule {
                         .filter(|p| p.now)
                         .map(|p| p.order.clone())
                         .collect();
+                    true
                 }
-                Job::HoldingCheck => round.holding = duties.check_holdings(),
-                Job::PublishersRecords => round.published = duties.read_publishers(),
+                Job::HoldingCheck => {
+                    round.holding = duties.check_holdings();
+                    round.holding.iter().all(|held| {
+                        held.reading.is_ok()
+                            && held.check.is_ok()
+                            && held.against_wallet.as_ref().is_none_or(|w| w.check.is_ok())
+                    })
+                }
+                Job::PublishersRecords => {
+                    round.published = duties.read_publishers();
+                    true
+                }
                 Job::StatusAsks => {
+                    let mut succeeded = true;
                     for unknown in duties.unknown_segments() {
                         if !self.status_due(&unknown, now) {
                             continue;
                         }
                         let tried = duties.ask_status_again(&unknown);
-                        self.note_asked(&unknown, now);
+                        // The segment's own cadence counts from an ask that went out; one that didn't is tried again
+                        // on the next tick.
+                        if tried.asked.is_ok() {
+                            self.note_asked(&unknown, now);
+                        } else {
+                            succeeded = false;
+                        }
                         round.statuses.push(tried);
                     }
+                    succeeded
                 }
-                Job::Watch => round.watched = duties.watch(),
-                Job::StuckReports => round.reported = duties.report_kept_answers(),
-                Job::EndExpired => round.ended = duties.end_expired(),
+                Job::Watch => {
+                    round.watched = duties.watch();
+                    true
+                }
+                Job::StuckReports => {
+                    round.reported = duties.report_kept_answers();
+                    true
+                }
+                Job::EndExpired => {
+                    round.ended = duties.end_expired();
+                    true
+                }
                 Job::UnbuiltPairs => {
                     round.raised = duties.raise_unbuilt_pairs();
                     for pair in duties.unbuilt_pairs() {
@@ -500,9 +593,23 @@ impl Schedule {
                             round.unbuilt_pairs.push(pair);
                         }
                     }
+                    true
                 }
-                Job::Notify => round.notified = Some(duties.notify()),
-                Job::Checkpoints => round.checkpoints = Some(duties.checkpoints()),
+                Job::Notify => {
+                    let notified = duties.notify();
+                    let succeeded = notified.is_ok();
+                    round.notified = Some(notified);
+                    succeeded
+                }
+                Job::Checkpoints => {
+                    let checkpoints = duties.checkpoints();
+                    let succeeded = checkpoints.is_ok();
+                    round.checkpoints = Some(checkpoints);
+                    succeeded
+                }
+            };
+            if succeeded {
+                self.last.insert(job, now);
             }
         }
         round
@@ -518,6 +625,20 @@ mod tests {
         landed: usize,
         asked: Vec<String>,
         unknown: Vec<Unknown>,
+        /// Whether a status question put again goes out (a receipt) or doesn't (a stand-in's refusal).
+        asks_go_out: bool,
+        /// How many times the holding check ran, and whether it finds the account unread.
+        checked: usize,
+        unread: bool,
+    }
+
+    fn receipt() -> Receipt {
+        serde_json::from_value(serde_json::json!({
+            "log": "log-1",
+            "index": 1,
+            "entry": { "algorithm": "sha-256", "value": "ab".repeat(32) },
+        }))
+        .expect("a receipt")
     }
 
     impl Duties for Counting {
@@ -538,7 +659,17 @@ mod tests {
             Vec::new()
         }
         fn check_holdings(&mut self) -> Vec<HoldingChecked> {
-            Vec::new()
+            self.checked += 1;
+            if !self.unread {
+                return Vec::new();
+            }
+            vec![HoldingChecked {
+                node: "ledger".to_owned(),
+                reading: Err("the module gave no balance".to_owned()),
+                check: Err("the module gave no balance".to_owned()),
+                not_read: None,
+                against_wallet: None,
+            }]
         }
         fn read_publishers(&mut self) -> Vec<Published> {
             Vec::new()
@@ -550,7 +681,11 @@ mod tests {
             self.asked.push(unknown.segment.as_str().to_owned());
             StatusTried {
                 unknown: unknown.clone(),
-                asked: Err("a stand-in".to_owned()),
+                asked: if self.asks_go_out {
+                    Ok(receipt())
+                } else {
+                    Err("a stand-in".to_owned())
+                },
                 kept: None,
                 status: None,
             }
@@ -608,6 +743,7 @@ mod tests {
         schedule.cadences_mut().set_status_of("slow", 600);
         let mut duties = Counting {
             unknown: vec![unknown("slow")],
+            asks_go_out: true,
             ..Counting::default()
         };
         schedule.note_asked(&unknown("slow"), 1_000);
@@ -620,5 +756,85 @@ mod tests {
         assert_eq!(duties.asked, ["segment"]);
         schedule.tick(1_700, &mut duties);
         assert_eq!(duties.asked.len(), 1, "and not again before it passes");
+    }
+
+    // verifies: NFR-6, REQ-AUD-15
+    #[test]
+    fn a_job_that_failed_is_due_again_on_the_next_tick_not_after_its_cadence() {
+        let mut schedule = Schedule::new();
+        let mut duties = Counting {
+            unread: true,
+            ..Counting::default()
+        };
+        // The holding check is hourly by default, and it found its account unread: it isn't counted as run.
+        assert!(schedule.tick(1_000, &mut duties).did(Job::HoldingCheck));
+        assert!(schedule.tick(1_001, &mut duties).did(Job::HoldingCheck));
+        assert_eq!(duties.checked, 2, "tried again on the next tick");
+        // Read at last: it has run, and waits its cadence from there.
+        duties.unread = false;
+        assert!(schedule.tick(1_002, &mut duties).did(Job::HoldingCheck));
+        assert!(!schedule.tick(1_003, &mut duties).did(Job::HoldingCheck));
+        assert!(
+            schedule
+                .tick(1_002 + 3_600, &mut duties)
+                .did(Job::HoldingCheck)
+        );
+        assert_eq!(duties.checked, 4);
+    }
+
+    // verifies: NFR-6, REQ-ORD-1
+    #[test]
+    fn a_status_question_that_did_not_go_out_is_asked_again_on_the_next_tick() {
+        let mut schedule = Schedule::new();
+        let mut duties = Counting {
+            unknown: vec![unknown("slow")],
+            ..Counting::default()
+        };
+        // The question wasn't put: nothing counts as asked, so the next tick, well inside the provider's hour, asks again.
+        schedule.tick(1_000, &mut duties);
+        schedule.tick(1_001, &mut duties);
+        assert_eq!(duties.asked.len(), 2);
+        // Put at last: the provider's cadence counts from it.
+        duties.asks_go_out = true;
+        schedule.tick(1_002, &mut duties);
+        schedule.tick(1_003, &mut duties);
+        assert_eq!(duties.asked.len(), 3);
+    }
+
+    /// The schedule rebuilt from a log holds each segment's last status question from the log's `ask_status` effect, and the
+    /// latest of two (`NFR-6`, `T-020-63`).
+    // verifies: NFR-6
+    #[test]
+    fn schedule_rebuilt_from_the_log_keeps_each_segments_last_status_question() {
+        let effect = |order: &str, segment: &str, at: &str| -> (Receipt, Entry) {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+                "../../contracts/core-internal/fixtures/valid/verified-entry-of-an-effect.json",
+            );
+            let mut entry: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(path).expect("the fixture")).expect("JSON");
+            entry["what"]["action"] = serde_json::json!({
+                "kind": "ask_status", "order": order, "segment": segment,
+                "provider": "slow", "transaction": format!("tx-{order}-{segment}-{at}"),
+            });
+            entry["when"]["at"] = at.into();
+            (receipt(), serde_json::from_value(entry).expect("an entry"))
+        };
+        let history = vec![
+            effect("order", "segment", "1970-01-01T00:16:40Z"),
+            effect("order", "segment", "1970-01-01T00:20:00Z"),
+            effect("order", "other", "1970-01-01T00:10:00Z"),
+        ];
+        let mut schedule = Schedule::recorded(&history);
+        schedule.cadences_mut().set_status_of("slow", 600);
+        let due = |segment: &str, at: u64| {
+            let mut one = unknown("slow");
+            one.segment = Id::new(segment).unwrap();
+            schedule.status_due(&one, at)
+        };
+        // The segment was last asked at 1 200 s (the later of two): not due before 1 800, and due at it.
+        assert!(!due("segment", 1_799) && due("segment", 1_800));
+        // Another, asked at 600 s, is due at 1 200; a segment never asked is due at once.
+        assert!(!due("other", 1_199) && due("other", 1_200));
+        assert!(due("never", 0));
     }
 }

@@ -83,6 +83,21 @@ pub trait Modules {
         Answered::Refused(PlatformRefusal::NotHandled)
     }
 
+    /// Hands the module of `provider` `question`, the operator's question of a holding account's balance, in its envelope
+    /// signed with the operator key, as `effect` (the permitted `read_holding_balance`) lets (`REQ-AUD-15`, `REQ-AUZ-1`,
+    /// `T-020-63`). The question moves nothing; Core takes the answer only as the balance of the account asked about
+    /// (`schedule`'s holding check). The default answers that the module handles no such question, so no balance comes
+    /// back and the account is raised as not read; the production platform answers it ([`Platform::handle`]).
+    fn ask_for_balance(
+        &mut self,
+        effect: &Effect,
+        provider: &Id,
+        question: &Statement<Operation>,
+    ) -> Answered {
+        let _ = (effect, provider, question);
+        Answered::Refused(PlatformRefusal::NotHandled)
+    }
+
     /// What the platform saw since it was last asked (`Platform::take_events`).
     fn take_events(&mut self) -> Events;
 
@@ -154,6 +169,22 @@ impl<W: World> Modules for Platform<W> {
             return Answered::Refused(PlatformRefusal::NotHandled);
         };
         match Platform::status(self, provider.as_str(), &asking, about) {
+            Handled::Answered(result) => serde_json::to_vec(&*result).map_or(
+                Answered::Refused(PlatformRefusal::OutcomeUnknown),
+                Answered::Bytes,
+            ),
+            Handled::Refused(refusal) => Answered::Refused(refusal),
+        }
+    }
+
+    fn ask_for_balance(
+        &mut self,
+        effect: &Effect,
+        provider: &Id,
+        question: &Statement<Operation>,
+    ) -> Answered {
+        let _permitted = effect;
+        match Platform::handle(self, provider.as_str(), question) {
             Handled::Answered(result) => serde_json::to_vec(&*result).map_or(
                 Answered::Refused(PlatformRefusal::OutcomeUnknown),
                 Answered::Bytes,
