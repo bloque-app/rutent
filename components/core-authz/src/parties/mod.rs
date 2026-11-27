@@ -105,6 +105,8 @@ pub enum Scope {
     AskReversal,
     /// Asking a segment's provider for its late status (`decide`, `ask_status`).
     AskStatus,
+    /// Reading a private node's record from its publisher's provider (`decide`, `read_node_record`, `T-020-58`).
+    ReadNodeRecord,
     /// Filing an arrival anew against its order (`decide`, `refile_arrival`, `T-020-52`).
     RefileArrival,
     /// The customer accepting a showing of its fault (`decide`, `accept_fault`).
@@ -150,6 +152,7 @@ impl Scope {
                 Action::EraseStatement { .. } => Scope::EraseStatement,
                 Action::AskReversal { .. } => Scope::AskReversal,
                 Action::AskStatus { .. } => Scope::AskStatus,
+                Action::ReadNodeRecord { .. } => Scope::ReadNodeRecord,
                 Action::RefileArrival { .. } => Scope::RefileArrival,
                 Action::AcceptFault { .. } => Scope::AcceptFault,
                 Action::ResolveStuck { .. } => Scope::MoveStuck,

@@ -10,6 +10,7 @@ use super::envelope::{
     ContextMismatch, Deployment, JUDGEMENT_SHAPE, ProtocolVersions, RESULT_SHAPE,
     REVERSAL_CONFIRMATION_SHAPE, ShapeMismatch, Statement, StatementShape,
 };
+use super::inner::InnerSegments;
 use super::operation::Operation;
 use super::stated::{Hold, TupleTerms};
 use super::types::{EvidenceGrade, SafeInteger};
@@ -41,6 +42,8 @@ pub enum ResultBody {
     StatusQuery(StatusQueryResult),
     /// A reserve's answer to a hold request (4.0.0).
     Hold(HoldResult),
+    /// A provider's answer to the question of a private node's record (4.0.0).
+    InnerSegmentsQuery(InnerSegmentsQueryResult),
 }
 
 impl ResultBody {
@@ -57,6 +60,7 @@ impl ResultBody {
             Self::HoldingBalance(r) => Some(&r.transaction),
             Self::StatusQuery(r) => Some(&r.transaction),
             Self::Hold(r) => Some(&r.transaction),
+            Self::InnerSegmentsQuery(r) => Some(&r.transaction),
         }
     }
 
@@ -105,6 +109,10 @@ impl StatementShape for ResultBody {
                 outcome: HoldOutcome::Held(held),
                 ..
             }) => held.hold.check_shape(),
+            Self::InnerSegmentsQuery(InnerSegmentsQueryResult {
+                outcome: InnerSegmentsOutcome::Answered(answered),
+                ..
+            }) => answered.record.check_shape(),
             _ => self.terms().map_or(Ok(()), Statement::check_shape),
         }
     }
@@ -138,6 +146,12 @@ impl StatementShape for ResultBody {
                 outcome: HoldOutcome::Held(held),
                 ..
             }) => held.hold.check_as_nested(maker, deployment, versions, at),
+            Self::InnerSegmentsQuery(InnerSegmentsQueryResult {
+                outcome: InnerSegmentsOutcome::Answered(answered),
+                ..
+            }) => answered
+                .record
+                .check_as_nested(maker, deployment, versions, at),
             _ => self.terms().map_or(Ok(()), |terms| {
                 terms.check_as_nested(maker, deployment, versions, at)
             }),
@@ -844,7 +858,10 @@ pub fn check_status_answer(
     }
     if let StatusOutcome::Answered(carried) = &answered.outcome {
         let result = &carried.result.statement;
-        if matches!(result, ResultBody::StatusQuery(_) | ResultBody::Hold(_)) {
+        if matches!(
+            result,
+            ResultBody::StatusQuery(_) | ResultBody::Hold(_) | ResultBody::InnerSegmentsQuery(_)
+        ) {
             out.push(StatusMismatch::CarriesNoOperationsResult);
         } else if result.transaction() != Some(asked.about.as_str()) {
             out.push(StatusMismatch::CarriesAnotherTransactionsResult);
@@ -907,6 +924,109 @@ pub fn check_hold_answer(
         {
             out.push(HoldMismatch::PastTheValidityAsked);
         }
+    }
+    if out.is_empty() { Ok(()) } else { Err(out) }
+}
+
+/// A provider's answer to the question of a private node's record (`REQ-ORD-41`; `T-020-58`, 4.0.0): the question's own
+/// transaction, the node asked about, and the record, or why there is none.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InnerSegmentsQueryResult {
+    /// The transaction this answers: the question's own.
+    pub transaction: String,
+    /// The private node asked about.
+    pub node: String,
+    /// The record, or why there is none.
+    pub outcome: InnerSegmentsOutcome,
+}
+
+/// What a provider answers to the question of a private node's record, by `status`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum InnerSegmentsOutcome {
+    /// The provider's own record of the node's segments, whole: a statement of its own, in its name, labelled its
+    /// publisher's word.
+    Answered(InnerSegmentsAnswered),
+    /// The provider has recorded no segment inside the node. It says nothing else.
+    NotKnown(NoDetail),
+    /// The provider refused, with its class (`REQ-CAT-18`).
+    Refused(Refused),
+}
+
+/// A record of a private node's segments, carried whole.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InnerSegmentsAnswered {
+    /// The provider's own enveloped record of the node, made by the answer's maker.
+    pub record: Box<Statement<InnerSegments>>,
+}
+
+/// How an answer to the question of a private node's record differs from the question it answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InnerSegmentsMismatch {
+    /// It was made by another provider than the one asked.
+    AnsweredByAnotherProvider,
+    /// It names another question's transaction.
+    AnswersAnotherQuestion,
+    /// It is about another node than the one asked about, or carries a record of one.
+    OfAnotherNode,
+    /// The record it carries was made by another provider than the one that answers.
+    RecordOfAnotherMaker,
+    /// The record it carries lists a segment under a transaction the question didn't ask about.
+    SegmentNotAsked,
+    /// The question names no transaction it is about, or one twice: it asks for nothing, or the same thing twice, and
+    /// no answer to it is held.
+    AboutNotAList,
+    /// The question isn't a question of a node's record, or the answer isn't an answer to one: an answer to another
+    /// question is no record of a private node.
+    NotAnInnerSegmentsQuestion,
+}
+
+/// Holds an answer to the question of a private node's record to the question it answers (`REQ-ORD-41`): the question
+/// and the signed answer, so the answer is the provider asked's own; the question's transaction, the node asked about, and, where it
+/// answers, a record of that node made by the provider that answers. That the record is signed with a key its maker's
+/// advertisement lists, and that the node is one the maker declares for its publisher, is the reader's, against the
+/// advertisement its catalogue accepted ([`check_inner_segments`](super::check_inner_segments)). That its segments add
+/// up is the replay's: the contract refuses no figure.
+pub fn check_inner_segments_answer(
+    question: &Operation,
+    answer: &Statement<ResultBody>,
+) -> Result<(), Vec<InnerSegmentsMismatch>> {
+    let (Operation::InnerSegmentsQuery(asked), ResultBody::InnerSegmentsQuery(answered)) =
+        (question, &answer.statement)
+    else {
+        return Err(alloc::vec![
+            InnerSegmentsMismatch::NotAnInnerSegmentsQuestion
+        ]);
+    };
+    let mut out = Vec::new();
+    if !asked.asks_about_each_once() {
+        out.push(InnerSegmentsMismatch::AboutNotAList);
+    }
+    if answer.maker != asked.provider {
+        out.push(InnerSegmentsMismatch::AnsweredByAnotherProvider);
+    }
+    if answered.transaction != asked.transaction {
+        out.push(InnerSegmentsMismatch::AnswersAnotherQuestion);
+    }
+    let carried = match &answered.outcome {
+        InnerSegmentsOutcome::Answered(carried) => Some(&carried.record),
+        _ => None,
+    };
+    if answered.node != asked.node || carried.is_some_and(|r| r.statement.node != asked.node) {
+        out.push(InnerSegmentsMismatch::OfAnotherNode);
+    }
+    if carried.is_some_and(|r| r.maker != answer.maker) {
+        out.push(InnerSegmentsMismatch::RecordOfAnotherMaker);
+    }
+    if carried.is_some_and(|r| {
+        r.statement
+            .segments
+            .iter()
+            .any(|s| !asked.about.contains(&s.transaction))
+    }) {
+        out.push(InnerSegmentsMismatch::SegmentNotAsked);
     }
     if out.is_empty() { Ok(()) } else { Err(out) }
 }

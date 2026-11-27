@@ -458,6 +458,7 @@ raise. A record not listed here needs a bump of this contract.
 | `T-020-22` | a non-final segment's public record contradicting its provider, raised | `public_mismatch`; raise, `difference: public_end` |
 | `T-020-25` | an empty shortlist's record; an operation that ended with no answer | `decision_record` of a shortlist naming none; `hand_over` of `operation_unanswered` |
 | `T-020-26` | the holding account's withdrawal record, at its node, a private node's labelled its publisher's word | `holding_withdrawal` (`node`, `publisher`) |
+| `T-020-58` | a private node's record read from its publisher's provider while a segment passing it is graded | `decide` and `effect` of `read_node_record` (`Action::ReadNodeRecord`), which names its fresh transaction |
 | `T-020-27` | a provider asked for a segment's late status; a reversal at a later inner node, on that node's reserve | `decide` and `effect` of `ask_status` (`Action::AskStatus`); `input` (`reversal_completed`) on `evidence` |
 | `T-020-29` | a charge stated in an asset no formula covers | raise, `difference: charge` with `no_formula` |
 | `T-023-03` | each notice delivered or abandoned, a raise's among them | `notice_summary` |

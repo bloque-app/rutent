@@ -55,6 +55,7 @@ use std::collections::BTreeMap;
 
 mod price;
 mod public_end;
+pub mod publishers;
 
 pub use price::{PriceDesk, Reported, RouteRun, Unreported, report_logged_price, report_price};
 
@@ -64,8 +65,9 @@ use rutent_contracts::core_internal::{
     ReplayMismatch, TimeSource, VerifiedEntry, VerifiedKind, What, When,
 };
 use rutent_contracts::provider_role::{
-    ConversionOutcome, Denomination, EvidenceGrade, EvidencePiece, InnerSegments, NodeRef, Payouts,
-    ReserveMovementOutcome, ResultBody, Statement, TransferOutcome,
+    ConversionOutcome, Denomination, EvidenceGrade, EvidencePiece, InnerSegments, NodeRef,
+    Operation as ProviderOperation, Payouts, ReserveMovementOutcome, ResultBody, Statement,
+    TransferOutcome,
 };
 use rutent_contracts::router_api::{Amount, Id, Operation, OperationKind};
 use rutent_evidence::replay::{
@@ -76,9 +78,9 @@ use rutent_evidence::{
     Check, Claim, Expected, GradeExt, MovementId, NetworkRules, PublicNetwork, Status, Unmatched,
     grade_outcome, public_record_check, verify_movement,
 };
-use rutent_prov::catalogue::{Catalogue, Category, Endpoint, TupleKey};
+use rutent_prov::catalogue::{Catalogue, Category, Endpoint, Instant, TupleKey};
 
-use crate::segments::{Graded, Grading, RaiseDesk, Short, ToGrade, ToKeep};
+use crate::segments::{Graded, Grading, RaiseDesk, RecordWanted, Short, ToGrade, ToKeep};
 use crate::snapshot::RouteRefusal;
 
 /// A segment's movement on a public network, as that network ties it to the segment's transaction.
@@ -156,6 +158,23 @@ pub trait Books {
     /// What the publisher of private node `node` recorded of the segments inside it that ran under `transactions`,
     /// in the order they ran; `None` where it recorded nothing.
     fn recorded(&self, node: &str, transactions: &[Id]) -> Option<Recorded>;
+
+    /// Hands the books what `provider`, a provider of `node`'s publisher, answered when Core asked it for its record of
+    /// the node for `order`'s segments, taken as one ([`publishers::taken`]). Each answer covers one order's
+    /// transactions, so the books keep a record for each provider, node and order, whole as the provider signed it (what
+    /// closing cites), the last for each: one order's read never drops another's, and a segment that waits keeps the
+    /// record it took (`T-020-58`, the review's M3). Books rebuild from the next asking after a restart. Books that are
+    /// given nothing (a fixed listing) ignore it.
+    fn took(&self, provider: &str, node: &str, order: &str, record: Statement<InnerSegments>) {
+        let _ = (provider, node, order, record);
+    }
+
+    /// Drops what the books hold for `order` at `node`: its segments there have settled and their records have been
+    /// kept and cited, so a later grading needs none of them (it reads again what it needs), and a grading's scan covers
+    /// the orders still in flight and no others (`T-020-58`, the review's L-e).
+    fn forget(&self, order: &str, node: &str) {
+        let _ = (order, node);
+    }
 }
 
 /// What grading kept of one settled segment, for the segments after it.
@@ -474,6 +493,48 @@ pub fn fees(settled: &ToGrade<'_>) -> Vec<Entry> {
 }
 
 impl Grading for Evidenced<'_> {
+    /// Each provider of each private node this segment's closing reads, whose record the segments ask for through the
+    /// platform, decided as an effect each (`REQ-ORD-41`, `T-020-58`). The nodes are Core's: the ones the route it runs
+    /// passes. The deployment carries the question and chooses nothing.
+    fn records_wanted(&mut self, settled: &ToGrade<'_>) -> Vec<RecordWanted> {
+        self.nodes_read(settled)
+            .into_iter()
+            .flat_map(|(node, about)| {
+                publishers::serving(self.catalogue, &node)
+                    .into_iter()
+                    .map(move |provider| RecordWanted {
+                        node: node.clone(),
+                        provider,
+                        about: about.clone(),
+                    })
+            })
+            .collect()
+    }
+
+    /// Takes what a provider answered as a record of its node, or as nothing, and hands the books the result.
+    fn record_read(
+        &mut self,
+        order: &Id,
+        wanted: &RecordWanted,
+        answer: Option<(&Statement<ProviderOperation>, &[u8])>,
+    ) -> bool {
+        // Judged at the time Core asked, which its question carries: Core's own clock then. A read that came to nothing
+        // leaves what the books hold of the provider as it was (a record taken earlier stays), and is tried again.
+        let record = answer.and_then(|(question, bytes)| {
+            let asked_at = rutent_contracts::router_api::Timestamp::new(question.made_at.clone())?;
+            let at = Instant(u64::try_from(asked_at.unix_nanos() / 1_000_000_000).ok()?);
+            publishers::taken(self.catalogue, at, &question.statement, bytes).ok()
+        });
+        match record {
+            Some(record) => {
+                self.books
+                    .took(&wanted.provider, &wanted.node, order.as_str(), record);
+                true
+            }
+            None => false,
+        }
+    }
+
     fn statements(&mut self, settled: &ToGrade<'_>) -> Vec<ToKeep> {
         self.to_keep(settled)
     }
@@ -495,6 +556,10 @@ impl Grading for Evidenced<'_> {
     }
 
     fn recorded(&mut self, settled: &ToGrade<'_>, receipts: &[Receipt]) {
+        // Settled, and the records it cites kept in the log: the books need none of this order's at the nodes it read.
+        for (node, _) in self.nodes_read(settled) {
+            self.books.forget(settled.order.as_str(), &node);
+        }
         self.closing
             .unraised
             .bind(settled.order, settled.segment, receipts);
@@ -1107,6 +1172,39 @@ impl Evidenced<'_> {
                     && !txs.contains(tx)
                 {
                     txs.push(tx.clone());
+                }
+            }
+        }
+        nodes
+    }
+
+    /// The private nodes this segment's closing reads the books of: the node a public segment enters, and the nodes
+    /// the value leaves for a public one, which the route Core runs names (`REQ-ORD-41`).
+    fn nodes_read(&self, settled: &ToGrade<'_>) -> Vec<(String, Vec<String>)> {
+        let operations = settled.operations;
+        let Some(operation) = operations.get(settled.place) else {
+            return Vec::new();
+        };
+        let mut nodes = Vec::new();
+        if !is_final_deposit(settled)
+            && self.public(&operation.from.node)
+            && self.private(&operation.to.node)
+        {
+            nodes.push((
+                node_name(&operation.to.node).to_owned(),
+                vec![settled.transaction.as_str().to_owned()],
+            ));
+        }
+        if self.private(&operation.from.node)
+            && !self.private(&operation.to.node)
+            && self.public(&operation.to.node)
+        {
+            for (node, transactions) in self.run_nodes(settled, operations) {
+                if !nodes.iter().any(|(n, _)| *n == node) {
+                    nodes.push((
+                        node,
+                        transactions.iter().map(|t| t.as_str().to_owned()).collect(),
+                    ));
                 }
             }
         }

@@ -30,7 +30,7 @@ use rutent_core_orch::notice::{Channel, NoticeKey, Notices, Transport};
 use rutent_core_orch::reversal::{Moving, Parts as ReversalParts, Reversals};
 use rutent_core_orch::rounds::Fresh as _;
 use rutent_core_orch::schedule::{
-    AccountRead, Actors, Job, Jobs, Ports, Published, PublisherAccount, Round, Started, StuckLent,
+    AccountRead, Actors, Job, Jobs, Ports, PublisherAccount, Round, Started, StuckLent,
 };
 use rutent_core_orch::segments::{Landings, NoProxy, Parts as SegmentParts, Segments};
 use rutent_core_orch::snapshot::Clock;
@@ -194,6 +194,93 @@ impl Core {
     }
 }
 
+impl Core {
+    /// Reads the records of the private node `node` about the transactions `about`, of each provider of its publisher that
+    /// declares it, by Core's own read ([`rutent_core_orch::segments::Segments::read_node_record`]): decided by policy,
+    /// recorded as an effect, put through the platform, and each answer taken as a record only as
+    /// `closing::publishers::taken` allows. For an order and a segment of it that pass the node (the effect names them), and
+    /// for a scenario that wants to see what a node holds that closing and the tick don't read: a route that ends inside it,
+    /// or an order that has settled.
+    pub fn read_records_about(
+        &mut self,
+        order: &Id,
+        segment: &Id,
+        node: &str,
+        about: &[Id],
+    ) -> Vec<
+        rutent_contracts::provider_role::Statement<rutent_contracts::provider_role::InnerSegments>,
+    > {
+        use rutent_core_orch::closing::publishers;
+        let Some(bounds) = self
+            .started
+            .get(order.as_str())
+            .map(|started| started.record.bounds.clone())
+        else {
+            return Vec::new();
+        };
+        let (core, operator) = (kit::core(), kit::operator());
+        let providers = publishers::serving(&self.catalogue, node);
+        let mut answers = Vec::new();
+        Due(self).with_segments(&mut |segments, parts| {
+            for provider in &providers {
+                let read = rutent_core_orch::segments::RecordRead {
+                    order,
+                    segment,
+                    node,
+                    provider,
+                    about,
+                    bounds: &bounds,
+                    operator: &operator,
+                    core: &core,
+                };
+                if let rutent_core_orch::segments::Read::Answered(question, bytes) =
+                    segments.read_node_record(parts, &read)
+                {
+                    answers.push((question, bytes));
+                }
+            }
+        });
+        let at = self.clock.now().floor();
+        answers
+            .into_iter()
+            .filter_map(|(question, bytes)| {
+                publishers::taken(&self.catalogue, at, &question.statement, &bytes).ok()
+            })
+            .collect()
+    }
+
+    /// Puts the question of `provider`'s record of `node` to the production platform, as the permitted `effect` lets,
+    /// through [`rutent_core_orch::segments::Modules::ask_for_record`]: the path closing takes for a platform of its own
+    /// (`T-020-58`). For a test that shows the production platform answers it; Core's own asking is closing's.
+    pub fn ask_record_of_the_platform(
+        &mut self,
+        effect: &rutent_contracts::core_internal::Effect,
+        provider: &str,
+        node: &str,
+        transaction: &str,
+        about: &[String],
+    ) -> rutent_core_orch::segments::Answered {
+        use rutent_core_orch::segments::Modules;
+        let refused = || {
+            rutent_core_orch::segments::Answered::Refused(
+                rutent_contracts::module_interface::PlatformRefusal::Unavailable,
+            )
+        };
+        let (Some(to), Some(made_at)) = (Id::new(provider), self.clock.now().timestamp()) else {
+            return refused();
+        };
+        self.fleet.platform.world.set_clock(self.clock.instant());
+        let mut key = RealKey::assembly();
+        let bounds = self.bounds.clone();
+        let signs = OperatorSigns::new(&mut key, &bounds, kit::operator().acts, made_at);
+        let question = rutent_prov::holding::wallet::Operator::statement(
+            &signs,
+            rutent_core_orch::closing::publishers::question(provider, node, transaction, about),
+        );
+        Modules::ask_for_record(&mut self.fleet.platform, effect, &to, &question)
+    }
+}
+
 /// The deployment's ports over a [`Core`]: each reads, asks or lends, and decides nothing.
 struct Due<'a>(&'a mut Core);
 
@@ -308,38 +395,6 @@ impl Ports for Due<'_> {
         .unwrap_or(Handled::Refused(
             rutent_contracts::module_interface::PlatformRefusal::Unavailable,
         ))
-    }
-
-    fn publishers_records(&mut self) -> Vec<Published> {
-        // `T-020-58`: no operation asks a publisher for its record yet, so it is read as the scenario world holds it.
-        let core = &mut *self.0;
-        core.readings.refresh(&core.fleet.platform.world);
-        let mut nodes: Vec<String> = core
-            .installed
-            .iter()
-            .flat_map(|one| {
-                one.advertisement
-                    .statement()
-                    .statement
-                    .private_nodes
-                    .clone()
-            })
-            .collect();
-        nodes.sort();
-        nodes.dedup();
-        nodes
-            .into_iter()
-            .flat_map(|node| {
-                core.readings
-                    .published_in(&node)
-                    .into_iter()
-                    .map(move |record| Published {
-                        node: node.clone(),
-                        record,
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect()
     }
 
     fn run_checkpoints(&mut self) -> Result<usize, String> {

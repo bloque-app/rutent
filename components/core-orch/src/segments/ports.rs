@@ -83,6 +83,21 @@ pub trait Modules {
         Answered::Refused(PlatformRefusal::NotHandled)
     }
 
+    /// Hands the module of `provider` `question`, the operator's question of its record of a private node, in its
+    /// envelope signed with the operator key, as `effect` (the permitted `read_node_record`) lets (`REQ-ORD-41`,
+    /// `REQ-AUZ-1`, `T-020-58`). The question moves nothing; Core holds the answer to it with
+    /// `closing::publishers::taken`. The default answers that the module handles no such question, so no record comes
+    /// back and the node's books say nothing; the production platform answers it ([`Platform::handle`]).
+    fn ask_for_record(
+        &mut self,
+        effect: &Effect,
+        provider: &Id,
+        question: &Statement<Operation>,
+    ) -> Answered {
+        let _ = (effect, provider, question);
+        Answered::Refused(PlatformRefusal::NotHandled)
+    }
+
     /// What the platform saw since it was last asked (`Platform::take_events`).
     fn take_events(&mut self) -> Events;
 
@@ -154,6 +169,22 @@ impl<W: World> Modules for Platform<W> {
             return Answered::Refused(PlatformRefusal::NotHandled);
         };
         match Platform::status(self, provider.as_str(), &asking, about) {
+            Handled::Answered(result) => serde_json::to_vec(&*result).map_or(
+                Answered::Refused(PlatformRefusal::OutcomeUnknown),
+                Answered::Bytes,
+            ),
+            Handled::Refused(refusal) => Answered::Refused(refusal),
+        }
+    }
+
+    fn ask_for_record(
+        &mut self,
+        effect: &Effect,
+        provider: &Id,
+        question: &Statement<Operation>,
+    ) -> Answered {
+        let _permitted = effect;
+        match Platform::handle(self, provider.as_str(), question) {
             Handled::Answered(result) => serde_json::to_vec(&*result).map_or(
                 Answered::Refused(PlatformRefusal::OutcomeUnknown),
                 Answered::Bytes,
@@ -323,6 +354,28 @@ pub enum Graded {
 /// answers the entries the segment's `segment_settled` rests on, or why it doesn't settle yet. It appends nothing
 /// itself: the segments append what it answers, each entry once, and grade a segment again only while it waits.
 pub trait Grading {
+    /// The private nodes' records the grading of `settled` reads, each of a provider of the node's publisher: what the
+    /// segments ask for, decided and taken as an effect each (`read_node_record`, `REQ-ORD-41`, `T-020-58`), each time
+    /// the segment is graded, so what the grading reads is what the providers state now. None unless a grading says
+    /// otherwise.
+    fn records_wanted(&mut self, settled: &ToGrade<'_>) -> Vec<RecordWanted> {
+        let _ = settled;
+        Vec::new()
+    }
+
+    /// What came back of a record `wanted`: the question as put and the answer as received, or `None` where nothing
+    /// came back. Whether the answer was taken as a record: where it wasn't, the read is tried again when the segment is
+    /// graded again, and a read that came to nothing changes nothing the grading holds.
+    fn record_read(
+        &mut self,
+        order: &Id,
+        wanted: &RecordWanted,
+        answer: Option<(&Statement<Operation>, &[u8])>,
+    ) -> bool {
+        let _ = (order, wanted, answer);
+        true
+    }
+
     /// The statements the grading reads and will cite, for the segments to keep and append before they grade
     /// `settled`, each once however often it is tried; their receipts come back in [`ToGrade::kept`]. None unless a
     /// grading says otherwise.
@@ -361,6 +414,17 @@ pub trait Grading {
         let _ = desk;
         Ok(())
     }
+}
+
+/// A record of a private node the grading reads: asked of `provider`, one of its publisher's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordWanted {
+    /// The private node.
+    pub node: String,
+    /// The provider asked.
+    pub provider: String,
+    /// The transactions the question is about: the order's own segments that passed the node, at least one.
+    pub about: Vec<String>,
 }
 
 /// What a grading reaches to raise a difference: the log, Core's clock, a source of fresh identifiers, the

@@ -43,6 +43,7 @@ fn operation(kind: OperationKind, callee: &str, transaction: &str) -> Operation 
         OperationKind::HoldingBalance => "operation-holding-balance",
         OperationKind::StatusQuery => "operation-status-query",
         OperationKind::Hold => "operation-hold-of-a-chosen-quote",
+        OperationKind::InnerSegmentsQuery => "operation-inner-segments-query",
     };
     let mut value = fixture("provider-role", name);
     value["statement"]["provider"] = json!(callee);
@@ -321,7 +322,7 @@ fn holding_balance_is_refused_as_a_declared_call_and_as_a_kind_a_route_names() {
     assert_eq!(named_only.refusal, Some(CallRefusalReason::UndeclaredKind));
 }
 
-// verifies: REQ-MDL-21, REQ-ORD-1
+// verifies: REQ-MDL-21, REQ-ORD-1, REQ-ORD-41
 #[test]
 fn status_query_and_hold_are_refused_as_a_declared_call_and_as_a_kind_a_route_names() {
     let named = |kinds: Vec<OperationKind>| {
@@ -365,7 +366,11 @@ fn status_query_and_hold_are_refused_as_a_declared_call_and_as_a_kind_a_route_na
 
     // Core's own questions, a status question about a transaction and a hold request, are never a module's call:
     // declared and named, declared only, or named only, each is refused as an undeclared kind.
-    for kind in [OperationKind::StatusQuery, OperationKind::Hold] {
+    for kind in [
+        OperationKind::StatusQuery,
+        OperationKind::Hold,
+        OperationKind::InnerSegmentsQuery,
+    ] {
         let both = judge_call(
             &declares(vec![OperationKind::Withdrawal, kind]),
             &named(vec![kind]),

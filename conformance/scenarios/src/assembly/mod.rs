@@ -50,6 +50,7 @@ pub mod checking;
 pub mod durable;
 mod erasure;
 mod grading;
+pub use grading::Tamper;
 pub mod holding;
 pub mod lifecycle;
 pub mod linked;
@@ -434,6 +435,27 @@ impl Modules for Running<'_> {
         let answered = Modules::status(self.platform, effect, provider, asking, about);
         self.readings.refresh(&self.platform.world);
         answered
+    }
+
+    fn ask_for_record(
+        &mut self,
+        effect: &rutent_contracts::core_internal::Effect,
+        provider: &Id,
+        question: &Statement<Operation>,
+    ) -> rutent_core_orch::segments::Answered {
+        use rutent_core_orch::segments::Answered;
+        self.platform.world.set_clock(self.clock.instant());
+        if let Operation::InnerSegmentsQuery(q) = &question.statement {
+            self.readings
+                .note_asked(provider.as_str(), &q.node, &q.transaction);
+        }
+        // The production platform carries it; only the fault a scenario planted on the answer's way to Core is added.
+        match Modules::ask_for_record(self.platform, effect, provider, question) {
+            Answered::Bytes(bytes) => {
+                Answered::Bytes(self.readings.tampered(provider.as_str(), bytes))
+            }
+            refused => refused,
+        }
     }
 
     fn take_events(&mut self) -> rutent_prov::module::types::Events {
@@ -885,6 +907,9 @@ impl Core {
                 r.list(&actor);
             }
             r.permit(&kit::core(), Permission::CarryOnward);
+            // Core reads a private node's record from its publisher's provider where policy decides it, carrying the
+            // operator's standing permission onward, beside `CarryOnward` (`REQ-ORD-41`, `REQ-AUZ-1`, `T-020-58`).
+            r.permit(&kit::core(), Permission::ReadNodeRecord);
             for change in [
                 CatalogueChange::Grant,
                 CatalogueChange::Promote,
@@ -1232,7 +1257,34 @@ impl Core {
     /// From now on, `provider`'s record of the segments inside its node is altered after it was signed, as a forger
     /// would: a fault the scenarios plant (`T-024-14`). Core's books refuse it, so the replay finds nothing recorded.
     pub fn forge_record_of(&mut self, provider: &str) {
-        self.readings.forge(provider);
+        self.readings.forge(provider, Tamper::Figure);
+    }
+
+    /// From now on, `provider`'s answer to the question of its record is altered as `how` says (`T-020-58`): Core takes
+    /// it only as a record of the node asked about, so the replay finds nothing recorded.
+    pub fn tamper_with_record_of(&mut self, provider: &str, how: Tamper) {
+        self.readings.forge(provider, how);
+    }
+
+    /// How many records closing's books hold now, whatever the node: the orders still in flight through a private node
+    /// hold theirs, and an order whose segments there have settled holds none (`T-020-58`).
+    pub fn records_held(&self) -> usize {
+        self.readings.held()
+    }
+
+    /// The records of the private node `node` Core took of its providers, as closing's books hold them (`T-020-58`).
+    pub fn records_taken(
+        &self,
+        node: &str,
+    ) -> Vec<Statement<rutent_contracts::provider_role::InnerSegments>> {
+        self.readings.taken(node)
+    }
+
+    /// Every question of a private node's record Core put to a provider, as the platform carried it: the provider, the
+    /// node and the transaction, in the order put (`T-020-58`). The assembly chooses none: Core does, from the routes
+    /// it runs, when it closes a segment and on its tick.
+    pub fn publishers_asked(&self) -> Vec<(String, String, String)> {
+        self.readings.asked()
     }
 
     /// The log.
@@ -1286,10 +1338,10 @@ impl Core {
         node: &str,
         transactions: &[Id],
     ) -> Option<Vec<rutent_evidence::replay::RecordedSegment>> {
-        use rutent_core_orch::closing::Books;
+        // The books are what Core took of its providers' answers when it last asked them (`T-020-58`).
         self.readings.refresh(&self.fleet.platform.world);
         self.readings
-            .recorded(node, transactions)
+            .recorded_ever(node, transactions)
             .map(|r| r.segments)
     }
 
