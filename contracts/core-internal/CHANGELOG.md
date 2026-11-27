@@ -142,8 +142,8 @@
 
   Valid fixtures for each new shape and setting, an invalid one per rule broken, and admission cases for each new
   row and field. With `T-020-44`'s, `T-020-50`'s, `T-020-46`'s (five rounds), `T-021-16`'s, `T-020-51`'s, `T-020-52`'s,
-  `T-020-48`'s, `T-020-57`'s and `T-020-49`'s rounds, merged beside it: thirty schemas, 193 valid fixtures and 195 invalid,
-  789 admission cases and 58 attribution cases (counted from the files); 120
+  `T-020-48`'s, `T-020-57`'s, `T-020-49`'s and `T-020-63`'s rounds, merged beside it: thirty schemas, 198 valid fixtures and 197
+  invalid, 789 admission cases and 58 attribution cases (counted from the files); 120
   relations and 5 closing ones, three stated. (DEC-4, DEC-20, REQ-QTE-10, REQ-AUZ-7, REQ-AUZ-6, REQ-AUZ-8, THR-3, GUA-1, REQ-ORD-20, T-020-45)
 - The interfaces between `CMP-CORE-ORCH`, `CMP-CORE-AUTHZ` and `CMP-CORE-AUDIT`, settled as a sixth contract before the
   three parts are built side by side (`PLAN.md` §3, §4.4). From orchestration to policy: one decision call for every

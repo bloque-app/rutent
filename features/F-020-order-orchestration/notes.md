@@ -9422,3 +9422,46 @@ now the second comparison, is what each test's earlier raises are about).
    and `core-orch`'s `Modules`; the merge takes both at each shared line (see the top of this section). `T-020-58` also
    removes `Ports::publishers_records`; this row removes `holding_readings` and `ask_as_operator`; the `Ports` trait and
    the assembly's `Due` take both removals.
+
+### Rule-off
+
+Each rule switched off alone (a patch to the one line, the file restored from its text, `contracts/src/lib.rs` touched before
+each run), over the tests named; a script of this row's wrote each run, so the table is what it saw:
+
+| Rule switched off | Tests that went red |
+|---|---|
+| a public node's reading is built from the wallet host's record, as the first build did, not from `resting_totals` | `public_nodes_balance_is_checked_against_what_cores_segments_rest_there` |
+| no second comparison against the wallet host's record | `public_nodes_balance_is_checked_against_what_cores_segments_rest_there` |
+| the second comparison is made even where the totals are the same | `public_nodes_balance_is_checked_against_what_cores_segments_rest_there` |
+| an answer is handed back though the log couldn't record its result | `holding_balance_with_no_answer_or_no_record_of_its_result_hands_back_none` |
+| a refusal by policy is read as a failure to answer, not as `not_permitted` | `holding_balance_is_read_on_a_decision_and_refused_where_policy_refuses` |
+| the floor window is logged as twice an advertised time | `owed_reversal_at_a_tuple_that_never_settles_is_held_to_a_floor_window` (the pure one, `stuck/timing.rs`); `owed_reversal_at_a_never_settling_tuple_goes_stuck_on_cores_tick` |
+| the schedule is not rebuilt from the log on reopening | `first_tick_after_a_restart_keeps_each_providers_ask_cadence` |
+| a job is counted as run though it failed | `a_job_that_failed_is_due_again_on_the_next_tick_not_after_its_cadence` |
+| a status question is counted as asked though it didn't go out | `a_status_question_that_did_not_go_out_is_asked_again_on_the_next_tick` |
+| a late answer is acknowledged though the log couldn't record it | `late_answer_the_log_could_not_record_is_kept_for_the_next_tick` |
+| accounts are skipped where the clock gives no time | `account_the_clock_cannot_time_is_raised_as_not_read` |
+| a holder the register doesn't name is left out | `holder_the_register_does_not_name_is_raised_as_not_read` |
+| every holder the register doesn't name is raised, value resting there or none (default 1's alternative) | `value_settled_at_a_public_node_held_by_a_holding_account_lands_in_it` (the hourly check, always failing, is asked again each tick) |
+| the public readings' decimals are a constant of the schedule's, not the register's | `public_nodes_reading_is_stated_in_the_decimals_the_register_gives_its_asset` |
+| Core reads a balance on the operator's permission alone, not carrying it onward with `CarryOnward` | `a_holding_balance_is_read_by_core_carrying_the_operators_permission_onward` (core-authz) |
+
+Not switched off: the order of the decided read (effect, then the question, then the result), which is the shape of
+`read_holding_balance` and is asserted by `holding_balance_is_read_on_a_decision_and_recorded_before_the_module_is_asked`
+(one entry in the log, the effect, when the platform is asked); the entry-point scan's `CARRY_OUT` line for `read_holding_balance`
+(a name in a list that the scan's own test reads); and the three new `HoldingNotRead` reasons' fixtures, each accepted by the
+schema and the Rust types in `a_holding_account_not_read_names_why_among_the_reasons_core_has`.
+
+### Local checks
+
+`cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo test -p rutent-core-orch -p
+rutent-contracts -p rutent-core-audit -p rutent-prov` and `-p rutent-core-authz --lib` (166); `cargo test -p rutent-scenarios -p
+rutent-conformance` (every binary, `invariants` under `RUTENT_SCENARIO_SEEDS=11,12,13,14,15`, built over this tree's plain wallet and
+stand-ins, each into a private directory named by `RUTENT_PLAIN_WALLET` and `RUTENT_WASM_STANDINS`); `plan-check --strict` and
+`tag-check --strict`; the contract guard against `origin/develop`. No `cargo doc` locally (CI's step).
+
+The scenario scan for secrets (`secrets_scan`) found four tests red on the first full run: the scenario's host landings leave
+Core's own segments resting nothing at the wallet's node, so Core's comparison raises the account as over by its whole balance,
+and the raise states that figure. A holding difference is a figure the contract's raise carries; the scan now leaves those records
+out of its surfaces (and the one assertion that read the log whole), and finds a figure planted in any other record as before.
+Sorted as a test artefact, not a Core bug: the contract's `Difference::Holding` states `by`.
