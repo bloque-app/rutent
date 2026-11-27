@@ -162,6 +162,8 @@ struct Fake {
     answers_at: Option<u64>,
     /// The protocol version the settled answer is made under, where it isn't the current one.
     answers_under: Option<String>,
+    /// The platform hands back nothing, and the operation ended with its outcome unknown.
+    unknown: bool,
 }
 
 impl Modules for Fake {
@@ -238,6 +240,9 @@ impl Modules for Fake {
                 &snapshot_support::statements_key("reserve-bank-co", 1),
             ));
         }
+        if self.unknown {
+            return Answered::Refused(PlatformRefusal::OutcomeUnknown);
+        }
         match &self.answer {
             Some(bytes) => Answered::Bytes(bytes.clone()),
             None => Answered::Refused(PlatformRefusal::Unavailable),
@@ -307,6 +312,7 @@ fn fake() -> Fake {
         clock: std::rc::Rc::new(TestClock(Cell::new(Reading::at(1_794_200_000)))),
         answers_at: None,
         answers_under: None,
+        unknown: false,
     }
 }
 
@@ -568,6 +574,99 @@ fn run_over_each(modules: &mut Fake, catalogues: Vec<Catalogue>) -> (Vec<Ran>, K
     (ran, log)
 }
 
+/// The part run over `run_over`, its first segment left with no outcome known, then a later statement about it judged over
+/// `late_over` with the clock at `lands_at`: Core's late answer, after the catalogue changed.
+fn run_then_late(
+    modules: &mut Fake,
+    run_over: Catalogue,
+    late_over: Catalogue,
+    late: impl FnOnce(&Fake) -> Vec<u8>,
+    lands_at: u64,
+) -> Result<rutent_core_orch::segments::Late, rutent_core_orch::segments::LateRefused> {
+    let record = record_naming_a_call();
+    let clock = std::rc::Rc::clone(&modules.clock);
+    let mut log = KeptLog::default();
+    let mut store = Store::default();
+    let mut policy = Permitting(0);
+    let mut key = TestKey(SigningKey::from_bytes(&[7; 32]));
+    let mut ids = Ids::default();
+    let issued = Issued::new();
+    let mut exposures = Exposures::new();
+    let mut segments = Segments::new();
+    let (order, part, auth, origin) = (id("ord-1"), id("p1"), id("auth-1"), id("reserve-bank-co"));
+    let plan = [id("p1-s1"), id("p1-s2"), id("p1-s3")];
+    let end = RouteEnd {
+        destination: Destination {
+            reserve: id("reserve-wallet"),
+            node: OuterNode {
+                network: "polygon".into(),
+            },
+            account: id("acct-2"),
+        },
+        to_asset: Denomination {
+            id: "USDC".into(),
+            decimals: 6,
+        },
+        delivers: rutent_contracts::router_api::Amount::new("1").unwrap(),
+    };
+    let (caller, core_actor, operator_actor) = (core(), core(), operator());
+    let session = id("session-1");
+    let inputs = BTreeMap::new();
+    let live = Live {
+        order: &order,
+        part: &part,
+        segments: &plan,
+        record: &record,
+        at: 0,
+        authorisation: &auth,
+        origin_reserve: &origin,
+        route: &end,
+        caller: &caller,
+        core: &core_actor,
+        operator: &operator_actor,
+        session: Some(&session),
+        inputs: &inputs,
+        floor: None,
+        record_entry: None,
+    };
+    for catalogue in [&run_over] {
+        let mut parts = Parts {
+            clock: &*clock,
+            catalogue,
+            log: &mut log,
+            evidence: &mut store,
+            decisions: &mut policy,
+            modules: &mut *modules,
+            uses: &mut NoProxy,
+            grading: &mut ProvidersWord,
+            operator_key: &mut key,
+            fresh: &mut ids,
+            issued: &issued,
+            exposures: &mut exposures,
+            channel: &mut rutent_core_orch::notice::Unbuilt,
+        };
+        segments.run_part(&mut parts, &live).unwrap();
+    }
+    clock.0.set(Reading::at(lands_at));
+    let late = late(modules);
+    let mut parts = Parts {
+        clock: &*clock,
+        catalogue: &late_over,
+        log: &mut log,
+        evidence: &mut store,
+        decisions: &mut policy,
+        modules: &mut *modules,
+        uses: &mut NoProxy,
+        grading: &mut ProvidersWord,
+        operator_key: &mut key,
+        fresh: &mut ids,
+        issued: &issued,
+        exposures: &mut exposures,
+        channel: &mut rutent_core_orch::notice::Unbuilt,
+    };
+    segments.late_statement(&mut parts, &live, &plan[0], &late)
+}
+
 /// The live withdrawal names its call to the exchange's conversion and no other: the route check lets that one
 /// through and refuses another kind to the same callee, and a call to another provider, while the segment is live;
 /// once it has ended, it names none. The exchange's segment, whose operation names no call, names none.
@@ -823,4 +922,58 @@ fn result_of_a_segment_begun_before_a_cutover_counts_whenever_it_lands() {
     for lands in [1_794_200_000, 1_794_209_999] {
         assert_eq!(results(1_794_199_000, lands), 0, "landing at {lands}");
     }
+}
+
+/// A later answer to a segment whose outcome is unknown is taken by the version the segment began under, not by the
+/// cutovers as they stand when it lands (`REQ-PRT-2`, `T-020-54`): begun before the date, the old version's answer is
+/// taken after it, and the date moved to before the segment began since changes nothing; a segment begun after the date
+/// takes no old-version answer.
+// verifies: REQ-PRT-2, REQ-PRT-4
+#[test]
+fn late_answer_of_a_segment_begun_before_a_cutover_is_taken_whatever_the_cutovers_say_since() {
+    let late_for = |began_cutover: u64, now_cutover: u64, lands: u64| {
+        let mut modules = fake();
+        // The platform hands back no answer: the outcome of the withdrawal is not known.
+        modules.unknown = true;
+        let mut run_catalogue = admitting();
+        run_catalogue.set_cutover("3.0.0", &Instant(began_cutover).rfc3339().unwrap());
+        let mut late_catalogue = admitting();
+        late_catalogue.set_cutover("3.0.0", &Instant(now_cutover).rfc3339().unwrap());
+        run_then_late(
+            &mut modules,
+            run_catalogue,
+            late_catalogue,
+            |modules| {
+                // The provider's own answer, under 3.0.0, to the withdrawal it was handed.
+                let transaction = modules.judged[0].0.clone();
+                let outcome = json!({
+                    "status": "succeeded", "amount_in": "100000000", "amount_out": "99900000",
+                    "fee": { "asset": "COP", "amount": "100000" },
+                    "evidence": [{ "grade": 3, "reference": "reserve-bank-co:book-1", "by": "reserve-bank-co" }],
+                });
+                let body =
+                    json!({ "kind": "withdrawal", "transaction": transaction, "outcome": outcome });
+                let mut envelope = snapshot_support::envelope(
+                    &snapshot_support::deployment(),
+                    rutent_contracts::provider_role::RESULT_SHAPE,
+                    "reserve-bank-co",
+                    1_794_200_000,
+                    body,
+                );
+                envelope["protocol_version"] = "3.0.0".into();
+                snapshot_support::sign(
+                    envelope,
+                    &snapshot_support::statements_key("reserve-bank-co", 1),
+                )
+            },
+            lands,
+        )
+    };
+    // Begun at 1 794 200 000 with the date at 1 794 200 100; it lands after, and the date has since moved before the
+    // beginning: taken.
+    assert!(late_for(1_794_200_100, 1_794_200_100, 1_794_200_500).is_ok());
+    assert!(late_for(1_794_200_100, 1_794_199_000, 1_794_200_500).is_ok());
+    // Begun after the date: refused, wherever it lands and whatever the cutover says since.
+    assert!(late_for(1_794_199_000, 1_794_200_100, 1_794_200_500).is_err());
+    assert!(late_for(1_794_199_000, 1_794_999_999, 1_794_200_500).is_err());
 }
