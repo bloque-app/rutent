@@ -1284,3 +1284,41 @@ fn private_rail_closed_before_core_reopens_stays_closed() {
         "the movement into the rail closed the first order alone"
     );
 }
+
+/// A listing the catalogue refuses is recorded `failed` (`T-020-65`, the reviewer's Low on `list()`): the operator's
+/// `public_node` setting listing the publishers' private node is permitted and its effect recorded, but the catalogue
+/// won't list a node a provider declared private, so its result is `failed`, the node stays private, and the setting is
+/// not the operator's (a reopened Core takes no `failed` setting).
+// verifies: REQ-CAT-22
+#[test]
+fn listing_a_node_the_catalogue_refuses_is_recorded_failed() {
+    use rutent_contracts::core_internal::{Entry, OperatorSetting, Outcome, What};
+    use rutent_core_orch::settings::SettingRefused;
+    let (mut core, _) = core_with("AC-29", &[IN, EXCHANGE, RAMP, OUT]);
+    assert!(!core.catalogue().nodes().is_public(NODE));
+    assert!(
+        core.catalogue()
+            .publishers()
+            .publisher_of_node(NODE)
+            .is_some()
+    );
+    let listed: OperatorSetting = serde_json::from_value(serde_json::json!({
+        "setting": "public_node", "node": { "network": NODE }, "listed": true,
+    }))
+    .expect("a setting");
+    let refused = core.set_setting(&listed);
+    assert!(
+        matches!(refused, Err(SettingRefused::NotTaken(_))),
+        "{refused:?}"
+    );
+    let last = core.log().entries().last().cloned().expect("an entry");
+    assert!(
+        matches!(&last.1, Entry::Verified(v) if matches!(v.what, What::Result { .. }) && v.outcome == Outcome::Failed {}),
+        "its result is failed: {last:?}"
+    );
+    assert!(!core.catalogue().nodes().is_public(NODE), "still private");
+    assert!(
+        core.settings().public_node(NODE).is_none(),
+        "no setting of the operator's"
+    );
+}

@@ -914,7 +914,7 @@ impl Duties for Jobs<'_> {
     /// and not by those ever started. Each read is decided by policy and recorded as an effect, as closing's is
     /// ([`Segments::read_node_record`]), and its answer is taken as a record only as `closing::publishers::taken` allows.
     ///
-    /// **What it serves.** The records go to the round ([`Round::published`]) and no further: they are what the
+    /// **What it serves.** The records go to the round ([`Round::published`](super::Round::published)) and no further: they are what the
     /// publishers state, now, of the orders in flight through their nodes, for the operator's view and for what reads a
     /// round. Closing's books are closing's own: it reads for itself, for each segment it grades, and keeps what it
     /// cites. The deployment carries each question to the platform and chooses neither node, provider nor order; where

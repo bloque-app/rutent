@@ -1,11 +1,11 @@
 //! Reading a private node's record (`REQ-ORD-41`, `REQ-AUZ-1`, `T-020-58`).
 //!
-//! Closing says which records it reads ([`Grading::records_wanted`]), and the tick's job which orders are still unsettled at
+//! Closing says which records it reads ([`Grading::records_wanted`](super::Grading::records_wanted)), and the tick's job which orders are still unsettled at
 //! a node; for each read ([`Segments::read_node_record`]) the segments do what they do for any action policy decides: draw
 //! a fresh transaction, have policy decide `read_node_record` as Core, which carries the operator's standing permission
 //! onward (`core-authz`'s roles, as `ask_status` is decided), record the effect before anything is sent, act on it once,
 //! put the question, scoped to the transactions asked about, to the platform as that effect lets
-//! ([`Modules::ask_for_record`]) and record how it came out. What came back goes to the grading, which takes it only as
+//! ([`Modules::ask_for_record`](super::Modules::ask_for_record)) and record how it came out. What came back goes to the grading, which takes it only as
 //! `closing::publishers::taken` allows. A refusal by policy asks nothing and the grading reads no record of that
 //! provider: it fails closed. A read is always recorded to its result: where the result can't be written the answer is
 //! not used.

@@ -864,6 +864,122 @@ fn a_waiting_segments_record_survives_another_orders_read_of_the_same_node() {
     );
 }
 
+/// How many of the publishers' records of a node's segments the log holds for `order`, each a stated entry about it.
+fn records_kept(core: &Core, order: &Id) -> usize {
+    core.log()
+        .entries()
+        .iter()
+        .filter(|(_, e)| {
+            matches!(e, rutent_contracts::core_internal::Entry::Stated(s)
+                if s.what.statement.as_str() == rutent_contracts::provider_role::INNER_SEGMENTS_SHAPE
+                    && s.about.as_ref().and_then(|a| a.order.as_ref()) == Some(order))
+        })
+        .count()
+}
+
+/// The movement of `deposit`, a transaction of the reserve's, reaches the bank's public record.
+fn put_on_the_banks_record(core: &mut Core, deposit: &Id) {
+    let amount = core
+        .world()
+        .journal(RESERVE)
+        .iter()
+        .find_map(|e| {
+            let value = serde_json::to_value(&e.operation.statement).ok()?;
+            (value["transaction"] == deposit.as_str())
+                .then(|| value["amount"].as_str().map(str::to_owned))?
+        })
+        .expect("the deposit's amount");
+    core.world()
+        .network_mut(&format!("{RESERVE}-bank"))
+        .expect("the bank's network")
+        .record(
+            rutent_evidence::MovementId::new(deposit.as_str()).expect("an id"),
+            rutent_evidence::Movement {
+                destination: OTHER.to_owned(),
+                asset: "COP".to_owned(),
+                amount,
+            },
+        )
+        .expect("recorded");
+}
+
+/// A restart while a segment waits doesn't keep its record a second time: the re-read answer is freshly signed, but what
+/// it says is what the log holds for that order and node, so it is not appended again, and the replay cites the record
+/// the log holds (`REQ-ORD-41`, `REQ-AUD-9`, the review's L-d).
+// verifies: REQ-ORD-41
+#[test]
+fn a_restart_while_a_segment_waits_keeps_its_record_once() {
+    use rutent_conformance::sim::Behaviour;
+    let names = [IN, EXCHANGE, QUICK, OUT, RESERVE];
+    let (mut core, session) = core_over(&names);
+    core.world().script_for(
+        RESERVE,
+        "deposit",
+        Behaviour {
+            unrecorded: true,
+            ..Behaviour::default()
+        },
+    );
+    let (a, ran) = run(&mut core, within("req-a", &session, AMOUNT, RESERVE, OTHER));
+    let waiting = accounted(&ran).to_vec();
+    let kept = records_kept(&core, &a);
+    assert!(kept > 0, "the record was kept while the deposit waits");
+    let mut core = rutent_scenarios::harness::Scenario::new("execution", "AC-35", given(&names))
+        .reopen(core, 1, &mut rutent_scenarios::assembly::machine::Reference);
+    core.run(&a).expect("A runs again after the restart");
+    assert_eq!(
+        records_kept(&core, &a),
+        kept,
+        "the re-read record, signed afresh, says what the log holds: it is not kept twice"
+    );
+    put_on_the_banks_record(&mut core, &transaction(&waiting[1]));
+    core.run(&a).expect("A runs again");
+    assert_eq!(
+        state(&mut core, &a),
+        rutent_contracts::state_machine::OrderState::Complete
+    );
+    assert_eq!(records_kept(&core, &a), kept);
+    let found = replays(&core, &a);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(
+        found[0].2,
+        ReplayFound::ConsistentWithTheExit {},
+        "{found:?}"
+    );
+}
+
+/// What closing's books hold is bounded: an order's records are dropped from them once its segments at the node have
+/// settled and their records have been kept, so a grading's scan covers the orders still in flight and no others; a
+/// waiting segment keeps its own (`REQ-ORD-41`, the review's L-e).
+// verifies: REQ-ORD-41
+#[test]
+fn closing_books_drop_an_orders_records_once_its_segments_have_settled() {
+    use rutent_conformance::sim::Behaviour;
+    let (mut core, session) = core_over(&[IN, EXCHANGE, QUICK, OUT, RESERVE]);
+    core.world().script_for(
+        RESERVE,
+        "deposit",
+        Behaviour {
+            unrecorded: true,
+            ..Behaviour::default()
+        },
+    );
+    let (a, ran) = run(&mut core, within("req-a", &session, AMOUNT, RESERVE, OTHER));
+    let waiting = accounted(&ran).to_vec();
+    assert_eq!(core.records_held(), 1, "the waiting order holds its own");
+    // Another order settles through the same node and leaves nothing in the books.
+    let (_, ran_b) = run(&mut core, within("req-b", &session, AMOUNT, RESERVE, OTHER));
+    assert_eq!(accounted(&ran_b).len(), 2);
+    assert_eq!(core.records_held(), 1, "only the waiting order's remains");
+    put_on_the_banks_record(&mut core, &transaction(&waiting[1]));
+    core.run(&a).expect("A runs again");
+    assert_eq!(
+        core.records_held(),
+        0,
+        "nothing is held for a settled order"
+    );
+}
+
 /// The production platform answers the question of a private node's record: `impl Modules for Platform` carries it
 /// through `Platform::handle` as the permitted effect lets, and never answers `NotHandled` (`REQ-ORD-41`, `T-020-58`).
 // verifies: REQ-ORD-41

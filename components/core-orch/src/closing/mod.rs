@@ -168,6 +168,13 @@ pub trait Books {
     fn took(&self, provider: &str, node: &str, order: &str, record: Statement<InnerSegments>) {
         let _ = (provider, node, order, record);
     }
+
+    /// Drops what the books hold for `order` at `node`: its segments there have settled and their records have been
+    /// kept and cited, so a later grading needs none of them (it reads again what it needs), and a grading's scan covers
+    /// the orders still in flight and no others (`T-020-58`, the review's L-e).
+    fn forget(&self, order: &str, node: &str) {
+        let _ = (order, node);
+    }
 }
 
 /// What grading kept of one settled segment, for the segments after it.
@@ -549,6 +556,10 @@ impl Grading for Evidenced<'_> {
     }
 
     fn recorded(&mut self, settled: &ToGrade<'_>, receipts: &[Receipt]) {
+        // Settled, and the records it cites kept in the log: the books need none of this order's at the nodes it read.
+        for (node, _) in self.nodes_read(settled) {
+            self.books.forget(settled.order.as_str(), &node);
+        }
         self.closing
             .unraised
             .bind(settled.order, settled.segment, receipts);

@@ -227,6 +227,17 @@ pub struct Live<'a> {
     pub record_entry: Option<&'a Receipt>,
 }
 
+/// A record of a private node's segments the log held when Core reopened: whose it is, what it says, and the receipt of
+/// its stated entry.
+#[derive(Debug, Clone)]
+pub(crate) struct HeldRecord {
+    pub(crate) order: String,
+    pub(crate) node: String,
+    pub(crate) maker: String,
+    pub(crate) body: rutent_contracts::provider_role::InnerSegments,
+    pub(crate) receipt: Receipt,
+}
+
 /// A provider's statement, labelled as its word: what Core passes on of it is its maker's, never rutent's
 /// (`REQ-ORD-26`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -689,6 +700,10 @@ pub struct Segments {
     /// a segment graded again while it waits asks nothing and appends nothing more (`T-020-58`). A Core that reopens
     /// asks again, once.
     records_read: BTreeSet<(String, String, String, String)>,
+    /// The publishers' records of private nodes the log held when Core reopened, by what they say (`T-020-58`): a record
+    /// read again after a restart, signed afresh, that says the same of the same order and node is not kept a second
+    /// time, and cites the receipt the log gave the first.
+    records_held: Vec<HeldRecord>,
     /// The receipt of the platform's record that the operation of a transaction ended with no answer.
     unanswered: BTreeMap<String, Receipt>,
     transactions: BTreeSet<String>,
@@ -1010,6 +1025,36 @@ impl Segments {
             resting.push(((node.clone(), order.clone()), amount));
         }
         landing::totals(resting)
+    }
+
+    /// Whether anything of Core's is at `node` now (`T-020-65`): value of an order it follows resting there (a settled
+    /// segment's, or one a reversal brought back), or a segment in flight, its outcome not final or not known, whose
+    /// route moves value from or to the node. What an unlist of a public node is held to: while either holds, changing
+    /// the node's standing would change how that value is graded.
+    pub fn touches_node(&self, node: &str) -> bool {
+        let rests = self
+            .values_at_nodes()
+            .iter()
+            .any(|(_, at, _, _, standing)| at == node && *standing == AtNode::Rests);
+        let names = |end: &rutent_contracts::provider_role::NodeRef| match end {
+            rutent_contracts::provider_role::NodeRef::Inner(id) => id.as_str() == node,
+            rutent_contracts::provider_role::NodeRef::Outer(outer) => outer.network == node,
+        };
+        let in_flight = self.flights.iter().any(|((order, segment), flight)| {
+            matches!(flight.outcome, None | Some(SegmentOutcome::Unknown(_)))
+                && self.orders.get(order).is_some_and(|tracked| {
+                    tracked
+                        .order
+                        .parts
+                        .iter()
+                        .flat_map(|part| &part.segments)
+                        .any(|s| {
+                            s.segment_id.as_str() == segment
+                                && (names(&s.from.node) || names(&s.to.node))
+                        })
+                })
+        });
+        rests || in_flight
     }
 
     /// What a Core that reopened finds of the landings its segments owed (`T-020-46`): the landing record is in no
@@ -3451,6 +3496,23 @@ impl Segments {
         Ok((self.step(log, at, name)?, true))
     }
 
+    /// The receipt of the record the log held when Core reopened that is `one`'s, signed afresh: the same order and node,
+    /// the same maker and the same things said (`T-020-58`, the review's L-d).
+    fn held_record(&self, one: &ToKeep) -> Option<Receipt> {
+        let record: Statement<rutent_contracts::provider_role::InnerSegments> =
+            serde_json::from_slice(&one.bytes).ok()?;
+        let (order, node) = (one.about.order.as_ref()?, one.about.node.as_ref()?);
+        self.records_held
+            .iter()
+            .find(|held| {
+                held.order == order.as_str()
+                    && held.node == node.as_str()
+                    && held.maker == record.maker
+                    && held.body == record.statement
+            })
+            .map(|held| held.receipt.clone())
+    }
+
     /// Keeps and appends the statements the segment's grading asks for, each once under its key, and answers each
     /// with its receipt. Asked of the grading only the first time; a retry appends what is not appended yet.
     fn keep_asked(
@@ -3477,6 +3539,7 @@ impl Segments {
             {
                 continue;
             }
+            let held = self.held_record(&one);
             let received_at = now(parts.clock)?;
             let entry = journal::stated_entry(
                 parts.evidence,
@@ -3494,6 +3557,7 @@ impl Segments {
             })?;
             entry.check().map_err(AppendFailure::Refused)?;
             let entry = GeneralEntry::try_from(entry).map_err(AppendFailure::Refused)?;
+            // A record the log holds already, saying the same, is cited at the receipt it has: never kept twice.
             self.flight_mut(at)?
                 .kept
                 .get_or_insert_with(Vec::new)
@@ -3501,7 +3565,7 @@ impl Segments {
                     one.key,
                     Step {
                         entry,
-                        receipt: None,
+                        receipt: held,
                     },
                 ));
         }

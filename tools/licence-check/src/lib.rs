@@ -19,7 +19,9 @@ mod artifact;
 mod json;
 mod spdx;
 
-pub use artifact::{ArtifactInput, ArtifactReason, ArtifactViolation, check_artifacts};
+pub use artifact::{
+    ArtifactInput, ArtifactReason, ArtifactViolation, check_artifacts, check_artifacts_with,
+};
 pub use spdx::is_permissive;
 
 use std::fmt;

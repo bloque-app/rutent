@@ -130,6 +130,39 @@ impl Segments {
                 segments.note_reversal_ran(order, transaction);
             }
         }
+        // The publishers' records of private nodes the log holds, by what they say: a record read again after the restart,
+        // signed afresh, isn't kept a second time (`T-020-58`).
+        for (receipt, entry) in history {
+            let Entry::Stated(stated) = entry else {
+                continue;
+            };
+            if stated.what.statement.as_str()
+                != rutent_contracts::provider_role::INNER_SEGMENTS_SHAPE
+            {
+                continue;
+            }
+            let Some(order) = stated.about.as_ref().and_then(|a| a.order.as_ref()) else {
+                continue;
+            };
+            let Some(node) = stated.about.as_ref().and_then(|a| a.node.as_ref()) else {
+                continue;
+            };
+            let Some(bytes) = reading.kept(&stated.commitment) else {
+                continue;
+            };
+            if let Ok(record) = serde_json::from_slice::<
+                Statement<rutent_contracts::provider_role::InnerSegments>,
+            >(&bytes)
+            {
+                segments.records_held.push(super::HeldRecord {
+                    order: order.as_str().to_owned(),
+                    node: node.as_str().to_owned(),
+                    maker: record.maker,
+                    body: record.statement,
+                    receipt: receipt.clone(),
+                });
+            }
+        }
         for input in &inputs {
             if let (Observed::StuckResolved { .. }, Some(part)) =
                 (&input.observed, &input.subject.part)

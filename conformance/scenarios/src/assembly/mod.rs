@@ -558,6 +558,10 @@ impl StatusReads for StatusReading {
         self.orders
             .opened(&record.order, &record.parties, &record.origin_reserve);
     }
+
+    fn withdrawn(&mut self, order: &Id) {
+        self.orders.withdrawn(order);
+    }
 }
 
 /// Policy's session register, as intake reads it: the sessions the engine opened.
@@ -1123,7 +1127,19 @@ impl Core {
                     catalogue: Some(&mut core.catalogue),
                     cadences: Some(core.schedule.cadences_mut()),
                     arrivals: Some(&mut core.arrivals),
+                    segments: None,
                 });
+            // A restrictive lifecycle effect whose result the log never took is completed from what the platform holds
+            // (`T-020-65`), as a setting's is.
+            {
+                let releases = core.fleet.releases();
+                Segments::reopen_lifecycle(&mut core.general, &releases, &core.clock, &kit::core())
+                    .map_err(|e| {
+                        AssemblyError::Listing(format!(
+                            "a lifecycle effect's result wasn't completed: {e:?}"
+                        ))
+                    })?;
+            }
             return Ok(core);
         }
         let installed = core.installed.clone();
@@ -1250,6 +1266,12 @@ impl Core {
         self.readings.forge(provider, how);
     }
 
+    /// How many records closing's books hold now, whatever the node: the orders still in flight through a private node
+    /// hold theirs, and an order whose segments there have settled holds none (`T-020-58`).
+    pub fn records_held(&self) -> usize {
+        self.readings.held()
+    }
+
     /// The records of the private node `node` Core took of its providers, as closing's books hold them (`T-020-58`).
     pub fn records_taken(
         &self,
@@ -1316,11 +1338,10 @@ impl Core {
         node: &str,
         transactions: &[Id],
     ) -> Option<Vec<rutent_evidence::replay::RecordedSegment>> {
-        use rutent_core_orch::closing::Books;
         // The books are what Core took of its providers' answers when it last asked them (`T-020-58`).
         self.readings.refresh(&self.fleet.platform.world);
         self.readings
-            .recorded(node, transactions)
+            .recorded_ever(node, transactions)
             .map(|r| r.segments)
     }
 
@@ -1377,6 +1398,7 @@ impl Core {
                 catalogue: Some(&mut self.catalogue),
                 cadences: Some(self.schedule.cadences_mut()),
                 arrivals: Some(&mut self.arrivals),
+                segments: Some(&self.segments),
             },
             &rutent_core_orch::settings::SettingAsked {
                 setting,

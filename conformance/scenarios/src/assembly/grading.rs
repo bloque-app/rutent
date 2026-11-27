@@ -26,6 +26,9 @@ struct Read {
     /// What each provider of a private node answered when Core last asked it for its record of the node, taken as one,
     /// by provider and node (`T-020-58`).
     records: BTreeMap<(String, String, String), Statement<InnerSegments>>,
+    /// Every record taken, the last for each provider, node and order, dropped never: what a scenario reads of what Core
+    /// took, which the books themselves forget once an order's segments have settled.
+    taken: BTreeMap<(String, String, String), Statement<InnerSegments>>,
     /// Each question of a node's record Core put, as the platform carried it: the provider, the node and the
     /// transaction.
     asked: Vec<(String, String, String)>,
@@ -112,15 +115,34 @@ impl Readings {
     /// providers are installed: what closing's books hold.
     pub(crate) fn taken(&self, node: &str) -> Vec<Statement<InnerSegments>> {
         let read = self.read.borrow();
-        self.movers
+        Self::records_among(&read.taken, &self.movers, node)
+    }
+
+    /// What closing's books hold of `node` now: the records of the orders still in flight.
+    fn held_of(&self, node: &str) -> Vec<Statement<InnerSegments>> {
+        let read = self.read.borrow();
+        Self::records_among(&read.records, &self.movers, node)
+    }
+
+    fn records_among(
+        records: &BTreeMap<(String, String, String), Statement<InnerSegments>>,
+        movers: &[Spec],
+        node: &str,
+    ) -> Vec<Statement<InnerSegments>> {
+        movers
             .iter()
             .flat_map(|spec| {
-                read.records
+                records
                     .iter()
                     .filter(|((provider, at, _), _)| *provider == spec.provider && at == node)
                     .map(|(_, record)| record.clone())
             })
             .collect()
+    }
+
+    /// How many records the books hold now.
+    pub(crate) fn held(&self) -> usize {
+        self.read.borrow().records.len()
     }
 
     /// Every question of a node's record Core put: the provider, the node and the transaction, in the order put.
@@ -225,16 +247,38 @@ impl PublicRecords for Readings {
 /// transactions are asked, each segment as its record states it.
 impl Books for Readings {
     fn took(&self, provider: &str, node: &str, order: &str, record: Statement<InnerSegments>) {
-        self.read.borrow_mut().records.insert(
-            (provider.to_owned(), node.to_owned(), order.to_owned()),
-            record,
-        );
+        let key = (provider.to_owned(), node.to_owned(), order.to_owned());
+        let mut read = self.read.borrow_mut();
+        read.taken.insert(key.clone(), record.clone());
+        read.records.insert(key, record);
+    }
+
+    fn forget(&self, order: &str, node: &str) {
+        self.read
+            .borrow_mut()
+            .records
+            .retain(|(_, n, o), _| n != node || o != order);
     }
 
     fn recorded(&self, node: &str, transactions: &[Id]) -> Option<Recorded> {
         // Every order's record of the node, each provider's together, in the order the providers are installed: an order's
         // transactions are listed in its own records alone, so an order reads its own.
-        let records = self.taken(node);
+        self.read_of(self.held_of(node), transactions)
+    }
+}
+
+impl Readings {
+    /// What every record Core took of `node` gives for `transactions`, whether the books still hold it or not: what a
+    /// scenario asks of Core's books after the orders have settled (`T-024-14`).
+    pub(crate) fn recorded_ever(&self, node: &str, transactions: &[Id]) -> Option<Recorded> {
+        self.read_of(self.taken(node), transactions)
+    }
+
+    fn read_of(
+        &self,
+        records: Vec<Statement<InnerSegments>>,
+        transactions: &[Id],
+    ) -> Option<Recorded> {
         let mut segments = Vec::new();
         let mut read: Vec<Statement<InnerSegments>> = Vec::new();
         for transaction in transactions {
