@@ -472,6 +472,21 @@ impl Fleet {
         self.installed.get(provider)
     }
 
+    /// What lists each network a provider installed here has its tuples on (`networks_of`), once each, by name: the
+    /// `list_public_network` the operator decides for it, naming its reader service (`T-024-25`, `DEC-28`,
+    /// [`super::readers::listing_of`]).
+    pub fn public_networks(&self) -> Vec<rutent_contracts::core_internal::PublicNetwork> {
+        let networks: BTreeSet<String> = self
+            .installed
+            .values()
+            .flat_map(|one| networks_of(&one.spec))
+            .collect();
+        networks
+            .iter()
+            .map(|network| super::readers::listing_of(network))
+            .collect()
+    }
+
     /// Takes an advertisement into the catalogue, as the operator does: a grant for what it offers, its advertising
     /// key trusted for advertising, and the advertisement joined. False if the catalogue refuses any step.
     pub fn list(&mut self, advertisement: &Received<Advertisement>) -> bool {

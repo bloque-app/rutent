@@ -267,19 +267,9 @@ impl Link {
                     }
                     let source = stream.peer_addr().map(|a| a.ip()).ok();
                     let admitted = source.is_some_and(|ip| {
-                        let Ok(mut by_source) = sources.lock() else {
-                            return false;
-                        };
-                        let from_it = by_source.entry(ip).or_insert(0);
-                        if *from_it >= limits.handshaking_per_source {
-                            return false;
-                        }
-                        if handshaking.fetch_add(1, Ordering::SeqCst) >= limits.handshaking {
-                            handshaking.fetch_sub(1, Ordering::SeqCst);
-                            return false;
-                        }
-                        *from_it += 1;
-                        true
+                        sources.lock().is_ok_and(|mut by_source| {
+                            admit(&mut by_source, &handshaking, &limits, ip)
+                        })
                     });
                     let Some(source) = source.filter(|_| admitted) else {
                         open.fetch_sub(1, Ordering::SeqCst);
@@ -346,6 +336,27 @@ fn serve_connection(
     }
 }
 
+/// Takes a connection from `ip` into a handshake slot, if the link has one free and its source holds fewer than its
+/// share: counted in the link's total and in its source's. The map of sources holds an entry only for a source with a
+/// handshake under way, so a refused source leaves none behind and the map stays bounded by the slots (#348's L10).
+fn admit(
+    by_source: &mut HashMap<IpAddr, usize>,
+    handshaking: &AtomicUsize,
+    limits: &LinkLimits,
+    ip: IpAddr,
+) -> bool {
+    let from_it = by_source.get(&ip).copied().unwrap_or(0);
+    if from_it >= limits.handshaking_per_source {
+        return false;
+    }
+    if handshaking.fetch_add(1, Ordering::SeqCst) >= limits.handshaking {
+        handshaking.fetch_sub(1, Ordering::SeqCst);
+        return false;
+    }
+    by_source.insert(ip, from_it + 1);
+    true
+}
+
 /// A connection's handshake slot: counted in the link's total and its source's, both given back when the handshake
 /// ends, done or not.
 struct Shaking<'a> {
@@ -400,4 +411,53 @@ pub fn read_answer(stream: &mut impl Read) -> io::Result<Option<Vec<u8>>> {
 /// Writes a question as a frame to any stream.
 pub fn write_question(stream: &mut impl Write, question: &[u8]) -> io::Result<()> {
     write_frame(stream, question)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::net::IpAddr;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::{LinkLimits, Shaking, admit};
+
+    // verifies: DEC-28
+    #[test]
+    fn refused_sources_leave_no_entry_and_the_map_of_sources_stays_bounded() {
+        let limits = LinkLimits {
+            handshaking: 2,
+            handshaking_per_source: 1,
+            ..LinkLimits::default()
+        };
+        let handshaking = AtomicUsize::new(0);
+        let mut by_source: HashMap<IpAddr, usize> = HashMap::new();
+        let ip = |n: u32| IpAddr::from((0x5db8_d800_u32 + n).to_be_bytes());
+        // Two sources take the two slots; a second handshake from one of them is over its share.
+        assert!(admit(&mut by_source, &handshaking, &limits, ip(1)));
+        assert!(admit(&mut by_source, &handshaking, &limits, ip(2)));
+        assert!(!admit(&mut by_source, &handshaking, &limits, ip(1)));
+        // A thousand more, each from an address of its own, find every slot taken: each is refused, and none is kept.
+        for n in 3..1003 {
+            assert!(!admit(&mut by_source, &handshaking, &limits, ip(n)));
+        }
+        assert_eq!(
+            by_source.len(),
+            2,
+            "only the sources with a handshake under way"
+        );
+        assert_eq!(handshaking.load(Ordering::SeqCst), 2);
+        // Each handshake that ends gives its slot back and its source's entry at zero goes.
+        let sources = Mutex::new(by_source);
+        for n in [1, 2] {
+            Shaking {
+                handshaking: &handshaking,
+                sources: &sources,
+                source: ip(n),
+            }
+            .release();
+        }
+        assert!(sources.lock().unwrap().is_empty());
+        assert_eq!(handshaking.load(Ordering::SeqCst), 0);
+    }
 }

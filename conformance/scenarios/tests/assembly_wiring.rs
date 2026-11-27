@@ -873,3 +873,88 @@ fn assembled_order_closes_on_the_public_record_and_the_reserves_statement() {
         .count();
     assert_eq!(settled, 2, "the withdrawal and the deposit settled");
 }
+
+/// A reserve is told the sessions the register issued for the account it holds, to that account's holder, and no other
+/// (`REQ-CAT-3`, `T-024-21`; #350's round-3 Low): a session of the holder's on another account, and one on the account
+/// of a party that no longer holds it, are each left out of what the reserve reads.
+// verifies: REQ-CAT-3
+#[test]
+fn reserve_is_told_only_its_account_holders_sessions_on_its_account() {
+    use rutent_contracts::core_internal::{
+        Actor, ActorKind, Role, SessionOutcome, SessionRequest, calls::Sessions,
+    };
+    use rutent_prov::module::platform::World;
+    let (mut core, _) = Scenario::new("Core alone", "AC-28", Given::one_reserve(Staged::AtOnce))
+        .core(1, &mut Reference);
+    let account = context().account;
+    // The customer's session on the account it holds.
+    let first = core
+        .open_session(&kit::customer())
+        .expect("the customer's session");
+    // The account passes to another party, which also holds an account elsewhere.
+    let other = Actor {
+        party: id("another-holder"),
+        acts: id("another-holder-user"),
+        role: Role::Customer,
+        kind: ActorKind::Person,
+    };
+    {
+        let mut registers = core.registers();
+        registers.list(&other);
+        registers
+            .accounts
+            .insert(account.clone(), other.party.as_str().to_owned());
+        registers
+            .accounts
+            .insert("acct-elsewhere".to_owned(), other.party.as_str().to_owned());
+    }
+    // Its session on the account elsewhere, opened through policy as any is, at Core's time now.
+    let at = core
+        .log()
+        .entries()
+        .iter()
+        .rev()
+        .find_map(|(_, e)| match e {
+            Entry::Verified(v) => Some(v.when.at.clone()),
+            Entry::Stated(_) => None,
+        })
+        .expect("Core's time");
+    let until = rutent_prov::catalogue::Instant(
+        u64::try_from(at.unix_nanos() / 1_000_000_000).unwrap() + 600,
+    )
+    .rfc3339()
+    .and_then(|t| rutent_contracts::router_api::Timestamp::new(&t))
+    .expect("a time");
+    let elsewhere = Sessions::open_session(
+        &mut core.policy(),
+        &SessionRequest {
+            request: id("sess-elsewhere"),
+            account: id("acct-elsewhere"),
+            holder: other.party.clone(),
+            requester: other.clone(),
+            until,
+            at,
+        },
+    )
+    .expect("policy answers");
+    let SessionOutcome::Opened {
+        session: elsewhere, ..
+    } = elsewhere.outcome
+    else {
+        panic!("the session elsewhere opens: {:?}", elsewhere.outcome);
+    };
+    // Its session on the account it now holds.
+    let second = core.open_session(&other).expect("the new holder's session");
+    let told: Vec<String> = serde_json::from_str(
+        &core
+            .world()
+            .state(RESERVE, rutent_conformance::sim::SESSIONS_KEY)
+            .expect("the reserve is told its sessions"),
+    )
+    .expect("a list");
+    assert_eq!(
+        told,
+        vec![second.as_str().to_owned()],
+        "the new holder's session alone: not the old holder's {first:?}, nor the one elsewhere {elsewhere:?}"
+    );
+}

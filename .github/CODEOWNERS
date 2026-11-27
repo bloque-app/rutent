@@ -4,6 +4,7 @@
 /contracts/                @pandres95
 /tools/contract-guard/     @pandres95
 /tools/licence-check/      @pandres95
+/tools/boundary-check/     @pandres95
 /licences/                 @pandres95
 /.github/                  @pandres95
 /components/prov/src/proxy/                 @pandres95
