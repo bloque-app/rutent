@@ -2184,7 +2184,7 @@ re-advertises), the bounded `WouldBlock` retry (it only shows as a flake).
 
 | Switched off | Red |
 |---|---|
-| the counter's rebuild (a reopened account starts at 0) | RO5_RESULT |
-| the restore's raise of the attribution | RO6_RESULT |
+| the counter's rebuild (a reopened account starts at 0) | `reopened account takes up its transactions after the highest the record knows` |
+| the restore's raise of the attribution | `restore on a reopened account attributes what the wallet still holds` |
 
 **Run id.** Pending: CI's run on this row's pull request goes here.
