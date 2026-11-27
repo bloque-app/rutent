@@ -326,10 +326,7 @@ fn late_answer_is_held_until_it_is_acknowledged_across_a_restart() {
 fn a_repeat_of_an_unanswered_operation_counts_for_nothing_towards_a_staging() {
     let policy = Staging::new(100, 60, 2).expect("a policy");
     let memory = MemoryRecord::new();
-    let mut s = Signed::on(
-        Box::new(StopsAt::new(&memory, "ran")),
-        TestWorld::default(),
-    );
+    let mut s = Signed::on(Box::new(StopsAt::new(&memory, "ran")), TestWorld::default());
     admitted_as(&mut s, RAMP, "1.0.0");
     s.platform.set_staging(Some(policy));
     admitted_as(&mut s, RAMP, "1.1.0");
@@ -367,7 +364,11 @@ fn a_repeat_of_an_unanswered_operation_counts_for_nothing_towards_a_staging() {
         s.platform.repeat_operation(RAMP, tx(RAMP, 3).as_str()),
         Handled::Answered(_)
     ));
-    assert_eq!(counts(&s), before, "the repeat is Core's retry, not traffic");
+    assert_eq!(
+        counts(&s),
+        before,
+        "the repeat is Core's retry, not traffic"
+    );
 }
 
 /// The end of a segment whose late answer waits for acknowledgement drops nothing of it, in memory or in the record
