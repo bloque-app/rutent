@@ -2315,8 +2315,8 @@ The code came first, so the rule-offs stand in for seeing each test red first.
    `[[bench]]`) builds a crate of its own, never `rutent_prov`, so its `path` can't widen what the reader host reaches:
    such tables are matched in every spelling, so a `path` under one is never read as the library's, and pass. The
    library target, in every spelling, and a build script are refused.
-6. **`tools/boundary-check` as a `DEC-20` path.** The lead's brief names it one, and this row's commit body says so;
-   `HOUSE-RULES.md`'s list and `.github/CODEOWNERS` don't hold it yet. Owner: the lead's plan follow-up, not changed here.
+6. **`tools/boundary-check` as a `DEC-20` path.** `PLAN.md`'s `DEC-20` list names it, but `HOUSE-RULES.md`'s list and
+   `.github/CODEOWNERS` didn't hold it; at the coordinator's request this row adds both, in a commit of its own.
 
 ### #348's L9 and L10, and #350's round-3 Lows
 
