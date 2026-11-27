@@ -43,25 +43,16 @@ pub struct ReaderConfig {
     /// The program's arguments.
     #[serde(default)]
     pub args: Vec<String>,
-    /// The reader's statement key: the name the host resolves it by, and the public half the listing names.
-    pub statement_key: KeyConfig,
+    /// The reader's statement key, the public half the listing names: the host resolves its private half by this
+    /// key's text, under the reader's name, as the platform resolves a provider's, and never hands it to the reader's
+    /// process (`REQ-MDL-6` applied to readers).
+    pub statement_key: PublicKey,
     /// What a light-client reader may reach: required for `light_client`, refused for `rpc_pool`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub light_client: Option<LightClientRule>,
     /// The host's bounds on the reader's process.
     #[serde(default)]
     pub limits: ReaderLimits,
-}
-
-/// A reader's statement key, by name: the host resolves the private half when it signs, and never hands it to the
-/// reader's process (`REQ-MDL-6` applied to readers).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct KeyConfig {
-    /// The name the host's key store holds the private half under, for this reader.
-    pub name: String,
-    /// The public half: the reader's statement key in the listing.
-    pub public: PublicKey,
 }
 
 /// How a light client's connections are reached (`DEC-28`): by protocol and port, not by address, since its peers
@@ -106,12 +97,11 @@ impl Protocol {
 }
 
 /// The host's bounds on one reader's process (`REQ-MDL-11`). Each is the host's own, on its own monotonic clock;
-/// none is the answer's deadline, which is Core's and carried in the question.
+/// none is the answer's deadline, which is Core's and carried in the question. The reader's memory is bounded by the
+/// jail, as a provider's process's is ([`rutent_prov::confine::PROVIDER_ADDRESS_SPACE`]), and the operator's task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ReaderLimits {
-    /// The address space the process may map, in bytes (`RLIMIT_AS`, on Linux).
-    pub memory_bytes: u64,
     /// How long the reader may take over one question before the host takes it as hung, kills it, answers the
     /// question unreadable and restarts it, in milliseconds.
     pub hang_after_ms: u64,
@@ -132,7 +122,6 @@ pub struct ReaderLimits {
 impl Default for ReaderLimits {
     fn default() -> Self {
         ReaderLimits {
-            memory_bytes: 2 << 30,
             hang_after_ms: 10_000,
             start_within_ms: 60_000,
             pending: 16,
@@ -218,8 +207,7 @@ impl HostConfig {
                 _ => {}
             }
             let l = &reader.limits;
-            if l.memory_bytes == 0
-                || l.hang_after_ms == 0
+            if l.hang_after_ms == 0
                 || l.start_within_ms == 0
                 || l.pending == 0
                 || l.egress_give_up_after_ms == 0

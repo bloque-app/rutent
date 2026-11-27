@@ -1,98 +1,56 @@
 //! The answers' signing (`T-015-04` part 3, `REQ-MDL-6` applied to readers): the host signs each answer with the
 //! reader's statement key, which it resolves by name when it signs and never hands to the reader's process.
 //!
-//! The private half is held as the base64url text, unpadded, of its 32-byte Ed25519 seed, as the provider system's
-//! store holds a provider's. It is refused unless its public half is the reader's listed statement key, so a store
-//! holding another key can't sign in the reader's name. The key is used for one answer and dropped.
+//! The private half is resolved as the platform resolves a provider's (`T-014-01`'s [`Resolver`], through
+//! [`rutent_prov::keys`]): from the keys of a vault bucket, keyed by the reader as a provider is keyed, by the text of
+//! the reader's listed public key, at the moment of signing, so a rotated key is used from the next answer on and the
+//! host keeps no copy. The production store is OpenBao or Vault ([`rutent_prov::keys::KvResolver`], built by
+//! [`rutent_prov::keys::kv_bucket`]). The deployment's operator key is never resolved as a reader's. The private half
+//! is held as the base64url text, unpadded, of its 32-byte Ed25519 seed, and refused unless its public half is the
+//! reader's listed key, so a store holding another key can't sign in the reader's name. It is used for one answer and
+//! dropped.
 
-use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::time::Instant;
 
 use ed25519_dalek::{Signer, SigningKey};
-use rutent_contracts::module_interface::SecretValue;
+use rutent_contracts::module_interface::{Identifier, Name, SecretValue};
 use rutent_contracts::provider_role::{
     Deployment, PublicKey, Signature, SignatureScheme, Statement, signing_input,
 };
 use rutent_contracts::reader::{ANSWER_SHAPE, ReaderAnswer};
 use rutent_contracts::router_api::{Id, ProtocolVersion};
+use rutent_prov::keys::Resolver;
 
 const BASE64URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-/// Resolves a reader's statement key by name, when the host signs (`REQ-MDL-17`, `DEC-9` applied to readers): keyed by
-/// reader, so the same name under two readers is two keys. An implementation asks its store on each call and keeps no
-/// copy, so a rotated key is used from the next answer on.
-pub trait StatementKeys: Send + Sync {
-    /// The private half of `reader`'s key `name`, or `None` if the store holds none.
-    fn resolve(&self, reader: &Id, name: &str) -> Option<SecretValue>;
-}
-
-/// Keys the host was handed at start in its environment, read on each call: `RUTENT_READER_KEY_<READER>_<NAME>`, each
-/// name upper-cased with every character but a letter or digit made `_`. A deployment's secrets reach an ECS task's
-/// environment this way; the readers' processes start with an empty one. A rotated key is read at the next start.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct EnvKeys;
-
-impl EnvKeys {
-    /// The variable `reader`'s key `name` is read from.
-    pub fn variable(reader: &Id, name: &str) -> String {
-        let part = |text: &str| -> String {
-            text.chars()
-                .map(|c| {
-                    if c.is_ascii_alphanumeric() {
-                        c.to_ascii_uppercase()
-                    } else {
-                        '_'
-                    }
-                })
-                .collect()
-        };
-        format!("RUTENT_READER_KEY_{}_{}", part(reader.as_str()), part(name))
+/// The private half of `reader`'s statement key `listed`, from `keys`, as the platform resolves a provider's: under the
+/// reader's name, by the public key's text, given up at `due`. The deployment's operator key is never resolved.
+pub fn resolve_key(
+    keys: &dyn Resolver,
+    reader: &Id,
+    listed: &PublicKey,
+    deployment: &Deployment,
+    due: Option<Instant>,
+) -> Result<SecretValue, SigningError> {
+    if listed == &deployment.operator_key {
+        return Err(SigningError::OperatorKey);
     }
-}
-
-impl StatementKeys for EnvKeys {
-    fn resolve(&self, reader: &Id, name: &str) -> Option<SecretValue> {
-        std::env::var(Self::variable(reader, name))
-            .ok()
-            .and_then(SecretValue::new)
-    }
-}
-
-/// Keys held in memory, for a test or an embedding that resolves them itself.
-#[derive(Debug, Default)]
-pub struct MemoryKeys {
-    keys: Mutex<BTreeMap<(String, String), SecretValue>>,
-}
-
-impl MemoryKeys {
-    /// An empty store.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Puts `value` as `reader`'s key `name`, in place of any before it.
-    pub fn put(&self, reader: &Id, name: &str, value: SecretValue) {
-        if let Ok(mut keys) = self.keys.lock() {
-            keys.insert((reader.as_str().to_owned(), name.to_owned()), value);
-        }
-    }
-}
-
-impl StatementKeys for MemoryKeys {
-    fn resolve(&self, reader: &Id, name: &str) -> Option<SecretValue> {
-        self.keys
-            .lock()
-            .ok()?
-            .get(&(reader.as_str().to_owned(), name.to_owned()))
-            .cloned()
-    }
+    let (Some(provider), Some(name)) =
+        (Identifier::new(reader.as_str()), Name::new(listed.as_str()))
+    else {
+        return Err(SigningError::NoKey);
+    };
+    keys.resolve_until(&provider, &name, due)
+        .map_err(|_| SigningError::NoKey)
 }
 
 /// Why an answer wasn't signed. No variant carries the key (`THR-50`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SigningError {
-    /// The store holds no key by that name for the reader.
+    /// The store gave no key by that name for the reader: none held, refused, or unreachable.
     NoKey,
+    /// The listed key is the deployment's operator key, which is never resolved as a reader's.
+    OperatorKey,
     /// The key resolved isn't the base64url text of a 32-byte seed.
     MalformedKey,
     /// The key resolved isn't the private half of the reader's listed statement key.

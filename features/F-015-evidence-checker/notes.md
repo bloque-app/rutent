@@ -127,7 +127,10 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 in `licences/RECORD`. It edits `components/reader-host/` (new), the root `Cargo.toml`'s members, `Cargo.lock` (the
 member's own entry: every dependency it names was locked already, so no `licences/RECORD` package line is new, only its
 `@core` and `@artifact` lines), `.github/CODEOWNERS`, `HOUSE-RULES.md` and `.github/workflows/jail-probes.yml`, all
-`DEC-20` paths. Nothing of ours depends on it: `T-024-25` adds the scenario assembly's dev-dependency.
+`DEC-20` paths. Nothing of ours depends on it: `T-024-25` adds the scenario assembly's dev-dependency. Since the lead's
+follow-up on #348 (and the row's part (7), plan `87aed6c0`), it also edits `tools/boundary-check/` and two new public
+paths of `rutent-prov`, `src/confine.rs` and `src/keys.rs`, with their `pub mod` lines in `src/lib.rs` (`DEC-20` paths
+too, added to `.github/CODEOWNERS` and `HOUSE-RULES.md`).
 
 ### Design
 
@@ -151,19 +154,31 @@ member's own entry: every dependency it names was locked already, so no `licence
   A crash is the end of the reader's output; a hang is `hang_after_ms` with no answer; a limit hit is a frame over
   `max_frame` or one that doesn't read as the wire's. The host kills the process (and, on Linux, `unshare`'s
   `--kill-child` takes the reader with it), answers the question unreadable and every waiting one
-  `reader_restarting`. Memory is bounded by `RLIMIT_AS` on Linux (`memory_bytes`).
+  `reader_restarting`. Memory is bounded by the jail's address space (`PROVIDER_ADDRESS_SPACE`, 4 GiB, set by
+  `confine`) and the operator's task; the first build's own `memory_bytes` went, since `confine` raises the limit to
+  the provider's and a lower hard limit set before it would refuse the raise.
 - **(3) Signing outside the reader** (`src/keys.rs`). The worker hands the host the reader's answer body; the host
   holds it to the question (`worker::holds`: the request, the network, the question as asked, the configured version,
   `ReaderAnswer::check`, and for `network_rules` the configured identity and trust rule) and builds the envelope: Core's
   deployment and protocol version from the configuration, the reader as maker, its listed key. It resolves the private
-  half by name at that moment (`StatementKeys`), refuses one whose public half isn't the listed key, signs the
+  half at that moment as the platform resolves a provider's (`keys::resolve_key` over `T-014-01`'s `Resolver`, through
+  `rutent_prov::keys`): under the reader's name, by the listed public key's text, given up at `egress_give_up_after_ms`,
+  and never the deployment's operator key. The binary builds the resolver as the platform builds a role's keys bucket:
+  `kv_bucket` over `HttpsTransport::for_role` from a process role's settings (`--key-store`, OpenBao or Vault), with the
+  token the deployment delivers in `RUTENT_READER_KEY_STORE_TOKEN`, which it takes out of its environment before any
+  thread starts. It refuses a key whose public half isn't the listed key, signs the
   provider-role signing input, and drops it. An answer that doesn't hold is signed as unreadable, with why. The key is
   never in the reader's frames, arguments or environment.
-- **(4) Egress, enforced by the host** (`src/egress.rs`, `src/jail.rs`). On Linux the reader starts under `unshare` in
-  new user (root mapped), network, IPC, UTS, mount and PID namespaces with `--fork --kill-child`, as `CMP-PROV` starts a
-  provider's process, and `--mount-proc` beside them; between fork and exec every descriptor above 2 is closed, core
-  dumps are off, open files bounded, `RLIMIT_AS` set and `no_new_privs` on; the environment is cleared and the working
-  directory is an empty one. Its one channel is its standard input and output (`src/wire.rs`: frames of JSON). A pool
+- **(4) Egress, enforced by the host** (`src/egress.rs`, `src/jail.rs`). The reader runs in the jail `CMP-PROV` runs a
+  provider's process in, through `rutent_prov::confine`: the host starts it with `isolated` under `Limits::PROVIDER`
+  (on Linux `unshare` in new user, network, IPC, UTS, mount and PID namespaces with `--fork --kill-child`; the
+  environment cleared, every descriptor above 2 closed, core dumps off and open files bounded; on macOS the provider's
+  deny-by-default `sandbox-exec` profile), and the reader calls `jail::confine_reader` (`confine(Role::Provider)`)
+  before it reads anything: `no_new_privs`, the empty read-only root, every capability dropped, Landlock with no rule,
+  the provider's `seccomp` allow-list and its address space. On Linux the host holds it to that before it takes the
+  reader's start-up checks (`jail::check_confined`): it reads the reader's `/proc` status (the one child of the
+  `unshare` it started) and refuses it as `reader_not_confined` unless `NoNewPrivs` is 1, `Seccomp` is 2 and no
+  capability is held, the bounding set included. The working directory is an empty one. Its one channel is its standard input and output (`src/wire.rs`: frames of JSON). A pool
   request goes through `rutent_prov::egress::Egress::send` under a running declaration the host builds from the trust
   rule (one destination per endpoint, by its name in the rule, public addresses, one operation `read`), so the layer's
   own checks hold: declared destinations only, each redirect checked, the name resolved once and every address held to
@@ -203,15 +218,21 @@ The ten named tests, each with the row's tags:
 - `reader_process_has_no_network_route_but_the_reader_host` [`REQ-MDL-7`] (`tests/jail.rs`): Linux only, ignored off
   Linux with a body that panics if run by hand. It runs in `jail-probes.yml`'s job in a step of its own, after the
   stand-ins are built, and the step greps for the test's `ok` line, so a skip, an ignore or a filter fails the job. It
-  also runs on Linux in `ci.yml`'s workspace test step. Not run locally (macOS).
+  also runs on Linux in `ci.yml`'s workspace test step. Not run locally (macOS). Beside the confined reader, which
+  reaches nothing but the host, it starts one that skips `confine` and shows the host refuse it as
+  `reader_not_confined`.
 - `reader_that_crashes_or_hangs_is_unreadable_and_the_other_readers_answer_on` [`REQ-MDL-11`] (`tests/readers.rs`)
 - `reader_never_holds_its_statement_key` [`REQ-MDL-6`] (`tests/keys.rs`, alone in its binary since it sets the
-  environment the production key store reads)
+  environment the binary reads its store's token from): the key resolved per answer through `KvResolver` over a
+  stand-in KV store on loopback, by the reader's name and the listed key's text, with the token, and neither key nor
+  token in anything the reader saw
 - `evm_reader_with_fewer_than_two_agreeing_rpc_answers_is_unreadable` [`REQ-ORD-39`, `DEC-28`] (`tests/readers.rs`)
 - `substrate_reader_checks_the_networks_genesis_before_answering` [`REQ-ORD-39`, `DEC-28`] (`tests/readers.rs`)
 - `restarted_reader_host_answers_nothing_until_each_readers_checks_pass_again` [`NFR-6`] (`tests/readers.rs`)
 
-Beside them: `core_holds_the_host_to_the_operators_ca_and_the_listed_name_and_takes_a_rotated_leaf` [`DEC-28`],
+Beside them: `reader_host_reaches_the_providers_jail_and_key_resolver_through_their_admitted_paths_only` [`DEC-28`,
+`DEC-2`, `REQ-MDL-6`, `REQ-MDL-7`] (`tools/boundary-check`), and
+`core_holds_the_host_to_the_operators_ca_and_the_listed_name_and_takes_a_rotated_leaf` [`DEC-28`],
 `host_signs_only_an_answer_that_names_the_question_it_was_asked` [`REQ-MDL-6`, `DEC-28`],
 `reader_with_its_questions_bound_reached_answers_the_next_unreadable_at_once` [`REQ-MDL-11`], and unit tests of the
 seed's one spelling, the listed key, the special-purpose ranges and the host's time. The issue listed nine tests; the
@@ -233,45 +254,56 @@ The code came first, so the rule-off runs below stand in for seeing each test re
    quorum is disagreement.
 6. A reader whose checks find another network is down and checked again at each restart (`restart_after_ms`); it never
    answers until they match.
-7. Bounds by default: 2 GiB of address space, 10 s per question, 60 s for the start-up checks, 16 questions waiting,
+7. Bounds by default: 10 s per question, 60 s for the start-up checks, 16 questions waiting,
    1 s before a restart, 5 s per egress call, 1 MiB per frame. A configuration sets each per reader; zero is refused.
 8. The host reads its chain and key at start: rotating the leaf is a restart, with no listing change.
-9. The production key store is the host's environment (`EnvKeys`, `RUTENT_READER_KEY_<READER>_<NAME>`), which ECS
-   fills from its secrets at start: a rotated key is used from the next start. The readers' environment is cleared.
+9. The production key store is the platform's: a process role's vault bucket (`--key-store`), its token delivered in
+   `RUTENT_READER_KEY_STORE_TOKEN` and taken out of the host's environment at start. A rotated key is used from the
+   next answer. The readers' environment is cleared.
 10. The binary makes the host undumpable on Linux (`PR_SET_DUMPABLE` 0), so a process of its user can't read its
-    memory or environment; and `--mount-proc` keeps the host's processes out of a reader's `/proc`.
-11. On macOS, for development only, a reader runs under `sandbox-exec` with `(deny network*)`.
+    memory or environment.
+11. A reader that isn't confined when it reports its checks is down (`reader_not_confined`) and started again after
+    `restart_after_ms`; it never answers.
 12. A light client's relay hands back what a connection gives within 2 s of a send, at most 64 KiB.
 
 ### Departures from the row, and gaps
 
-1. **The jail.** The row says the reader runs in the jail `CMP-PROV` uses. That launcher (`sandbox::isolated`, with the
-   in-process `confine`) is in `rutent_prov::module`, and the boundary admits the host only to `rutent_prov::egress`
-   (`T-020-59`). The host composes the same `unshare` namespaces itself (`jail::UNSHARE`, with `--mount-proc`), and the
-   pre-exec limits; `confine`'s in-process layers (the empty read-only root, dropped capabilities, Landlock, seccomp)
-   are not applied, since a reader is the operator's own program, not the provider binary. Gap, for the lead and
-   `T-031-02`/`T-031-03`: move the launcher where the boundary admits it, or have each real reader confine itself.
-2. **The key resolver.** The row names `T-014-01`'s resolver. It is `rutent_prov::proxy::Resolver`, also outside the
-   boundary. The host defines `StatementKeys` with the same contract (resolve by name when signing, keyed by reader, no
-   copy kept), and ships `EnvKeys`. Gap, for the lead: an OpenBao/Vault binding for the host, either by a boundary
-   change that admits the resolver or a re-export under `rutent_prov::egress` (a `DEC-20` edit to prov, not this row's).
-3. **The egress layer's clock.** The lead asked for the host's clock to be handed to the egress layer through
-   `with_clock`. `OperationClock` is in `rutent_prov::module::platform`, which the host can't name, so the resolver and
-   the connector keep their default, `Monotonic`, which is the host's own monotonic clock. The names are confusing on
-   prov's side: `Call::due` and `Dial::due` are documented as "when the operation the call serves must end, if it has a
+The first build (#348's first commit) left three departures that the lead's follow-up closed in this row, since
+pre-production gaps are fixed in the milestone that finds them: the jail was the namespaces alone, composed by the
+host; the key store was a seam of the host's own (`EnvKeys`); and the egress layer's clock couldn't be handed over.
+`tools/boundary-check` now admits `rutent-reader-host` to three paths of `rutent-prov` and nothing more
+(`PROV_PATHS`): `egress`, `confine` (`PROV_CONFINE`: `isolated`, `confine`, `Limits`, `Role`, `PROVIDER_ADDRESS_SPACE`,
+re-exported from `module::sandbox`) and `keys` (`PROV_KEYS`: `T-014-01`'s `Resolver` and `ResolveError`, `KvResolver`,
+`KvConfig`, `kv_bucket`, `Bucket`, `RoleSettings`, `Server`, `StoreAddress`, `StoreScheme`, `Token`, `HttpsTransport`,
+`TransportError`, `InvalidConfig`, `InvalidSettings`, re-exported from `proxy`). Each file holds that one re-export
+and nothing else, which the check reads (`Why::WidensAnAdmittedPath`); a longer name, a group, a glob, or any other
+path into `module` or `proxy` is still refused (`Why::ReachesBeyondItsPaths`, renamed from `ReachesBeyondEgress`).
+`rutent-prov`'s `src/lib.rs` says it belongs to `T-012-01`; its two `pub mod` lines are this row's, at the lead's
+request.
+
+1. **The egress layer's clock.** The lead's first brief asked for the host's clock to be handed to the egress layer
+   through `with_clock`; the follow-up kept `Monotonic`. `OperationClock` stays out of the admitted paths, so the
+   resolver and the connector keep their default, the host's own monotonic clock. The names are confusing on prov's
+   side: `Call::due` and `Dial::due` are documented as "when the operation the call serves must end, if it has a
    deadline", which for the reader host is its own give-up time (`egress_give_up_after_ms`), never Core's answer
    deadline. Prov's API is not renamed here.
-4. **A light client's connections.** The egress layer has no session interface (a `Connector` is one request and one
-   answer, and refuses `wss`), so the host opens them with the layer's resolver and dialer and its own address check,
-   and records them in its own `ConnectionRecord`: the module-interface `Hop` has no scheme for a p2p transport. The
-   relay is a send and what comes back within a wait, not a stream. Gap, for `T-031-02`: a streaming relay for
-   `smoldot-light`'s transport.
-5. **`wss` in an RPC pool.** The contract admits `wss` endpoints; the production connector refuses them, so such an
-   endpoint never answers and counts against the quorum. Gap, for `T-031-03`.
-6. **The metadata check.** The host holds a light client's reported genesis to its configuration; the metadata it
+2. **A light client's connections** (gap, owned by `T-031-02`). The egress layer has no session interface (a
+   `Connector` is one request and one answer, and refuses `wss`), so the host opens them with the layer's resolver
+   and dialer and its own address check, and records them in its own `ConnectionRecord`: the module-interface `Hop`
+   has no scheme for a p2p transport. The relay is a send and what comes back within a wait, not a stream;
+   `T-031-02` gives `smoldot-light`'s transport the streaming relay it needs.
+3. **`wss` in an RPC pool** (gap, owned by `T-031-03`). The contract admits `wss` endpoints; the production
+   connector refuses them, so such an endpoint never answers and never counts toward the quorum. `T-031-03` gives a
+   pool's `wss` endpoints a session to answer over, or lists `https` endpoints only.
+4. **The seccomp allow-list is a provider's.** A reader confined as `Role::Provider` makes only the calls a provider's
+   process makes: no timed sleep (`nanosleep`), no thread (`RLIMIT_NPROC` 0), no socket. The stand-ins wait by
+   yielding. A real reader that needs more is `T-031-02`'s and `T-031-03`'s to raise, as a role of its own in
+   `module::sandbox` and `PROV_CONFINE`, never by leaving the jail.
+5. **The metadata check.** The host holds a light client's reported genesis to its configuration; the metadata it
    relies on and answering only on finalised state are the reader's own to hold (its code is the operator's), as are
    an RPC reader's confirmations. The host can't check either.
-7. **The jail test** runs only on Linux, in CI; it was not run locally.
+6. **The jail test** runs only on Linux, in CI's `jail-probes` job (and `ci.yml`'s workspace test step); it was not
+   run locally, and neither was the host's confinement check, which only Linux has.
 
 ### Rule-off
 
@@ -296,3 +328,16 @@ locally.
 | A hung reader is stopped at its bound | `reader_that_crashes_or_hangs_is_unreadable_and_the_other_readers_answer_on` | never answered; killed at 240 s |
 | The questions waiting are bounded | `reader_with_its_questions_bound_reached_answers_the_next_unreadable_at_once` | `left: Some("reader_restarting")`: the third question waited |
 | Only the listed key signs | `keys::tests::answer_is_signed_only_with_the_readers_listed_key` | `left: Ok(..)`, another key signed |
+
+After the follow-up, the same way:
+
+| Rule switched off | Test | Red |
+|---|---|---|
+| The reader starts in prov's jail (`isolated`, not a plain command) | `reader_never_holds_its_statement_key` | the host's store token reached the reader's environment |
+| Only the admitted prov paths pass | `reader_host_reaches_the_providers_jail_and_key_resolver_through_their_admitted_paths_only` | `left: []`, paths into `module` and `proxy` passed |
+| An admitted path holds its one re-export | the same | `left: []`, a widened `keys.rs` passed |
+| No more paths than `egress`, `confine` and `keys` (`module` added) | the same, and `reader_host_reaches_only_the_contracts_and_the_providers_egress_and_nothing_reaches_it` | `rutent_prov::module::..` passed |
+
+The jail's in-process layers (empty root, capabilities, Landlock, seccomp) and the host's check of them exist only on
+Linux, so they can't be switched off and run here. Each layer alone is `T-025-02`'s probes in the same job, and the
+jail test's unconfined reader is the host's check seen red on its own.

@@ -15,7 +15,7 @@
 //! A hostile act makes it misbehave, for the host to hold: `ignore-quorum` (answers a final movement whatever the
 //! pool agreed), `undeclared` (asks an endpoint it doesn't declare too), `other-request` (answers under another
 //! request id), `other-rules` (names a stricter quorum than its listing in its network's rules), `skip-checks` (never
-//! reports its checks, and answers anyway), `crash` and `hang` (on a question),
+//! reports its checks, and answers anyway), `crash` and `hang` (on a question), `unconfined` (skips the jail's in-process half),
 //! `inspect` (logs its arguments, its environment and every frame it reads) and `probe-network=<address:port>` (tries
 //! to connect to that address, and to a public one, at start, and logs what happened).
 
@@ -159,7 +159,7 @@ impl Reader {
                 if let Some(hash) = GenesisHash::new(answer.clone()) {
                     return Some(NetworkIdentity::GenesisHash { hash });
                 }
-                std::thread::sleep(Duration::from_millis(50));
+                pause(Duration::from_millis(50));
             }
         }
         loop {
@@ -176,7 +176,7 @@ impl Reader {
                     id: ChainId::new(id.to_string())?,
                 });
             }
-            std::thread::sleep(Duration::from_millis(50));
+            pause(Duration::from_millis(50));
         }
     }
 
@@ -276,6 +276,15 @@ impl Reader {
     }
 }
 
+/// Waits `for_` without a timed sleep, which the provider's `seccomp` allow-list doesn't take: the clock and yielding
+/// are allowed.
+fn pause(for_: Duration) {
+    let until = std::time::Instant::now() + for_;
+    while std::time::Instant::now() < until {
+        std::thread::yield_now();
+    }
+}
+
 fn standing(value: &Value) -> Option<Standing> {
     let movement = || -> Option<Movement> {
         Some(Movement {
@@ -352,6 +361,14 @@ fn main() {
             _ => i += 1,
         }
     }
+    // The provider's jail, from inside, before anything is read: what every reader does first. `unconfined` skips it,
+    // for the host to refuse.
+    if !hostile.iter().any(|h| h == "unconfined")
+        && let Err(e) = rutent_reader_host::jail::confine_reader()
+    {
+        eprintln!("standin_reader: not confined: {e}");
+        std::process::exit(5);
+    }
     let inspect = hostile.iter().any(|h| h == "inspect");
     let mut reader = Reader {
         io: Io {
@@ -416,7 +433,7 @@ fn main() {
         }
         if reader.hostile("hang") {
             loop {
-                std::thread::sleep(Duration::from_secs(3600));
+                std::thread::park();
             }
         }
         let answer = reader.answer(&question, &found);

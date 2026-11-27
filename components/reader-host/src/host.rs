@@ -13,10 +13,11 @@ use rutent_contracts::router_api::Id;
 
 use crate::config::{ConfigError, HostConfig, ReaderConfig};
 use crate::egress::{Network, ReaderEgress};
-use crate::keys::{Envelope, StatementKeys, sign_answer};
+use crate::keys::{Envelope, resolve_key, sign_answer};
 use crate::records::CallRecords;
 use crate::time::now_rfc3339;
 use crate::worker::{Event, Reply, Shared, Worker};
+use rutent_prov::keys::Resolver;
 
 /// Where a reader stands, as the host reports it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,8 +40,8 @@ struct Reader {
 /// What the host is handed besides its configuration: the store it resolves the readers' keys from, the network it
 /// reaches for them, and where its records go.
 pub struct Services {
-    /// The readers' statement keys, by name.
-    pub keys: Arc<dyn StatementKeys>,
+    /// The readers' statement keys: `T-014-01`'s resolver, the keys of a vault bucket in production.
+    pub keys: Arc<dyn Resolver + Send + Sync>,
     /// The network.
     pub network: Network,
     /// The records of the readers' calls.
@@ -51,7 +52,7 @@ pub struct Services {
 /// questions signed with each reader's key.
 pub struct Host {
     config: HostConfig,
-    keys: Arc<dyn StatementKeys>,
+    keys: Arc<dyn Resolver + Send + Sync>,
     readers: BTreeMap<String, Reader>,
     workers: Mutex<Vec<JoinHandle<()>>>,
 }
@@ -144,15 +145,21 @@ impl Host {
                     .unwrap_or_else(|| Reason::new("unreadable").expect("a reason")),
             },
         });
-        let secret = self
-            .keys
-            .resolve(&reader.config.name, &reader.config.statement_key.name)?;
+        let due = Some(Instant::now() + reader.config.limits.egress_give_up_after());
+        let secret = resolve_key(
+            &*self.keys,
+            &reader.config.name,
+            &reader.config.statement_key,
+            &self.config.deployment,
+            due,
+        )
+        .ok()?;
         let made_at = now_rfc3339();
         let envelope = Envelope {
             deployment: &self.config.deployment,
             protocol_version: &self.config.protocol_version,
             maker: &reader.config.name,
-            key: &reader.config.statement_key.public,
+            key: &reader.config.statement_key,
             made_at: &made_at,
         };
         sign_answer(&envelope, body, &secret).ok()

@@ -93,6 +93,7 @@ enum Phase {
 
 struct Running {
     child: Child,
+    pid: u32,
     stdin: ChildStdin,
     workdir: PathBuf,
 }
@@ -269,8 +270,10 @@ impl Worker {
                 }
             }
         });
+        let pid = child.id();
         self.running = Some(Running {
             child,
+            pid,
             stdin,
             workdir,
         });
@@ -380,7 +383,15 @@ impl Worker {
             FromReader::Log { line } => self.log(line),
             FromReader::Checked { identity } => {
                 if matches!(self.phase, Phase::Starting { .. }) {
-                    if identity == self.config.identity {
+                    // Its checks are taken only from a reader in the provider's jail, confined as it is.
+                    let unconfined = self
+                        .running
+                        .as_ref()
+                        .and_then(|r| jail::check_confined(r.pid));
+                    if let Some(why) = unconfined {
+                        self.log(format!("host: the reader is not confined: {why}"));
+                        self.down(why);
+                    } else if identity == self.config.identity {
                         self.log("host: start-up checks passed".to_owned());
                         self.next();
                     } else {

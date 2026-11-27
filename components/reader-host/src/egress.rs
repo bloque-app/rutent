@@ -155,7 +155,7 @@ fn declaration(config: &ReaderConfig) -> Option<Declaration> {
             destinations,
             secrets: Vec::new(),
             calls: Vec::new(),
-            statement_key: config.statement_key.public.clone(),
+            statement_key: config.statement_key.clone(),
         },
     })
 }

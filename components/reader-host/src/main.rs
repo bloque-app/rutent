@@ -2,11 +2,13 @@
 //!
 //! ```text
 //! rutent-reader-host <config.json> --listen <address:port> --operator-ca <ca.pem> --cert <chain.pem>
-//!     --key <key.pem> --core-name <Core's subject name> --rpc-roots <roots.pem>
+//!     --key <key.pem> --core-name <Core's subject name> --rpc-roots <roots.pem> --key-store <role.json>
 //! ```
 //!
-//! It reads its configuration ([`rutent_reader_host::HostConfig::read`]) at each start, resolves the readers' keys from
-//! its environment ([`rutent_reader_host::keys::EnvKeys`]), writes each call's record to its standard error as a JSON
+//! It reads its configuration ([`rutent_reader_host::HostConfig::read`]) at each start, resolves the readers' keys as
+//! the platform resolves a provider's, from the keys of the vault bucket `--key-store` describes (a process role's
+//! settings, [`rutent_prov::keys::RoleSettings`], read with the token the deployment delivers in
+//! `RUTENT_READER_KEY_STORE_TOKEN`), writes each call's record to its standard error as a JSON
 //! line, and serves Core over mTLS until it is stopped.
 
 use std::collections::BTreeMap;
@@ -15,19 +17,20 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
+use rutent_prov::keys::{HttpsTransport, RoleSettings, Token, kv_bucket};
 use rutent_reader_host::egress::Network;
-use rutent_reader_host::keys::EnvKeys;
 use rutent_reader_host::link::{Link, LinkTls};
 use rutent_reader_host::records::StderrRecords;
 use rutent_reader_host::{Host, HostConfig, Services, jail};
 
-const FLAGS: [&str; 6] = [
+const FLAGS: [&str; 7] = [
     "--listen",
     "--operator-ca",
     "--cert",
     "--key",
     "--core-name",
     "--rpc-roots",
+    "--key-store",
 ];
 
 fn main() -> ExitCode {
@@ -74,10 +77,22 @@ fn run() -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
     let network = Network::production(&read("--rpc-roots")?).map_err(|e| e.to_string())?;
+    let role: RoleSettings = serde_json::from_slice(&read("--key-store")?)
+        .map_err(|_| "--key-store is not a process role's settings".to_owned())?;
+    let token = std::env::var("RUTENT_READER_KEY_STORE_TOKEN")
+        .ok()
+        .and_then(Token::new)
+        .ok_or("RUTENT_READER_KEY_STORE_TOKEN holds no token")?;
+    // SAFETY: still one thread: no reader, worker or link has started.
+    unsafe { std::env::remove_var("RUTENT_READER_KEY_STORE_TOKEN") };
+    let transport = HttpsTransport::for_role(&role).map_err(|e| e.to_string())?;
+    let keys = kv_bucket(&role, token, transport)
+        .map_err(|e| e.to_string())?
+        .keys;
     let host = Host::start(
         config,
         Services {
-            keys: Arc::new(EnvKeys),
+            keys: Arc::new(keys),
             network,
             records: Arc::new(StderrRecords),
         },

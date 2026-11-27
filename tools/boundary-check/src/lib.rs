@@ -38,15 +38,54 @@ const SCENARIOS: &str = "rutent-scenarios";
 
 /// The reader host (`DEC-28`, `T-015-04`): `CMP-EVIDENCE`'s standalone part, which runs each public
 /// network's reader as a reader service outside Core. It depends on the contracts, for the reader
-/// contract, and on the provider system for its egress layer alone ([`PROV_EGRESS`]). Nothing of
+/// contract, and on the provider system through its admitted paths alone ([`PROV_PATHS`]). Nothing of
 /// ours depends on it, save the scenario assembly's tests: a dev-dependency of the assembly's, so
 /// the simulated networks' readers run in the test harness (`T-024-25`), and never a dependency of
 /// its build (`T-020-59`, its review's L6).
 pub const READER_HOST: &str = "rutent-reader-host";
 
-/// The one path of the provider system the reader host may name: its egress layer
-/// (`components/prov/src/egress/`), which enforces a reader's declared destinations.
-pub const PROV_EGRESS: &str = "rutent_prov::egress";
+/// The paths of the provider system the reader host may name, under `rutent_prov::`, and nothing
+/// else of it (`T-015-04`'s part 7, `DEC-28`): its egress layer (`components/prov/src/egress/`),
+/// which enforces a reader's declared destinations; the provider's jail, re-exported at
+/// `rutent_prov::confine` ([`PROV_CONFINE`]); and `T-014-01`'s key resolver, re-exported at
+/// `rutent_prov::keys` ([`PROV_KEYS`]). The rest of `module` and `proxy` stays out of its reach.
+pub const PROV_PATHS: [&str; 3] = ["egress", "confine", "keys"];
+
+/// What `rutent_prov::confine` (`components/prov/src/confine.rs`) re-exports, and nothing more: the
+/// launcher and the in-process jail a provider's process runs in, and what they take.
+pub const PROV_CONFINE: (&str, &[&str]) = (
+    "crate::module::sandbox",
+    &[
+        "Limits",
+        "PROVIDER_ADDRESS_SPACE",
+        "Role",
+        "confine",
+        "isolated",
+    ],
+);
+
+/// What `rutent_prov::keys` (`components/prov/src/keys.rs`) re-exports, and nothing more: the
+/// resolver interface, its vault implementation and what builds it from a process role's settings.
+pub const PROV_KEYS: (&str, &[&str]) = (
+    "crate::proxy",
+    &[
+        "Bucket",
+        "HttpsTransport",
+        "InvalidConfig",
+        "InvalidSettings",
+        "KvConfig",
+        "KvResolver",
+        "ResolveError",
+        "Resolver",
+        "RoleSettings",
+        "Server",
+        "StoreAddress",
+        "StoreScheme",
+        "Token",
+        "TransportError",
+        "kv_bucket",
+    ],
+);
 
 /// The crates of ours that `krate` may depend on (DEC-2).
 ///
@@ -262,9 +301,12 @@ pub enum Why {
     /// A `#[macro_export]` in the contract's own module, which would export a macro at the
     /// contracts crate's root, out of the reach of the name.
     ExportsAMacro,
-    /// The reader host names the provider system other than through its egress layer
-    /// ([`PROV_EGRESS`]).
-    ReachesBeyondEgress,
+    /// The reader host names the provider system other than through its admitted paths
+    /// ([`PROV_PATHS`]).
+    ReachesBeyondItsPaths,
+    /// An admitted path of the provider system re-exports more, or other, than it is admitted
+    /// with ([`PROV_CONFINE`], [`PROV_KEYS`]), or holds anything but that re-export.
+    WidensAnAdmittedPath,
 }
 
 /// A source line that breaks the boundary.
@@ -632,11 +674,12 @@ fn public_items_naming(text: &str) -> Vec<usize> {
 }
 
 /// The 1-based lines of `text`, its comments and literals blanked, that name the provider system's
-/// crate, `rutent_prov`, other than as a path into its egress layer: `rutent_prov::egress`
-/// followed by `::` or by a character that can't continue a name. Fails closed: a bare
-/// `rutent_prov`, a grouped `use rutent_prov::{egress, ..}`, an `extern crate` or a rename is a
-/// finding, so only paths that start with [`PROV_EGRESS`] pass.
-fn lines_beyond_egress(text: &str) -> Vec<usize> {
+/// crate, `rutent_prov`, other than as a path into one of its admitted paths ([`PROV_PATHS`]):
+/// `rutent_prov::egress`, `rutent_prov::confine` or `rutent_prov::keys`, followed by `::` or by a
+/// character that can't continue a name. Fails closed: a bare `rutent_prov`, a grouped
+/// `use rutent_prov::{egress, ..}`, an `extern crate`, a rename or a longer name
+/// (`rutent_prov::keystore`) is a finding.
+fn lines_beyond_admitted(text: &str) -> Vec<usize> {
     const CRATE: &str = "rutent_prov";
     let code = blank(text, true);
     let continues = |c: char| c.is_alphanumeric() || c == '_';
@@ -650,17 +693,46 @@ fn lines_beyond_egress(text: &str) -> Vec<usize> {
             continue;
         }
         let rest = after.trim_start();
-        let through_egress = rest
+        let admitted = rest
             .strip_prefix("::")
             .map(str::trim_start)
-            .and_then(|r| r.strip_prefix("egress"))
-            .is_some_and(|r| !r.chars().next().is_some_and(continues));
-        if !through_egress {
+            .is_some_and(|r| {
+                PROV_PATHS.iter().any(|path| {
+                    r.strip_prefix(path)
+                        .is_some_and(|r| !r.chars().next().is_some_and(continues))
+                })
+            });
+        if !admitted {
             found.push(line_of(text, at));
         }
     }
     found.dedup();
     found
+}
+
+/// Whether `text`, an admitted path's file, holds the one re-export `admitted` names and nothing
+/// else: comments, then `pub use <from>::{<items>};` with exactly those items, in any order. Fails
+/// closed: another item, a glob, a rename, a second statement, or anything but comments around it
+/// is a widening.
+pub fn holds_its_reexport(text: &str, admitted: (&str, &[&str])) -> bool {
+    let code = blank(text, true);
+    let code: String = code.split_whitespace().collect::<Vec<_>>().join(" ");
+    let (from, items) = admitted;
+    let Some(list) = code
+        .strip_prefix(&format!("pub use {from}::{{"))
+        .and_then(|r| r.strip_suffix("};"))
+    else {
+        return false;
+    };
+    let mut named: Vec<&str> = list
+        .split(',')
+        .map(str::trim)
+        .filter(|i| !i.is_empty())
+        .collect();
+    named.sort_unstable();
+    let mut wanted = items.to_vec();
+    wanted.sort_unstable();
+    named == wanted
 }
 
 /// Reports every line that breaks the source boundary of the core-internal contract (DEC-2):
@@ -677,8 +749,10 @@ fn lines_beyond_egress(text: &str) -> Vec<usize> {
 ///   the check can't resolve;
 /// - any `#[macro_export]` in the contract's own module;
 /// - in the reader host ([`READER_HOST`]), once it is a member, any line that names the contract,
-///   and any that names the provider system other than through its egress layer
-///   ([`PROV_EGRESS`], `T-020-59`).
+///   and any that names the provider system other than through its admitted paths
+///   ([`PROV_PATHS`], `T-020-59`, `T-015-04`);
+/// - in the provider system, an admitted path's file (`src/confine.rs`, `src/keys.rs`) that holds
+///   more or other than its one re-export ([`PROV_CONFINE`], [`PROV_KEYS`], [`holds_its_reexport`]).
 ///
 /// Fails closed: it matches the plain text, comments included, so a mention in a library's
 /// documentation fails too. A package [`OUTER`] names that isn't a member, and a symbolic link in
@@ -701,7 +775,7 @@ pub fn sources_naming_core_internal(root: &Path) -> std::io::Result<Vec<SourceFi
             .collect()
     };
     let mut found = Vec::new();
-    let mut beyond_egress = Vec::new();
+    let mut beyond_paths = Vec::new();
     let relative = |file: &Path| file.strip_prefix(root).unwrap_or(file).to_path_buf();
     let mut scan = |package: &Path,
                     names_allowed: &dyn Fn(&Path, &str) -> bool,
@@ -745,11 +819,27 @@ pub fn sources_naming_core_internal(root: &Path) -> std::io::Result<Vec<SourceFi
         scan(dir, &|_, _| false, false)?;
         for file in rust_files(dir, &others(dir))? {
             let text = std::fs::read_to_string(&file)?;
-            for line in lines_beyond_egress(&text) {
-                beyond_egress.push(SourceFinding {
+            for line in lines_beyond_admitted(&text) {
+                beyond_paths.push(SourceFinding {
                     file: relative(&file),
                     line,
-                    why: Why::ReachesBeyondEgress,
+                    why: Why::ReachesBeyondItsPaths,
+                });
+            }
+        }
+    }
+    // What the admitted paths admit: each file of the provider system's holds its one re-export, and
+    // nothing more, so the reader host reaches no more of `module` or `proxy` than it is admitted to.
+    if let Some(prov) = dirs.get("rutent-prov") {
+        for (file, admitted) in [("confine.rs", PROV_CONFINE), ("keys.rs", PROV_KEYS)] {
+            let path = prov.join("src").join(file);
+            if let Ok(text) = std::fs::read_to_string(&path)
+                && !holds_its_reexport(&text, admitted)
+            {
+                beyond_paths.push(SourceFinding {
+                    file: relative(&path),
+                    line: 1,
+                    why: Why::WidensAnAdmittedPath,
                 });
             }
         }
@@ -779,7 +869,7 @@ pub fn sources_naming_core_internal(root: &Path) -> std::io::Result<Vec<SourceFi
             }
         }
     }
-    found.extend(beyond_egress);
+    found.extend(beyond_paths);
     found.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
     Ok(found)
 }

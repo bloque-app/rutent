@@ -74,14 +74,41 @@ mod linux {
                 "the reader reached {target}: {line}"
             );
         }
+        // No route to read, or none to read it with: the jail's root is empty.
         assert!(
-            log.iter().any(|l| l == "probe routes: 0"),
+            log.iter()
+                .any(|l| l == "probe routes: 0" || l.starts_with("probe routes: unreadable")),
             "the reader has no route: {log:?}"
         );
         assert!(
             matches!(listener.accept(), Err(e) if e.kind() == ErrorKind::WouldBlock),
             "nothing connected to the host's port from the reader"
         );
+
+        // A reader that skips the jail's in-process half (the empty root, capabilities, Landlock, seccomp) is never
+        // taken: the host reads its status and refuses it before its checks.
+        let loose = rpc_reader("loose", &["unconfined"]);
+        let loose_rig = Rig::start(vec![loose.clone()], honest_pool(), &[]);
+        let until = std::time::Instant::now() + Duration::from_secs(10);
+        while !loose_rig
+            .host
+            .log(&loose.name)
+            .iter()
+            .any(|l| l.contains("not confined: reader_not_confined"))
+        {
+            assert!(
+                std::time::Instant::now() < until,
+                "the unconfined reader was refused: {:?}",
+                loose_rig.host.log(&loose.name)
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            !loose_rig
+                .host
+                .wait_ready(&loose.name, Duration::from_secs(1))
+        );
+        assert!(unreadable(&ask(&loose_rig.host, &loose, status_of("0xmove"))).is_some());
         eprintln!(
             "jail-probe run {run}: reader-host: reader_process_has_no_network_route_but_the_reader_host: held"
         );

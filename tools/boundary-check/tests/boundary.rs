@@ -1,8 +1,8 @@
 //! Tests of the boundary check.
 
 use rutent_boundary_check::{
-    Graph, OUTER, READER_HOST, SourceFinding, Why, load, members, parse_manifest,
-    sources_naming_core_internal, violations,
+    Graph, OUTER, PROV_CONFINE, PROV_KEYS, READER_HOST, SourceFinding, Why, holds_its_reexport,
+    load, members, parse_manifest, sources_naming_core_internal, violations,
 };
 use std::path::{Path, PathBuf};
 
@@ -738,27 +738,27 @@ fn reader_host_reaches_only_the_contracts_and_the_providers_egress_and_nothing_r
             (
                 "components/reader-host/src/egress.rs",
                 1,
-                Why::ReachesBeyondEgress,
+                Why::ReachesBeyondItsPaths,
             ),
             (
                 "components/reader-host/src/egress.rs",
                 2,
-                Why::ReachesBeyondEgress,
+                Why::ReachesBeyondItsPaths,
             ),
             (
                 "components/reader-host/src/egress.rs",
                 3,
-                Why::ReachesBeyondEgress,
+                Why::ReachesBeyondItsPaths,
             ),
             (
                 "components/reader-host/src/egress.rs",
                 4,
-                Why::ReachesBeyondEgress,
+                Why::ReachesBeyondItsPaths,
             ),
             (
                 "components/reader-host/src/egress.rs",
                 5,
-                Why::ReachesBeyondEgress,
+                Why::ReachesBeyondItsPaths,
             ),
             ("components/reader-host/src/egress.rs", 6, Why::Names),
         ],
@@ -773,6 +773,103 @@ fn reader_host_reaches_only_the_contracts_and_the_providers_egress_and_nothing_r
             .all(|deps| deps.iter().all(|d| d.name != READER_HOST)),
         "nothing of ours depends on the reader host"
     );
+}
+
+/// The reader host reaches the provider's jail and `T-014-01`'s key resolver too, each through a narrow public path of
+/// the provider system that re-exports just them (`rutent_prov::confine`, `rutent_prov::keys`), beside its egress layer
+/// (`T-015-04`'s part 7, `DEC-28`): those paths pass, and every other path into `module` or `proxy` is still refused,
+/// as is an admitted path's file that re-exports more than it is admitted with.
+// verifies: DEC-28, DEC-2, REQ-MDL-6, REQ-MDL-7
+#[test]
+fn reader_host_reaches_the_providers_jail_and_key_resolver_through_their_admitted_paths_only() {
+    let host = manifest(
+        READER_HOST,
+        "rutent-contracts = { path = \"../../contracts\" }\nrutent-prov = { path = \"../prov\" }",
+        "",
+    );
+    let sources = Sources::new("reader-host-paths");
+    sources.write(
+        "Cargo.toml",
+        &format!(
+            "{}\n",
+            std::fs::read_to_string(sources.0.join("Cargo.toml"))
+                .unwrap()
+                .replace("members = [", "members = [\"components/reader-host\", ")
+        ),
+    );
+    sources.write("components/reader-host/Cargo.toml", &host);
+    sources.write(
+        "components/reader-host/src/lib.rs",
+        "use rutent_prov::confine::{Limits, Role, confine, isolated};\n\
+         use rutent_prov::keys::{Resolver, kv_bucket};\n\
+         use rutent_prov::egress::Egress;\n\
+         fn f(_: &dyn rutent_prov::keys::Resolver) -> rutent_prov::confine::Role { todo!() }\n",
+    );
+    assert_eq!(sources.findings(), vec![]);
+
+    // Everything else of `module` and `proxy`, named directly or by a longer name, a group or a glob.
+    sources.write(
+        "components/reader-host/src/jail.rs",
+        "use rutent_prov::module::sandbox::isolated;\n\
+         use rutent_prov::proxy::Resolver;\n\
+         use rutent_prov::proxy::CredentialProxy;\n\
+         use rutent_prov::module::platform::OperationClock;\n\
+         use rutent_prov::keystore::Resolver;\n\
+         use rutent_prov::confined::isolated;\n\
+         use rutent_prov::{confine, keys};\n\
+         use rutent_prov::*;\n",
+    );
+    let jail = "components/reader-host/src/jail.rs";
+    expect(
+        sources.findings(),
+        &(1..=8)
+            .map(|line| (jail, line, Why::ReachesBeyondItsPaths))
+            .collect::<Vec<_>>(),
+    );
+    sources.write(jail, "//! The jail.\n");
+
+    // The admitted paths' files hold their one re-export, or the path widens.
+    let confine = "pub use crate::module::sandbox::{Limits, PROVIDER_ADDRESS_SPACE, Role, confine, isolated};\n";
+    sources.write("prov/src/confine.rs", &format!("//! The jail.\n{confine}"));
+    sources.write(
+        "prov/src/keys.rs",
+        "//! The keys.\npub use crate::proxy::{Bucket, HttpsTransport, InvalidConfig, InvalidSettings, KvConfig,\n\
+         KvResolver, ResolveError, Resolver, RoleSettings, Server, StoreAddress, StoreScheme, Token,\n\
+         TransportError, kv_bucket};\n",
+    );
+    assert_eq!(sources.findings(), vec![]);
+    for widened in [
+        "pub use crate::proxy::{Resolver, CredentialProxy};\n",
+        "pub use crate::proxy::*;\n",
+        "pub use crate::proxy::{Resolver as R};\n",
+        "pub use crate::module::sandbox::{Limits, PROVIDER_ADDRESS_SPACE, Role, confine, isolated};\n",
+    ] {
+        sources.write("prov/src/keys.rs", widened);
+        expect(
+            sources.findings(),
+            &[("prov/src/keys.rs", 1, Why::WidensAnAdmittedPath)],
+        );
+    }
+    sources.write("prov/src/keys.rs", "");
+    sources.write(
+        "prov/src/confine.rs",
+        &format!("{confine}pub mod platform {{}}\n"),
+    );
+    expect(
+        sources.findings(),
+        &[
+            ("prov/src/confine.rs", 1, Why::WidensAnAdmittedPath),
+            ("prov/src/keys.rs", 1, Why::WidensAnAdmittedPath),
+        ],
+    );
+
+    // The real files hold, and the real workspace's sources are clean.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let read =
+        |file: &str| std::fs::read_to_string(root.join("components/prov/src").join(file)).unwrap();
+    assert!(holds_its_reexport(&read("confine.rs"), PROV_CONFINE));
+    assert!(holds_its_reexport(&read("keys.rs"), PROV_KEYS));
+    assert_eq!(sources_naming_core_internal(&root).unwrap(), vec![]);
 }
 
 /// The scenario assembly's tests run the simulated networks' readers in the test harness (`T-024-25`), so the assembly

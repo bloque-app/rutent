@@ -15,14 +15,17 @@
 //!    sent, and never draws either.
 //! 2. **One process per reader** ([`Host`], [`config::ReaderLimits`]). Each reader is a child process the host starts
 //!    from its configuration. A reader's crash, hang or limit hit stops that reader alone: the host answers its
-//!    questions as unreadable and restarts it, and the other readers answer on. The host bounds each reader's memory,
-//!    the time it may take over a question and the questions waiting for it.
+//!    questions as unreadable and restarts it, and the other readers answer on. The host bounds each reader's memory
+//!    (the jail's address space), the time it may take over a question and the questions waiting for it.
 //! 3. **Signing outside the reader** ([`keys`]). The host signs each answer with the reader's statement key, which it
-//!    resolves by name when it signs and never hands to the reader's process. It signs only an answer that names the
-//!    question and the request it was asked and holds to its shape; anything else is signed as unreadable.
+//!    resolves by name when it signs, through `T-014-01`'s resolver as the platform does ([`rutent_prov::keys`]), and
+//!    never hands to the reader's process. It signs only an answer that names the question and the request it was
+//!    asked and holds to its shape; anything else is signed as unreadable.
 //! 4. **Egress, enforced by the host** ([`egress`], [`jail`]). A reader's process has no network route of its own:
-//!    on Linux it starts in new user, network, IPC, UTS, mount and PID namespaces, as `CMP-PROV` starts a provider's
-//!    process, with one inherited channel to the host, its standard input and output. Every request or connection it
+//!    it runs in the jail `CMP-PROV` runs a provider's process in ([`rutent_prov::confine`]): on Linux new user,
+//!    network, IPC, UTS, mount and PID namespaces from outside, and from inside the empty read-only root, every
+//!    capability dropped, Landlock and the `seccomp` allow-list, which the host holds it to before it answers. Its one
+//!    channel to the host is its standard input and output. Every request or connection it
 //!    makes is the host's to make, through `CMP-PROV`'s egress layer, only to a destination the reader declares, and
 //!    each is recorded with destination, reader, version and request ([`records`]).
 //! 5. **The trust rules.** For `rpc_pool`, the host asks the pool's endpoints and hands the reader an answer only

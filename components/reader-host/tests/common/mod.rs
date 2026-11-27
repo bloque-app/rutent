@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
 use rutent_conformance::signing::{base64url, public_key, verify};
-use rutent_contracts::module_interface::{Host as HostName, SecretValue};
+use rutent_contracts::module_interface::{Host as HostName, Identifier, Name, SecretValue};
 use rutent_contracts::provider_role::{
     Deployment, NoDetail, ProtocolVersions, PublicKey, Statement,
 };
@@ -27,9 +27,9 @@ use rutent_contracts::reader::{
 };
 use rutent_contracts::router_api::{Id, ProtocolVersion, Timestamp, Version};
 use rutent_prov::egress::{ConnectError, Connector, Dial, Dialer, NameResolver, Request, Response};
-use rutent_reader_host::config::{KeyConfig, LightClientRule, PortRule, Protocol, ReaderLimits};
+use rutent_prov::keys::{ResolveError, Resolver};
+use rutent_reader_host::config::{LightClientRule, PortRule, Protocol, ReaderLimits};
 use rutent_reader_host::egress::Network;
-use rutent_reader_host::keys::MemoryKeys;
 use rutent_reader_host::records::MemoryRecords;
 use rutent_reader_host::{Host, HostConfig, ReaderConfig, Services};
 
@@ -136,7 +136,7 @@ pub fn as_core_reads(
     let expected = Expected {
         deployment: &deployment(),
         versions: &versions,
-        key: &config.statement_key.public,
+        key: &config.statement_key,
         version: &config.version,
     };
     let now = Timestamp::new("2026-11-27T10:00:00Z").expect("a time");
@@ -205,10 +205,7 @@ pub fn rpc_reader(name: &str, hostile: &[&str]) -> ReaderConfig {
         },
         program: standin(),
         args,
-        statement_key: KeyConfig {
-            name: "statement".to_owned(),
-            public: listed_key(name),
-        },
+        statement_key: listed_key(name),
         light_client: None,
         limits: limits(),
     }
@@ -241,10 +238,7 @@ pub fn light_reader(
         trust: TrustRule::LightClient(NoDetail {}),
         program: standin(),
         args,
-        statement_key: KeyConfig {
-            name: "statement".to_owned(),
-            public: listed_key(name),
-        },
+        statement_key: listed_key(name),
         light_client: Some(rule),
         limits: limits(),
     }
@@ -276,13 +270,33 @@ pub fn host_config(readers: Vec<ReaderConfig>) -> HostConfig {
     }
 }
 
+/// A test double of `T-014-01`'s resolver: the keys in memory, keyed by provider (here, the reader) and name (here,
+/// the listed public key's text), as a vault bucket's keys are.
+#[derive(Default)]
+pub struct MemoryKeys {
+    pub keys: Mutex<BTreeMap<(String, String), SecretValue>>,
+}
+
+impl Resolver for MemoryKeys {
+    fn resolve(&self, provider: &Identifier, name: &Name) -> Result<SecretValue, ResolveError> {
+        self.keys
+            .lock()
+            .unwrap()
+            .get(&(provider.as_str().to_owned(), name.as_str().to_owned()))
+            .cloned()
+            .ok_or(ResolveError::NotFound)
+    }
+}
+
 /// The keys of `readers`, in memory.
 pub fn keys_of(readers: &[ReaderConfig]) -> Arc<MemoryKeys> {
-    let keys = MemoryKeys::new();
+    let keys = MemoryKeys::default();
     for reader in readers {
-        keys.put(
-            &reader.name,
-            &reader.statement_key.name,
+        keys.keys.lock().unwrap().insert(
+            (
+                reader.name.as_str().to_owned(),
+                reader.statement_key.as_str().to_owned(),
+            ),
             secret_of(reader.name.as_str()),
         );
     }

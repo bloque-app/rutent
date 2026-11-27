@@ -8,6 +8,8 @@
 /.github/                  @pandres95
 /components/prov/src/proxy/                 @pandres95
 /components/prov/src/egress/                @pandres95
+/components/prov/src/confine.rs             @pandres95
+/components/prov/src/keys.rs                @pandres95
 /components/prov/src/module/admission.rs    @pandres95
 /components/prov/src/module/platform.rs     @pandres95
 /components/prov/src/module/engine.rs       @pandres95
