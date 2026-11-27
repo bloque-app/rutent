@@ -11,29 +11,34 @@
 //!   starts it again.
 
 use std::collections::VecDeque;
-use std::io::Write;
+use std::io::Read;
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin};
+use std::process::Child;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use rutent_contracts::module_interface::Identifier;
-use rutent_contracts::reader::{Answered, ReaderAnswer, ReaderQuestion};
+use rutent_contracts::reader::{
+    Answered, NetworkIdentity, ReaderAnswer, ReaderQuestion, TrustRule,
+};
 
-use crate::config::ReaderConfig;
+use crate::config::{READ_FRAMES, ReaderConfig, WRITE_BYTES, WRITE_FRAMES};
 use crate::egress::{ReaderEgress, Serving};
 use crate::host::ReaderState;
 use crate::jail;
 use crate::records::START_UP;
-use crate::wire::{FromReader, ToReader, read_frame, write_frame};
+use crate::wire::{FromReader, RpcResult, ToReader, read_frame, write_frame};
 
 /// The most lines the host keeps of a reader's log.
 const LOG_LINES: usize = 256;
 
 /// The longest log line kept, in bytes.
 const LOG_LINE: usize = 4096;
+
+/// What the host asks an RPC pool for itself, to hold an EVM reader's reported chain id to the pool's.
+const CHAIN_ID: &str = r#"{"jsonrpc":"2.0","id":1,"method":"eth_chainId"}"#;
 
 /// What the worker gives back for a question: the answer's body to sign, or why it is unreadable.
 pub(crate) type Reply = Result<ReaderAnswer, &'static str>;
@@ -42,9 +47,9 @@ pub(crate) type Reply = Result<ReaderAnswer, &'static str>;
 pub(crate) enum Event {
     /// A question, and where its reply goes.
     Ask(ReaderQuestion, Sender<Reply>),
-    /// A frame from the process of this generation.
-    Frame(u64, FromReader),
-    /// The process of this generation ended its channel, or broke it: why.
+    /// A frame from the process of this generation, and its size on the wire.
+    Frame(u64, FromReader, usize),
+    /// The process of this generation ended its channel, broke it or went over a bound: why.
     Gone(u64, &'static str),
     /// The host is stopping.
     Stop,
@@ -74,6 +79,77 @@ impl Shared {
     }
 }
 
+/// The frames of one reader's process waiting for its worker: counted when its output thread reads them, and again
+/// when the worker takes them, so a reader that writes faster than the host reads is stopped, never held in memory.
+#[derive(Debug, Default)]
+pub(crate) struct Gauge {
+    frames: AtomicUsize,
+    bytes: AtomicUsize,
+    /// Why the reader's process is to be stopped, as its output or input thread first found it: the worker reads it on
+    /// every turn, ahead of the frames still waiting.
+    stopped: Mutex<Option<&'static str>>,
+}
+
+impl Gauge {
+    /// Counts a frame of `size` bytes in; false if that takes it over `frames` frames or `bytes` bytes.
+    fn take(&self, size: usize, frames: usize, bytes: usize) -> bool {
+        let n = self.frames.fetch_add(1, Ordering::SeqCst) + 1;
+        let b = self.bytes.fetch_add(size, Ordering::SeqCst) + size;
+        n <= frames && b <= bytes
+    }
+
+    /// Counts a frame of `size` bytes out.
+    fn give(&self, size: usize) {
+        self.frames.fetch_sub(1, Ordering::SeqCst);
+        self.bytes.fetch_sub(size, Ordering::SeqCst);
+    }
+
+    /// Marks the process to be stopped for `why`, unless it already is for another reason; gives the reason it is.
+    fn stop(&self, why: &'static str) -> &'static str {
+        match self.stopped.lock() {
+            Ok(mut stopped) => *stopped.get_or_insert(why),
+            Err(_) => why,
+        }
+    }
+
+    /// Why the process is to be stopped, if it is.
+    fn stopped(&self) -> Option<&'static str> {
+        self.stopped.lock().ok().and_then(|s| *s)
+    }
+}
+
+/// Reads frames from a reader's output and hands them to its worker, until the output ends, a frame breaks the
+/// wire or its bound, or the frames waiting reach the gauge's bound: what the reader's output thread runs.
+pub(crate) fn forward_frames(
+    output: &mut impl Read,
+    to: &Sender<Event>,
+    generation: u64,
+    gauge: &Gauge,
+    max_frame: usize,
+) {
+    let waiting_bytes = max_frame.saturating_mul(4);
+    loop {
+        let event = match read_frame(output, max_frame) {
+            Ok(Some(bytes)) => match serde_json::from_slice::<FromReader>(&bytes) {
+                Ok(_) if !gauge.take(bytes.len(), READ_FRAMES, waiting_bytes) => {
+                    Event::Gone(generation, gauge.stop("reader_hit_a_limit"))
+                }
+                Ok(frame) => Event::Frame(generation, frame, bytes.len()),
+                Err(_) => Event::Gone(generation, "reader_sent_malformed_frame"),
+            },
+            Ok(None) => Event::Gone(generation, "reader_crashed"),
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                Event::Gone(generation, gauge.stop("reader_hit_a_limit"))
+            }
+            Err(_) => Event::Gone(generation, "reader_crashed"),
+        };
+        let last = matches!(event, Event::Gone(..));
+        if to.send(event).is_err() || last {
+            return;
+        }
+    }
+}
+
 enum Phase {
     Starting {
         until: Instant,
@@ -84,6 +160,7 @@ enum Phase {
         reply: Sender<Reply>,
         until: Instant,
         tainted: bool,
+        agreed: bool,
     },
     Down {
         restart_at: Instant,
@@ -94,8 +171,16 @@ enum Phase {
 struct Running {
     child: Child,
     pid: u32,
-    stdin: ChildStdin,
+    /// The frames for the reader, written by a thread of their own, so a reader that stops reading never holds the
+    /// worker: a queue of at most [`WRITE_FRAMES`] frames and [`WRITE_BYTES`] bytes.
+    writer: SyncSender<Vec<u8>>,
+    unwritten: Arc<AtomicUsize>,
+    gauge: Arc<Gauge>,
     workdir: PathBuf,
+    /// Whether the host has held the process to its jail: before then it is served nothing.
+    confined: bool,
+    /// The egress calls asked for in the phase it is in.
+    calls: u32,
 }
 
 impl Running {
@@ -170,15 +255,31 @@ impl Worker {
         }
     }
 
+    fn timer(&self) -> Option<Instant> {
+        match &self.phase {
+            Phase::Starting { until } | Phase::Asking { until, .. } => Some(*until),
+            Phase::Down { restart_at, .. } => Some(*restart_at),
+            Phase::Ready => None,
+        }
+    }
+
     /// Runs until the host stops.
     pub(crate) fn run(mut self) {
         self.start();
         loop {
-            let timer = match &self.phase {
-                Phase::Starting { until } | Phase::Asking { until, .. } => Some(*until),
-                Phase::Down { restart_at, .. } => Some(*restart_at),
-                Phase::Ready => None,
-            };
+            // The phase's bound is read on every turn, not only when no event comes: a reader that keeps talking
+            // is stopped at its bound as one that is silent is.
+            if let Some(why) = self.running.as_ref().and_then(|r| r.gauge.stopped()) {
+                self.down(why);
+                continue;
+            }
+            let timer = self.timer();
+            if let Some(at) = timer
+                && Instant::now() >= at
+            {
+                self.on_timer();
+                continue;
+            }
             let event = match timer {
                 Some(at) => match self
                     .events
@@ -194,10 +295,18 @@ impl Worker {
                 None => self.on_timer(),
                 Some(Event::Stop) => break,
                 Some(Event::Ask(question, reply)) => self.on_ask(question, reply),
-                Some(Event::Frame(generation, frame)) if generation == self.generation => {
+                // What the process of this generation sent before it was stopped is dropped with it.
+                Some(Event::Frame(generation, frame, size))
+                    if generation == self.generation && self.running.is_some() =>
+                {
+                    if let Some(running) = &self.running {
+                        running.gauge.give(size);
+                    }
                     self.on_frame(frame)
                 }
-                Some(Event::Gone(generation, why)) if generation == self.generation => {
+                Some(Event::Gone(generation, why))
+                    if generation == self.generation && self.running.is_some() =>
+                {
                     self.down(why)
                 }
                 Some(_) => {}
@@ -239,7 +348,7 @@ impl Worker {
                 return;
             }
         };
-        let (Some(stdin), Some(mut stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        let (Some(mut stdin), Some(mut stdout)) = (child.stdin.take(), child.stdout.take()) else {
             let _ = child.kill();
             let _ = child.wait();
             self.phase = Phase::Down {
@@ -249,33 +358,32 @@ impl Worker {
             self.set_state(ReaderState::Down);
             return;
         };
-        let sender = self.sender.clone();
+        let (sender, gauge) = (self.sender.clone(), Arc::new(Gauge::default()));
         let max = self.config.limits.max_frame as usize;
+        let reading = gauge.clone();
+        std::thread::spawn(move || forward_frames(&mut stdout, &sender, generation, &reading, max));
+        let (writer, frames) = std::sync::mpsc::sync_channel::<Vec<u8>>(WRITE_FRAMES);
+        let unwritten = Arc::new(AtomicUsize::new(0));
+        let (written, gone, writing) = (unwritten.clone(), self.sender.clone(), gauge.clone());
         std::thread::spawn(move || {
-            loop {
-                let event = match read_frame(&mut stdout, max) {
-                    Ok(Some(bytes)) => match serde_json::from_slice::<FromReader>(&bytes) {
-                        Ok(frame) => Event::Frame(generation, frame),
-                        Err(_) => Event::Gone(generation, "reader_sent_malformed_frame"),
-                    },
-                    Ok(None) => Event::Gone(generation, "reader_crashed"),
-                    Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
-                        Event::Gone(generation, "reader_hit_a_limit")
-                    }
-                    Err(_) => Event::Gone(generation, "reader_crashed"),
-                };
-                let last = matches!(event, Event::Gone(..));
-                if sender.send(event).is_err() || last {
+            for frame in frames {
+                if write_frame(&mut stdin, &frame).is_err() {
+                    let _ = gone.send(Event::Gone(generation, writing.stop("reader_crashed")));
                     return;
                 }
+                written.fetch_sub(frame.len(), Ordering::SeqCst);
             }
         });
         let pid = child.id();
         self.running = Some(Running {
             child,
             pid,
-            stdin,
+            writer,
+            unwritten,
+            gauge,
             workdir,
+            confined: false,
+            calls: 0,
         });
         self.phase = Phase::Starting {
             until: Instant::now() + self.config.limits.start_within(),
@@ -292,16 +400,26 @@ impl Worker {
         self.send(&start);
     }
 
-    /// Writes a frame to the reader; a reader that can't be written to is gone.
+    /// Hands a frame to the reader's writer. A reader whose frames wait past their bound has stopped reading, and is
+    /// stopped; one that can't be written to is gone.
     fn send(&mut self, frame: &ToReader) {
-        let written = match (&mut self.running, serde_json::to_vec(frame)) {
+        let queued = match (&self.running, serde_json::to_vec(frame)) {
             (Some(running), Ok(bytes)) => {
-                write_frame(&mut running.stdin, &bytes).and_then(|()| running.stdin.flush())
+                let size = bytes.len();
+                if running.unwritten.fetch_add(size, Ordering::SeqCst) + size > WRITE_BYTES {
+                    Err("reader_stopped_reading")
+                } else {
+                    match running.writer.try_send(bytes) {
+                        Ok(()) => Ok(()),
+                        Err(TrySendError::Full(_)) => Err("reader_stopped_reading"),
+                        Err(TrySendError::Disconnected(_)) => Err("reader_crashed"),
+                    }
+                }
             }
-            _ => Err(std::io::Error::other("no reader")),
+            _ => Err("reader_crashed"),
         };
-        if written.is_err() {
-            self.down("reader_crashed");
+        if let Err(why) = queued {
+            self.down(why);
         }
     }
 
@@ -350,11 +468,15 @@ impl Worker {
     }
 
     fn ask(&mut self, question: ReaderQuestion, reply: Sender<Reply>) {
+        if let Some(running) = &mut self.running {
+            running.calls = 0;
+        }
         self.phase = Phase::Asking {
             question: question.clone(),
             reply,
             until: Instant::now() + self.config.limits.hang_after(),
             tainted: false,
+            agreed: false,
         };
         self.send(&ToReader::Question { question });
     }
@@ -368,35 +490,85 @@ impl Worker {
     }
 
     fn serving(&self) -> Serving {
-        let request = match &self.phase {
-            Phase::Asking { question, .. } => question.request.as_str(),
-            _ => START_UP,
+        let (request, until) = match &self.phase {
+            Phase::Asking {
+                question, until, ..
+            } => (question.request.as_str(), Some(*until)),
+            Phase::Starting { until } => (START_UP, Some(*until)),
+            _ => (START_UP, None),
         };
         Serving {
             request: Identifier::new(request)
                 .unwrap_or_else(|| Identifier::new(START_UP).expect("non-empty")),
+            until,
         }
     }
 
+    /// Counts one egress call in the phase; false once the reader asked for more than its bound.
+    fn count_call(&mut self) -> bool {
+        let bound = self.config.limits.calls_per_question;
+        self.running.as_mut().is_some_and(|r| {
+            r.calls += 1;
+            r.calls <= bound
+        })
+    }
+
+    /// For an RPC pool's reader, the chain id the pool itself agrees on, asked by the host, never taken from the
+    /// reader's report alone: whether it is the configured one.
+    fn pool_names_the_configured_chain(&mut self) -> bool {
+        let (TrustRule::RpcPool { endpoints, .. }, NetworkIdentity::ChainId { id }) =
+            (&self.config.trust, &self.config.identity)
+        else {
+            return true;
+        };
+        let endpoints: Vec<String> = endpoints.iter().map(|e| e.as_str().to_owned()).collect();
+        let serving = self.serving();
+        let (RpcResult::Agreed { body }, false) = self.egress.rpc(&serving, &endpoints, CHAIN_ID)
+        else {
+            return false;
+        };
+        serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|v| v["result"].as_str().map(str::to_owned))
+            .and_then(|hex| u128::from_str_radix(hex.strip_prefix("0x")?, 16).ok())
+            .is_some_and(|n| n.to_string() == id.as_str())
+    }
+
     fn on_frame(&mut self, frame: FromReader) {
+        if let FromReader::Log { line } = frame {
+            self.log(line);
+            return;
+        }
+        // Nothing but its log is taken from a process the host hasn't held to its jail: not a call, not a check, not
+        // an answer.
+        if let Some(running) = &mut self.running
+            && !running.confined
+        {
+            if let Some(why) = jail::check_confined(running.pid) {
+                self.log(format!("host: the reader is not confined: {why}"));
+                self.down(why);
+                return;
+            }
+            running.confined = true;
+        }
+        if matches!(frame, FromReader::Rpc { .. } | FromReader::Open { .. }) && !self.count_call() {
+            self.log("host: the reader asked for more calls than its bound".to_owned());
+            self.down("reader_hit_a_limit");
+            return;
+        }
         match frame {
-            FromReader::Log { line } => self.log(line),
+            FromReader::Log { .. } => {}
             FromReader::Checked { identity } => {
                 if matches!(self.phase, Phase::Starting { .. }) {
-                    // Its checks are taken only from a reader in the provider's jail, confined as it is.
-                    let unconfined = self
-                        .running
-                        .as_ref()
-                        .and_then(|r| jail::check_confined(r.pid));
-                    if let Some(why) = unconfined {
-                        self.log(format!("host: the reader is not confined: {why}"));
-                        self.down(why);
-                    } else if identity == self.config.identity {
-                        self.log("host: start-up checks passed".to_owned());
-                        self.next();
-                    } else {
+                    if identity != self.config.identity {
                         self.log("host: start-up checks found another network".to_owned());
                         self.down("checks_failed");
+                    } else if !self.pool_names_the_configured_chain() {
+                        self.log("host: the pool found another network".to_owned());
+                        self.down("checks_failed");
+                    } else {
+                        self.log("host: start-up checks passed".to_owned());
+                        self.next();
                     }
                 }
             }
@@ -407,11 +579,15 @@ impl Worker {
             } => {
                 let serving = self.serving();
                 let (result, undeclared) = self.egress.rpc(&serving, &endpoints, &body);
-                let agreed = matches!(result, crate::wire::RpcResult::Agreed { .. });
-                if let Phase::Asking { tainted, .. } = &mut self.phase {
+                let ok = matches!(result, RpcResult::Agreed { .. });
+                if let Phase::Asking {
+                    tainted, agreed, ..
+                } = &mut self.phase
+                {
                     // Only what the quorum agreed on may stand behind an answer; and a reader that asks for a
                     // destination it didn't declare isn't keeping to its list.
-                    *tainted |= undeclared || !agreed;
+                    *tainted |= undeclared || !ok;
+                    *agreed |= ok;
                 }
                 self.send(&ToReader::Rpc { call, result });
             }
@@ -435,6 +611,7 @@ impl Worker {
                     question,
                     reply,
                     tainted,
+                    agreed,
                     ..
                 } = std::mem::replace(&mut self.phase, Phase::Ready)
                 else {
@@ -446,8 +623,20 @@ impl Worker {
                     Ok(body) => holds(&self.config, &question, &body).map(|()| body),
                     Err(_) => Err("answer_breaks_its_shape"),
                 };
+                // An RPC pool's reader answers a movement only from what the pool agreed on in this question.
+                let pool = matches!(self.config.trust, TrustRule::RpcPool { .. });
                 let reply_value = match held {
                     Ok(body) if tainted && !matches!(body.answer, Answered::Unreadable { .. }) => {
+                        Err("trust_rule_not_met")
+                    }
+                    Ok(body)
+                        if pool
+                            && !agreed
+                            && matches!(
+                                body.answer,
+                                Answered::MovementStatus { .. } | Answered::MovementOf { .. }
+                            ) =>
+                    {
                         Err("trust_rule_not_met")
                     }
                     other => other,
@@ -488,4 +677,48 @@ pub(crate) fn holds(
         return Err("rules_not_as_configured");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Event, Gauge, forward_frames};
+    use crate::config::READ_FRAMES;
+    use crate::wire::{FromReader, write_frame};
+
+    // verifies: REQ-MDL-11
+    #[test]
+    fn reader_whose_frames_wait_past_their_bound_is_stopped() {
+        let mut wire = Vec::new();
+        let frame = serde_json::to_vec(&FromReader::Log {
+            line: "x".repeat(100),
+        })
+        .unwrap();
+        for _ in 0..READ_FRAMES + 10 {
+            write_frame(&mut wire, &frame).unwrap();
+        }
+        // Nobody takes the frames: the worker is busy.
+        let (to, from) = std::sync::mpsc::channel();
+        let gauge = Gauge::default();
+        forward_frames(&mut wire.as_slice(), &to, 7, &gauge, 1 << 20);
+        let events: Vec<Event> = from.try_iter().collect();
+        assert_eq!(
+            events.len(),
+            READ_FRAMES + 1,
+            "forwarded up to the bound, then stopped"
+        );
+        assert!(matches!(
+            events.last(),
+            Some(Event::Gone(7, "reader_hit_a_limit"))
+        ));
+
+        // By bytes: four frames' worth of the largest frame.
+        let (to, from) = std::sync::mpsc::channel();
+        forward_frames(&mut wire.as_slice(), &to, 8, &Gauge::default(), frame.len());
+        let events: Vec<Event> = from.try_iter().collect();
+        assert_eq!(events.len(), 5);
+        assert!(matches!(
+            events.last(),
+            Some(Event::Gone(8, "reader_hit_a_limit"))
+        ));
+    }
 }

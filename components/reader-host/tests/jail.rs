@@ -86,8 +86,10 @@ mod linux {
         );
 
         // A reader that skips the jail's in-process half (the empty root, capabilities, Landlock, seccomp) is never
-        // taken: the host reads its status and refuses it before its checks.
-        let loose = rpc_reader("loose", &["unconfined"]);
+        // taken: the host reads its status and refuses it before it serves it anything. It probes the network first,
+        // with only the namespaces around it and no seccomp: what refuses it then is the network namespace alone (no
+        // interface is up, so no route: `NetworkUnreachable`, never seccomp's `PermissionDenied`).
+        let loose = rpc_reader("loose", &["unconfined", probe.as_str()]);
         let loose_rig = Rig::start(vec![loose.clone()], honest_pool(), &[]);
         let until = std::time::Instant::now() + Duration::from_secs(10);
         while !loose_rig
@@ -109,6 +111,26 @@ mod linux {
                 .wait_ready(&loose.name, Duration::from_secs(1))
         );
         assert!(unreadable(&ask(&loose_rig.host, &loose, status_of("0xmove"))).is_some());
+        let loose_log = loose_rig.host.log(&loose.name);
+        eprintln!("jail-probe run {run}: reader-host: unconfined: {loose_log:?}");
+        for target in [
+            address.to_string(),
+            "93.184.216.34:443".to_owned(),
+            "[2606:2800:220:1::]:443".to_owned(),
+        ] {
+            let line = loose_log
+                .iter()
+                .find(|l| l.starts_with(&format!("probe {target}: ")))
+                .unwrap_or_else(|| panic!("the unconfined reader probed {target}: {loose_log:?}"));
+            assert!(
+                line.contains("NetworkUnreachable"),
+                "the network namespace alone refuses {target}: {line}"
+            );
+        }
+        assert!(
+            matches!(listener.accept(), Err(e) if e.kind() == ErrorKind::WouldBlock),
+            "nothing connected to the host's port from the unconfined reader"
+        );
         eprintln!(
             "jail-probe run {run}: reader-host: reader_process_has_no_network_route_but_the_reader_host: held"
         );

@@ -91,6 +91,131 @@ fn reader_that_crashes_or_hangs_is_unreadable_and_the_other_readers_answer_on() 
 
 // verifies: REQ-MDL-11
 #[test]
+fn reader_that_keeps_talking_or_stops_reading_is_stopped_at_its_bound_and_the_others_answer_on() {
+    // One floods the host with pool requests and never reads its replies; one keeps the host busy, a request after each
+    // reply, and never answers. The call bound is set out of the way, so what stops them is the bound on what waits for
+    // a reader, and the time bound read on every turn.
+    let mut flooder = rpc_reader("flooder", &["flood"]);
+    let mut chatter = rpc_reader("busy", &["busy"]);
+    for reader in [&mut flooder, &mut chatter] {
+        reader.limits.hang_after_ms = 1_500;
+        reader.limits.calls_per_question = 1_000_000;
+    }
+    let steady = rpc_reader("steady", &[]);
+    let rig = Arc::new(Rig::start(
+        vec![flooder.clone(), chatter.clone(), steady.clone()],
+        honest_pool(),
+        &[],
+    ));
+    for reader in [&flooder, &chatter, &steady] {
+        assert!(
+            rig.host.wait_ready(&reader.name, READY),
+            "{} passes its checks",
+            reader.name
+        );
+    }
+    let asked: Vec<_> = [flooder.clone(), chatter.clone()]
+        .into_iter()
+        .map(|reader| {
+            let rig = rig.clone();
+            std::thread::spawn(move || {
+                let started = Instant::now();
+                let answer = ask(&rig.host, &reader, status_of("0xmove"));
+                (answer, started.elapsed())
+            })
+        })
+        .collect();
+    std::thread::sleep(Duration::from_millis(200));
+    for _ in 0..3 {
+        let started = Instant::now();
+        let answered = ask(&rig.host, &steady, status_of("0xmove"));
+        assert!(
+            is_final_to(&answered, "dest-1"),
+            "the steady reader answers: {answered:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(1_000),
+            "and doesn't wait for the others"
+        );
+    }
+    let mut results = asked.into_iter().map(|h| h.join().unwrap());
+    let (flooded, took) = results.next().unwrap();
+    // Each large reply waits for a reader that doesn't read: stopped by the bound on what waits to be written to it,
+    // well before its own frames reach the bound on what waits for the host.
+    assert_eq!(
+        unreadable(&flooded),
+        Some("reader_stopped_reading"),
+        "{:?}",
+        rig.host.log(&flooder.name)
+    );
+    assert!(
+        took < Duration::from_millis(2_500),
+        "stopped within its bound: {took:?}"
+    );
+    let (chattered, took) = results.next().unwrap();
+    assert_eq!(unreadable(&chattered), Some("reader_hung"));
+    assert!(
+        took < Duration::from_millis(2_500),
+        "stopped at its bound though it kept talking: {took:?}"
+    );
+    for reader in [&flooder, &chatter] {
+        assert!(
+            rig.host.wait_ready(&reader.name, READY),
+            "{} is back",
+            reader.name
+        );
+        assert!(
+            rig.host.starts(&reader.name) >= 2,
+            "{} was started again",
+            reader.name
+        );
+    }
+    assert_eq!(
+        rig.host.starts(&steady.name),
+        1,
+        "the steady reader was never stopped"
+    );
+}
+
+// verifies: REQ-ORD-39, DEC-28
+#[test]
+fn rpc_readers_chain_id_is_held_to_the_pools_own_answer_not_the_readers_report() {
+    // A reader that reports the identity it was handed, without asking: taken only where the pool itself agrees.
+    let echo = rpc_reader("base-echo", &["echo"]);
+    let rig = Rig::start(vec![echo.clone()], honest_pool(), &[]);
+    assert!(
+        rig.host.wait_ready(&echo.name, READY),
+        "{:?}",
+        rig.host.log(&echo.name)
+    );
+
+    let other_chain = Arc::new(StubConnector::default());
+    for endpoint in pool() {
+        other_chain.set(
+            endpoint.trim_start_matches("https://"),
+            Box::new(|body: &str| {
+                let id = serde_json::from_str::<serde_json::Value>(body).unwrap()["id"].clone();
+                ok(serde_json::json!({"jsonrpc": "2.0", "id": id, "result": "0x1"}))
+            }),
+        );
+    }
+    let rig = Rig::start(vec![echo.clone()], other_chain, &[]);
+    let until = Instant::now() + Duration::from_secs(10);
+    while !rig
+        .host
+        .log(&echo.name)
+        .iter()
+        .any(|l| l.contains("the pool found another network"))
+    {
+        assert!(Instant::now() < until, "{:?}", rig.host.log(&echo.name));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!rig.host.wait_ready(&echo.name, Duration::from_millis(500)));
+    assert!(unreadable(&ask(&rig.host, &echo, status_of("0xmove"))).is_some());
+}
+
+// verifies: REQ-MDL-11
+#[test]
 fn reader_with_its_questions_bound_reached_answers_the_next_unreadable_at_once() {
     let mut hanger = rpc_reader("hanger", &["hang"]);
     hanger.limits.hang_after_ms = 3_000;
@@ -149,15 +274,21 @@ fn host_signs_only_an_answer_that_names_the_question_it_was_asked() {
 fn evm_reader_with_fewer_than_two_agreeing_rpc_answers_is_unreadable() {
     let honest = rpc_reader("base-honest", &[]);
     let careless = rpc_reader("base-careless", &["ignore-quorum"]);
+    let lazy = rpc_reader("base-lazy", &["no-call"]);
     let connector = honest_pool();
     let rig = Rig::start(
-        vec![honest.clone(), careless.clone()],
+        vec![honest.clone(), careless.clone(), lazy.clone()],
         connector.clone(),
         &[],
     );
-    for reader in [&honest, &careless] {
+    for reader in [&honest, &careless, &lazy] {
         assert!(rig.host.wait_ready(&reader.name, READY));
     }
+    // An answer that rests on no answer of the pool at all: none agreeing.
+    assert_eq!(
+        unreadable(&ask(&rig.host, &lazy, status_of("0xmove"))),
+        Some("trust_rule_not_met")
+    );
     let both = |rig: &Rig| {
         (
             ask(&rig.host, &honest, status_of("0xmove")),

@@ -385,8 +385,8 @@ pub fn ok(body: serde_json::Value) -> Result<Response, ConnectError> {
     })
 }
 
-/// An honest stand-in EVM node: chain id 8453 (`0x2105`), and the movement `0xmove` final, `100` of `usdc` to
-/// `dest-1`. `lie` makes it say the movement went to `dest-evil`.
+/// An honest stand-in EVM node: chain id 8453 (`0x2105`), the movement `0xmove` final, `100` of `usdc` to `dest-1`,
+/// and a large answer to `rutent_large`. `lie` makes it say the movement went to `dest-evil`.
 pub fn evm_node(lie: bool) -> Answerer {
     Box::new(move |body: &str| {
         let request: serde_json::Value =
@@ -403,6 +403,10 @@ pub fn evm_node(lie: bool) -> Answerer {
                     "asset": "usdc",
                     "amount": "100"
                 }}))
+            }
+            // A large answer, 32 KiB: what fills a reader's input when it stops reading.
+            Some("rutent_large") => {
+                ok(serde_json::json!({"jsonrpc": "2.0", "id": id, "result": "x".repeat(32 << 10)}))
             }
             _ => ok(serde_json::json!({"jsonrpc": "2.0", "id": id, "result": null})),
         }

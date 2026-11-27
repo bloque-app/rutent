@@ -88,6 +88,9 @@ impl Network {
 pub(crate) struct Serving {
     /// The request id, or [`crate::records::START_UP`].
     pub request: Identifier,
+    /// When the phase the call serves must end, by the host's own bound (a question's `hang_after_ms`, the start-up
+    /// checks' `start_within_ms`): every call is given up then, whatever its own bound.
+    pub until: Option<Instant>,
 }
 
 /// One reader's egress: its running declaration, the egress layer, and the light client's open connections.
@@ -205,8 +208,10 @@ impl ReaderEgress {
         self.connections.clear();
     }
 
-    fn due(&self) -> Option<Instant> {
-        Some(Instant::now() + self.config.limits.egress_give_up_after())
+    /// When a call for `serving` is given up: its own bound, or the end of the phase it serves, whichever is first.
+    fn due(&self, serving: &Serving) -> Option<Instant> {
+        let own = Instant::now() + self.config.limits.egress_give_up_after();
+        Some(serving.until.map_or(own, |until| until.min(own)))
     }
 
     /// Sends `body` to each endpoint named, through the egress layer, and gives what at least the quorum agreed on.
@@ -256,7 +261,7 @@ impl ReaderEgress {
                 transaction: &serving.request,
                 secrets: &[],
                 started_at: &started_at,
-                due: self.due(),
+                due: self.due(serving),
             };
             let host = endpoint.host.clone();
             let mut log = ToRecords(&*self.records);
@@ -386,7 +391,7 @@ impl ReaderEgress {
                     host: &name,
                     port: nonzero,
                     provider: &provider,
-                    due: self.due(),
+                    due: self.due(serving),
                 }) {
                     Ok(addresses) => addresses,
                     Err(LookupRefused::TooManyInFlight) => {

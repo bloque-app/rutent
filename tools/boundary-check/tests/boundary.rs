@@ -340,6 +340,14 @@ fn only_the_scenario_assembly_may_import_core_crates() {
 
 /// A throwaway workspace with the four outer libraries, the conformance suites, the scenario
 /// assembly inside them, and the contracts crate, each with one source file.
+/// The admitted paths' files as the real crate writes them.
+const PROV_CONFINE_FILE: &str = "//! The jail.\n\
+    pub use crate::module::sandbox::{Limits, PROVIDER_ADDRESS_SPACE, Role, confine, isolated};\n";
+const PROV_KEYS_FILE: &str = "//! The keys.\n\
+    pub use crate::proxy::{Bucket, HttpsTransport, InvalidConfig, InvalidSettings, KvConfig,\n\
+    KvResolver, ResolveError, Resolver, RoleSettings, Server, StoreAddress, StoreScheme, Token,\n\
+    TransportError, kv_bucket};\n";
+
 struct Sources(PathBuf);
 
 impl Sources {
@@ -375,6 +383,13 @@ impl Sources {
             "contracts/src/core_internal/mod.rs",
             "//! core_internal names itself.\n",
         );
+        // The provider system's admitted paths, as the real crate declares them.
+        sources.write(
+            "prov/src/lib.rs",
+            "//! A library.\npub mod confine;\npub mod keys;\n",
+        );
+        sources.write("prov/src/confine.rs", PROV_CONFINE_FILE);
+        sources.write("prov/src/keys.rs", PROV_KEYS_FILE);
         sources
     }
 
@@ -830,13 +845,6 @@ fn reader_host_reaches_the_providers_jail_and_key_resolver_through_their_admitte
 
     // The admitted paths' files hold their one re-export, or the path widens.
     let confine = "pub use crate::module::sandbox::{Limits, PROVIDER_ADDRESS_SPACE, Role, confine, isolated};\n";
-    sources.write("prov/src/confine.rs", &format!("//! The jail.\n{confine}"));
-    sources.write(
-        "prov/src/keys.rs",
-        "//! The keys.\npub use crate::proxy::{Bucket, HttpsTransport, InvalidConfig, InvalidSettings, KvConfig,\n\
-         KvResolver, ResolveError, Resolver, RoleSettings, Server, StoreAddress, StoreScheme, Token,\n\
-         TransportError, kv_bucket};\n",
-    );
     assert_eq!(sources.findings(), vec![]);
     for widened in [
         "pub use crate::proxy::{Resolver, CredentialProxy};\n",
@@ -861,6 +869,59 @@ fn reader_host_reaches_the_providers_jail_and_key_resolver_through_their_admitte
             ("prov/src/confine.rs", 1, Why::WidensAnAdmittedPath),
             ("prov/src/keys.rs", 1, Why::WidensAnAdmittedPath),
         ],
+    );
+    sources.write("prov/src/confine.rs", PROV_CONFINE_FILE);
+    sources.write("prov/src/keys.rs", PROV_KEYS_FILE);
+    assert_eq!(sources.findings(), vec![]);
+
+    // The crate root mounts another file under an admitted name, by `#[path]` on its own line, on the same line, or
+    // through `cfg_attr`; or gives it an inline body; or leaves it out, or declares it twice; while the real file
+    // stays as a decoy. Each is refused.
+    sources.write("prov/src/confine_wide.rs", "pub use crate::module::*;\n");
+    let roots = [
+        (
+            "#[path = \"confine_wide.rs\"]\npub mod confine;\npub mod keys;\n",
+            3,
+        ),
+        (
+            "#[path = \"confine_wide.rs\"] pub mod confine;\npub mod keys;\n",
+            2,
+        ),
+        (
+            "#[cfg_attr(all(), path = \"confine_wide.rs\")]\npub mod confine;\npub mod keys;\n",
+            3,
+        ),
+        (
+            "pub mod confine {\n    pub use crate::module::*;\n}\npub mod keys;\n",
+            2,
+        ),
+        ("pub mod keys;\n", 1),
+        ("pub mod confine;\nmod confine;\npub mod keys;\n", 3),
+    ];
+    for (root, line) in roots {
+        sources.write("prov/src/lib.rs", &format!("//! A library.\n{root}"));
+        expect(
+            sources.findings(),
+            &[("prov/src/lib.rs", line, Why::WidensAnAdmittedPath)],
+        );
+    }
+    sources.write(
+        "prov/src/lib.rs",
+        "//! A library.\npub mod confine;\npub mod keys;\n",
+    );
+    assert_eq!(sources.findings(), vec![]);
+
+    // A missing file fails closed, and so does a module directory beside the file.
+    std::fs::remove_file(sources.0.join("prov/src/keys.rs")).unwrap();
+    expect(
+        sources.findings(),
+        &[("prov/src/keys.rs", 1, Why::WidensAnAdmittedPath)],
+    );
+    sources.write("prov/src/keys.rs", PROV_KEYS_FILE);
+    sources.write("prov/src/confine/mod.rs", "pub use crate::module::*;\n");
+    expect(
+        sources.findings(),
+        &[("prov/src/confine", 1, Why::WidensAnAdmittedPath)],
     );
 
     // The real files hold, and the real workspace's sources are clean.

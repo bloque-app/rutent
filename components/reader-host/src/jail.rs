@@ -12,9 +12,13 @@
 //!   does: `no_new_privs`, the empty read-only root, every capability dropped, Landlock with no rule, the `seccomp`
 //!   allow-list of a provider's process, and its address space bounded
 //!   ([`rutent_prov::confine::PROVIDER_ADDRESS_SPACE`]). A reader program calls it first thing.
-//! - **Held by the host** ([`check_confined`]): on Linux, before the host takes a reader's start-up checks, it reads
-//!   the reader's process status and holds it to the confinement: `no_new_privs` set, a `seccomp` filter installed and
-//!   no capability held, bounding set included. A reader that didn't confine itself never answers.
+//! - **Held by the host** ([`check_confined`]): on Linux, before the host serves a reader anything but its log (a call,
+//!   its checks, an answer), it reads the status of every thread of the reader's process and holds each to the
+//!   confinement: `no_new_privs` set, a `seccomp` filter installed and no capability held, bounding set included. The
+//!   reader may have no child process, and its network namespace must not be the host's. A reader that didn't confine
+//!   itself is served nothing and never answers.
+//! - **Killed first** (Linux): each reader's `oom_score_adj` is the highest, so when the readers of one task press its
+//!   memory, the kernel kills a reader, which the host restarts, and not the host.
 
 use std::io;
 use std::path::Path;
@@ -30,6 +34,15 @@ pub fn command(config: &ReaderConfig, workdir: &Path) -> io::Result<Command> {
     let args: Vec<&str> = config.args.iter().map(String::as_str).collect();
     let mut command = isolated(&config.program, &args, workdir, Limits::PROVIDER)?;
     command.stderr(Stdio::null());
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: the closure runs in the forked child before `exec`, after the launcher's own, and calls only
+        // async-signal-safe system calls on a path computed before the fork.
+        unsafe {
+            command.pre_exec(linux::kill_me_first);
+        }
+    }
     Ok(command)
 }
 
@@ -57,41 +70,90 @@ pub fn check_confined(launched: u32) -> Option<&'static str> {
 
 #[cfg(target_os = "linux")]
 mod linux {
-    /// The status of the process whose parent is `parent`: on Linux, `unshare --fork` starts the reader as its one
-    /// child.
-    fn child_status(parent: u32) -> Option<String> {
-        let wanted = format!("PPid:\t{parent}");
-        std::fs::read_dir("/proc")
-            .ok()?
-            .flatten()
-            .find_map(|entry| {
-                let name = entry.file_name();
-                let name = name.to_str()?;
-                if !name.bytes().all(|b| b.is_ascii_digit()) {
-                    return None;
-                }
-                let status = std::fs::read_to_string(entry.path().join("status")).ok()?;
-                status.lines().any(|l| l == wanted).then_some(status)
-            })
+    /// The highest `oom_score_adj`: what a process may always set for itself.
+    const KILL_ME_FIRST: &[u8] = b"1000";
+
+    /// Raises the calling process's `oom_score_adj` to the highest, between `fork` and `exec`: the reader inherits it.
+    pub(super) fn kill_me_first() -> std::io::Result<()> {
+        // SAFETY: open, write and close on a NUL-terminated literal path and a byte buffer, each async-signal-safe.
+        unsafe {
+            let fd = libc::open(
+                c"/proc/self/oom_score_adj".as_ptr(),
+                libc::O_WRONLY | libc::O_CLOEXEC,
+            );
+            if fd < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let written = libc::write(fd, KILL_ME_FIRST.as_ptr().cast(), KILL_ME_FIRST.len());
+            libc::close(fd);
+            if written != KILL_ME_FIRST.len() as isize {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+        Ok(())
     }
 
-    pub(super) fn check(launched: u32) -> Option<&'static str> {
-        let Some(status) = child_status(launched) else {
-            return Some("reader_process_not_found");
+    /// The process ids whose parent is `parent`.
+    fn children(parent: u32) -> Vec<u32> {
+        let wanted = format!("PPid:\t{parent}");
+        let Ok(entries) = std::fs::read_dir("/proc") else {
+            return Vec::new();
         };
+        entries
+            .flatten()
+            .filter_map(|entry| {
+                let pid: u32 = entry.file_name().to_str()?.parse().ok()?;
+                let status = std::fs::read_to_string(entry.path().join("status")).ok()?;
+                status.lines().any(|l| l == wanted).then_some(pid)
+            })
+            .collect()
+    }
+
+    /// Whether one thread's status shows the jail: `no_new_privs`, a `seccomp` filter, and no capability.
+    fn holds(status: &str) -> bool {
         let field = |name: &str| {
             status
                 .lines()
                 .find_map(|l| l.strip_prefix(name).map(str::trim).map(str::to_owned))
         };
         let none = "0000000000000000";
-        let held = field("NoNewPrivs:").as_deref() == Some("1")
+        field("NoNewPrivs:").as_deref() == Some("1")
             && field("Seccomp:").as_deref() == Some("2")
             && ["CapInh:", "CapPrm:", "CapEff:", "CapBnd:"]
                 .iter()
                 .all(|cap| field(cap).as_deref() == Some(none))
-            && field("CapAmb:").as_deref().is_none_or(|v| v == none);
-        (!held).then_some("reader_not_confined")
+            && field("CapAmb:").as_deref().is_none_or(|v| v == none)
+    }
+
+    pub(super) fn check(launched: u32) -> Option<&'static str> {
+        // `unshare --fork` starts the reader as its one child.
+        let launched_children = children(launched);
+        let [reader] = launched_children.as_slice() else {
+            return Some("reader_process_not_found");
+        };
+        let reader = *reader;
+        let Ok(tasks) = std::fs::read_dir(format!("/proc/{reader}/task")) else {
+            return Some("reader_process_not_found");
+        };
+        let mut threads = 0;
+        for task in tasks.flatten() {
+            threads += 1;
+            match std::fs::read_to_string(task.path().join("status")) {
+                Ok(status) if holds(&status) => {}
+                _ => return Some("reader_not_confined"),
+            }
+        }
+        if threads == 0 || !children(reader).is_empty() {
+            return Some("reader_not_confined");
+        }
+        // Its network namespace is its own, where the host can read it: defence beside the launcher's.
+        let net = |pid: &str| std::fs::read_link(format!("/proc/{pid}/ns/net")).ok();
+        if let (Some(own), Some(theirs)) = (net("self"), net(&reader.to_string()))
+            && own == theirs
+        {
+            return Some("reader_not_confined");
+        }
+        None
     }
 }
 

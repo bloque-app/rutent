@@ -16,7 +16,10 @@
 //! 2. **One process per reader** ([`Host`], [`config::ReaderLimits`]). Each reader is a child process the host starts
 //!    from its configuration. A reader's crash, hang or limit hit stops that reader alone: the host answers its
 //!    questions as unreadable and restarts it, and the other readers answer on. The host bounds each reader's memory
-//!    (the jail's address space), the time it may take over a question and the questions waiting for it.
+//!    (the jail's address space), the time it may take over a question (read on every turn of its worker, and every
+//!    egress call given up with it), the questions waiting for it, the frames waiting each way between it and the host
+//!    (so a reader that stops reading, or talks faster than the host reads, is stopped, never waited on), and its
+//!    egress calls per question. An asker waits no longer than the reader's share of that.
 //! 3. **Signing outside the reader** ([`keys`]). The host signs each answer with the reader's statement key, which it
 //!    resolves by name when it signs, through `T-014-01`'s resolver as the platform does ([`rutent_prov::keys`]), and
 //!    never hands to the reader's process. It signs only an answer that names the question and the request it was

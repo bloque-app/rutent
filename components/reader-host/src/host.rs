@@ -182,8 +182,11 @@ impl Host {
             return Err("reader_down");
         }
         // The worker replies to every question it takes: answered, or unreadable once the reader hangs, crashes or the
-        // host stops.
-        answer.recv().unwrap_or(Err("reader_down"))
+        // host stops. The asker waits no longer than every question ahead of it and its own could take, each at most
+        // its time bound and one egress call past it, so a link thread is held by one reader's share alone.
+        answer
+            .recv_timeout(ask_bound(&reader.config))
+            .unwrap_or(Err("reader_hung"))
     }
 
     /// Where the reader `name` stands, if the host runs it.
@@ -226,6 +229,13 @@ impl Host {
             .get(name.as_str())
             .map_or(0, |r| r.shared.starts.load(Ordering::SeqCst))
     }
+}
+
+/// How long one asker waits for a reader's reply: the questions that may wait ahead of it and its own, each at most
+/// `hang_after_ms` and one egress call's bound past it, which is when the worker next reads its bound.
+pub(crate) fn ask_bound(config: &ReaderConfig) -> Duration {
+    let limits = &config.limits;
+    (limits.hang_after() + limits.egress_give_up_after()) * (limits.pending + 1)
 }
 
 impl Drop for Host {

@@ -13,7 +13,7 @@ use rcgen::{
 };
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName};
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
-use rutent_reader_host::link::{Link, LinkTls, read_answer, write_question};
+use rutent_reader_host::link::{Link, LinkLimits, LinkTls, read_answer, write_question};
 
 const HOST_NAME: &str = "readers.operator.example";
 const CORE_NAME: &str = "core.operator.example";
@@ -218,5 +218,80 @@ fn core_holds_the_host_to_the_operators_ca_and_the_listed_name_and_takes_a_rotat
             &question
         )
         .is_err()
+    );
+}
+
+// verifies: DEC-28
+#[test]
+fn link_closes_a_handshake_past_its_deadline_and_keeps_room_for_core() {
+    use std::io::Read;
+    let operator = Authority::new();
+    let reader = rpc_reader("base", &[]);
+    let rig = Rig::start(vec![reader.clone()], honest_pool(), &[]);
+    assert!(rig.host.wait_ready(&reader.name, Duration::from_secs(30)));
+    let leaf = operator.issue(HOST_NAME, ExtendedKeyUsagePurpose::ServerAuth);
+    let tls = LinkTls::new(
+        operator.pem().as_bytes(),
+        leaf.chain_pem.as_bytes(),
+        leaf.key_pem.as_bytes(),
+        CORE_NAME,
+    )
+    .unwrap();
+    let limits = LinkLimits {
+        handshake: Duration::from_millis(300),
+        handshaking: 2,
+        ..LinkLimits::default()
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let link = Link::serve_with(listener, tls, Arc::new(rig.host), limits).unwrap();
+
+    // Peers that never authenticate: two are held, each no longer than the handshake's deadline, and a third, past
+    // the cap, is closed at once.
+    let connect = || {
+        let tcp = TcpStream::connect(link.address()).unwrap();
+        tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        tcp
+    };
+    let (mut first, mut second) = (connect(), connect());
+    std::thread::sleep(Duration::from_millis(100));
+    let mut third = connect();
+    let closed = |tcp: &mut TcpStream| {
+        let started = std::time::Instant::now();
+        let mut byte = [0u8; 1];
+        let ended = match tcp.read(&mut byte) {
+            Ok(0) => true,
+            Ok(_) => false,
+            Err(e) => !matches!(
+                e.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+            ),
+        };
+        (ended, started.elapsed())
+    };
+    let (ended, took) = closed(&mut third);
+    assert!(
+        ended && took < Duration::from_millis(500),
+        "the third is closed at once: {took:?}"
+    );
+    for tcp in [&mut first, &mut second] {
+        let (ended, took) = closed(tcp);
+        assert!(
+            ended && took < Duration::from_millis(1_500),
+            "closed at the handshake's deadline: {took:?}"
+        );
+    }
+
+    // Core is answered once they are gone.
+    std::thread::sleep(Duration::from_millis(100));
+    let core = operator.issue(CORE_NAME, ExtendedKeyUsagePurpose::ClientAuth);
+    let question = serde_json::to_vec(&question("base", "base", network_rules())).unwrap();
+    assert!(
+        over_link(
+            client(&operator, Some(&core)),
+            link.address(),
+            HOST_NAME,
+            &question
+        )
+        .is_ok()
     );
 }

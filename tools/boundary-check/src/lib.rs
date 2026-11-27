@@ -710,6 +710,53 @@ fn lines_beyond_admitted(text: &str) -> Vec<usize> {
     found
 }
 
+/// Whether the crate root `text` declares the module `name` once, as `pub mod <name>;` alone: no attribute before it
+/// (a `#[path]` or a `#[cfg_attr(.., path = ..)]` would mount another file under the admitted name), no inline body,
+/// no second declaration. `Err` gives the 1-based line to report: the offending declaration's, or 1 where there is
+/// none.
+pub fn declared_plainly(text: &str, name: &str) -> Result<(), usize> {
+    let code = blank(text, true);
+    let continues = |c: char| c.is_alphanumeric() || c == '_';
+    let mut found = Vec::new();
+    let mut from = 0;
+    while let Some(at) = code[from..].find("mod").map(|n| from + n) {
+        from = at + 3;
+        let before = code[..at].chars().next_back();
+        let rest = &code[from..];
+        if before.is_some_and(continues) || !rest.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let rest = rest.trim_start();
+        if rest
+            .strip_prefix(name)
+            .is_some_and(|r| !r.chars().next().is_some_and(continues))
+        {
+            found.push(at);
+        }
+    }
+    let &[at] = found.as_slice() else {
+        return Err(found.get(1).map_or(1, |at| line_of(text, *at)));
+    };
+    let plain = code[at..]
+        .strip_prefix("mod")
+        .map(str::trim_start)
+        .and_then(|r| r.strip_prefix(name))
+        .is_some_and(|r| r.trim_start().starts_with(';'));
+    let before = code[..at].trim_end();
+    let public = before.strip_suffix("pub").is_some_and(|b| {
+        !b.chars().next_back().is_some_and(continues)
+            && b.trim_end()
+                .chars()
+                .next_back()
+                .is_none_or(|c| c == ';' || c == '}')
+    });
+    if plain && public {
+        Ok(())
+    } else {
+        Err(line_of(text, at))
+    }
+}
+
 /// Whether `text`, an admitted path's file, holds the one re-export `admitted` names and nothing
 /// else: comments, then `pub use <from>::{<items>};` with exactly those items, in any order. Fails
 /// closed: another item, a glob, a rename, a second statement, or anything but comments around it
@@ -828,19 +875,36 @@ pub fn sources_naming_core_internal(root: &Path) -> std::io::Result<Vec<SourceFi
             }
         }
     }
-    // What the admitted paths admit: each file of the provider system's holds its one re-export, and
-    // nothing more, so the reader host reaches no more of `module` or `proxy` than it is admitted to.
-    if let Some(prov) = dirs.get("rutent-prov") {
-        for (file, admitted) in [("confine.rs", PROV_CONFINE), ("keys.rs", PROV_KEYS)] {
-            let path = prov.join("src").join(file);
-            if let Ok(text) = std::fs::read_to_string(&path)
-                && !holds_its_reexport(&text, admitted)
-            {
+    // What the admitted paths admit, once the reader host is a member: each is declared in the provider system's
+    // crate root plainly, `pub mod <name>;`, with no attribute that could mount another file and no inline body; its
+    // file is `src/<name>.rs`, which must exist, with no `src/<name>/` beside it; and that file holds its one
+    // re-export and nothing more. So the reader host reaches no more of `module` or `proxy` than it is admitted to.
+    if dirs.contains_key(READER_HOST) {
+        let prov = dirs
+            .get("rutent-prov")
+            .ok_or_else(|| missing("rutent-prov"))?
+            .join("src");
+        let lib = prov.join("lib.rs");
+        let root_text = std::fs::read_to_string(&lib).unwrap_or_default();
+        for (name, admitted) in [("confine", PROV_CONFINE), ("keys", PROV_KEYS)] {
+            let mut widen = |path: &Path, line: usize| {
                 beyond_paths.push(SourceFinding {
-                    file: relative(&path),
-                    line: 1,
+                    file: relative(path),
+                    line,
                     why: Why::WidensAnAdmittedPath,
-                });
+                })
+            };
+            if let Err(line) = declared_plainly(&root_text, name) {
+                widen(&lib, line);
+            }
+            let file = prov.join(format!("{name}.rs"));
+            match std::fs::read_to_string(&file) {
+                Ok(text) if holds_its_reexport(&text, admitted) => {}
+                _ => widen(&file, 1),
+            }
+            let dir = prov.join(name);
+            if dir.exists() {
+                widen(&dir, 1);
             }
         }
     }

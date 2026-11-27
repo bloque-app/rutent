@@ -37,11 +37,42 @@ use crate::wire::{read_frame, write_frame};
 /// The largest question the host reads, in bytes.
 pub const MAX_QUESTION: usize = 64 * 1024;
 
-/// The most connections from Core the host serves at once; one more is closed unread.
+/// The most connections the host serves at once; one more is closed unread.
 pub const MAX_CONNECTIONS: usize = 64;
 
-/// How long a connection may sit idle, or a handshake take, before the host closes it.
+/// The most of them still in their handshake, so not yet shown to be Core's; one more is closed unread, so peers that
+/// never authenticate can't take the slots Core's connections need.
+pub const MAX_HANDSHAKING: usize = 16;
+
+/// How long a whole handshake may take, every read and write of it together, before the host closes the connection.
+pub const HANDSHAKE: Duration = Duration::from_secs(10);
+
+/// How long an authenticated connection may sit idle before the host closes it.
 pub const IDLE: Duration = Duration::from_secs(60);
+
+/// The link's bounds on its connections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinkLimits {
+    /// [`MAX_CONNECTIONS`] by default.
+    pub connections: usize,
+    /// [`MAX_HANDSHAKING`] by default.
+    pub handshaking: usize,
+    /// [`HANDSHAKE`] by default.
+    pub handshake: Duration,
+    /// [`IDLE`] by default.
+    pub idle: Duration,
+}
+
+impl Default for LinkLimits {
+    fn default() -> Self {
+        LinkLimits {
+            connections: MAX_CONNECTIONS,
+            handshaking: MAX_HANDSHAKING,
+            handshake: HANDSHAKE,
+            idle: IDLE,
+        }
+    }
+}
 
 /// Why the link's TLS wasn't built.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,12 +226,23 @@ impl core::fmt::Debug for Link {
 }
 
 impl Link {
-    /// Serves `host` on `listener` under `tls`, each connection on a thread of its own, at most [`MAX_CONNECTIONS`]
-    /// at once.
+    /// Serves `host` on `listener` under `tls`, each connection on a thread of its own, under the default
+    /// [`LinkLimits`].
     pub fn serve(listener: TcpListener, tls: LinkTls, host: Arc<Host>) -> io::Result<Link> {
+        Link::serve_with(listener, tls, host, LinkLimits::default())
+    }
+
+    /// [`Link::serve`], under `limits`.
+    pub fn serve_with(
+        listener: TcpListener,
+        tls: LinkTls,
+        host: Arc<Host>,
+        limits: LinkLimits,
+    ) -> io::Result<Link> {
         let address = listener.local_addr()?;
         let stop = Arc::new(AtomicBool::new(false));
         let open = Arc::new(AtomicUsize::new(0));
+        let handshaking = Arc::new(AtomicUsize::new(0));
         let stopping = stop.clone();
         let accepter = std::thread::Builder::new()
             .name("reader host link".to_owned())
@@ -210,13 +252,19 @@ impl Link {
                         return;
                     }
                     let Ok(stream) = stream else { continue };
-                    if open.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+                    if open.fetch_add(1, Ordering::SeqCst) >= limits.connections {
                         open.fetch_sub(1, Ordering::SeqCst);
                         continue;
                     }
-                    let (tls, host, open) = (tls.clone(), host.clone(), open.clone());
+                    if handshaking.fetch_add(1, Ordering::SeqCst) >= limits.handshaking {
+                        handshaking.fetch_sub(1, Ordering::SeqCst);
+                        open.fetch_sub(1, Ordering::SeqCst);
+                        continue;
+                    }
+                    let (tls, host) = (tls.clone(), host.clone());
+                    let (open, handshaking) = (open.clone(), handshaking.clone());
                     std::thread::spawn(move || {
-                        let _ = serve_connection(stream, &tls, &host);
+                        let _ = serve_connection(stream, &tls, &host, &limits, &handshaking);
                         open.fetch_sub(1, Ordering::SeqCst);
                     });
                 }
@@ -245,15 +293,20 @@ impl Drop for Link {
     }
 }
 
-/// One connection: the handshake, which holds Core's certificate, then a question and its answer at a time.
-fn serve_connection(tcp: TcpStream, tls: &LinkTls, host: &Host) -> io::Result<()> {
-    tcp.set_read_timeout(Some(IDLE))?;
-    tcp.set_write_timeout(Some(IDLE))?;
-    let connection = ServerConnection::new(tls.config.clone()).map_err(io::Error::other)?;
-    let mut stream = StreamOwned::new(connection, tcp);
-    while stream.conn.is_handshaking() {
-        stream.conn.complete_io(&mut stream.sock)?;
-    }
+/// One connection: the handshake, which holds Core's certificate within one deadline for the whole of it, then a
+/// question and its answer at a time.
+fn serve_connection(
+    tcp: TcpStream,
+    tls: &LinkTls,
+    host: &Host,
+    limits: &LinkLimits,
+    handshaking: &AtomicUsize,
+) -> io::Result<()> {
+    let shaken = handshake(tcp, tls, limits.handshake);
+    handshaking.fetch_sub(1, Ordering::SeqCst);
+    let mut stream = shaken?;
+    stream.sock.set_read_timeout(Some(limits.idle))?;
+    stream.sock.set_write_timeout(Some(limits.idle))?;
     loop {
         let Some(question) = read_frame(&mut stream, MAX_QUESTION)? else {
             return Ok(());
@@ -261,6 +314,30 @@ fn serve_connection(tcp: TcpStream, tls: &LinkTls, host: &Host) -> io::Result<()
         let answer = host.answer(&question).unwrap_or_default();
         write_frame(&mut stream, &answer)?;
     }
+}
+
+/// The handshake, given up once `within` has passed since it began, however the peer spaces its bytes.
+fn handshake(
+    tcp: TcpStream,
+    tls: &LinkTls,
+    within: Duration,
+) -> io::Result<StreamOwned<ServerConnection, TcpStream>> {
+    let until = std::time::Instant::now() + within;
+    let connection = ServerConnection::new(tls.config.clone()).map_err(io::Error::other)?;
+    let mut stream = StreamOwned::new(connection, tcp);
+    while stream.conn.is_handshaking() {
+        let left = until.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "the handshake took too long",
+            ));
+        }
+        stream.sock.set_read_timeout(Some(left))?;
+        stream.sock.set_write_timeout(Some(left))?;
+        stream.conn.complete_io(&mut stream.sock)?;
+    }
+    Ok(stream)
 }
 
 /// Reads a frame from any stream: the link's, for a client's own use (Core's adapter, a test).

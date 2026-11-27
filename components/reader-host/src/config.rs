@@ -115,9 +115,23 @@ pub struct ReaderLimits {
     pub restart_after_ms: u64,
     /// How long one egress call may take, every hop included, before the host gives up on it, in milliseconds.
     pub egress_give_up_after_ms: u64,
-    /// The largest frame the reader may send the host, in bytes; a longer one is a limit hit.
+    /// The largest frame the reader may send the host, in bytes; a longer one is a limit hit. The frames waiting for
+    /// the host from one reader are bounded too, at four such frames' worth of bytes and [`READ_FRAMES`] in number,
+    /// and those waiting for the reader at [`WRITE_FRAMES`] and [`WRITE_BYTES`]: a reader over either is stopped.
     pub max_frame: u32,
+    /// The most egress calls (RPC requests and light-client connections) the reader may ask for over one question, or
+    /// over its start-up checks; one more is a limit hit.
+    pub calls_per_question: u32,
 }
+
+/// The most frames from one reader waiting for the host to read them.
+pub const READ_FRAMES: usize = 64;
+
+/// The most frames waiting to be written to one reader.
+pub const WRITE_FRAMES: usize = 32;
+
+/// The most bytes waiting to be written to one reader.
+pub const WRITE_BYTES: usize = 4 << 20;
 
 impl Default for ReaderLimits {
     fn default() -> Self {
@@ -128,6 +142,7 @@ impl Default for ReaderLimits {
             restart_after_ms: 1_000,
             egress_give_up_after_ms: 5_000,
             max_frame: 1 << 20,
+            calls_per_question: 64,
         }
     }
 }
@@ -212,6 +227,7 @@ impl HostConfig {
                 || l.pending == 0
                 || l.egress_give_up_after_ms == 0
                 || l.max_frame == 0
+                || l.calls_per_question == 0
             {
                 return bad(&reader.name, "every bound is above zero");
             }

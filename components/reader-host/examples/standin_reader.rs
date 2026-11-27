@@ -15,7 +15,9 @@
 //! A hostile act makes it misbehave, for the host to hold: `ignore-quorum` (answers a final movement whatever the
 //! pool agreed), `undeclared` (asks an endpoint it doesn't declare too), `other-request` (answers under another
 //! request id), `other-rules` (names a stricter quorum than its listing in its network's rules), `skip-checks` (never
-//! reports its checks, and answers anyway), `crash` and `hang` (on a question), `unconfined` (skips the jail's in-process half),
+//! reports its checks, and answers anyway), `crash` and `hang` (on a question), `unconfined` (skips the jail's in-process half), `echo` (reports the identity
+//! it was handed without checking), `no-call` (answers a movement without asking its network), `flood` (asks the pool
+//! without end and never reads) and `busy` (asks the pool without end, reading each reply, and never answers),
 //! `inspect` (logs its arguments, its environment and every frame it reads) and `probe-network=<address:port>` (tries
 //! to connect to that address, and to a public one, at start, and logs what happened).
 
@@ -412,6 +414,12 @@ fn main() {
     }
     let found = if reader.hostile("skip-checks") {
         identity
+    } else if reader.hostile("echo") {
+        // Reports the identity it was handed, without asking the network anything.
+        reader.io.send(&FromReader::Checked {
+            identity: identity.clone(),
+        });
+        identity
     } else {
         let Some(found) = reader.check() else {
             reader.io.log("checks: nothing found");
@@ -436,7 +444,42 @@ fn main() {
                 std::thread::park();
             }
         }
-        let answer = reader.answer(&question, &found);
+        if reader.hostile("flood") {
+            // Asks the pool again and again, every 5 ms, for a large answer and never reads what the host writes back; a write that
+            // fails (the host stopped reading it) doesn't end it either: it keeps its pipes, as a hostile reader would.
+            let body = json!({"jsonrpc": "2.0", "id": 9, "method": "rutent_large"}).to_string();
+            for call in 1000..u64::MAX {
+                let frame = FromReader::Rpc {
+                    call,
+                    endpoints: reader.endpoints.clone(),
+                    body: body.clone(),
+                };
+                let bytes = serde_json::to_vec(&frame).expect("a frame");
+                let _ = write_frame(&mut reader.io.output.lock(), &bytes);
+                // Paced, so the host keeps up with what it sends: what fills up is what it never reads.
+                pause(Duration::from_millis(5));
+            }
+        }
+        if reader.hostile("busy") {
+            // Keeps the host busy, one pool request after another, reading each reply, and never answers.
+            let body = json!({"jsonrpc": "2.0", "id": 9, "method": "eth_chainId"}).to_string();
+            loop {
+                let endpoints = reader.endpoints.clone();
+                let _ = reader.rpc(endpoints, serde_json::from_str(&body).expect("json"));
+            }
+        }
+        let answer = if reader.hostile("no-call") {
+            // Answers a movement final without asking its network.
+            Answered::MovementStatus {
+                standing: Standing::Final(Movement {
+                    destination: Id::new("dest-1").expect("an id"),
+                    asset: Id::new("usdc").expect("an id"),
+                    amount: Amount::new("100").expect("an amount"),
+                }),
+            }
+        } else {
+            reader.answer(&question, &found)
+        };
         let request = if reader.hostile("other-request") {
             RequestId::from_random([0x5a; 16]).expect("a request id")
         } else {

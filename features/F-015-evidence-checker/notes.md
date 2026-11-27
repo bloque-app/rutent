@@ -341,3 +341,72 @@ After the follow-up, the same way:
 The jail's in-process layers (empty root, capabilities, Landlock, seccomp) and the host's check of them exist only on
 Linux, so they can't be switched off and run here. Each layer alone is `T-025-02`'s probes in the same job, and the
 jail test's unconfined reader is the host's check seen red on its own.
+
+### The review of #348 at `4c3448cf` (review 6088670252)
+
+CHANGES, on one High and one Medium, with six Lows; each fixed in this row (pre-production).
+
+- **H1. A reader that stops reading froze its worker.** Writes to a reader now go through a writer thread of its
+  own over a bounded queue (`WRITE_FRAMES`, 32 frames, and `WRITE_BYTES`, 4 MiB); the worker only queues, and a
+  reader whose frames wait past either bound has stopped reading: it is killed (`reader_stopped_reading`), its
+  questions answered unreadable, and it is started again. The phase's bound (a question's `hang_after_ms`, the start-up
+  checks' `start_within_ms`) is read on every turn of the worker, so a reader that keeps talking is stopped at its bound
+  as a silent one is. Each egress call is given up at the phase's bound too (`Serving::until`), so one call can't
+  carry a question past it. The frames from a reader's output to its worker are counted in and out (`Gauge`): at most
+  `READ_FRAMES` (64) and four `max_frame`s' worth of bytes waiting, and a reader over either is stopped
+  (`reader_hit_a_limit`). The first reason found by the output or the input thread wins and is read ahead of the
+  frames still waiting; frames of a process already stopped are dropped with it. A reader may ask for at most
+  `calls_per_question` (64) egress calls in one question, or in its start-up checks, which bounds the amplification of
+  a flood. An asker waits for its reply at most `(hang_after_ms + egress_give_up_after_ms) × (pending + 1)`
+  (`host::ask_bound`), so a link thread is held by one reader's share alone. Test:
+  `reader_that_keeps_talking_or_stops_reading_is_stopped_at_its_bound_and_the_others_answer_on` [`REQ-MDL-11`] (a
+  reader that asks the pool every 5 ms for a large answer and never reads, stopped as `reader_stopped_reading`, and
+  one that asks without end, reading each reply, and never answers, stopped as `reader_hung`; each within 2.5 s of a
+  1.5 s bound and started again, while a third answers in under a second), and
+  `worker::tests::reader_whose_frames_wait_past_their_bound_is_stopped` [`REQ-MDL-11`].
+- **M1. The admitted paths could be redirected.** Once the reader host is a member, `tools/boundary-check` now holds
+  prov's crate root to declaring each admitted path plainly (`declared_plainly`: exactly one `pub mod confine;` and
+  one `pub mod keys;`, no attribute before them, so no `#[path]` or `#[cfg_attr(.., path = ..)]`, and no inline body),
+  requires `src/confine.rs` and `src/keys.rs` to exist and hold their one re-export (a missing file is a finding, no
+  longer skipped), and refuses a `src/confine/` or `src/keys/` directory. `components/prov/src/lib.rs` and
+  `components/prov/src/module/sandbox.rs` join `.github/CODEOWNERS` and `HOUSE-RULES.md`. The test of the admitted
+  paths now covers the redirect on its own line, on the same line and through `cfg_attr`, an inline body, a missing
+  declaration, a second declaration, a missing file and a module directory, each with the real file left as a decoy.
+- **L1.** The host's check reads the status of every thread of the reader (`/proc/<pid>/task/*/status`), refuses a
+  reader with a child process, and refuses one whose network namespace it can read as its own. It runs on the first
+  frame of any kind but a log line, and nothing (no call, no check, no answer) is served before it passes. Prov's
+  `seccomp` keeps no `TSYNC` flag: with RLIMIT_NPROC 0 and no `clone` in the allow-list, a reader makes no thread
+  after `confine`, and one made before it is read and refused.
+- **L2.** For an RPC pool, the host asks the pool for the chain id itself (`eth_chainId`, through the quorum) before
+  it takes the reader's checks, and refuses a reader whose pool names another chain, whatever the reader reported.
+  Test: `rpc_readers_chain_id_is_held_to_the_pools_own_answer_not_the_readers_report` [`REQ-ORD-39`, `DEC-28`]. A light
+  client's genesis can't be checked so without speaking its peer protocol: gap, owned by `T-031-02`, whose reader
+  pins its chain spec by digest.
+- **L3.** An RPC pool's movement answer (`movement_status`, `movement_of`) is signed as answered only if at least one
+  pool call agreed in that question; otherwise `trust_rule_not_met`. Case added to
+  `evm_reader_with_fewer_than_two_agreeing_rpc_answers_is_unreadable` (a reader that answers without asking).
+- **L4.** The link's handshake has one deadline for the whole of it (`HANDSHAKE`, 10 s), and at most
+  `MAX_HANDSHAKING` (16) connections may be in their handshake at once, so peers that never authenticate can't hold
+  the slots Core needs (`LinkLimits`, `Link::serve_with`). Test:
+  `link_closes_a_handshake_past_its_deadline_and_keeps_room_for_core` [`DEC-28`].
+- **L5.** Each reader starts with `oom_score_adj` 1000 (set between fork and exec, inherited), so the kernel kills a
+  reader, which the host restarts, before the host. The task's memory, the readers' together, is the operator's to
+  size: gap, owned by `F-030`.
+- **L6.** The jail test's unconfined reader runs the same network probe with only the namespaces around it, before
+  the host refuses it, and must be refused with `NetworkUnreachable`, never seccomp's `PermissionDenied`: the network
+  namespace shown to hold on its own.
+
+Rule-offs, each alone and reverted:
+
+| Rule switched off | Test | Red |
+|---|---|---|
+| Writes go through the bounded writer (a blocking write in the worker instead) | `reader_that_keeps_talking_or_stops_reading_is_stopped_at_its_bound_and_the_others_answer_on` | never answered: the worker blocked on the flooder's full input; killed at 240 s |
+| The frames waiting for the worker are bounded | `worker::tests::reader_whose_frames_wait_past_their_bound_is_stopped` | `left: 75`: every frame forwarded |
+| The crate root declares an admitted path plainly | `reader_host_reaches_the_providers_jail_and_key_resolver_through_their_admitted_paths_only` | `left: []`, the `#[path]` redirect passed |
+| A missing admitted file fails closed | the same | `left: []`, the missing `keys.rs` passed |
+| No module directory beside an admitted file | the same | `left: []`, `src/confine/` passed |
+| An RPC pool's movement answer rests on an agreed call | `evm_reader_with_fewer_than_two_agreeing_rpc_answers_is_unreadable` | `left: None`: the reader that asked nothing was signed as answered |
+
+The phase's bound read on every turn, switched off alone, leaves the test green: a reader that talks without end
+either leaves the worker an idle instant (once the bound has passed, the worker's wait is zero, and a timeout is all
+it takes) or is stopped first by the bound on its frames. It stays as defence beside them, and no test isolates it.
