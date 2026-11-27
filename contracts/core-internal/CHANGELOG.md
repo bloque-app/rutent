@@ -1,6 +1,15 @@
 # core-internal changelog
 
 ## 1.0.0
+- `T-020-61` (item 10, the review of #355, M2; `INV-8`, `NFR-6`): `Action::ReadRecordedAnswer {order, segment, provider,
+  transaction}` (`read_recorded_answer`), Core reading back the answer the platform recorded for a segment's own operation,
+  where Core recorded the move's effect and lost its answer in a stop, at a provider that declares neither a status query nor
+  a safe repeat: a decided action, taken as an effect before the platform is asked, which hands over its record's answer,
+  runs no module and moves nothing. It names the segment's own transaction, and `repeat-is-of-an-unsettled-segment-at-its-provider`
+  holds it as it does a repeat (its provider the move's, its transaction the segment's, the move with no final outcome), so
+  the relation count is unmoved. Folded into this unreleased version. Fixtures: valid `decision-request-to-read-a-recorded-answer`;
+  invalid `decision-request-to-read-a-recorded-answer-without-its-transaction` (one schema rule more). Ignorable: no, it is
+  a decided action a reader that ignored would carry out undecided. (DEC-4, DEC-20, T-020-61)
 - `T-020-67` (the milestone reviewer's check of `T-020-58`, review round 2 of #351; `REQ-ORD-41`, `NFR-5`):
   `Action::ReadNodeRecord` gains `by` (`grading` or `tick`, `ReadBy`), who asked: a segment's grading, or the tick's read of the
   publishers' records, so a reopened Core counts each one's reads from the log and a restart after many tick reads leaves

@@ -73,6 +73,12 @@ pub(super) const CARRY_OUT: &[(&str, &str, &str)] = &[
         "prov/src/module/platform.rs",
         "repeat_operation",
     ),
+    // Hands over the answer the platform's record holds for a segment's own operation, on a decided effect (`T-020-61`).
+    (
+        "recorded_answer",
+        "prov/src/module/platform.rs",
+        "read_recorded_answer",
+    ),
     (
         "accept",
         "prov/src/module/platform.rs",

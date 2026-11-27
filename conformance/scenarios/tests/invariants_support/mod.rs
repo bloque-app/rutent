@@ -85,12 +85,12 @@ pub enum Kind {
 /// The restart kinds whose caught order ends stuck, not complete, for the operator (`T-020-61`, item 8 as `T-020-63` designed
 /// it): a crash after the log took a segment's effect and before the platform carried it out leaves a segment whose provider
 /// knows no result of it; the restarted Core asks its status where it answers status queries, repeats only at a provider
-/// that declares a safe repeat and no status query, and otherwise leaves it for the stuck check, never handing it again. The
-/// crash after the exchange carried its conversion out (the joined route's `RestartAfterEffect(1)`) is one too: the exchange
-/// declares neither, and its answer is only the platform's record's (gap: the decided read of a recorded answer, item 10).
+/// that declares a safe repeat and no status query, and otherwise reads back the answer the platform recorded, which it
+/// recorded none of, so it leaves the segment for the stuck check, never handing it again. A crash after the platform
+/// carried the operation out (`RestartAfterEffect`) completes at every provider, the exchange's included: its answer is read
+/// back from the platform's record (item 10).
 pub fn stuck_for_the_operator(plan: &Plan) -> bool {
     matches!(plan.kind, Kind::RestartAfterRecord(_))
-        || (plan.shape == Shape::Joined && plan.kind == Kind::RestartAfterEffect(1))
 }
 
 impl Kind {

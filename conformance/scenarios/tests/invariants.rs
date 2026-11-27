@@ -1687,6 +1687,68 @@ fn order_in_a_second_session_of_a_long_run_is_quoted() {
     );
 }
 
+/// The exchange's case of the one point a restarted Core could move value twice (`T-020-61`, item 10; the review of #355,
+/// M2): the joined route's crash after the platform carried the exchange's conversion out, the exchange having moved, and
+/// before Core logged its answer. The exchange answers no status query and declares no safe repeat, so the restarted Core
+/// never hands the operation over again: it reads back, as a decided effect, the answer the platform recorded for that
+/// transaction, and the segment takes it. The order completes; the conversion moved once, its transaction stated once, and
+/// nothing was sent to the exchange again.
+// verifies: INV-8, NFR-6
+#[test]
+fn answer_the_platform_recorded_before_core_lost_it_is_read_back_and_nothing_is_sent_again() {
+    let exchange = Plan {
+        seed: 116,
+        shape: Shape::Joined,
+        kind: Kind::RestartAfterEffect(1),
+    };
+    let sim = runs()
+        .iter()
+        .find(|sim| sim.plan == exchange)
+        .expect("the exchange's restart is pinned");
+    assert!(!sim.caught.is_empty(), "{}: the crash fell", sim.name());
+    let bad = moved_once(sim);
+    assert!(bad.is_empty(), "{}: {bad:?}", sim.name());
+    let states = sim.run.state_names();
+    for order in &sim.caught {
+        assert_eq!(
+            states.get(order).cloned().flatten().as_deref(),
+            Some("complete"),
+            "{}: the caught order completes",
+            sim.name()
+        );
+    }
+    let effects = |kind: &str| {
+        entries(&sim.run)
+            .iter()
+            .filter(|e| {
+                e["kind"] == "verified"
+                    && e["what"]["call"] == "effect"
+                    && e["what"]["action"]["kind"] == kind
+            })
+            .map(|e| {
+                e["what"]["action"]["provider"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        effects("read_recorded_answer"),
+        ["sim-join-exchange"],
+        "{}: the exchange's recorded answer read back once, as a decided effect",
+        sim.name()
+    );
+    assert!(
+        !effects("repeat_operation")
+            .iter()
+            .chain(effects("ask_status").iter())
+            .any(|p| p == "sim-join-exchange"),
+        "{}: nothing asked of the exchange again",
+        sim.name()
+    );
+}
+
 /// The one point a restarted Core could move value twice (`T-020-61`, item 9): the process crashes after the platform
 /// carried a segment's operation out, its provider having moved, and before Core logged the answer. The restarted Core
 /// carries the segment on (its status asked, the answer the provider's own result), and the order completes; the value moved
@@ -1707,9 +1769,9 @@ fn restart_after_the_provider_moved_and_before_its_answer_was_logged_moves_nothi
         fell += 1;
         let bad = moved_once(sim);
         assert!(bad.is_empty(), "{}: {bad:?}", sim.name());
-        // The caught order ends as its kind says: complete where its provider answered its status, stuck for the operator at
-        // the exchange, which answers no status query and declares no safe repeat (the decided read of the platform's
-        // recorded answer is item 10's), and never handed again either way.
+        // The caught order ends as its kind says: complete, its answer the provider's status or, at the exchange, which
+        // answers no status query and declares no safe repeat, the answer the platform recorded, read back (item 10); never
+        // handed again either way.
         let states = sim.run.state_names();
         for order in &sim.caught {
             assert_eq!(

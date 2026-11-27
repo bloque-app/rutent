@@ -856,6 +856,22 @@ pub enum Action {
         /// The segment's own transaction, which the repeat is of.
         transaction: Id,
     },
+    /// Reading back the answer the platform recorded for a segment's own operation, where Core recorded the move's effect
+    /// and lost its answer in a stop, at a provider that declares neither a status query nor a safe repeat (`INV-8`,
+    /// `NFR-6`, `T-020-61` item 10): a decided action, taken as an effect before the platform is asked. The platform hands
+    /// over the answer its record holds for that provider's operation under the transaction, running no module, and moves
+    /// nothing; with none recorded, nothing comes back and the segment waits for the stuck check. It names the segment's
+    /// own transaction.
+    ReadRecordedAnswer {
+        /// The order.
+        order: Id,
+        /// The segment whose answer is read back.
+        segment: Id,
+        /// The segment's provider, whose operation it was.
+        provider: Id,
+        /// The segment's own transaction, which the recorded answer is to.
+        transaction: Id,
+    },
     /// The customer accepting a provider's showing that a failed segment's failure was its fault (`REQ-ORD-11`): a
     /// decision of policy's on the policy handle, as an order's authorisation is, asked by the order's requester in its
     /// open session and naming the showing it accepts, so it can't be read as accepting another. It takes no effect:

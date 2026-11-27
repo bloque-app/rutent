@@ -365,7 +365,7 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 155] = [
+const SCHEMA_RULES: [SchemaRule; 156] = [
     (
         "decision-request-to-list-a-public-network-under-a-hexadecimal-ip-subject-name",
         &[("/action/public_network/listing/reader/subject_name", "not")],
@@ -545,6 +545,11 @@ const SCHEMA_RULES: [SchemaRule; 155] = [
     ),
     (
         "decision-request-to-repeat-an-operation-without-its-transaction",
+        &[("/action", "required")],
+        "missing field `transaction`",
+    ),
+    (
+        "decision-request-to-read-a-recorded-answer-without-its-transaction",
         &[("/action", "required")],
         "missing field `transaction`",
     ),
@@ -3502,6 +3507,13 @@ fn request_to_repeat_an_operation_names_its_segment_and_transaction() {
     assert_accepted_by_both("decision-request-to-repeat-an-operation");
     assert_rejected("decision-request-to-repeat-an-operation-without-its-segment");
     assert_rejected("decision-request-to-repeat-an-operation-without-its-transaction");
+}
+
+// verifies: INV-8, NFR-6
+#[test]
+fn request_to_read_a_recorded_answer_names_its_segment_and_transaction() {
+    assert_accepted_by_both("decision-request-to-read-a-recorded-answer");
+    assert_rejected("decision-request-to-read-a-recorded-answer-without-its-transaction");
 }
 
 // verifies: REQ-ORD-41, REQ-AUZ-1

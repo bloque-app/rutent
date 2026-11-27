@@ -2571,15 +2571,23 @@ pub static RELATIONS: [Relation; 121] = [
         name: "repeat-is-of-an-unsettled-segment-at-its-provider",
         spec: &["REQ-ORD-1", "INV-8"],
         quantifier: Quantifier::Exists,
-        refusal: "a segment's operation is carried out again only by the provider its move went to, under the transaction its question named, and only while that move has no final outcome",
+        refusal: "a segment's operation is carried out again, or its recorded answer read back, only at the provider its move went to, under the transaction its question named, and only while that move has no final outcome",
         fields: &[],
         // None to point to: a `repeat_operation` effect is refused unless its provider is the one the segment's move
         // went to, its transaction one Core's question of that segment (`operation`, stated about it) named, and that move has no final result nor a permitted confirmation of its outcome (`T-020-63`). That the
         // provider declares a safe repeat and no status query is its accepted advertisement's, which the log holds by
         // commitment alone: the platform refuses the repeat of a provider that doesn't declare it (`REQ-CAT-10`).
+        // A read of the platform's recorded answer to the segment's operation is held to the same: it is of the same
+        // move, the same provider and the same transaction, while the move has no final outcome (`T-020-61`, item 10).
         cites: |e, h| match effect_action(e) {
             Some((
                 Action::RepeatOperation {
+                    order,
+                    segment,
+                    provider,
+                    transaction,
+                }
+                | Action::ReadRecordedAnswer {
                     order,
                     segment,
                     provider,

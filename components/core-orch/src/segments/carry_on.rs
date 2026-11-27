@@ -16,7 +16,11 @@
 //!    provider that declares a safe repeat and no status query: the platform runs again what it carried with no answer
 //!    ([`Modules::repeat_operation`](super::Modules::repeat_operation)). Never at another provider: the platform's record
 //!    of what it carried is a guard, not the rule, since a record restored from an older backup would let a move run twice.
-//! 3. **Otherwise, and once carried on, it waits**: nothing more is asked, and the stuck check times it on its provider's figures
+//! 3. **Otherwise, the answer the platform recorded read back** (`read_recorded_answer`, `T-020-61` item 10): at a provider
+//!    that declares neither, the operation is never handed over again, but the platform's record may hold the answer the
+//!    provider gave before Core stopped ([`Modules::recorded_answer`](super::Modules::recorded_answer)). It runs no module
+//!    and moves nothing; an answer that names the segment's transaction is the segment's, taken as any answer.
+//! 4. **Otherwise, and once carried on, it waits**: nothing more is asked, and the stuck check times it on its provider's figures
 //!    (`REQ-ORD-29`). Core never writes a result for it it has no answer for: it is never timed out.
 
 use rutent_contracts::core_internal::{Action, Actor, DecisionRequest, Effect, Outcome, What};
@@ -159,9 +163,36 @@ impl Segments {
                 Answered::Refused(_) => CarriedOn::Waiting("the platform gave no answer"),
             };
         }
-        CarriedOn::Waiting(
-            "its provider declares neither a status query nor a safe repeat: left for the stuck check",
-        )
+        // A provider that declares neither: the operation is never handed over again. The platform's record may hold the
+        // answer the provider gave before Core stopped, read back as a decided effect, moving nothing (item 10). With none
+        // recorded, the segment waits for the stuck check.
+        let action = Action::ReadRecordedAnswer {
+            order: carry.order.clone(),
+            segment: carry.segment.clone(),
+            provider: provider.clone(),
+            transaction: transaction.clone(),
+        };
+        let answered = match self.decided(
+            parts,
+            carry.core,
+            action,
+            Ask::Recorded {
+                provider: &provider,
+                transaction: &transaction,
+            },
+        ) {
+            Ok(answered) => answered,
+            Err(stopped) => return stopped,
+        };
+        self.mark_carried_on(&at);
+        match answered {
+            Answered::Bytes(bytes) if names_transaction(&bytes, transaction.as_str()) => {
+                self.take_answer(&at, bytes)
+            }
+            _ => CarriedOn::Waiting(
+                "its provider declares neither a status query nor a safe repeat, and the platform recorded no answer: left for the stuck check",
+            ),
+        }
     }
 
     /// Marks the segment at `at` carried on once.
@@ -324,7 +355,8 @@ impl Segments {
     }
 }
 
-/// Puts `ask` to the platform as the recorded `effect` lets it: the segment's status, or its own operation handed again,
+/// Puts `ask` to the platform as the recorded `effect` lets it: the segment's status, the answer the platform recorded for
+/// its operation, or its own operation handed again,
 /// carried out only where the platform never carried the transaction and, where it did and got no answer, run again at a
 /// provider that declares a safe repeat.
 fn put(parts: &mut Parts<'_>, effect: &Effect, ask: Ask<'_>) -> Answered {
@@ -340,6 +372,10 @@ fn put(parts: &mut Parts<'_>, effect: &Effect, ask: Ask<'_>) -> Answered {
         } => parts
             .modules
             .repeat_operation(effect, provider, transaction),
+        Ask::Recorded {
+            provider,
+            transaction,
+        } => parts.modules.recorded_answer(effect, provider, transaction),
     }
 }
 
@@ -355,6 +391,11 @@ enum Ask<'a> {
     },
     /// The segment's own operation, carried out again under its own transaction.
     Repeat {
+        provider: &'a Id,
+        transaction: &'a Id,
+    },
+    /// The answer the platform recorded for the segment's own operation, read back.
+    Recorded {
         provider: &'a Id,
         transaction: &'a Id,
     },

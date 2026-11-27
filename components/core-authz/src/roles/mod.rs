@@ -369,23 +369,27 @@ fn needs_of(asked: Asked<'_>) -> Option<Needs> {
                 // carrying-out: an operator's login the register lists for it, a permission of its own, or one of Core's own
                 // actors, which carries the operator's standing permission onward, listed for `CarryOnward` and for this
                 // permission both. Nobody else, and an unknown role fails closed.
-                Action::RepeatOperation { .. } => match caller.role {
-                    Role::Operator => {
-                        operator_holds(caller, Permission::RepeatOperation).map(Needs::from)
+                // Reading back the platform's recorded answer to that operation (`INV-8`, `T-020-61` item 10) is held to the
+                // same permission: the same carrying-on of the same move, which moves nothing.
+                Action::RepeatOperation { .. } | Action::ReadRecordedAnswer { .. } => {
+                    match caller.role {
+                        Role::Operator => {
+                            operator_holds(caller, Permission::RepeatOperation).map(Needs::from)
+                        }
+                        Role::Core => Some(
+                            vec![
+                                listed(caller, Permission::CarryOnward),
+                                listed(caller, Permission::RepeatOperation),
+                            ]
+                            .into(),
+                        ),
+                        Role::Customer
+                        | Role::Provider
+                        | Role::Verifier
+                        | Role::Regulator
+                        | Role::Checker => None,
                     }
-                    Role::Core => Some(
-                        vec![
-                            listed(caller, Permission::CarryOnward),
-                            listed(caller, Permission::RepeatOperation),
-                        ]
-                        .into(),
-                    ),
-                    Role::Customer
-                    | Role::Provider
-                    | Role::Verifier
-                    | Role::Regulator
-                    | Role::Checker => None,
-                },
+                }
                 // Asking a failed segment's provider to reverse it (`REQ-ORD-3`, `REQ-ORD-11`): an operator's login the
                 // register lists for it, a permission of its own, or one of Core's own actors carrying the order on.
                 // Which provider is asked, and that its segment owes the reversal, the log holds

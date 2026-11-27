@@ -526,6 +526,16 @@ impl Modules for Running<'_> {
         answered
     }
 
+    fn recorded_answer(
+        &mut self,
+        effect: &rutent_contracts::core_internal::Effect,
+        provider: &Id,
+        transaction: &Id,
+    ) -> rutent_core_orch::segments::Answered {
+        // The production platform reads it from its record (`T-020-61`, item 10).
+        Modules::recorded_answer(self.platform, effect, provider, transaction)
+    }
+
     fn take_events(&mut self) -> rutent_prov::module::types::Events {
         Modules::take_events(self.platform)
     }

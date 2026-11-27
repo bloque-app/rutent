@@ -1316,6 +1316,8 @@ mod tests {
                 Action::ReadHoldingBalance { .. } => {}
                 // In policy's tables since `T-020-63`: the operator's permission, which Core carries onward.
                 Action::RepeatOperation { .. } => {}
+                // In policy's tables since `T-020-61`: held to the repeat's permission.
+                Action::ReadRecordedAnswer { .. } => {}
                 // Decided and never an effect: orchestration records the refiling on its permit
                 // (`refiling-rests-on-policys-permit`); its own tests are `roles`'.
                 Action::RefileArrival { .. } => unreachable!("tested apart: it has no effect"),
@@ -1634,7 +1636,8 @@ mod tests {
                 Action::MoveValue { .. }
                 | Action::AskReversal { .. }
                 | Action::AskStatus { .. }
-                | Action::RepeatOperation { .. } => assert!(
+                | Action::RepeatOperation { .. }
+                | Action::ReadRecordedAnswer { .. } => assert!(
                     matches!(effect, Err(AppendFailure::Refused(v)) if v.0 != RELATIONS[0].refusal)
                 ),
                 _ => assert!(effect.is_ok(), "{action:?}"),
@@ -1704,7 +1707,8 @@ mod tests {
                 Action::AskReversal { .. }
                 | Action::AskStatus { .. }
                 | Action::ReadHoldingBalance { .. }
-                | Action::RepeatOperation { .. } => {
+                | Action::RepeatOperation { .. }
+                | Action::ReadRecordedAnswer { .. } => {
                     matches!(caller.role, Role::Core | Role::Operator)
                 }
                 Action::ReadNodeRecord { .. } => matches!(caller.role, Role::Core | Role::Operator),

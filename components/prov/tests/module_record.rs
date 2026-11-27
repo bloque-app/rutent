@@ -1400,3 +1400,44 @@ fn provider_marked_stale_with_a_release_staged_is_confirmed_after_an_unclean_end
         Some(Mark::Stale)
     );
 }
+
+/// The answer the platform recorded for an operation is read back from its record after a restart, the module never run
+/// and nothing handed over again (`INV-8`, `NFR-6`, `T-020-61` item 10): what Core reads, as a decided effect, for a segment
+/// whose answer it lost in a stop at a provider that declares neither a status query nor a safe repeat. Another provider's
+/// read, or one of a transaction the record holds no answer to, gets nothing.
+// verifies: INV-8, NFR-6
+#[test]
+fn recorded_answer_is_read_back_after_a_restart_with_no_module_run() {
+    let memory = MemoryRecord::new();
+    let operation = withdrawal(RAMP, 9);
+    let mut s = opened(Box::new(memory.clone()), TestWorld::default(), &[RAMP]);
+    let Handled::Answered(first) = s.platform.handle(RAMP, &operation) else {
+        panic!("answered");
+    };
+    let world = stop(s);
+    let mut s = opened(Box::new(memory), world, &[RAMP]);
+    let ran = s.platform.operations_run(RAMP);
+    assert_eq!(
+        s.platform.recorded_answer(RAMP, tx(RAMP, 9).as_str()),
+        Handled::Answered(first),
+        "the answer the record holds, as it was"
+    );
+    assert_eq!(s.platform.operations_run(RAMP), ran, "no module ran for it");
+    assert_eq!(
+        s.platform.recorded_answer(RESERVE, tx(RAMP, 9).as_str()),
+        Handled::Refused(PlatformRefusal::NotHandled),
+        "another provider's read gets nothing"
+    );
+    assert_eq!(
+        s.platform.recorded_answer(RAMP, tx(RAMP, 10).as_str()),
+        Handled::Refused(PlatformRefusal::NotHandled),
+        "nothing recorded under another transaction"
+    );
+    // Handed over again, the operation is answered from the record or refused, and never run a second time.
+    let _ = s.platform.handle(RAMP, &operation);
+    assert_eq!(
+        s.platform.operations_run(RAMP),
+        ran,
+        "never carried out twice"
+    );
+}

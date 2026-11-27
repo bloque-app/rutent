@@ -228,7 +228,8 @@
             "resolve_stuck",
             "read_node_record",
             "read_holding_balance",
-            "repeat_operation"
+            "repeat_operation",
+            "read_recorded_answer"
           ]
         }
       },
@@ -411,6 +412,21 @@
           },
           "then": {
             "$ref": "#/$defs/action_repeat_operation"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "read_recorded_answer"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/action_read_recorded_answer"
           }
         }
       ]
@@ -823,6 +839,38 @@
         },
         "transaction": {
           "description": "The segment's own transaction, which the repeat is of.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "action_read_recorded_answer": {
+      "description": "Reading back the answer the platform recorded for a segment's own operation (INV-8, NFR-6, T-020-61): where Core recorded the move's effect and lost its answer in a stop, at a provider that declares neither a status query nor a safe repeat. A decided action, taken as an effect before the platform is asked; the platform hands over the answer its record holds, running no module, and moves nothing. It names the segment's own transaction.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "order",
+        "segment",
+        "provider",
+        "transaction"
+      ],
+      "properties": {
+        "kind": {
+          "const": "read_recorded_answer"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "description": "The segment whose answer is read back.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "description": "The segment's provider, whose operation it was.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "transaction": {
+          "description": "The segment's own transaction, which the recorded answer is to.",
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         }
       }

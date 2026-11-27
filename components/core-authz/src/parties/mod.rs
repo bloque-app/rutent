@@ -158,7 +158,11 @@ impl Scope {
                 Action::AskStatus { .. } => Scope::AskStatus,
                 Action::ReadNodeRecord { .. } => Scope::ReadNodeRecord,
                 Action::ReadHoldingBalance { .. } => Scope::ReadHoldingBalance,
-                Action::RepeatOperation { .. } => Scope::RepeatOperation,
+                // A read of the platform's recorded answer to the segment's operation is held to the repeat's scope: it is
+                // the same carrying-on of the same move, and moves nothing (`T-020-61`, item 10).
+                Action::RepeatOperation { .. } | Action::ReadRecordedAnswer { .. } => {
+                    Scope::RepeatOperation
+                }
                 Action::RefileArrival { .. } => Scope::RefileArrival,
                 Action::AcceptFault { .. } => Scope::AcceptFault,
                 Action::ResolveStuck { .. } => Scope::MoveStuck,

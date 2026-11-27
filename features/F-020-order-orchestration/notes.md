@@ -10881,13 +10881,54 @@ T-020-67 landed that still called the assembly's `run` move onto ticks.
   are **not built yet**.
 - **M4, done.** `decide_stuck` takes the part Core holds stuck, any part of a split order. No split-order test yet.
 - **L5, done.** `Recalculations::recalculate`'s doc says the second-recalculation rule is Core's run's.
-- **Not built yet in this pass, each owned by this row:** H1 (the reversal of a failed segment as a job of Core's run, and
-  `end`, `show_fault`, `accept_fault`, `dispute`, `returned` as Core entry points; then R12's gate is live and tested); H2 (the
-  linked order accepted by Core, its inputs logged and its authorisation under the customer's floor; test `linked order is
-  accepted by core with the customer's inputs logged`); M3 (open orders at a reserve, the reliance declarations, release
-  acceptance through Core's decided path); M2's decided read; L1 (item 9's four Lows); L2 (item 7's: the owed-reversal refusal
-  test, a lapsed quote's hold released); L3 (`reserve_yes` recorded on the quote); L6 (the stuck tests reached through Core's
-  run).
+- **H1, done: a failed segment's reversal is a job of Core's run.** `Jobs::reverse_owed` (`schedule/run.rs`) takes a step on
+  each segment of a part that failed owing its reversal, one step a tick, as recalculation does: on the tick after it failed,
+  recorded owed in the catalogue's list (`Reversals::owe`); on the next, while the failed provider carries it, the provider
+  asked (`Reversals::ask`, through policy); on the next, the origin reserve or the node's holder asked to confirm
+  (`Reversals::confirm_reversal`); and so in turn, the provider asked again and the confirmation asked again, until it completes
+  (`Reversals::took_step`/`asked_last` keep the turn; a reopened Core confirms first where the log holds an ask). Where the
+  provider can't be asked (no reserve at the node, policy's refusal), the confirmation is asked on the same tick. A reversal
+  the customer or the operator carries, on a showing they accepted, is theirs: Core asks no one. A stuck part's reversal still
+  runs, as before (a dispute's provider carries it meanwhile). A part whose reversal completed on a tick is recalculated on the
+  next. The deployment lends one more port, `Ports::with_reversal_desk` (`ReversalDesk`: the operator key, policy, the
+  platform as `ReversalPlatform` for a decided reversal and a reserve's question, the stuck orders, the register of actors).
+  The inbound commands are Core entry points over `Ports` (`reversal/command.rs`): `end` (the customer, as the log's
+  acceptance names it, or the operator by the register: core-internal has no decided `end` action, so Core holds the caller
+  itself, as `accept_fault` does the operator's), `show_fault`, `accept_fault` (the customer's through policy's
+  `accept_fault` decision, which Core asks itself, then reads from its log; the operator's by its command and the register),
+  `dispute`, `returned`, and, beside them, `late_approval`, `report_late` (a provider's result after its answer was taken,
+  with who the transport says handed it over) and `confirm_undone` (`AC-8`, a complete part's start asked of its origin
+  reserve). The assembly's `owe_reversal`, `ask_reversal`, `confirm_reversal` and its two private lenders are gone; it reads
+  what Core holds (`owed_reversal`) or what a tick told (`asked_on_tick`, `confirmed_on_tick`), and hands each command to the
+  entry point. `Reversals::confirm` is renamed `confirm_reversal`: core-authz's entry-point scan reads any call named
+  `confirm` as the platform's `confirm_releases` carrier, and Core now calls it from its own run. R12's gate is live: the run's recalculation of a part refuses while a segment of it owes an uncompleted
+  reversal, answering `NotNow(InFlight)`, the recalculations' own answer. Test `failed segment's reversal is owed asked and
+  confirmed by core's run` (`reversing.rs`): a failed middle segment owed, asked, confirmed (refused as the same publisher's
+  word), asked again and completed, recalculated and run, on ticks alone, the recalculation refused while it was owed.
+  Rule-off: the run's reversal step switched off turns it red (nothing owed on the first tick). Switching off the run's own
+  owed gate alone leaves it green, as the recalculations' rule refuses the same: two holds of one rule, neither the only one.
+  Tests that stepped a reversal by hand now tick: the showings script the failed provider before its ask, and
+  `gross_charged` counts only charge raises, since a tick also runs the holding check (`T-020-63`), which raises the stand-in
+  reserve's ledger node the scenario's register doesn't name.
+- **M2, done: the exchange's case closed by a decided read of the platform's recorded answer** (`DEC-20` paths:
+  `contracts/`, `components/core-authz/`, `components/prov/src/module/platform.rs`). core-internal 1.0.0 (unreleased) gains
+  `Action::ReadRecordedAnswer {order, segment, provider, transaction}` (`read_recorded_answer`), schema, two fixtures and a
+  changelog entry; `repeat-is-of-an-unsettled-segment-at-its-provider` holds it as it holds a repeat, so the relation count
+  is unmoved. core-authz holds it to the repeat's permission and scope (the same carrying-on of the same move, moving nothing),
+  and lists `recorded_answer` in `CARRY_OUT`. The platform's `recorded_answer` hands over its record's answer to that
+  provider's top-level operation under the transaction, running no module (`module_record`'s
+  `recorded_answer_is_read_back_after_a_restart_with_no_module_run`). Carry-on's third step (`segments/carry_on.rs`): at a
+  provider that declares neither a status query nor a safe repeat, the read, as a decided effect; an answer naming the
+  segment's transaction is the segment's; none, and it waits for the stuck check. So `RestartAfterEffect` completes at the
+  exchange: `stuck_for_the_operator` marks only `RestartAfterRecord`. Test `answer the platform recorded before core lost it
+  is read back and nothing is sent again` (`invariants.rs`, seed 116's pinned joined `RestartAfterEffect(1)`): the crash
+  fell, `INV-8` holds (`moved_once`), the order completes, one `read_recorded_answer` effect at the exchange and no
+  `repeat_operation` or `ask_status` of it.
+- **Not built yet in this pass, each owned by this row:** H2 (the linked order accepted by Core, its inputs logged and its
+  authorisation under the customer's floor; test `linked order is accepted by core with the customer's inputs logged`); M3
+  (open orders at a reserve, the reliance declarations, release acceptance through Core's decided path); M4's split-order
+  test; L1 (item 9's four Lows); L2 (item 7's: a lapsed quote's hold released; the owed-reversal refusal is now in the H1
+  test); L3 (`reserve_yes` recorded on the quote); L6 (the stuck tests reached through Core's run).
 
 ## T-020-67: what the checks of `T-020-58` and `T-020-54` left
 
