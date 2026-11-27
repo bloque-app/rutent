@@ -81,6 +81,7 @@ use rutent_contracts::state_machine::{
     self as stm, Observed, PartPlan, RecordId, RecordedInput, SegmentPlan, Source, SourceKind,
     Standing, Subject,
 };
+use rutent_prov::catalogue::Catalogue;
 use serde::{Deserialize, Serialize};
 
 use crate::quote::{AcceptedQuote, HoldError, Holds, Recorded, Redemption, TakesTerms};
@@ -1300,6 +1301,18 @@ impl Intake {
             return Err(IntakeError::NotNow);
         }
         let request = kept.request.clone();
+        // A route is accepted only on the standing it was chosen on: each inner node it names still on the operator's
+        // public list, or still the private node of its segment's publisher, as the catalogue's snapshot admits a
+        // tuple. A node unlisted since the quote leaves no route right now: the quote shown is gone, and the order is
+        // quoted again on the standing that holds (`REQ-CAT-22`, #346's review, L2).
+        if unlisted_on(&*desk.parts.catalogue, route_of(&offered.candidate)).is_some() {
+            let class = OrderRefusalClass::NoRouteRightNow;
+            refuse(desk, &request.request, Some(order), class)?;
+            kept.status = Status::CantProceed { class };
+            kept.offered = None;
+            kept.changed_owner = None;
+            return Ok(kept.told());
+        }
 
         // The destination, resolved when the route is accepted (`REQ-ORD-24`), against the owner the customer
         // accepted: the first resolved, or the one it now confirms.
@@ -1462,6 +1475,24 @@ impl Intake {
 /// appended. Where the log can't be written now, the next acceptance by the same actor carries on; where it refuses
 /// an entry, no retry can succeed, so the order ends, of the class `no_route_right_now`.
 fn carry_on(desk: &mut Desk<'_, '_>, kept: &mut Kept) -> Result<Told, IntakeError> {
+    // Carried on from where it stopped, the route is held again to the standing it was chosen on, as its acceptance was:
+    // a node unlisted since leaves no route right now, and nothing starts (#346's review, L2).
+    let unlisted = kept.accepting.as_ref().is_some_and(|accepting| {
+        let Observed::RouteChosen { parts, .. } = &accepting.input.observed else {
+            return false;
+        };
+        let route = parts.iter().flat_map(|part| {
+            part.segments.iter().flat_map(|segment| {
+                [&segment.from.node, &segment.to.node]
+                    .into_iter()
+                    .map(|node| (segment.provider.as_str(), node))
+            })
+        });
+        !accepting.pending.is_empty() && unlisted_on(&*desk.parts.catalogue, route).is_some()
+    });
+    if unlisted {
+        return ended(desk, kept, OrderRefusalClass::NoRouteRightNow);
+    }
     let accepting = kept.accepting.as_mut().ok_or(IntakeError::NotNow)?;
     if let Some(authorisation) = accepting.authorisation.clone() {
         // The acceptance first, alone, where it isn't in the log yet: policy reads the order's parties from it. The
@@ -1509,6 +1540,39 @@ fn carry_on(desk: &mut Desk<'_, '_>, kept: &mut Kept) -> Result<Told, IntakeErro
         Err(AppendFailure::Refused(_)) => ended(desk, kept, OrderRefusalClass::NoRouteRightNow),
         Err(failure) => Err(IntakeError::Log(failure)),
     }
+}
+
+/// Each segment of `candidate`'s route, as its provider and the nodes it moves between.
+fn route_of(candidate: &Candidate) -> impl Iterator<Item = (&str, &NodeRef)> {
+    candidate.parts.iter().flat_map(|part| {
+        part.operations.iter().flat_map(|operation| {
+            [&operation.from.node, &operation.to.node]
+                .into_iter()
+                .map(|node| (operation.provider.as_str(), node))
+        })
+    })
+}
+
+/// The first inner node of `route`, each named with its segment's provider, that the catalogue no longer admits for
+/// that provider as its snapshot admits a tuple: on the operator's public list, or the private node of the provider's
+/// publisher (`REQ-CAT-22`, #346's review, L2). An outer node's standing is its publisher's declaration, which no
+/// unlist changes.
+fn unlisted_on<'a>(
+    catalogue: &Catalogue,
+    route: impl IntoIterator<Item = (&'a str, &'a NodeRef)>,
+) -> Option<String> {
+    route.into_iter().find_map(|(provider, node)| {
+        let NodeRef::Inner(id) = node else {
+            return None;
+        };
+        let publishers = catalogue.publishers();
+        let publisher = publishers
+            .publisher_of_provider(provider)
+            .unwrap_or_default();
+        let listed = catalogue.nodes().is_public(id.as_str())
+            || publishers.publisher_of_node(id.as_str()) == Some(publisher);
+        (!listed).then(|| id.as_str().to_owned())
+    })
 }
 
 /// Ends `kept`'s order, accepted or not, with its refusal of `class` recorded: nothing started, nothing moved.

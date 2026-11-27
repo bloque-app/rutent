@@ -461,6 +461,35 @@ fn order_is_not_started_without_acceptance() {
     }
 }
 
+/// An acceptance carried on after the route's public node was unlisted starts nothing (`T-020-66`, #346's review, L2):
+/// its first try's append fails, the operator takes `polygon` off the public list, and accepting again holds the route
+/// to the standing it was chosen on, as the first try did: no route right now, no start, and the log admits it.
+// verifies: REQ-CAT-22
+#[test]
+fn acceptance_carried_on_after_its_routes_node_was_unlisted_starts_nothing() {
+    for failing in ["input", "acceptance"] {
+        let mut env = Env::new();
+        let mut sim = env.sim();
+        let (order, digest) = env.quoted(&mut sim, &order_request("client-req-1", customer()));
+        env.book.borrow_mut().fail_next = Some(failing);
+        assert!(matches!(
+            env.accept(&mut sim, &order, &customer(), &digest),
+            Err(IntakeError::Log(_))
+        ));
+        assert!(env.catalogue.remove_public_node("polygon"));
+        let told = env.accept(&mut sim, &order, &customer(), &digest).unwrap();
+        assert_eq!(
+            status_of(&told),
+            &Status::CantProceed {
+                class: OrderRefusalClass::NoRouteRightNow
+            },
+            "{failing}"
+        );
+        assert!(env.started().is_empty(), "{failing}");
+        assert_admitted(&env);
+    }
+}
+
 // verifies: REQ-ORD-19, INV-8
 #[test]
 fn acceptance_whose_append_failed_is_carried_on_once() {

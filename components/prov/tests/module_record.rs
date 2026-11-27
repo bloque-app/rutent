@@ -974,7 +974,7 @@ fn releases_of_a_platform_that_ended_unclean_run_once_the_operator_confirms_them
 
 // verifies: REQ-MDL-3, REQ-MDL-20
 #[test]
-fn a_release_admitted_while_its_provider_waits_for_confirmation_starts_nothing() {
+fn a_release_published_while_its_provider_waits_for_confirmation_is_refused() {
     let broken = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let inner = MemoryRecord::new();
     let mut s = Signed::on(
@@ -992,9 +992,15 @@ fn a_release_admitted_while_its_provider_waits_for_confirmation_starts_nothing()
         readmitted(&mut s, RESERVE, "1.0.0"),
         Admitted::Artefact(_)
     ));
-    // A new release is accepted and placed, and nothing runs it: no process, no operation, until the operator confirms.
-    admit_version(&mut s, RESERVE, "1.1.0");
-    assert!(s.platform.lifecycle().is_accepted(RESERVE, "1.1.0"));
+    // A new release is neither accepted nor staged while the provider waits: what the record holds is what the
+    // operator confirms, and a release placed now would read, to a Core completing an effect, as one placed before
+    // a restrictive decision the platform took unrecorded (`T-020-66`).
+    assert_eq!(
+        readmitted(&mut s, RESERVE, "1.1.0"),
+        Admitted::Refused(AdmissionRefusal::AdmissionPending)
+    );
+    assert!(!s.platform.lifecycle().is_accepted(RESERVE, "1.1.0"));
+    assert_eq!(s.platform.lifecycle().staged(RESERVE), None);
     assert_eq!(s.platform.active_version(RESERVE), None);
     assert_eq!(s.platform.version_process(RESERVE, "1.1.0"), None);
     assert_eq!(
@@ -1004,6 +1010,9 @@ fn a_release_admitted_while_its_provider_waits_for_confirmation_starts_nothing()
     s.platform
         .confirm(RESERVE, "test-operator", AT)
         .expect("confirmed");
+    assert_eq!(s.platform.active_version(RESERVE).as_deref(), Some("1.0.0"));
+    // Once confirmed, the release is published as any other is.
+    admit_version(&mut s, RESERVE, "1.1.0");
     assert_eq!(s.platform.active_version(RESERVE).as_deref(), Some("1.1.0"));
 }
 

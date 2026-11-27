@@ -748,6 +748,102 @@ fn publisher_cannot_mark_its_own_version_stale() {
     assert!(changes_of(&core, CatalogueChange::MarkStale).is_empty());
 }
 
+/// A stale mark the platform took unrecorded is taken again at the confirmation, not completed `failed`, when a
+/// release is published while its provider waits (`T-020-66`, #346's review, M1): 1.1.0 is in force, and the operator's
+/// stale mark of 1.0.0 is decided and its effect appended. The platform takes the mark with its record failing, in
+/// memory and unrecorded, and Core stops before its result. The platform ends unclean, the mark is gone, and the
+/// provider waits for the operator's confirmation. A release published now, under a staging policy, is refused, so
+/// "nothing marked and a release staged" still means the mark was refused for that staging. Core reopens: the effect
+/// stays without its result, and the confirmation takes the mark again before it confirms, so 1.0.0 is stale.
+// verifies: NFR-6, REQ-MDL-4
+#[test]
+fn stale_mark_taken_unrecorded_is_taken_again_when_a_release_is_published_while_its_provider_waits()
+{
+    use rutent_contracts::module_interface::AdmissionRefusal;
+    use rutent_core_orch::segments::lifecycle::{Changed, ReleaseChange};
+    use rutent_prov::module::lifecycle::{LifecycleRefusal, Mark};
+    let result_of = |core: &Core, effect: &_| {
+        core.log().entries().iter().find_map(|(_, e)| match e {
+            Entry::Verified(v) => match &v.what {
+                What::Result { effect: e } if e == effect => Some(v.outcome),
+                _ => None,
+            },
+            Entry::Stated(_) => None,
+        })
+    };
+    let scenario = Scenario::new("orders wait to run", "AC-28", two_reserves());
+    let (mut core, _) = scenario.core(1, &mut Reference);
+    artefact(core.publish_release(RESERVE, &Release::at("1.1.0")));
+    let effect = core
+        .effect_without_its_result(Action::ChangeCatalogue {
+            change: CatalogueChange::MarkStale,
+            provider: kit::id(RESERVE),
+            version: Some(kit::id("1.0.0")),
+            tuple: None,
+            class: None,
+            advertising_keys: Vec::new(),
+            statement_key: None,
+            setting: None,
+            versions: Vec::new(),
+        })
+        .expect("decided, its effect appended");
+    let taken = core.on_platform_with_its_record_broken(|platform| {
+        platform.mark_stale(
+            RESERVE,
+            "1.0.0",
+            "test-operator",
+            rutent_prov::catalogue::Instant(2_000),
+        )
+    });
+    assert_eq!(taken, Err(LifecycleRefusal::TakenUnrecorded));
+    assert_eq!(
+        core.fleet().platform.lifecycle().mark(RESERVE, "1.0.0"),
+        Some(Mark::Stale),
+        "taken in memory"
+    );
+
+    core.restart_platform(true);
+    assert_eq!(
+        core.fleet().platform.lifecycle().mark(RESERVE, "1.0.0"),
+        None,
+        "the unrecorded mark is gone"
+    );
+    let held = core
+        .fleet()
+        .platform
+        .awaiting_confirmation(RESERVE)
+        .expect("held after the unclean end");
+    core.set_staging(Some(Staging::new(1, 0, 0).expect("a staging policy")));
+    assert_eq!(
+        core.publish_release(RESERVE, &Release::at("1.2.0")),
+        Admitted::Refused(AdmissionRefusal::AdmissionPending),
+        "nothing new is admitted while the provider waits"
+    );
+    assert_eq!(core.fleet().platform.lifecycle().staged(RESERVE), None);
+
+    let mut core = scenario.reopen(core, 1, &mut Reference);
+    assert_eq!(
+        result_of(&core, &effect),
+        None,
+        "its result is not completed: whether the mark took effect isn't known"
+    );
+    let versions: Vec<Id> = held.iter().map(|v| kit::id(v)).collect();
+    assert_eq!(
+        core.change_release(
+            RESERVE,
+            ReleaseChange::Confirm {
+                versions: &versions
+            }
+        ),
+        Ok(Changed::Confirmed)
+    );
+    assert_eq!(
+        core.fleet().platform.lifecycle().mark(RESERVE, "1.0.0"),
+        Some(Mark::Stale),
+        "the mark is taken again before the confirmation"
+    );
+}
+
 /// A stale mark refused while a release is staged does not hold its provider after Core restarts (`T-020-66`, the
 /// milestone reviewer's check of `T-020-65` at `ebf42c9c`): 1.1.0 is in force, 1.2.0 staged, and the operator's stale mark
 /// of 1.0.0 is decided and its effect appended, but Core stops before its result (the platform refuses a stale mark

@@ -1313,6 +1313,70 @@ fn public_node_cannot_be_unlisted_while_a_failed_segments_reversal_is_owed_there
     }
 }
 
+/// The operator's setting that takes `node` off the public list.
+fn unlisting(node: &str) -> rutent_contracts::core_internal::OperatorSetting {
+    serde_json::from_value(
+        serde_json::json!({"setting": "public_node", "node": {"network": node}, "listed": false}),
+    )
+    .expect("a setting")
+}
+
+/// An order quoted on a route whose public node the operator unlisted before the customer accepted isn't accepted on
+/// it (`T-020-66`, #346's review, L2): the route was chosen on a standing that no longer holds, and a segment begun on it
+/// would be graded on a node that is neither public nor its publisher's. The quote is unlisted while nothing of Core's
+/// is at the node, so the unlist is permitted; the acceptance then reads each inner node of the route as the catalogue's
+/// snapshot does and finds the node off the list, so it is refused as no route right now, nothing started, and the
+/// order is quoted again on the standing that holds now.
+// verifies: REQ-CAT-22
+#[test]
+fn quote_whose_route_names_a_node_unlisted_since_is_not_accepted() {
+    use rutent_contracts::core_internal::OrderRefusalClass;
+    use rutent_core_orch::intake::{Status, Told};
+    let (mut core, session) = core_with("AC-1", &[IN, EXCHANGE, QUICK, OUT]);
+    let (order, told) = quoted(&mut core, across("req-quoted", &session));
+    let Told::Exists {
+        status: Status::Quoted { digest, .. },
+        ..
+    } = told
+    else {
+        panic!("quoted: {told:?}");
+    };
+    let chain = "sim-join-chain";
+    assert!(core.catalogue().nodes().is_public(chain));
+    assert_eq!(core.set_setting(&unlisting(chain)).map(|_| ()), Ok(()));
+    let told = core
+        .accept(&kit::customer(), &order, &digest)
+        .expect("told");
+    assert!(
+        matches!(
+            told,
+            Told::Exists {
+                status: Status::CantProceed {
+                    class: OrderRefusalClass::NoRouteRightNow
+                },
+                ..
+            }
+        ),
+        "{told:?}"
+    );
+    assert!(core.followed(&order).is_none(), "nothing started");
+    assert!(
+        core.accept(&kit::customer(), &order, &digest).is_err(),
+        "the quote shown is gone"
+    );
+    let told = core.quote(&kit::customer(), &order).expect("quoted again");
+    assert!(
+        !matches!(
+            told,
+            Told::Exists {
+                status: Status::Quoted { .. },
+                ..
+            }
+        ),
+        "no route through the unlisted node: {told:?}"
+    );
+}
+
 /// A public node can't be unlisted while an order Core follows that hasn't ended names it on its route (`T-020-66`, #342's
 /// L2): accepted and not yet run, nothing of it is at the ramp's nodes, and its segments there are still to begin; the
 /// operator's unlist of either is refused, so the segments are graded on the standing they begin under.

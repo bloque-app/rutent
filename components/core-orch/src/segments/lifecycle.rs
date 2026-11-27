@@ -646,7 +646,9 @@ fn standing_of(releases: &dyn Releases, effect: &Effect) -> Option<Outcome> {
             (None, _) if !releases.is_accepted(provider, version) => None,
             // Nothing marked and a release staged: the platform refuses a stale mark while a release is staged, and one
             // taken before the staging would have been recorded and restored with it, so it never took effect
-            // (`T-020-66`, the milestone reviewer's Medium).
+            // (`T-020-66`, the milestone reviewer's Medium). One taken unrecorded leaves the platform's record taking
+            // no write, so nothing is staged after it before the unclean end, and while the provider then waits for
+            // the confirmation the platform admits no new release (#346's review, M1).
             (None, _) if releases.staged(provider).is_some() => Some(Outcome::Failed {}),
             // Nothing newer in force to move its segments to: the platform refuses a stale mark there, so it never
             // took effect.

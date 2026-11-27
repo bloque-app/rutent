@@ -1012,7 +1012,8 @@ impl Segments {
     /// - value of an order it follows resting there (a settled segment's, or one a reversal brought back);
     /// - a segment moving value from or to it whose outcome isn't final: every outcome but `Settled`, `NotPermitted`,
     ///   `NotHandedOver` and `WithdrawalCancelled` counts (one not known, waiting on a person, with no result or waiting
-    ///   for its evidence), and a `Failed` or `Refused` one counts until its reversal completes;
+    ///   for its evidence), and a `Failed` or `Refused` one counts while its reversal is owed: until it completes, and
+    ///   never for a deposit, which owes none (its value stays where the deposit failed, which the first point reads);
     /// - an order it follows that hasn't ended (complete, ended without completing, failed or handed on) whose route
     ///   names the node: a segment of it still to begin, or one that began and that grading reads the node for, as a
     ///   private run's public entry (`closing`'s `movement_into`), is graded on the standing it began under.
@@ -1046,8 +1047,11 @@ impl Segments {
                     | SegmentOutcome::NotHandedOver(_)
                     | SegmentOutcome::WithdrawalCancelled,
                 ) => false,
+                // Counted while a reversal is owed: until it completes, and never for a deposit, whose reversal never
+                // applies, so a failed deposit's nodes aren't held for ever once its order ends (#346's review, L1).
                 Some(SegmentOutcome::Failed | SegmentOutcome::Refused(_)) => {
-                    planned.state != stm::SegmentState::ReversalComplete
+                    planned.kind != rutent_contracts::router_api::OperationKind::Deposit
+                        && planned.state != stm::SegmentState::ReversalComplete
                 }
                 _ => true,
             };

@@ -359,6 +359,17 @@ impl Fleet {
         }
     }
 
+    /// The platform's record breaks in place, as a disk that fills, and the platform then takes `decide`: a
+    /// restrictive decision it takes now is taken in memory and answered `TakenUnrecorded`, and the platform can end
+    /// only unclean (`T-020-66`). The record stays broken until [`Fleet::restart_platform`].
+    pub fn with_record_broken<R>(
+        &mut self,
+        decide: impl FnOnce(&mut Platform<SimWorld>) -> R,
+    ) -> R {
+        self.record.broken.store(true, Ordering::SeqCst);
+        decide(&mut self.platform)
+    }
+
     /// The context every statement is in.
     pub fn context(&self) -> &SuiteContext {
         &self.context

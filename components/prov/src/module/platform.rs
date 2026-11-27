@@ -1229,7 +1229,8 @@ impl<W: World> Platform<W> {
     /// force otherwise (`T-013-06`). If its process doesn't start, the version in force stays in force, and nothing
     /// runs the release (`REQ-MDL-4`, `AC-19`). What the acceptance changes, the version accepted and where it went,
     /// is written to the platform's record before it takes effect, and the release isn't accepted, its process
-    /// stopped, where the record can't hold it: `false`, nothing changed (`T-013-11`).
+    /// stopped, where the record can't hold it: `false`, nothing changed (`T-013-11`). Nor is it accepted while the
+    /// provider's releases wait for the operator's confirmation: `false` (`T-020-66`).
     fn accept_and_start(
         &mut self,
         provider: &str,
@@ -1238,22 +1239,20 @@ impl<W: World> Platform<W> {
         by: Option<&Identifier>,
         at: Clock,
     ) -> bool {
+        // A provider whose releases wait for the operator's confirmation accepts nothing new: what its record holds
+        // is what the operator confirms (`T-013-11`, `T-020-66`).
+        if self.unconfirmed.contains(provider) {
+            return false;
+        }
         let version = artefact.declaration().version.as_str().to_owned();
         let slot = self.providers.entry(provider.to_owned()).or_default();
         slot.accepted.push(artefact.clone());
         slot.machines.insert(version.clone(), machine);
         let placement = self.lifecycle.placement(provider);
-        // A provider whose releases wait for the operator's confirmation starts nothing: the release is accepted and
-        // placed as a restored one is, and runs once the operator confirms (`T-013-11`).
-        let held_out = self.unconfirmed.contains(provider);
-        let started = if held_out {
-            None
-        } else {
-            self.spawn(provider, &version)
-        };
+        let started = self.spawn(provider, &version);
         let mut next = self.lifecycle.clone();
         next.accept(provider, &version);
-        if started.is_some() || held_out {
+        if started.is_some() {
             next.started(provider, &version, placement, at);
         }
         let mut acceptances = self.acceptances.get(provider).cloned().unwrap_or_default();
@@ -2536,8 +2535,9 @@ impl<W: World> Platform<W> {
     /// Admits a release: the provider's signed assertion, as the bytes it arrived in, and the binaries it received
     /// (`REQ-MDL-1`). The assertion is read from those bytes and judged by `judge` at the caller's clock `at`; its
     /// digest is of those bytes. The assertion, the binaries against the digests it states, their format and size,
-    /// and a release of the provider admitted under that version or waiting for an acceptance, under any, are
-    /// judged before the admitting compiler runs. After it, only the compiler's refusal and the judge's refusal to
+    /// and a release of the provider admitted under that version or waiting for an acceptance, under any, or for
+    /// the operator's confirmation (`AdmissionPending`, unless the record holds this release), are judged before the
+    /// admitting compiler runs. After it, only the compiler's refusal and the judge's refusal to
     /// record the declared statement key remain; the catalogue's can't happen once its judgement passed, since the
     /// accepted advertisement lists that key for statements. Each provider's history is
     /// kept, and a release that needs only an automatic acceptance is started, its acceptance recorded at `at`. An
@@ -2691,6 +2691,14 @@ impl<W: World> Platform<W> {
         if restored.is_none() && self.lifecycle.staged(&provider).is_some() {
             return Admitted::Refused(AdmissionRefusal::ReleaseStaged);
         }
+        // While the provider's releases wait for the operator's confirmation, no new one is admitted: what the
+        // record holds is what the operator confirms, and a release accepted or staged now would read as one placed
+        // before a restrictive decision the platform took and couldn't write (`T-013-11`, `T-020-66`). Only a
+        // release the record holds is admitted again. The release waiting is the provider's confirmation, so the
+        // refusal is the one for a waiting acceptance.
+        if restored.is_none() && self.unconfirmed.contains(&provider) {
+            return Admitted::Refused(AdmissionRefusal::AdmissionPending);
+        }
         if let Some(latest) = &latest
             && asserted_before(&artefact, latest)
         {
@@ -2804,8 +2812,9 @@ impl<W: World> Platform<W> {
     /// assertion as received (`REQ-MDL-1`). That assertion is judged again by `judge` at the caller's clock `at`,
     /// so a release signed with a key retired since its admission is no longer accepted (`THR-4`), and the
     /// acceptance is recorded at `at`. The accepted artefact, or `None` if no release waits under that digest, `by`
-    /// names no one, the assertion no longer passes, or `at` is past what a record's time can hold (the year 9999);
-    /// the waiting release then stays as it was.
+    /// names no one, the assertion no longer passes, `at` is past what a record's time can hold (the year 9999), or
+    /// the provider's releases wait for the operator's confirmation (`T-020-66`); the waiting release then stays as
+    /// it was.
     pub fn accept(
         &mut self,
         provider: &str,

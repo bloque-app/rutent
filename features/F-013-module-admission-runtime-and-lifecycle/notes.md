@@ -1457,8 +1457,10 @@ parsed no failed result and passed vacuously; it parses one now.
    and `accept`, `withdraw`, `revoke`, `declare_exploited`, `mark_stale` will be (`T-020-45`'s round 5): a variant
    naming the provider (and the versions confirmed), so the log can record the decided action.
 3. **A release admitted while its provider waits for confirmation** is accepted and placed as a restored one is (so a
-   restart finds it), with no process and no operation, and runs when the operator confirms. Test:
-   `a_release_admitted_while_its_provider_waits_for_confirmation_starts_nothing`.
+   restart finds it), with no process and no operation, and runs when the operator confirms. **Superseded by
+   `T-020-66`** (#346's review, M1): such a release is now refused `AdmissionPending`, since one accepted or staged
+   while the provider waits reads, to a Core completing a restrictive effect, as one placed before a decision the
+   platform took unrecorded. Test, renamed: `a_release_published_while_its_provider_waits_for_confirmation_is_refused`.
 4. **A segment begun and nothing carried out in it** no longer takes the operation's kind from the caller: the
    question is `Unavailable`. Test: `status_question_about_a_segment_with_nothing_carried_out_in_it_is_refused`.
 5. **A held final refusal binds the nested result too** (`refused` with class `final`); one that lifts doesn't. Test:
@@ -1472,7 +1474,7 @@ parsed no failed result and passed vacuously; it parses one now.
 
 | Rule switched off | Test that went red |
 | --- | --- |
-| A provider waiting for confirmation starts no new release (3) | `a_release_admitted_while_its_provider_waits_for_confirmation_starts_nothing` |
+| A provider waiting for confirmation starts no new release (3; refused since `T-020-66`) | `a_release_published_while_its_provider_waits_for_confirmation_is_refused` |
 | The operation's kind is the record's, never the caller's (4) | `status_question_about_a_segment_with_nothing_carried_out_in_it_is_refused` |
 | A refusal for good binds the nested result (5) | `nested_result_that_differs_from_a_final_answer_the_platform_holds_is_not_signed` |
 | `confirm` and `status` pinned in the scan (1) | `carry_out_is_pinned` in `cargo test -p rutent-core-authz --lib`: red at `bbbe3ddd` as the re-review found, not switched off again here; green now |

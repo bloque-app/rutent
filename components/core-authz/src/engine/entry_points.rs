@@ -25,13 +25,19 @@
 //!    lifecycle actions on the platform (`accept`, `withdraw`, `revoke`, `declare_exploited`, `mark_stale`,
 //!    `promote`, `roll_back`, `confirm`) is visible in the crate at most, or a method of a port's trait impl; and one
 //!    visible outside the crate that reaches one of the crate's carriers ([`CARRIERS`]: `carry_out_roll_back` and its
-//!    siblings), directly or through other functions of the crate or module-level `const` and `static` items, asks policy
-//!    a decision itself and keeps the permit it takes before that call: so no caller outside `core-orch` reaches one but
-//!    through the decided path, which asks policy, records the effect and carries it out (`F-025`'s note on
-//!    `carry_out_roll_back`, `T-020-49`, L1 of #337's review, `T-020-65`, `T-020-66`). Out of its reach, for v0: a
-//!    carrier named inside a `macro_rules!` body (searched as tokens by the macro rule above only where a macro is
-//!    invoked), and a permit and a decision on two unrelated values, which no syntax ties together; both need deliberate
-//!    code in reviewed core-orch, whose carriers are visible in the crate alone.
+//!    siblings), directly or through other functions of the crate or `const` and `static` items (module-level, or an
+//!    `impl` block's associated `const`), asks policy a decision itself and takes a permit earlier in its body than that
+//!    call (`.permit()`, not discarded by `let _ =` or as a statement of its own): so no caller outside `core-orch`
+//!    reaches one but through the decided path, which asks policy, records the effect and carries it out (`F-025`'s
+//!    note on `carry_out_roll_back`, `T-020-49`, L1 of #337's review, `T-020-65`, `T-020-66`). The guard is where the
+//!    permit is taken, by name and position, not where it flows: beyond a name-based scan, for v0, are a carrier named
+//!    inside a `macro_rules!` body (searched as tokens by the macro rule above only where a macro is invoked); a permit
+//!    and a decision on two unrelated values, which no syntax ties together; and a permit taken but never checked
+//!    before the carrier: bound to `_p` or put in a struct, passed to another function, tested with `.is_some();` as a
+//!    statement, `if let Some(_) = ..` with the carrier after it, `drop(..)`ped, taken in a closure never called, or
+//!    with the carrier on its refused branch (`if p.is_none() { carrier() }`). Each needs deliberate code in reviewed
+//!    core-orch, whose carriers are visible in the crate alone; review and the decided path's tests are the line of
+//!    defence there (#346's review, L4).
 //!
 //! The names the rules watch can't be renamed out of their sight: no `use .. as`, no type alias of a watched type, no
 //! import of a watched enum's variants (`use Answer::*`, `use Answer::Permit`). Nor can a file be mounted from
@@ -420,9 +426,10 @@ struct Reach {
 }
 
 /// The finding of rule 4's reach: a public function of core-orch reaching one of the crate's carriers, directly or
-/// through functions, module-level `const` and `static` items included, that reach one, where no decision guards the
-/// reaching call: a call is guarded only where the function asks policy and keeps the permit it takes before that call
-/// (`T-020-66`). Matched by name across the crate as the other rules match, so it fails closed on a shared name.
+/// through functions, `const` and `static` items included, that reach one, where no decision guards the reaching
+/// call: a call is guarded only where the function asks policy and takes a permit earlier in its body than that call
+/// (`T-020-66`), by position, not data flow (the module's doc names what that leaves out). Matched by name across the
+/// crate as the other rules match, so it fails closed on a shared name.
 fn reach_findings(graph: &[Reach]) -> Vec<Finding> {
     let guarded = |f: &Reach, at: usize| f.decides && f.permit_at.is_some_and(|p| p < at);
     let mut reaching: std::collections::BTreeMap<String, String> = CARRIERS
@@ -842,6 +849,13 @@ impl<'ast> Visit<'ast> for Visitor<'_> {
             return;
         }
         self.binding(item.ident.to_string(), |v| visit::visit_item_const(v, item));
+    }
+
+    // An associated `const` in an `impl` block, `Self::F`, is a node as a module-level one is (#346's review, L4).
+    fn visit_impl_item_const(&mut self, item: &'ast syn::ImplItemConst) {
+        self.binding(item.ident.to_string(), |v| {
+            visit::visit_impl_item_const(v, item)
+        });
     }
 
     fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
@@ -1665,9 +1679,9 @@ pub(super) fn public_wrappers_reaching_a_carrier_indirectly_are_found() {
     }
 }
 
-/// Rule 4's reach from #342's review (`T-020-66`): a module-level `const` or `static` function pointer to a carrier, a
-/// permit taken and discarded, and a permit taken only after the carrier is reached are each found; a permit kept before
-/// the carrier is not.
+/// Rule 4's reach from #342's review (`T-020-66`): a module-level `const` or `static` function pointer to a carrier, an
+/// associated `const` one (#346's review, L4), a permit taken and discarded, and a permit taken only after the carrier
+/// is reached are each found; a permit taken earlier in the body than the carrier is not.
 pub(super) fn pointers_and_unchecked_permits_are_found() {
     let orch = |source: &str| {
         let mut scan = Scan::default();
@@ -1696,6 +1710,14 @@ pub(super) fn pointers_and_unchecked_permits_are_found() {
             )),
             found("wrap"),
             "a static pointer"
+        );
+        assert_eq!(
+            orch(&format!(
+                "impl X {{ const F: fn(&mut M, &Effect) = {carrier}; \
+                 pub fn wrap(m: &mut M, e: &Effect) {{ Self::F(m, e); }} }}"
+            )),
+            found("wrap"),
+            "an associated const pointer"
         );
         assert_eq!(
             orch(&format!(

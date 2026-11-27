@@ -216,4 +216,14 @@ impl Core {
     pub fn restart_platform(&mut self, unclean: bool) {
         self.fleet.restart_platform(unclean);
     }
+
+    /// The platform takes `decide` with its record broken in place (`Fleet::with_record_broken`, `T-020-66`): a
+    /// carrying out of an effect Core decided, which the platform takes unrecorded, before Core stops short of its
+    /// result. Core's log is not touched.
+    pub fn on_platform_with_its_record_broken<R>(
+        &mut self,
+        decide: impl FnOnce(&mut rutent_prov::module::platform::Platform<crate::sim::SimWorld>) -> R,
+    ) -> R {
+        self.fleet.with_record_broken(decide)
+    }
 }
