@@ -8,7 +8,7 @@ mod failure_support;
 
 use execution_support::*;
 use failure_support::*;
-use rutent_conformance::sim::Behaviour;
+use rutent_conformance::sim::{Act, Behaviour};
 use rutent_contracts::core_internal::OperatorSetting;
 use rutent_contracts::router_api::{ProtocolVersion, Timestamp};
 use rutent_core_orch::segments::SegmentOutcome;
@@ -129,4 +129,54 @@ fn operator_listed_public_node_stays_public_across_a_reopen() {
         "the node the operator took off stays off"
     );
     assert!(core.catalogue().accepted_advertisement(RESERVE).is_some());
+}
+
+const IN: &str = "sim-join-in";
+const EXCHANGE: &str = "sim-join-exchange";
+const QUICK: &str = "sim-join-ramp-quick";
+const OUT: &str = "sim-join-out";
+
+/// A holdout fleet's exchange fails mid-route and the reversal is asked after the cutover: the failed provider's answer,
+/// under the old version, is taken by the version the segment began under (`REQ-PRT-2`, `REQ-PRT-4`, `T-020-54`). The
+/// confirmation judge's site is tested at its seam, in `core-orch`'s `reversal::judge`: a reserve's confirmation can't be
+/// had from a holdout through the assembly (Core's own question to it goes unanswered there, before or after the date).
+// verifies: REQ-PRT-2, REQ-PRT-4
+#[test]
+fn reversal_of_a_segment_begun_before_a_cutover_is_taken_when_a_holdouts_answer_lands_after_it() {
+    let scenario = Scenario::new("reversal", "AC-4", given(&[IN, EXCHANGE, QUICK, OUT]))
+        .holdout(OLD, &at(600));
+    let (mut core, _) = scenario.core(1, &mut Reference);
+    let session = core.open_session(&kit::customer()).expect("a session");
+    core.world()
+        .script_for(EXCHANGE, "conversion", Behaviour::act(Act::Fail));
+    let (order, ran) = run(
+        &mut core,
+        request(
+            "req-reversal",
+            &session,
+            AMOUNT,
+            IN,
+            outer("sim-join-in-bank", "COP"),
+            outer("sim-join-out-bank", "USD"),
+            OUT,
+            OTHER,
+            "lowest_total_cost",
+        ),
+    );
+    let segments = segments_of(&ran);
+    assert!(
+        matches!(segments[1].outcome, SegmentOutcome::Failed),
+        "the exchange failed: {segments:?}"
+    );
+    let exchange = segments[1].segment.clone();
+    // The date passes before the reversal is asked.
+    core.clock.advance(900);
+    core.set_cadence(rutent_core_orch::schedule::Job::StatusAsks, u64::MAX);
+    core.set_cadence(rutent_core_orch::schedule::Job::StuckReports, u64::MAX);
+    core.world().script(IN, Behaviour::crediting_a_reversal());
+    let asked = core.ask_reversal(&order, &exchange).expect("asked");
+    assert!(
+        asked.completed.is_some(),
+        "the failed provider's answer under the old version is taken: {asked:?}"
+    );
 }

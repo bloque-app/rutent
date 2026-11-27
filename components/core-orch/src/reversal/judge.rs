@@ -30,6 +30,7 @@ use rutent_contracts::router_api::Id;
 use rutent_prov::catalogue::{Catalogue, HoldingSource, Instant, Publisher, verify_envelope};
 
 use super::Word;
+use crate::segments::Began;
 
 /// Why a statement doesn't complete a reversal.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,12 +105,32 @@ pub(super) struct Whose {
 /// advertises nothing, so its statements are attributed by these, as the log attributes them (`T-020-57`).
 pub(super) type ReleaseKeys = std::collections::BTreeMap<String, Vec<PublicKey>>;
 
+/// [`Catalogue::verify_statement`] by the versions in force when the segment began, where Core holds it, else by the
+/// catalogue's table at `at` (`T-020-54`).
+fn verify(
+    catalogue: &Catalogue,
+    received: &[u8],
+    at: Instant,
+    began: Option<&Began>,
+) -> Result<(), rutent_prov::catalogue::StatementRefusal> {
+    match began {
+        Some(b) => catalogue.verify_statement_under(received, at, &b.versions, b.at),
+        None => catalogue.verify_statement(received, at),
+    }
+}
+
 /// Whether `received` is attributable to its maker: its signature verifies under a `statements` key its maker
 /// listed in its advertisement (`Catalogue::verify_statement`), or, for a module the operator publishes, which
 /// advertises nothing, under a statement key one of its accepted releases names in the log, in the catalogue's
 /// deployment and protocol version (`T-020-57`).
-fn attributable(catalogue: &Catalogue, keys: &ReleaseKeys, received: &[u8], at: Instant) -> bool {
-    if catalogue.verify_statement(received, at).is_ok() {
+fn attributable(
+    catalogue: &Catalogue,
+    keys: &ReleaseKeys,
+    received: &[u8],
+    at: Instant,
+    began: Option<&Began>,
+) -> bool {
+    if verify(catalogue, received, at, began).is_ok() {
         return true;
     }
     let Ok(envelope) = serde_json::from_slice::<serde_json::Value>(received) else {
@@ -126,10 +147,14 @@ fn attributable(catalogue: &Catalogue, keys: &ReleaseKeys, received: &[u8], at: 
         text(&["signature", "key"]).and_then(PublicKey::new),
         text(&["signature", "value"]),
         catalogue.context(),
-        catalogue.protocol_versions(),
+        // The versions in force as the segment began under them, where Core holds the segment (`T-020-54`).
+        began
+            .map(|b| b.versions.clone())
+            .or_else(|| catalogue.protocol_versions()),
     ) else {
         return false;
     };
+    let at = began.map_or(at, |b| b.at);
     // The protocol versions in force, each older one until its cutover, judged at the caller's clock (`REQ-PRT-4`).
     let in_context = serde_json::to_value(deployment).ok().as_ref() == envelope.get("deployment")
         && at.rfc3339().is_some_and(|now| {
@@ -146,11 +171,12 @@ pub(super) fn judge(
     catalogue: &Catalogue,
     keys: &ReleaseKeys,
     at: Instant,
+    began: Option<&Began>,
     reversed: &Reversed<'_>,
     question: Option<&Id>,
     received: &[u8],
 ) -> Result<Whose, NotCounted> {
-    if !attributable(catalogue, keys, received, at) {
+    if !attributable(catalogue, keys, received, at, began) {
         return Err(NotCounted::Unattributable);
     }
     let result: Statement<ResultBody> =
@@ -196,7 +222,7 @@ pub(super) fn judge(
     let inner = serde_json::to_vec(&**confirmed).map_err(|_| NotCounted::Unreadable)?;
     if confirmed.maker != result.maker
         || confirmed.shape != REVERSAL_CONFIRMATION_SHAPE
-        || !attributable(catalogue, keys, &inner, at)
+        || !attributable(catalogue, keys, &inner, at, began)
     {
         return Err(NotCounted::NotItsOwn);
     }
@@ -237,14 +263,13 @@ pub(super) fn judge(
 pub(super) fn judge_reversal(
     catalogue: &Catalogue,
     at: Instant,
+    began: Option<&Began>,
     reversed: &Reversed<'_>,
     question: &Id,
     bound: Option<&str>,
     received: &[u8],
 ) -> Result<Whose, NotCounted> {
-    catalogue
-        .verify_statement(received, at)
-        .map_err(|_| NotCounted::Unattributable)?;
+    verify(catalogue, received, at, began).map_err(|_| NotCounted::Unattributable)?;
     let result: Statement<ResultBody> =
         serde_json::from_slice(received).map_err(|_| NotCounted::Unreadable)?;
     if result.shape != RESULT_SHAPE || result.maker != reversed.provider.as_str() {
@@ -358,12 +383,64 @@ mod tests {
         let current = statement(&deployment, VERSION, &key);
         let (before, after) = (Instant(4_999), Instant(5_000));
         assert!(
-            !attributable(&catalogue, &keys, &old, before),
+            !attributable(&catalogue, &keys, &old, before, None),
             "no cutover names it"
         );
         catalogue.set_cutover("3.0.0", &Instant(5_000).rfc3339().unwrap());
-        assert!(attributable(&catalogue, &keys, &old, before));
-        assert!(!attributable(&catalogue, &keys, &old, after));
-        assert!(attributable(&catalogue, &keys, &current, after));
+        assert!(attributable(&catalogue, &keys, &old, before, None));
+        assert!(!attributable(&catalogue, &keys, &old, after, None));
+        assert!(attributable(&catalogue, &keys, &current, after, None));
+    }
+
+    /// The confirmation judge reads the version the segment began under, not the date its answer lands on
+    /// (`REQ-PRT-2`, `REQ-PRT-4`, `T-020-54`): a holdout's statement landing after the cutover, for a segment begun before
+    /// it, passes the attribution (and fails later, for being no result, which is how the test tells), and one for a
+    /// segment begun after it is unattributable. The failed provider's answer (`judge_reversal`) is the assembly's test.
+    // verifies: REQ-PRT-2, REQ-PRT-4
+    #[test]
+    fn confirmation_judge_reads_the_version_its_segment_began_under() {
+        let key = SigningKey::from_bytes(&[5u8; 32]);
+        let operator = SigningKey::from_bytes(&[6u8; 32]);
+        let deployment = Deployment {
+            name: "rutent-test".to_owned(),
+            operator_key: PublicKey::new(base64url(operator.verifying_key().as_bytes())).unwrap(),
+        };
+        let mut catalogue = Catalogue::new();
+        catalogue.set_context(deployment.clone(), VERSION);
+        catalogue.publish_operator_module("wallet").unwrap();
+        catalogue.set_cutover("3.0.0", &Instant(5_000).rfc3339().unwrap());
+        let keys: ReleaseKeys = [(
+            "wallet".to_owned(),
+            vec![PublicKey::new(base64url(key.verifying_key().as_bytes())).unwrap()],
+        )]
+        .into();
+        let old = statement(&deployment, "3.0.0", &key);
+        let (provider, origin, transaction) = (
+            Id::new("wallet").unwrap(),
+            Id::new("wallet").unwrap(),
+            Id::new("tx-1").unwrap(),
+        );
+        let reversed = Reversed {
+            provider: &provider,
+            node: None,
+            origin: Some(&origin),
+            transaction: &transaction,
+            asset: "COP",
+            amount: "1",
+        };
+        let versions = catalogue.protocol_versions().unwrap();
+        let before = Began {
+            at: Instant(4_000),
+            versions: versions.clone(),
+        };
+        let after = Began {
+            at: Instant(5_000),
+            versions,
+        };
+        let lands = Instant(9_000);
+        let judged = |began: Option<&Began>| judge(&catalogue, &keys, lands, began, &reversed, None, &old);
+        assert_eq!(judged(Some(&before)), Err(NotCounted::Unreadable));
+        assert_eq!(judged(Some(&after)), Err(NotCounted::Unattributable));
+        assert_eq!(judged(None), Err(NotCounted::Unattributable));
     }
 }

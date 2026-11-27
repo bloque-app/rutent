@@ -834,6 +834,8 @@ pub struct World {
     pub fleet: Fleet,
     pub catalogue: Catalogue,
     pub installed: Vec<Installed>,
+    /// What Core's side of a holdout world speaks: the current version, the fleet's the old one still in force.
+    core_context: Option<SuiteContext>,
     /// Holds the thread's ends for as long as this world lives.
     _alive: Alive,
 }
@@ -860,12 +862,50 @@ impl World {
         Self::built(reserves, (first, first))
     }
 
+    /// [`World::two_parties`], its providers holdouts: they speak protocol `old` and take the current version's
+    /// operations, and the catalogue reads `old` until `cutover` seconds from [`START`] (`REQ-PRT-4`, `T-020-54`).
+    pub fn two_parties_holding_out(old: &str, cutover: u64) -> Self {
+        Self::built_under(
+            &[TWO_PARTY_ORIGIN, TWO_PARTY_LAST],
+            (TWO_PARTY_ORIGIN, TWO_PARTY_LAST),
+            Some((old, cutover)),
+        )
+    }
+
     fn built(reserves: &[&str], ends: (&'static str, &'static str)) -> Self {
+        Self::built_under(reserves, ends, None)
+    }
+
+    fn built_under(
+        reserves: &[&str],
+        ends: (&'static str, &'static str),
+        holdout: Option<(&str, u64)>,
+    ) -> Self {
         let alive = Alive::with(ends);
-        let mut fleet = Fleet::new(DEADLINE);
+        let mut fleet = match holdout {
+            None => Fleet::new(DEADLINE),
+            Some((old, _)) => {
+                let mut context = SuiteContext::default();
+                context.older_versions = vec![(
+                    context.protocol_version.clone(),
+                    "9999-12-31T23:59:59Z".to_owned(),
+                )];
+                context.protocol_version = old.to_owned();
+                Fleet::with_context(DEADLINE, context)
+            }
+        };
         let context = fleet.context().clone();
         let mut catalogue = Catalogue::new();
-        catalogue.set_context(context.deployment.clone(), &context.protocol_version);
+        match holdout {
+            None => catalogue.set_context(context.deployment.clone(), &context.protocol_version),
+            Some((old, cutover)) => {
+                catalogue.set_context(
+                    context.deployment.clone(),
+                    rutent_contracts::provider_role::VERSION,
+                );
+                catalogue.set_cutover(old, &Instant(START + cutover).rfc3339().unwrap());
+            }
+        }
         let mut installed = Vec::new();
         for reserve in reserves {
             let spec = Spec::of(SimRole::Reserve, reserve);
@@ -875,16 +915,26 @@ impl World {
         }
         // What the routing's questions left behind is not the segments'.
         let _ = fleet.platform.take_events();
+        let core_context = holdout.map(|(old, cutover)| {
+            let mut core_side = context.clone();
+            core_side.protocol_version = rutent_contracts::provider_role::VERSION.to_owned();
+            core_side.older_versions =
+                vec![(old.to_owned(), Instant(START + cutover).rfc3339().unwrap())];
+            core_side
+        });
         World {
             fleet,
             catalogue,
             installed,
+            core_context,
             _alive: alive,
         }
     }
 
     pub fn context(&self) -> SuiteContext {
-        self.fleet.context().clone()
+        self.core_context
+            .clone()
+            .unwrap_or_else(|| self.fleet.context().clone())
     }
 }
 

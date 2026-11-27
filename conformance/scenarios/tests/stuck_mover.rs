@@ -2647,3 +2647,128 @@ fn decline_resting_on_an_outside_providers_word_or_the_reporters_own_party_is_re
     m.held();
     m.admitted();
 }
+
+/// A decided resolution's move is carried out by a holdout reserve that speaks the old version, whose date passes while
+/// the operation runs: the answer lands after the cutover, for a move begun before it, and counts (`REQ-PRT-2`,
+/// `REQ-PRT-4`, `T-020-54`).
+// verifies: REQ-PRT-2, REQ-PRT-4
+#[test]
+fn stuck_mover_takes_a_holdouts_answer_landing_after_the_cutover_for_a_move_begun_before_it() {
+    let (mut world, mut core, mut stuck) =
+        stuck_by_no_route_in(World::two_parties_holding_out("3.0.0", 3_600));
+    let mut mover = Mover::new();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
+    let permitted = decide(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        &alice,
+        &to_origin(AMOUNT),
+    )
+    .expect("asked");
+    let order = id(&core.named.order);
+    let actor = segments_support::core();
+    let carries_out = decided(&permitted);
+    let mut watched = Watched::new(&mut world.fleet.platform);
+    // The operation takes two hours: the answer lands after the date.
+    watched.takes = Some((core.clock.clone(), 7_200));
+    let moved = on_platform(
+        &mut core,
+        &world.catalogue,
+        &mut watched,
+        &mut mover,
+        |parts, delivering| {
+            stuck.carry_out(
+                parts,
+                &mut policy,
+                delivering,
+                Moving {
+                    order: &order,
+                    carries_out: &carries_out,
+                    mover: &bob,
+                    core: &actor,
+                },
+            )
+        },
+    );
+    let Ok(Moved::CarriedOut { resolved, .. }) = moved else {
+        panic!("carried out: {moved:?}");
+    };
+    assert_eq!(
+        resolved,
+        Resolved::Done,
+        "the holdout's answer counts, though it lands after the cutover"
+    );
+}
+
+/// A move left unknown whose provider's later statement, under the old version, lands after the cutover is taken
+/// by the version the move began under (`REQ-PRT-2`, `REQ-PRT-4`, `T-020-54`).
+// verifies: REQ-PRT-2, REQ-PRT-4
+#[test]
+fn stuck_mover_takes_a_holdouts_later_statement_after_the_cutover_for_a_move_begun_before_it() {
+    let (mut world, mut core, mut stuck) =
+        stuck_by_no_route_in(World::two_parties_holding_out("3.0.0", 3_600));
+    let mut mover = Mover::new();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
+    world
+        .fleet
+        .world()
+        .script_for(origin_reserve(), "deposit", Behaviour::act(Act::Unknown));
+    let permitted = decide(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        &alice,
+        &to_origin(AMOUNT),
+    )
+    .expect("asked");
+    let delivered = deliver(
+        &mut core,
+        &mut world,
+        &mut stuck,
+        &mut mover,
+        &mut policy,
+        &decided(&permitted),
+        &bob,
+    );
+    let Ok(Moved::CarriedOut {
+        effect,
+        resolved: Resolved::Unknown,
+        ..
+    }) = delivered.moved.clone()
+    else {
+        panic!("unknown: {:?}", delivered.moved);
+    };
+    // The date passes, and the provider's later statement is made then, under the old version.
+    core.clock.advance(7_200);
+    let transaction = decided_transaction(&core);
+    let late = serde_json::to_vec(&settled_after_unknown(&core, &transaction)).unwrap();
+    let (order, part) = (id(&core.named.order), id(PART));
+    let carrying_core = segments_support::core();
+    let mut watched = Watched::new(&mut world.fleet.platform);
+    let taken = on_platform(
+        &mut core,
+        &world.catalogue,
+        &mut watched,
+        &mut mover,
+        |parts, delivering| {
+            delivering.statement(
+                parts,
+                &rutent_core_orch::stuck::Carrying {
+                    order: &order,
+                    part: &part,
+                    core: &carrying_core,
+                    again: false,
+                },
+                &effect,
+                &late,
+            )
+        },
+    );
+    assert_eq!(
+        taken.expect("taken after the cutover").outcome(),
+        Some(Resolved::Done)
+    );
+}

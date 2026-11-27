@@ -865,6 +865,10 @@ impl Reversals {
             Some(answer) => judge::judge_reversal(
                 parts.catalogue,
                 parts.clock.now().floor(),
+                parts
+                    .segments
+                    .began_of(target.reversed().transaction)
+                    .as_ref(),
                 &target.reversed(),
                 &state.transaction,
                 bound.as_deref(),
@@ -1351,6 +1355,7 @@ impl Reversals {
             parts.catalogue,
             &self.release_keys,
             parts.clock.now().floor(),
+            parts.segments.began_of(reversed.transaction).as_ref(),
             &reversed,
             Some(&transaction),
             &answer,
@@ -1417,6 +1422,10 @@ impl Reversals {
             parts.catalogue,
             &self.release_keys,
             parts.clock.now().floor(),
+            parts
+                .segments
+                .began_of(target.reversed().transaction)
+                .as_ref(),
             &target.reversed(),
             None,
             bytes,
