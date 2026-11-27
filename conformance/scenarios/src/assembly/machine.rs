@@ -239,6 +239,25 @@ impl Feed {
         out
     }
 
+    /// The machine's host restarted from its journal in `environment` (`T-024-21`, `NFR-6`): every order's journal as
+    /// its store holds it exported, a fresh host opened on exactly that, and resumed; nothing the host held in memory
+    /// goes on. Core, restarted beside it, knows nothing of how far it fed the host, so every input the log took is
+    /// delivered again from the first, which the host records once (`exactly-once`). Not a swap: the environment is
+    /// the one it ran in, and no swap is counted.
+    ///
+    /// # Errors
+    ///
+    /// If the journal can't be exported, or the fresh host can't take it.
+    pub fn restarted(&mut self, environment: &mut dyn Environment) -> Result<(), HostError> {
+        self.machine.halt()?;
+        let entries = self.machine.export()?;
+        let mut next = environment.import(entries)?;
+        next.resume()?;
+        self.machine = next;
+        self.fed = 0;
+        Ok(())
+    }
+
     /// Moves the machine to `to`: halted, exported, imported into a fresh host there, and resumed. Nothing it held
     /// is lost, or the swap fails.
     pub fn swap(&mut self, to: &mut dyn Environment) -> Result<(), HostError> {

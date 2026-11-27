@@ -65,20 +65,80 @@ pub enum Kind {
     Repeated,
     /// The whole route is run again after it ended.
     Rerun,
+    /// The process crashes right after the log's store took the `n`th effect, and Core and its platform are restarted
+    /// from their disks and carry on from the log (`T-024-21`).
+    RestartAfterRecord(usize),
+    /// The process crashes right before the platform carries out the `n`th effect, and Core and its platform are
+    /// restarted and carry on (`T-024-21`).
+    RestartBeforeEffect(usize),
+    /// The process crashes right after the log's store took the `n`th provider's answer, its result statement, the
+    /// provider having moved, before Core acted on it: Core and its platform are restarted, and the segment goes on
+    /// from its logged answer (`T-024-21`).
+    RestartAfterAnswer(usize),
+    /// The final deposit is taken and never answered, the part is declared stuck, and then Core and its platform crash
+    /// and are restarted, and the stuck order is followed on from the log (`T-024-21`).
+    RestartWhileStuck,
+}
+
+/// The restart kinds whose caught order ends stuck, not complete, until `T-020-61` lands (`T-024-21`): the crash falls
+/// after the log took a segment's effect and before its outcome was recorded, and the restarted Core never hands that
+/// segment over again (`Segments::AlreadyActed`: its value may be in motion, `INV-8`) nor asks its provider where it
+/// stands, so the order is held until its time passes and then declared stuck, for the operator. `T-020-61` carries such
+/// a segment on (a status question, then a repeat under its transaction where nothing moved); when it lands, emptying
+/// this is the whole change here, and every caught order must then complete.
+pub fn stuck_until_t020_61(kind: Kind) -> bool {
+    matches!(
+        kind,
+        Kind::RestartAfterRecord(_) | Kind::RestartBeforeEffect(_)
+    )
 }
 
 impl Kind {
-    /// The kind of fault seed `seed` draws, when it isn't pinned.
+    /// Whether a run of this kind restarts Core and its platform mid-order (`T-024-21`).
+    pub fn restarts(self) -> bool {
+        matches!(
+            self,
+            Kind::RestartAfterRecord(_)
+                | Kind::RestartBeforeEffect(_)
+                | Kind::RestartAfterAnswer(_)
+                | Kind::RestartWhileStuck
+        )
+    }
+}
+
+impl Kind {
+    /// The kind of fault seed `seed` draws, when it isn't pinned. A crash is followed by a restart as often as not
+    /// (`T-024-21`): the seeds CI sets plant restarts of Core and its platform at points they draw.
     fn drawn(draw: &mut Seeded) -> Kind {
         match draw.below(8) {
             0 => Kind::Clean,
             1 => Kind::FailsAtTheEnd,
             2 => Kind::FailsInTheMiddle,
             3 => Kind::SilentAtTheEnd,
-            4 => Kind::CrashAfterRecord(draw.below(3) as usize),
-            5 => Kind::CrashBeforeEffect(draw.below(3) as usize),
+            4 => {
+                let nth = draw.below(3) as usize;
+                match draw.below(3) {
+                    0 => Kind::CrashAfterRecord(nth),
+                    1 => Kind::RestartAfterRecord(nth),
+                    _ => Kind::RestartAfterAnswer(nth.min(1)),
+                }
+            }
+            5 => {
+                let nth = draw.below(3) as usize;
+                if draw.below(2) == 0 {
+                    Kind::CrashBeforeEffect(nth)
+                } else {
+                    Kind::RestartBeforeEffect(nth)
+                }
+            }
             6 => Kind::Repeated,
-            _ => Kind::Rerun,
+            _ => {
+                if draw.below(2) == 0 {
+                    Kind::Rerun
+                } else {
+                    Kind::RestartWhileStuck
+                }
+            }
         }
     }
 }
@@ -95,8 +155,8 @@ pub struct Plan {
 }
 
 /// The runs every test binary plays, whatever the seeds say: one of each kind of fault, on both routes where the
-/// kind has a meaning on both.
-pub const PINNED: [Plan; 12] = [
+/// kind has a meaning on both, restarts of Core and its platform among them (`T-024-21`).
+pub const PINNED: [Plan; 19] = [
     Plan {
         seed: 101,
         shape: Shape::Base,
@@ -157,6 +217,41 @@ pub const PINNED: [Plan; 12] = [
         shape: Shape::Joined,
         kind: Kind::FailsAtTheEnd,
     },
+    Plan {
+        seed: 113,
+        shape: Shape::Base,
+        kind: Kind::RestartAfterRecord(0),
+    },
+    Plan {
+        seed: 114,
+        shape: Shape::Base,
+        kind: Kind::RestartBeforeEffect(1),
+    },
+    Plan {
+        seed: 115,
+        shape: Shape::Joined,
+        kind: Kind::RestartAfterRecord(2),
+    },
+    Plan {
+        seed: 116,
+        shape: Shape::Joined,
+        kind: Kind::RestartBeforeEffect(1),
+    },
+    Plan {
+        seed: 117,
+        shape: Shape::Base,
+        kind: Kind::RestartWhileStuck,
+    },
+    Plan {
+        seed: 118,
+        shape: Shape::Base,
+        kind: Kind::RestartAfterAnswer(0),
+    },
+    Plan {
+        seed: 119,
+        shape: Shape::Joined,
+        kind: Kind::RestartAfterAnswer(1),
+    },
 ];
 
 /// The seeds the seeded runs are made under where `RUTENT_SCENARIO_SEEDS` sets none.
@@ -170,9 +265,23 @@ pub struct Sim {
     pub run: Run,
     /// What each failure step answered, for the record of what the run did.
     pub notes: Vec<String>,
+    /// The orders a planted crash caught mid-run, Core and its platform restarted under them (`T-024-21`).
+    pub caught: Vec<String>,
 }
 
 impl Sim {
+    /// The state a restarted run's `order` must end in (`T-024-21`): `stuck` where it was stuck when the run restarted
+    /// (`RestartWhileStuck`), or a crash caught it in a kind `stuck_until_t020_61` marks; `complete` otherwise.
+    pub fn expected_end(&self, order: &str) -> &'static str {
+        if (self.plan.kind == Kind::RestartWhileStuck || stuck_until_t020_61(self.plan.kind))
+            && self.caught.iter().any(|o| o == order)
+        {
+            "stuck"
+        } else {
+            "complete"
+        }
+    }
+
     /// How a failing check names this run.
     pub fn name(&self) -> String {
         format!(
@@ -195,6 +304,9 @@ pub fn plan_of(seed: u64) -> Plan {
     // to be the destination's, and so do on the joined one; the plan keeps the draw as it is.
     if shape == Shape::Joined && matches!(kind, Kind::SilentAtTheEnd) {
         kind = Kind::FailsAtTheEnd;
+    }
+    if shape == Shape::Joined && matches!(kind, Kind::RestartWhileStuck) {
+        kind = Kind::RestartAfterRecord(1);
     }
     Plan { seed, shape, kind }
 }
@@ -249,7 +361,9 @@ fn order_request(shape: Shape, name: &str, session: &Id, amount: &str) -> OrderR
 }
 
 /// Plays `plan`: the orders opened, quoted and accepted, the fault planted, the routes run and the failures followed
-/// as `T-024-06` follows them, and the run read back.
+/// as `T-024-06` follows them, and the run read back. A run of a restarting kind (`Kind::restarts`) restarts Core and
+/// its platform where its crash falls, or where its stuck order is declared, and carries every order on from the log
+/// (`T-024-21`).
 pub fn play(plan: Plan) -> Sim {
     let scenario = Scenario::new(
         "invariants",
@@ -260,26 +374,121 @@ pub fn play(plan: Plan) -> Sim {
         },
         given_of(plan.shape),
     );
-    let (mut core, _) = scenario.core(plan.seed, &mut Reference);
-    let mut orders: Vec<Id> = Vec::new();
-    let mut notes = Vec::new();
-    let done = catch_unwind(AssertUnwindSafe(|| {
-        drive(&mut core, plan, &mut orders, &mut notes);
-    }));
-    let crashed = match done {
-        Ok(()) => false,
-        Err(panic) if is_crash(&*panic) => true,
-        Err(panic) => resume_unwind(panic),
+    let (core, _) = scenario.core(plan.seed, &mut Reference);
+    let mut driving = Driving {
+        core: Some(core),
+        scenario: &scenario,
+        plan,
+        notes: Vec::new(),
+        caught: Vec::new(),
     };
-    let run = Run::read(&scenario, plan.seed, core, orders, crashed);
-    Sim { plan, run, notes }
+    let mut orders: Vec<Id> = Vec::new();
+    let crashed = match drive(&mut driving, &mut orders) {
+        Ok(()) => false,
+        Err(Stopped) => true,
+    };
+    let Driving {
+        core,
+        notes,
+        caught,
+        ..
+    } = driving;
+    let run = Run::read(
+        &scenario,
+        plan.seed,
+        core.expect("Core, as the run left it"),
+        orders,
+        crashed,
+    );
+    Sim {
+        plan,
+        run,
+        notes,
+        caught,
+    }
 }
 
-fn drive(core: &mut Core, plan: Plan, orders: &mut Vec<Id>, notes: &mut Vec<String>) {
+/// Core stopped on a planted crash, and the run's kind doesn't restart it.
+struct Stopped;
+
+/// A run being driven: Core as it stands, restarted in place where the run's kind says.
+struct Driving<'a> {
+    core: Option<Core>,
+    scenario: &'a Scenario,
+    plan: Plan,
+    notes: Vec<String>,
+    caught: Vec<String>,
+}
+
+impl Driving<'_> {
+    fn core(&mut self) -> &mut Core {
+        self.core.as_mut().expect("Core")
+    }
+
+    /// Core and its platform restarted after a crash (`Scenario::restart`, `T-024-21`).
+    fn restart(&mut self, why: &str) {
+        let core = self.core.take().expect("Core");
+        self.core = Some(self.scenario.restart(core, self.plan.seed, &mut Reference));
+        self.notes.push(format!("restarted: {why}"));
+    }
+
+    /// Runs `call` on Core. Where a planted crash stops it, a run of a restarting kind restarts Core and its platform
+    /// and answers `Ok(None)`, the step to be carried on from the log; any other run stops there.
+    fn guarded<T>(&mut self, call: impl FnOnce(&mut Core) -> T) -> Result<Option<T>, Stopped> {
+        let core = self.core();
+        match catch_unwind(AssertUnwindSafe(|| call(core))) {
+            Ok(done) => Ok(Some(done)),
+            Err(panic) if is_crash(&*panic) => {
+                if self.plan.kind.restarts() {
+                    self.restart("after the planted crash");
+                    Ok(None)
+                } else {
+                    Err(Stopped)
+                }
+            }
+            Err(panic) => resume_unwind(panic),
+        }
+    }
+}
+
+/// `late`, a provider's signed result, stated otherwise by the same provider: its first piece of evidence named
+/// anew, signed again with the provider's statement key the world holds. `None` where it states no evidence.
+fn contradicting(core: &mut Core, late: &[u8]) -> Option<Vec<u8>> {
+    let mut statement: serde_json::Value = serde_json::from_slice(late).ok()?;
+    let maker = statement["maker"].as_str()?.to_owned();
+    let reference = statement["statement"]["outcome"]["evidence"][0]["reference"]
+        .as_str()?
+        .to_owned();
+    statement["statement"]["outcome"]["evidence"][0]["reference"] =
+        format!("{reference}-restated").into();
+    core.world()
+        .sign_as(&maker, &mut statement)
+        .then(|| serde_json::to_vec(&statement).ok())
+        .flatten()
+}
+
+/// The segments of `order` whose outcome a run left unknown.
+fn unknown_of(ran: &[rutent_core_orch::segments::Ran], order: &Id, unknown: &mut Vec<(Id, Id)>) {
+    for part in ran {
+        if let rutent_core_orch::segments::Ran::Segments(segments) = part {
+            for s in segments {
+                if matches!(
+                    s.outcome,
+                    rutent_core_orch::segments::SegmentOutcome::Unknown(_)
+                ) {
+                    unknown.push((order.clone(), s.segment.clone()));
+                }
+            }
+        }
+    }
+}
+
+fn drive(driving: &mut Driving<'_>, orders: &mut Vec<Id>) -> Result<(), Stopped> {
+    let plan = driving.plan;
     let mut draw = Seeded::new(plan.seed ^ 0x0de1_7a5e);
     let customer = kit::customer();
-    let session = core.open_session(&customer).expect("a session");
-    core.swap_to = Some(reference());
+    let mut session = driving.core().open_session(&customer).expect("a session");
+    driving.core().swap_to = Some(reference());
     let amounts: Vec<String> = match plan.shape {
         // Two orders of at most 20 100 000 each fit the simulated reserve's opening balance.
         Shape::Base => (0..1 + draw.below(2))
@@ -288,53 +497,64 @@ fn drive(core: &mut Core, plan: Plan, orders: &mut Vec<Id>, notes: &mut Vec<Stri
         Shape::Joined => vec![kit::AMOUNT.to_owned()],
     };
     let mut unknown: Vec<(Id, Id)> = Vec::new();
-    let (last, middle, kind) = match plan.shape {
-        Shape::Base => (RESERVE, RESERVE, plan.kind),
-        Shape::Joined => (OUT, EXCHANGE, plan.kind),
+    let (last, middle) = match plan.shape {
+        Shape::Base => (RESERVE, RESERVE),
+        Shape::Joined => (OUT, EXCHANGE),
     };
-    match plan.kind {
-        Kind::FailsAtTheEnd => core
-            .world()
-            .script_for(last, "deposit", Behaviour::act(Act::Fail)),
-        Kind::FailsInTheMiddle => {
-            let (provider, op) = if plan.shape == Shape::Joined {
-                (middle, "conversion")
-            } else {
-                (middle, "deposit")
-            };
-            core.world()
-                .script_for(provider, op, Behaviour::act(Act::Fail));
+    {
+        let core = driving.core();
+        match plan.kind {
+            Kind::FailsAtTheEnd => {
+                core.world()
+                    .script_for(last, "deposit", Behaviour::act(Act::Fail))
+            }
+            Kind::FailsInTheMiddle => {
+                let (provider, op) = if plan.shape == Shape::Joined {
+                    (middle, "conversion")
+                } else {
+                    (middle, "deposit")
+                };
+                core.world()
+                    .script_for(provider, op, Behaviour::act(Act::Fail));
+            }
+            Kind::SilentAtTheEnd | Kind::RestartWhileStuck => {
+                core.world().script_for(last, "deposit", Behaviour::late());
+            }
+            Kind::CrashAfterRecord(nth) | Kind::RestartAfterRecord(nth) => plant(
+                core,
+                &Fault::CrashAfterRecord {
+                    call: "effect",
+                    nth,
+                },
+            ),
+            Kind::CrashBeforeEffect(nth) | Kind::RestartBeforeEffect(nth) => {
+                plant(core, &Fault::CrashBeforeEffect(nth));
+            }
+            // Planted as the first order runs, so the answers counted are its segments', not a quote's.
+            Kind::RestartAfterAnswer(_) => {}
+            Kind::Repeated => {
+                // The same operation sent to a provider twice, under its transaction, on both routes. A provider that
+                // declares no safe retry (the simulated exchange, which `T-024-01` models as moving again on a repeat)
+                // is never repeated to by Core (`REQ-CAT-10`), so the repeat is injected beneath Core, and the
+                // platform refuses it (`T-013-09`): the joined route's `INV-8` holds the platform, and not only the
+                // provider.
+                plant(core, &Fault::DeliverTwice);
+                let delivery = if draw.below(2) == 0 {
+                    Delivery::Repeated
+                } else {
+                    Delivery::Reordered
+                };
+                plant(core, &Fault::Deliver(delivery));
+                plant(core, &Fault::SwapBeforeEffect(draw.below(3) as usize));
+            }
+            Kind::Clean | Kind::Rerun => {}
         }
-        Kind::SilentAtTheEnd => core.world().script_for(last, "deposit", Behaviour::late()),
-        Kind::CrashAfterRecord(nth) => plant(
-            core,
-            &Fault::CrashAfterRecord {
-                call: "effect",
-                nth,
-            },
-        ),
-        Kind::CrashBeforeEffect(nth) => plant(core, &Fault::CrashBeforeEffect(nth)),
-        Kind::Repeated => {
-            // The same operation sent to a provider twice, under its transaction, on both routes. A provider that
-            // declares no safe retry (the simulated exchange, which `T-024-01` models as moving again on a repeat)
-            // is never repeated to by Core (`REQ-CAT-10`), so the repeat is injected beneath Core, and the
-            // platform refuses it (`T-013-09`): the joined route's `INV-8` holds the platform, and not only the
-            // provider.
-            plant(core, &Fault::DeliverTwice);
-            let delivery = if draw.below(2) == 0 {
-                Delivery::Repeated
-            } else {
-                Delivery::Reordered
-            };
-            plant(core, &Fault::Deliver(delivery));
-            plant(core, &Fault::SwapBeforeEffect(draw.below(3) as usize));
-        }
-        Kind::Clean | Kind::Rerun => {}
     }
-    let _ = (kind, Paid::Full);
+    let _ = Paid::Full;
     for (n, amount) in amounts.iter().enumerate() {
         let name = format!("req-inv-{}-{n}", plan.seed);
         let request = order_request(plan.shape, &name, &session, amount);
+        let core = driving.core();
         let told = core.request(request).expect("the request opens an order");
         let order = Core::order_of(&told).expect("an order");
         let told = core.quote(&customer, &order).expect("quoted");
@@ -350,96 +570,171 @@ fn drive(core: &mut Core, plan: Plan, orders: &mut Vec<Id>, notes: &mut Vec<Stri
         };
         core.accept(&customer, &order, &digest).expect("accepted");
         orders.push(order.clone());
-        match core.run(&order) {
-            Ok(ran) => {
-                for part in &ran {
-                    if let rutent_core_orch::segments::Ran::Segments(segments) = part {
-                        for s in segments {
-                            if matches!(
-                                s.outcome,
-                                rutent_core_orch::segments::SegmentOutcome::Unknown(_)
-                            ) {
-                                unknown.push((order.clone(), s.segment.clone()));
-                            }
-                        }
+        if let (0, Kind::RestartAfterAnswer(nth)) = (n, plan.kind) {
+            plant(
+                driving.core(),
+                &Fault::CrashAfterRecord {
+                    call: rutent_contracts::provider_role::RESULT_SHAPE,
+                    nth,
+                },
+            );
+        }
+        match driving.guarded(|core| core.run(&order))? {
+            Some(Ok(ran)) => unknown_of(&ran, &order, &mut unknown),
+            Some(Err(e)) => driving.notes.push(format!("run {n}: {e:?}")),
+            // Restarted where the crash fell: every order accepted so far carries on from the log, and the session the
+            // restarted Core's policy holds is the one the next order is asked in.
+            None => {
+                driving.caught.push(order.as_str().to_owned());
+                session = driving.core().open_session(&customer).expect("a session");
+                for order in orders.clone() {
+                    match driving.guarded(|core| core.run(&order))? {
+                        Some(Ok(ran)) => unknown_of(&ran, &order, &mut unknown),
+                        Some(Err(e)) => driving.notes.push(format!("carried on: {e:?}")),
+                        None => {}
                     }
                 }
             }
-            Err(e) => notes.push(format!("run {n}: {e:?}")),
         }
-        core.flush()
+        driving
+            .core()
+            .flush()
             .expect("the state machine takes what the log did");
     }
     if plan.kind == Kind::Rerun {
         for order in orders.clone() {
-            if let Err(e) = core.run(&order) {
-                notes.push(format!("rerun: {e:?}"));
+            if let Err(e) = driving.core().run(&order) {
+                driving.notes.push(format!("rerun: {e:?}"));
             }
         }
+    }
+    // A planted crash that never fell: Core and its platform are restarted all the same, once every order ran, and
+    // each order is carried on from the log.
+    if matches!(
+        plan.kind,
+        Kind::RestartAfterRecord(_) | Kind::RestartBeforeEffect(_) | Kind::RestartAfterAnswer(_)
+    ) && driving.core().restarts() == 0
+    {
+        // The crash never fell: it is taken back, so it never falls in the restart's own records.
+        rutent_scenarios::harness::unplant_crashes(driving.core());
+        driving.restart("after the orders ran, the planted crash having never fallen");
+        for order in orders.clone() {
+            match driving.guarded(|core| core.run(&order))? {
+                Some(Err(e)) => driving.notes.push(format!("carried on: {e:?}")),
+                Some(Ok(ran)) => unknown_of(&ran, &order, &mut unknown),
+                None => {}
+            }
+        }
+    }
+    // The order a crash caught after its segment's effect was recorded and before its outcome was is held by the
+    // restarted Core until its time passes, and then declared stuck, for the operator: only those, of the kinds
+    // `stuck_until_t020_61` marks, are timed out. Every other order of a restarted run must have completed by itself.
+    if stuck_until_t020_61(plan.kind) && !driving.caught.is_empty() {
+        driving.core().clock.advance(2 * 86_400 + 60);
+        for order in driving.caught.clone() {
+            let order = rutent_contracts::router_api::Id::new(&order).expect("an order id");
+            if let Ok(Some(watched)) = driving.guarded(|core| core.watch(&order)) {
+                driving.notes.push(format!(
+                    "watch after the restart: {}",
+                    format!("{watched:?}").chars().take(40).collect::<String>()
+                ));
+            }
+        }
+        driving
+            .core()
+            .flush()
+            .expect("the state machine takes what the log did");
     }
     // The failures, followed: a part that can't go on is recalculated, and left stuck where no route is left; a
     // provider that never answered is timed.
     for order in orders.clone() {
         match plan.kind {
-            Kind::FailsAtTheEnd | Kind::FailsInTheMiddle => match core.recalculate(&order) {
-                Ok(r) => {
-                    notes.push(format!(
-                        "recalculate: {}",
-                        format!("{r:?}").chars().take(60).collect::<String>()
-                    ));
-                    match &r {
-                        Recalculation::Recalculated(recalculated) => {
-                            if let Err(e) = core.run_recalculated(&order, recalculated) {
-                                notes.push(format!("run recalculated: {e:?}"));
+            Kind::FailsAtTheEnd | Kind::FailsInTheMiddle => {
+                match driving.core().recalculate(&order) {
+                    Ok(r) => {
+                        driving.notes.push(format!(
+                            "recalculate: {}",
+                            format!("{r:?}").chars().take(60).collect::<String>()
+                        ));
+                        match &r {
+                            Recalculation::Recalculated(recalculated) => {
+                                if let Err(e) =
+                                    driving.core().run_recalculated(&order, recalculated)
+                                {
+                                    driving.notes.push(format!("run recalculated: {e:?}"));
+                                }
                             }
-                        }
-                        Recalculation::NoRouteLeft { .. } => {
-                            if let Err(e) = core.record_no_route(&order, &r) {
-                                notes.push(format!("no route: {e:?}"));
+                            Recalculation::NoRouteLeft { .. } => {
+                                if let Err(e) = driving.core().record_no_route(&order, &r) {
+                                    driving.notes.push(format!("no route: {e:?}"));
+                                }
                             }
+                            _ => {}
                         }
-                        _ => {}
                     }
+                    Err(e) => driving.notes.push(format!("recalculate: {e:?}")),
                 }
-                Err(e) => notes.push(format!("recalculate: {e:?}")),
-            },
-            Kind::SilentAtTheEnd => {
-                core.clock.advance(2 * 86_400 + 60);
-                match core.watch(&order) {
-                    Ok(w) => notes.push(format!(
+            }
+            Kind::SilentAtTheEnd | Kind::RestartWhileStuck => {
+                driving.core().clock.advance(2 * 86_400 + 60);
+                match driving.core().watch(&order) {
+                    Ok(w) => driving.notes.push(format!(
                         "watch: {}",
                         format!("{w:?}").chars().take(40).collect::<String>()
                     )),
-                    Err(e) => notes.push(format!("watch: {e:?}")),
+                    Err(e) => driving.notes.push(format!("watch: {e:?}")),
+                }
+                // Declared stuck, Core and its platform crash and are restarted: the stuck order is followed on from
+                // the log (`T-024-21`).
+                if plan.kind == Kind::RestartWhileStuck && driving.core().restarts() == 0 {
+                    driving.caught.extend(
+                        unknown
+                            .iter()
+                            .filter(|(o, _)| *o == order)
+                            .map(|(o, _)| o.as_str().to_owned()),
+                    );
+                    driving.restart("with the order stuck");
                 }
                 // A stuck order starts no new route and hands nothing over (`AC-5`): both are asked, and what the log
                 // then holds is what the invariants read.
-                match core.recalculate(&order) {
-                    Ok(r) => notes.push(format!(
+                match driving.core().recalculate(&order) {
+                    Ok(r) => driving.notes.push(format!(
                         "recalculate: {}",
                         format!("{r:?}").chars().take(60).collect::<String>()
                     )),
-                    Err(e) => notes.push(format!("recalculate: {e:?}")),
+                    Err(e) => driving.notes.push(format!("recalculate: {e:?}")),
                 }
-                if let Err(e) = core.run(&order) {
-                    notes.push(format!("run again: {e:?}"));
+                if let Err(e) = driving.core().run(&order) {
+                    driving.notes.push(format!("run again: {e:?}"));
                 }
                 // The provider's answer comes late, twice: kept once, and it moves nothing.
                 for (o, segment) in unknown.iter().filter(|(o, _)| *o == order) {
-                    if let Some(late) = core.provider_again(o, segment) {
+                    if let Some(late) = driving.core().provider_again(o, segment) {
                         for _ in 0..2 {
-                            if let Err(e) = core.late_delivery(o, segment, &late) {
-                                notes.push(format!("late delivery: {e:?}"));
+                            if let Err(e) = driving.core().late_delivery(o, segment, &late) {
+                                driving.notes.push(format!("late delivery: {e:?}"));
                             }
+                        }
+                        // Then the provider states something else about it (`T-020-47`'s shape): the same result with
+                        // its evidence named otherwise, signed anew by the provider. Kept as a further statement that
+                        // moves nothing: `INV-4` holds it to that (`T-024-21`).
+                        if plan.kind == Kind::SilentAtTheEnd
+                            && let Some(other) = contradicting(driving.core(), &late)
+                            && let Err(e) = driving.core().late_delivery(o, segment, &other)
+                        {
+                            driving.notes.push(format!("contradicting delivery: {e:?}"));
                         }
                     }
                 }
             }
             _ => {}
         }
-        core.flush()
+        driving
+            .core()
+            .flush()
             .expect("the state machine takes what the log did");
     }
+    Ok(())
 }
 
 // --- What the log, read back, says ---------------------------------------------------------------------------------

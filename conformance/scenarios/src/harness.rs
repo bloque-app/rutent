@@ -144,8 +144,11 @@ pub enum Step {
     Advance(u64),
     /// The state machine moves to the swap environment, now.
     Swap,
-    /// Core, stopped by a planted crash or not, is opened again on its disk and goes on: the providers, their networks
-    /// and the state machine's host as they stand ([`Core::reopened`]). Orders it was running stay where they stopped.
+    /// Core and its platform, stopped by a planted crash or not, are restarted as after a crash (`T-024-21`): every
+    /// value either held in memory dropped, both opened again from their disks, the log, the evidence store, the
+    /// platform's record and the state machine's journal, and the releases the platform holds confirmed by the
+    /// operator through Core's decided path ([`Core::restarted`]). The providers' world goes on as it stands. Orders it
+    /// was running stay where they stopped, for a later step to carry on from the log.
     Restart,
 }
 
@@ -273,8 +276,9 @@ impl Scenario {
         (core, orders)
     }
 
-    /// `core`, put together for this scenario under `seed`, opened again on its disk as [`Step::Restart`] opens it
-    /// ([`Core::reopened`]): for a test that drives Core's own calls and restarts it between them (`T-020-46`).
+    /// `core`, put together for this scenario under `seed`, opened again on its disk, the platform and the state
+    /// machine's host going on as they stand ([`Core::reopened`]): for a test that drives Core's own calls and restarts
+    /// Core alone between them (`T-020-46`).
     ///
     /// # Panics
     ///
@@ -287,6 +291,53 @@ impl Scenario {
                 self.name
             )
         })
+    }
+
+    /// `core` and its platform restarted after a crash as [`Step::Restart`] restarts them ([`Core::restarted`]), the
+    /// planted swap kept: for a test that drives Core's own calls and restarts both between them (`T-024-21`).
+    ///
+    /// # Panics
+    ///
+    /// If Core or its platform can't be opened again.
+    pub fn restart(&self, core: Core, seed: u64, environment: &mut dyn Environment) -> Core {
+        let config = self.config(seed);
+        let mut core = core;
+        let swap_to = core.swap_to.take();
+        let mut core = core.restarted(&config, environment).unwrap_or_else(|e| {
+            panic!(
+                "scenario `{}`, seed {seed}: Core and its platform weren't restarted: {e:?}",
+                self.name
+            )
+        });
+        core.swap_to = swap_to;
+        core
+    }
+
+    /// [`Scenario::restart`], the platform's releases left held until the operator confirms them
+    /// ([`Core::restarted_holding`], [`Core::confirm_releases`]).
+    ///
+    /// # Panics
+    ///
+    /// As [`Scenario::restart`].
+    pub fn restart_holding(
+        &self,
+        core: Core,
+        seed: u64,
+        environment: &mut dyn Environment,
+    ) -> Core {
+        let config = self.config(seed);
+        let mut core = core;
+        let swap_to = core.swap_to.take();
+        let mut core = core
+            .restarted_holding(&config, environment)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "scenario `{}`, seed {seed}: Core and its platform weren't restarted: {e:?}",
+                    self.name
+                )
+            });
+        core.swap_to = swap_to;
+        core
     }
 
     pub(crate) fn config(&self, seed: u64) -> Config {
@@ -365,14 +416,7 @@ impl Scenario {
         let mut stopped = Vec::new();
         for (n, step) in self.when.iter().enumerate() {
             if *step == Step::Restart {
-                let swap_to = core.swap_to.take();
-                core = core.reopened(&config, environment).unwrap_or_else(|e| {
-                    panic!(
-                        "scenario `{}`, seed {seed}: Core wasn't opened again: {e:?}",
-                        self.name
-                    )
-                });
-                core.swap_to = swap_to;
+                core = self.restart(core, seed, environment);
                 // The session opened before the restart is held by the reopened Core's policy, its register rebuilt from
                 // the log, as the Core that ran on holds it (`T-021-17`): its id opens no other session.
                 down = false;
@@ -539,6 +583,13 @@ fn take(
     Ok(())
 }
 
+/// Takes back from `core` every planted crash that hasn't fallen, at the log's store and at the platform's seam: the
+/// run goes on with no crash to come (`T-024-21`, a run that restarts Core and its platform where its crash never fell).
+pub fn unplant_crashes(core: &mut Core) {
+    core.disk.unplant();
+    core.faults.crash_before_effect = None;
+}
+
 /// Plants `fault` in `core`: what a [`Step::Plant`] does, for a test that drives Core's own calls and plants the
 /// fault between them.
 pub fn plant(core: &mut Core, fault: &Fault) {
@@ -618,6 +669,8 @@ pub struct Run {
     /// The same statements as the evidence store kept them, each with its commitment, salt and bytes, so a checker
     /// can open the log over them (`T-024-08`, `INV-6`).
     pub kept: Vec<rutent_contracts::core_internal::KeptStatement>,
+    /// How many times Core and its platform were restarted after a crash mid-run and went on (`T-024-21`).
+    pub restarts: usize,
 }
 
 /// The statements `disk`'s shelf holds, in the order they were kept: parsed, and as kept.
@@ -725,6 +778,7 @@ impl Run {
         let environments = core.feed.environments.clone();
         let swaps = core.feed.swaps.clone();
         let delivered_twice = core.faults.delivered_twice;
+        let restarts = core.restarts();
         let swap_failed = core.faults.swap_failed.as_ref().map(|e| format!("{e:?}"));
         // Core goes before its disk is read back: what reads it then is a process of its own, as after a crash.
         let disk = core.disk.clone();
@@ -778,6 +832,7 @@ impl Run {
             stopped: Vec::new(),
             statements,
             kept,
+            restarts,
         }
     }
 

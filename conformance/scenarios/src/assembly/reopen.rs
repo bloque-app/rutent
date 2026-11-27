@@ -339,7 +339,7 @@ impl Core {
                 continue;
             };
             let started = match handed_on_from {
-                None => self.restarted(history, &logged, &order, decision_record, parts),
+                None => self.restarted_order(history, &logged, &order, decision_record, parts),
                 Some(from) => {
                     self.restarted_linked(history, &logged, &order, from, decision_record, parts)
                 }
@@ -432,7 +432,7 @@ impl Core {
         })
     }
 
-    fn restarted(
+    fn restarted_order(
         &self,
         history: &[(Receipt, Entry)],
         logged: &[Entry],

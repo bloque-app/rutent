@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use crate::module::limits::MAX_PROVIDER_FRAME;
 use crate::module::sandbox::{Limits, isolated, read_frame, read_frame_up_to, write_frame};
+use crate::module::types::StartId;
 
 /// A working directory of one child's own: empty, made before it starts and removed after it ends.
 struct Workdir(PathBuf);
@@ -416,6 +417,30 @@ pub struct ProviderProcess {
     from: Receiver<Option<Vec<u8>>>,
     /// How long it took from spawning to both parts started.
     pub took: Duration,
+    /// The start it is, which the platform minted when it spawned it ([`mint_start`]).
+    start: StartId,
+}
+
+/// Mints the identifier of one start of a module's process (`T-024-21`, `REQ-ORD-43`): never the operating system's
+/// process id, which a later start may be given again, but a counter of this process's starts behind a nonce drawn
+/// once per platform process from its process id, the time and an address. Two starts never share one, in one
+/// platform process or across its restarts, so what was seen at one start is never taken for another's.
+fn mint_start() -> StartId {
+    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    static NONCE: OnceLock<String> = OnceLock::new();
+    let nonce = NONCE.get_or_init(|| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let digest = crate::module::wire::sha256(
+            format!("{}\u{0}{now}\u{0}{:p}", std::process::id(), &NEXT).as_bytes(),
+        );
+        digest[..16].to_owned()
+    });
+    format!("start-{nonce}-{}", NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
 impl ProviderProcess {
@@ -468,6 +493,7 @@ impl ProviderProcess {
             to,
             from,
             took: Duration::ZERO,
+            start: mint_start(),
         };
         let load = ToProvider::Load {
             sandboxed: admitted[0].to_owned(),
@@ -490,6 +516,11 @@ impl ProviderProcess {
             )),
             _ => Err("the provider's process stopped while starting".to_owned()),
         }
+    }
+
+    /// The start it is: minted when it was spawned, and another for every process started since.
+    pub fn start(&self) -> &StartId {
+        &self.start
     }
 
     /// Its operating-system process id. On Linux that is `unshare`'s, whose one child runs the module.

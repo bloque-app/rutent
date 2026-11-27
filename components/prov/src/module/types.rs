@@ -140,3 +140,8 @@ pub struct Events {
 
 /// An operating-system process, as the platform names it.
 pub type ProcessId = u64;
+
+/// One start of a module's process, as the platform names it: minted at each start, never the operating system's
+/// process id, which a later start may be given again (`T-024-21`, `REQ-ORD-43`). A module seen at one start and found
+/// at another restarted in between, whatever process ids the two had.
+pub type StartId = String;
