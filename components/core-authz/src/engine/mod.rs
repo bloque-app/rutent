@@ -1271,6 +1271,9 @@ mod tests {
             provider: id("bridge-pay"),
             transaction: id("tx-status-1"),
         });
+        // And reading a holding account's balance from its module (`T-020-63`).
+        let read: DecisionRequest = fixture!("decision-request-to-read-a-holding-balance");
+        actions.push(read.action);
         // And erasing a kept statement (`T-021-10`), the fixtures' commitment.
         let erased: DecisionRequest = fixture!("decision-request-to-erase-a-kept-statement");
         actions.push(erased.action);
@@ -1284,6 +1287,8 @@ mod tests {
                 Action::AskReversal { .. } => {}
                 // In policy's tables since `T-021-09`: asked as a reversal is.
                 Action::AskStatus { .. } => {}
+                // In policy's tables since `T-020-63`: the operator's permission, which Core carries onward.
+                Action::ReadHoldingBalance { .. } => {}
                 // Decided and never an effect: orchestration records the refiling on its permit
                 // (`refiling-rests-on-policys-permit`); its own tests are `roles`'.
                 Action::RefileArrival { .. } => unreachable!("tested apart: it has no effect"),
@@ -1536,7 +1541,7 @@ mod tests {
     fn every_value_moving_action_is_refused_when_policy_denies() {
         let denies = || Service::ruling(Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted)));
         let actions = every_decided_action();
-        assert_eq!(actions.len(), 26);
+        assert_eq!(actions.len(), 27);
         let requests: Vec<DecisionRequest> = actions.iter().cloned().map(request).collect();
         let mut policy = Engine::with_policy(
             Guarded::with_a_decision_record(),
@@ -1649,7 +1654,9 @@ mod tests {
                 Action::MoveValue { .. } => {
                     matches!(caller.role, Role::Customer | Role::Core | Role::Operator)
                 }
-                Action::AskReversal { .. } | Action::AskStatus { .. } => {
+                Action::AskReversal { .. }
+                | Action::AskStatus { .. }
+                | Action::ReadHoldingBalance { .. } => {
                     matches!(caller.role, Role::Core | Role::Operator)
                 }
                 _ => caller.role == Role::Operator,
@@ -1668,8 +1675,8 @@ mod tests {
         }
         assert_eq!(
             callers.len(),
-            3 * 26 + 2 * 3 + 3 + 3,
-            "the operator on every action, the user and Core on a move, Core on a reversal or a status asked"
+            3 * 27 + 2 * 3 + 3 + 3 + 3,
+            "the operator on every action, the user and Core on a move, Core on a reversal, a status or a balance read asked"
         );
         let seen: Vec<Actor> = policy
             .policy

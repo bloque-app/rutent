@@ -699,6 +699,20 @@ pub enum Action {
         /// The fresh transaction it is asked under: never the segment's own, nor one any other entry named before.
         transaction: Id,
     },
+    /// Reading a holding account's balance from the module that holds it (`REQ-AUD-15`, `REQ-AUZ-1`, `T-020-63`): Core's
+    /// schedule asks each public node's wallet and each private node's publisher's module its balance, and the question
+    /// is a decided action like any other, taken as an effect under a fresh transaction it names and appended before the
+    /// module is asked, so a reading is traceable from the log. What the module answers is a balance and moves nothing.
+    ReadHoldingBalance {
+        /// The inner node whose holding account is read.
+        node: Id,
+        /// The provider whose module holds the account, asked.
+        provider: Id,
+        /// The asset whose balance is read.
+        asset: Id,
+        /// The fresh transaction it is asked under: no entry before it names it.
+        transaction: Id,
+    },
     /// The customer accepting a provider's showing that a failed segment's failure was its fault (`REQ-ORD-11`): a
     /// decision of policy's on the policy handle, as an order's authorisation is, asked by the order's requester in its
     /// open session and naming the showing it accepts, so it can't be read as accepting another. It takes no effect:
@@ -2084,6 +2098,13 @@ pub enum HoldingNotRead {
     AnotherAnswer {},
     /// The balance the module gave is no amount a reading carries.
     NotABalance {},
+    /// Policy didn't permit the read, so the module was asked nothing (`T-020-63`).
+    NotPermitted {},
+    /// Core's clock gave no time to stamp the reading with, so the module was asked nothing (`T-020-63`).
+    NotTimed {},
+    /// The catalogue lists a holding account at the node and the deployment's register of holding accounts doesn't
+    /// name it, so nothing asked it (`T-020-63`): the register is the definition of what is checked.
+    NotRegistered {},
 }
 
 /// The mark of a charge stated in an asset no fee formula covers. Schema:
@@ -2301,6 +2322,9 @@ pub enum StuckBasis {
     TwiceP99,
     /// Twice its advertised time, until it has a history.
     TwiceAdvertised,
+    /// Twice the floor window, where the tuple has neither a history nor an advertised time (the router's "never
+    /// settles"), so an owed reversal at it still makes its order stuck (`INV-3`, `T-020-63`).
+    Floor,
 }
 
 /// Who a fee is attributed to: a provider or the operator, and no one else (`REQ-AUD-11`).

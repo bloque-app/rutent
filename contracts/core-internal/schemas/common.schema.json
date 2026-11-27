@@ -207,7 +207,7 @@
       ]
     },
     "action": {
-      "description": "An action policy decides: one that moves value, posts a route, changes the catalogue, moves a stuck order's value or erases a kept statement (REQ-AUZ-1, REQ-AUD-13).",
+      "description": "An action policy decides: one that moves value, posts a route, changes the catalogue, moves a stuck order's value, erases a kept statement or reads a holding account's balance (REQ-AUZ-1, REQ-AUD-13, REQ-AUD-15).",
       "type": "object",
       "required": [
         "kind"
@@ -223,7 +223,8 @@
             "refile_arrival",
             "accept_fault",
             "erase_statement",
-            "resolve_stuck"
+            "resolve_stuck",
+            "read_holding_balance"
           ]
         }
       },
@@ -361,6 +362,21 @@
           },
           "then": {
             "$ref": "#/$defs/action_resolve_stuck"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "read_holding_balance"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/action_read_holding_balance"
           }
         }
       ]
@@ -545,6 +561,39 @@
         },
         "transaction": {
           "description": "The fresh transaction it is asked under: never the segment's own, nor one any other entry named before.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "action_read_holding_balance": {
+      "description": "Reading a holding account's balance from the module that holds it (REQ-AUD-15, REQ-AUZ-1, T-020-63): Core's schedule asks each public node's wallet and each private node's publisher's module, a decided action taken as an effect under a fresh transaction it names, before the module is asked, so a reading is traceable from the log; no entry before it names that transaction. What the module answers is a balance and moves nothing.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "node",
+        "provider",
+        "asset",
+        "transaction"
+      ],
+      "properties": {
+        "kind": {
+          "const": "read_holding_balance"
+        },
+        "node": {
+          "description": "The inner node whose holding account is read.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "description": "The provider whose module holds the account, asked.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "asset": {
+          "description": "The asset whose balance is read.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "transaction": {
+          "description": "The fresh transaction it is asked under: no entry before it names it.",
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         }
       }

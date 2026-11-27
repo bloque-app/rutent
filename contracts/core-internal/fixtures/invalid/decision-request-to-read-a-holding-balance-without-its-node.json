@@ -1,0 +1,16 @@
+{
+  "request": "req-102",
+  "caller": {
+    "party": "operator",
+    "acts": "rutent-operator",
+    "role": "operator",
+    "kind": "component"
+  },
+  "action": {
+    "kind": "read_holding_balance",
+    "provider": "fx-desk",
+    "asset": "USDC",
+    "transaction": "tx-balance-1"
+  },
+  "at": "2026-11-10T09:00:00Z"
+}

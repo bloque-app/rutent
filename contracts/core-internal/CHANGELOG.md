@@ -3,6 +3,21 @@
 ## 1.0.0
 - The contract round for `M3`'s milestone review of 2026-11-24 (`T-020-45`), folded into this unreleased version
   while `develop` holds none of it:
+  - `T-020-63` (the milestone reviewer's check of `T-020-48` at `e7418a53`, its Lows, and `T-020-58`'s carry-over):
+    `Action::ReadHoldingBalance {node, provider, asset, transaction}` (`read_holding_balance`), Core's schedule asking the
+    module that holds a holding account for its balance, public node and private alike, a decided action taken as an
+    effect under a fresh transaction it names, appended before the module is asked (`REQ-AUD-15`, `REQ-AUZ-1`); its
+    transaction counts among those `status-is-asked-under-a-fresh-transaction` reads an entry as naming, so a late status is
+    never asked under it. `HoldingNotRead.why` gains `not_permitted` (policy refused the read, so the module was asked
+    nothing), `not_timed` (Core's clock gave no time to stamp a reading with) and `not_registered` (the catalogue lists a
+    holding account at the node and the deployment's register of holding accounts doesn't name it). `StuckBasis` gains
+    `floor`, what a stuck call's clock ran on for a tuple with neither a history nor an advertised time, which was logged as
+    `twice_advertised` though nothing was advertised (`INV-3`, `REQ-ORD-29`). No relation of its own, so the relation count is
+    unmoved. Fixtures: valid `decision-request-to-read-a-holding-balance`,
+    `raise-of-a-holding-account-not-read-for-want-of-a-permit`, `--for-want-of-a-time`,
+    `raise-of-a-holding-account-the-register-does-not-name`, `verified-entry-of-the-figures-behind-a-stuck-call-at-the-floor`;
+    invalid `decision-request-to-read-a-holding-balance-without-its-node`, `--without-its-asset`. Ignorable: no, `read_holding_balance`
+    is a decided action a reader that ignored would carry out undecided.
   - `T-020-48` (finding 4): `Difference::PairNotBuilt {order, segment, why}` (`pair_not_built`; `why`: `PairNotBuilt`,
     `no_sent_report {segment}`, `no_flight`, `not_an_amount`, `refused`), a segment's pair of reports that was never built, so
     the comparison was never made (`REQ-ORD-9`, `ADR-0009`); `Comparisons::pair_not_built`. The one raise that may cite no

@@ -348,7 +348,7 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 132] = [
+const SCHEMA_RULES: [SchemaRule; 134] = [
     (
         "decision-request-to-confirm-releases-naming-a-version-twice",
         &[("/action/versions", "uniqueItems")],
@@ -403,6 +403,16 @@ const SCHEMA_RULES: [SchemaRule; 132] = [
         "decision-request-to-ask-a-late-status-without-its-transaction",
         &[("/action", "required")],
         "missing field `transaction`",
+    ),
+    (
+        "decision-request-to-read-a-holding-balance-without-its-node",
+        &[("/action", "required")],
+        "missing field `node`",
+    ),
+    (
+        "decision-request-to-read-a-holding-balance-without-its-asset",
+        &[("/action", "required")],
+        "missing field `asset`",
     ),
     (
         "stated-entry-naming-a-node-for-a-result",
@@ -3323,6 +3333,32 @@ fn a_refiling_rests_on_policys_permitted_decision_to_file_the_arrival_anew() {
 #[test]
 fn an_order_refused_for_an_input_policy_could_not_read_is_told_its_class() {
     assert_accepted_by_both("verified-entry-of-a-refusal-for-an-input-policy-could-not-read");
+}
+
+// verifies: REQ-AUD-15, REQ-AUZ-1
+#[test]
+fn request_to_read_a_holding_balance_names_its_node_asset_and_fresh_transaction() {
+    assert_accepted_by_both("decision-request-to-read-a-holding-balance");
+    assert_rejected("decision-request-to-read-a-holding-balance-without-its-node");
+    assert_rejected("decision-request-to-read-a-holding-balance-without-its-asset");
+}
+
+// verifies: REQ-AUD-15, INV-1
+#[test]
+fn a_holding_account_not_read_names_why_among_the_reasons_core_has() {
+    for name in [
+        "raise-of-a-holding-account-not-read-for-want-of-a-permit",
+        "raise-of-a-holding-account-not-read-for-want-of-a-time",
+        "raise-of-a-holding-account-the-register-does-not-name",
+    ] {
+        assert_accepted_by_both(name);
+    }
+}
+
+// verifies: INV-3, REQ-ORD-29
+#[test]
+fn a_stuck_call_at_the_floor_window_is_on_record_with_a_basis_of_its_own() {
+    assert_accepted_by_both("verified-entry-of-the-figures-behind-a-stuck-call-at-the-floor");
 }
 
 // verifies: REQ-ORD-1, INV-4
