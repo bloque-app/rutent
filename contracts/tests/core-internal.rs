@@ -3390,6 +3390,16 @@ fn request_for_a_providers_late_status_without_its_segment_is_invalid() {
     assert_case_refused("status-is-asked-of-the-segments-provider--missing");
 }
 
+// verifies: REQ-ORD-1, INV-8
+#[test]
+fn repeat_of_a_segment_that_already_has_an_outcome_is_refused_by_the_log() {
+    // Decided, then taken as an effect, of the segment's own provider only, and only while its move has no outcome.
+    assert_case("world--decide_repeat");
+    assert_case("world--effect_repeat");
+    assert_case_refused("repeat-is-of-an-unsettled-segment-at-its-provider--missing");
+    assert_case_refused("repeat-is-of-an-unsettled-segment-at-its-provider--a-settled-segment");
+}
+
 // verifies: REQ-AUZ-1
 #[test]
 fn decision_whose_actor_is_not_the_requests_caller_is_refused() {

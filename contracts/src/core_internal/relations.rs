@@ -309,6 +309,19 @@ fn segment_provider<'a>(order: &Id, segment: &Id, history: &'a History) -> Optio
         })
 }
 
+/// Whether the `move_value` effect of `segment` of `order` has no final outcome in `history`: a result `done` or `failed`,
+/// or a permitted confirmation of its outcome ([`settled`]).
+fn move_without_outcome(order: &Id, segment: &Id, history: &History) -> bool {
+    history.iter().any(|(_, e)| {
+        verified(e)
+            .and_then(effect_action)
+            .is_some_and(|(action, _)| {
+                matches!(action, Action::MoveValue { order: o, segment: s, .. } if o == order && s == segment)
+            })
+            && !settled(e, history)
+    })
+}
+
 /// The citing entry's recorded input, if it records one.
 fn input(entry: &VerifiedEntry) -> Option<&crate::state_machine::RecordedInput> {
     match &entry.what {
@@ -489,7 +502,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 120] = [
+pub static RELATIONS: [Relation; 121] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -2535,6 +2548,34 @@ pub static RELATIONS: [Relation; 120] = [
                 },
                 _,
             )) if segment_provider(order, segment, h) != Some(provider) => by_fields(0),
+            _ => none(),
+        },
+        answers: |_, _, _, _| Match::NotTarget,
+    },
+    Relation {
+        name: "repeat-is-of-an-unsettled-segment-at-its-provider",
+        spec: &["REQ-ORD-1", "INV-8"],
+        quantifier: Quantifier::Exists,
+        refusal: "a segment's operation is carried out again only by the provider its move went to, and only while that move has no final outcome",
+        fields: &[],
+        // None to point to: a `repeat_operation` effect is refused unless its provider is the one the segment's move
+        // went to and that move has no final result nor a permitted confirmation of its outcome (`T-020-63`). That the
+        // provider declares a safe repeat and no status query is its accepted advertisement's, which the log holds by
+        // commitment alone: the platform refuses the repeat of a provider that doesn't declare it (`REQ-CAT-10`).
+        cites: |e, h| match effect_action(e) {
+            Some((
+                Action::RepeatOperation {
+                    order,
+                    segment,
+                    provider,
+                    ..
+                },
+                _,
+            )) if !(segment_provider(order, segment, h) == Some(provider)
+                && move_without_outcome(order, segment, h)) =>
+            {
+                by_fields(0)
+            }
             _ => none(),
         },
         answers: |_, _, _, _| Match::NotTarget,
