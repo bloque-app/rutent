@@ -9334,3 +9334,31 @@ Branch `f-020/t-020-65`, from `2c86d6a9` (`origin/m3` with `T-020-49` merged), i
 - **Defaults** (reversible, fail closed). (1) Completion records `failed` only for a stale mark with nothing newer in
   force; anything the standing can't tell stays without a result. (2) An unlist is refused where Core's segments aren't
   read. (3) A listing the catalogue refuses is `failed`.
+- **Red first.** The four named tests were written before their fixes: (1) and (2) ran red on their assertions against
+  the unfixed code (nothing completed, the confirmation refused; `StagingInProgress` for `AlreadyMarked`). (3) and the
+  scan's (4) were written in the same pass as their rules: their reds below (C1, D1, D2) are those rules switched back to
+  the code as it stood. `T-020-49`'s `public_node_unlisted_by_the_operator_is_no_longer_on_the_catalogues_public_list`
+  now hands Core's segments to the unlist, and asserts the unlist with none is refused.
+- **Rule-off table** (each alone, its test run through the lock, the file restored from git; `ruleoff.py` in the row's
+  scratch folder; every red an assertion, no build failure).
+
+  | Rule switched off | Red |
+  |---|---|
+  | A: the stale mark is checked before the staging | `provider_marked_stale_with_a_release_staged_is_confirmed_after_an_unclean_end` |
+  | B1: the confirmation completes a missing result first | `restriction_refused_before_its_result_was_written_does_not_hold_its_provider_for_good` |
+  | B2: a stale mark with nothing newer in force completes `failed` | the same |
+  | C1: an unlist is held to what is at the node | `public_node_cannot_be_unlisted_while_a_segment_or_holding_rests_there` |
+  | C2: a segment in flight counts | `public_node_cannot_be_unlisted_while_a_segment_is_in_flight_there` |
+  | C3: value resting counts | `public_node_cannot_be_unlisted_while_a_segment_or_holding_rests_there` |
+  | C4: an unlist with no segments read is refused | `public_node_unlisted_by_the_operator_is_no_longer_on_the_catalogues_public_list` |
+  | D1: rule 4's reach goes through helpers | `public_wrapper_reaching_a_carrier_indirectly_is_caught_by_the_scan` |
+  | D2: a decided path takes the permit | the same |
+  | L1: Kept answers no for another order | `policys_log_backed_answers_are_cores_and_the_assembly_supplies_only_the_deployments_registers` |
+  | L2: a listing the catalogue refuses is `failed` | `listing_a_node_the_catalogue_refuses_is_recorded_failed` |
+- **Local checks** (through the lock, `contracts/src/lib.rs` touched first): `fmt --check` and workspace `clippy
+  --all-targets -D warnings` clean; core-orch, contracts and core-audit 757 passed; core-authz `--lib` 166; prov (lib,
+  `module_record`, `module_lifecycle`, `module_lifecycle_properties`, `catalogue_snapshot`, `catalogue`,
+  `catalogue_advertisements`) 175; scenarios (lib, `assembly_real_wallet`, `simulated_faults`, `assembly_policy`,
+  `private_nodes`, `segments`, `module_scenarios`, `reopened`, `execution_routes`, `sim_providers`) 156; `invariants` on
+  seeds 11 to 15, 10; `plan-check --strict` 0 findings, `tag-check --strict` 2527 tests, 0 findings; the contract guard
+  against `origin/develop`: no violations. No `cargo doc` locally (the owner's rule): CI's doc step is the check.
