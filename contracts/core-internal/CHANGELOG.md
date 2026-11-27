@@ -1,6 +1,9 @@
 # core-internal changelog
 
 ## 1.0.0
+- The rule switch is the crate's own (`T-020-54`): `without_rule` is re-exported from `rule_switch`, which router-api's checks
+  read too, so one test helper reaches both contracts and neither names the other. No shape or rule changed here.
+  (DEC-4, DEC-20, T-020-54)
 - The contract round for `M3`'s milestone review of 2026-11-24 (`T-020-45`), folded into this unreleased version
   while `develop` holds none of it:
   - `T-020-58` (the review of `T-020-48`'s first build, S3, `REQ-ORD-41`, `REQ-AUZ-1`): `Action::ReadNodeRecord {order,

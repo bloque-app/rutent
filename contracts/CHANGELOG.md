@@ -89,3 +89,7 @@ directory (see `README.md`).
   `contracts/src/reader`), `src/lib.rs` exposes the `reader` module, and `README.md` lists seven contracts. core-internal's
   listing of a public network names the reader's shapes, folded into its unreleased 1.0.0; its changelog names the
   change. No dependency changed. (DEC-4, DEC-20, DEC-28, T-020-59)
+- The contract tests' rule switch is the crate's own (`T-020-54`, the boundary check): `rule_switch` holds the thread-local list of
+  rules switched off and `without_rule`, built only with the `rule-switches` feature, so no contract names another to reach
+  it; `core_internal::without_rule` stays as a re-export. Before it, router-api's checks named core-internal for it, which
+  `DEC-2` forbids. (DEC-2, DEC-4, DEC-20, T-020-54)

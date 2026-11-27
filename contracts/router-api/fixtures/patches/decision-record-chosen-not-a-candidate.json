@@ -5,6 +5,14 @@
       "op": "replace",
       "path": "/statement/chosen",
       "value": "c7"
+    },
+    {
+      "op": "add",
+      "path": "/statement/candidates/0/dropped",
+      "value": {
+        "reason": "outranked",
+        "by": "c2"
+      }
     }
   ]
 }

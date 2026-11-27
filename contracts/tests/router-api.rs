@@ -9,6 +9,7 @@ use rutent_contracts::router_api::{
     Candidate, CatalogueSnapshot, FigureValue, HeldQuote, Id, NonEmpty, Operation, Part,
     PolicyBounds, RecordedDecision, Request, SettlementTimes, StatedTerms, VERSION,
 };
+use rutent_contracts::rule_switch::without_rule;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -27,9 +28,94 @@ const SHAPES: [&str; 10] = [
     "held-quote",
 ];
 
+/// The invalid fixtures that still break a second rule beside the one they name, each with that second rule: read with
+/// its own rule switched off, the fixture is refused by this one. The milestone reviewer's Low on fixtures pinned by
+/// their first refusal (`T-020-45` (6), `T-020-54`) holds router-api's fixtures to one rule each; these are the ones
+/// not yet made to, pinned as they are so the list can only shrink: the test fails when one of them is mended or
+/// when another joins. `T-020-54`'s gap, in F-020's notes.
+const ALSO_BREAK: [(&str, &str); 14] = [
+    (
+        "decision-record-batched-payout-naming-an-operation-before-the-last",
+        "a batched-payout reason names a deposit at a reserve tuple that pays out in batches",
+    ),
+    (
+        "candidate-with-a-gap-between-operations",
+        "each operation of a part takes in what the one before it delivered",
+    ),
+    (
+        "decision-record-void-reason-naming-a-statement-valid-here",
+        "a stale, void or voided statement drops its candidate only where no usable answer covers its operation",
+    ),
+    (
+        "decision-record-drop-reason-naming-a-figure-its-candidate-does-not-cite",
+        "a drop reason's figure supports the drop",
+    ),
+    (
+        "decision-record-quote-voided-by-a-condition-it-does-not-name",
+        "a stale, void or voided statement drops its candidate only where no usable answer covers its operation",
+    ),
+    (
+        "decision-record-quote-voided-by-an-unchanged-amount",
+        "a stale, void or voided statement drops its candidate only where no usable answer covers its operation",
+    ),
+    (
+        "decision-record-operation-citing-another-providers-tuple",
+        "every operation cites a tuple with its own two ends",
+    ),
+    (
+        "decision-record-operation-citing-a-tuple-with-other-ends",
+        "every other figure an operation cites names the operation's own tuple",
+    ),
+    (
+        "decision-record-over-a-ceiling-at-other-decimals",
+        "an over-ceiling reason names a ceiling the candidate passes",
+    ),
+    (
+        "decision-record-refused-dry-run-moved-to-the-deposit",
+        "every dry run an operation cites is for its amount in",
+    ),
+    (
+        "decision-record-over-a-ceiling-the-bounds-lack",
+        "an over-ceiling reason names a ceiling the candidate passes",
+    ),
+    (
+        "decision-record-no-price-naming-an-operation-before-the-last",
+        "a no-price reason names an operation whose tuple the snapshot holds no price for, and which cites none",
+    ),
+    (
+        "decision-record-confirmed-by-an-answer-made-before-the-shortlist",
+        "the choice round chooses only a candidate whose every operation is confirmed",
+    ),
+    (
+        "decision-record-refining-a-shortlist-taken-after-its-snapshot",
+        "a confirming answer is made at or after the shortlist round it refines",
+    ),
+];
+
+/// The invalid fixtures whose rule can't be switched off, because the check returns where it can't go on (a
+/// `let ... else`, a match arm, a rule whose refusal stands for a value the rest needs): read with the rule "off", the
+/// fixture is refused by it still, so the fixture is not shown to break that rule alone. Pinned the same way.
+const UNSWITCHABLE: [&str; 7] = [
+    "held-quote-of-a-record-choosing-nothing",
+    "decision-record-naming-a-call-without-its-calls-figure",
+    "decision-record-citing-a-calls-figure-and-naming-no-call",
+    "catalogue-snapshot-price-for-a-missing-figure",
+    "catalogue-snapshot-price-of-a-price",
+    "decision-record-stale-reason-naming-a-missing-figure",
+    "decision-record-operation-citing-no-tuple",
+];
+
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 135] = [
+const RUST_RULES: [(&str, &str); 137] = [
+    (
+        "policy-bounds-naming-an-older-protocol-version-twice",
+        "each older protocol version is named once and is not the current one",
+    ),
+    (
+        "policy-bounds-whose-older-protocol-version-is-the-current-one",
+        "each older protocol version is named once and is not the current one",
+    ),
     (
         "decision-record-batching-deposit-ending-a-kept-candidate",
         "a kept or outranked candidate doesn't end a part on a deposit at a reserve tuple that pays out in batches",
@@ -1333,6 +1419,68 @@ fn every_invalid_fixture_is_rejected_by_the_rust_types_too() {
     assert!(accepted.is_empty(), "Rust accepts: {}", accepted.join(", "));
 }
 
+/// The review's Low on fixtures pinned by their first refusal, as `core-internal`'s test holds it (`T-020-54`, the
+/// milestone reviewer's check of `T-020-45`): each invalid fixture only the Rust types refuse breaks the one rule it
+/// names, so read with that rule switched off it is accepted; a fixture that broke two rules would be refused still,
+/// by the other. The fixtures in `ALSO_BREAK` and `UNSWITCHABLE` are pinned as they are, so a mended one leaves its
+/// list and a new one can't join silently.
+// verifies: DEC-4
+#[test]
+fn each_router_api_invalid_fixture_breaks_only_the_rule_it_names() {
+    let mut failures = Vec::new();
+    for list in [
+        ALSO_BREAK.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+        UNSWITCHABLE.to_vec(),
+    ] {
+        for name in list {
+            if !RUST_RULES.iter().any(|(n, _)| *n == name) {
+                failures.push(format!("{name} is pinned but is no Rust-read fixture"));
+            }
+        }
+    }
+    for name in UNSWITCHABLE {
+        if ALSO_BREAK.iter().any(|(n, _)| *n == name) {
+            failures.push(format!("{name} is pinned in both lists"));
+        }
+    }
+    for (name, rule) in RUST_RULES {
+        let shape = shape_of(name);
+        let value = fixture("invalid", name);
+        match through_rust(shape, &value) {
+            Err(e) if e.contains(rule) => {}
+            other => failures.push(format!("{name}: {other:?}, not refused by its rule")),
+        }
+        let off = without_rule(rule, || through_rust(shape, &value));
+        let second = ALSO_BREAK.iter().find(|(n, _)| *n == name).map(|(_, r)| *r);
+        match (off, second) {
+            (Ok(_), None) if !UNSWITCHABLE.contains(&name) => {}
+            (Ok(_), None) => failures.push(format!(
+                "{name} is pinned as unswitchable and can be switched: unpin it"
+            )),
+            (Ok(_), Some(_)) => failures.push(format!(
+                "{name} breaks only its own rule now: unpin it from ALSO_BREAK"
+            )),
+            (Err(e), Some(other)) if e.contains(other) => {}
+            (Err(e), Some(other)) => failures.push(format!(
+                "{name}: it pins {other:?} as its second rule, and is refused for {e}"
+            )),
+            (Err(e), None) if UNSWITCHABLE.contains(&name) && e.contains(rule) => {}
+            (Err(e), None) if e.contains(rule) => failures.push(format!(
+                "{name}: its rule can't be switched off: pin it in UNSWITCHABLE: {e}"
+            )),
+            (Err(e), None) => {
+                failures.push(format!("{name} breaks another rule than its own: {e}"))
+            }
+        }
+    }
+    // The switch is the test's alone: off the closure, every rule is back.
+    let (name, rule) = RUST_RULES[0];
+    assert!(
+        through_rust(shape_of(name), &fixture("invalid", name)).is_err_and(|e| e.contains(rule))
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 // verifies: REQ-QTE-4
 #[test]
 fn a_quote_past_its_validity_is_not_within_it() {
@@ -1619,4 +1767,25 @@ fn candidate_dropped_for_a_batched_payout_names_its_reason() {
             "{name}: {refused:?}"
         );
     }
+}
+
+/// The bounds name the protocol versions in force, each older one with the date from which a statement under it is void,
+/// and the router judges the snapshot's statements by them (`REQ-PRT-4`, `T-020-54`).
+// verifies: REQ-PRT-4
+#[test]
+fn bounds_name_the_protocol_versions_in_force_and_their_cutovers() {
+    let bounds: PolicyBounds = serde_json::from_value(fixture(
+        "valid",
+        "policy-bounds-with-an-older-protocol-version-in-force",
+    ))
+    .expect("reads");
+    let versions = bounds.protocol_versions();
+    assert_eq!(versions.current(), "2.0.1");
+    assert_eq!(versions.in_force("2.0.1", "2027-01-01T00:00:00Z"), Ok(()));
+    assert_eq!(versions.in_force("2.0.0", "2026-11-30T23:59:59Z"), Ok(()));
+    assert!(versions.in_force("2.0.0", "2026-12-01T00:00:00Z").is_err());
+    assert!(versions.in_force("1.9.0", "2026-11-01T00:00:00Z").is_err());
+    let plain: PolicyBounds =
+        serde_json::from_value(fixture("valid", "policy-bounds-without-splitting")).unwrap();
+    assert!(plain.protocol_versions().older().is_empty());
 }

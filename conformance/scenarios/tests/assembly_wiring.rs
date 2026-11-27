@@ -567,6 +567,7 @@ fn staging_is_the_one_the_scenario_sets() {
                 deadline: std::time::Duration::from_secs(2),
                 providers: Given::one_reserve(staged).providers,
                 delivery: rutent_scenarios::assembly::machine::Delivery::Once,
+                holdout: None,
             },
             &mut Reference,
         )

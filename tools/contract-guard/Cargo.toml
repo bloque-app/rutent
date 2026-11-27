@@ -9,5 +9,6 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+serde_json = "1.0.154"
 
 [dev-dependencies]

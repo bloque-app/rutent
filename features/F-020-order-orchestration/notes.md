@@ -10093,3 +10093,295 @@ findings; `tag-check --strict` 2554 tests, 0 findings; the contract guard agains
 local `cargo doc`: the new doc comments carry no new intra-doc links but `[`ReaderAnswer::check`]`,
 `[`Statement::check_context`]` and `[`check_pairing`]`, each in scope where it is written.
 
+
+## T-020-54: protocol changes and cutovers, as protocol behaviour (finding 11 of the milestone review of 2026-11-24)
+
+What the row's author built, on `T-020-45`'s shapes and `T-020-49`'s recorded cutover. It edits `tools/contract-guard/` and
+`contracts/` (`DEC-20` paths), `components/prov/src/catalogue/` (an outer library's code this Work names), and, in
+`core-orch`, `settings/` and, in `core-audit`, `log/keys.rs` (`DEC-20`); and the scope file (an `F-024` file).
+
+### Design
+
+- **The guard's fold rule** (the milestone reviewer's check of 2026-11-25, and its addendum). A contract version whose
+  heading `develop`'s changelog lacks is unreleased. Against a base that is no release line (the base commit is an
+  ancestor of neither `develop` nor `main`: `m3`, a PR's earlier commit), a change to an unreleased version needs no bump
+  (it may not go down), and a README-only change to it needs no new bullet; a lock move that touches every contract
+  asks no bump of an unreleased one. Against `develop` and `main`, and for any version `develop` holds, both rules are
+  as they were. `Files` gained `base_is_release()` (default true) and `released(path)` (the text on `develop`'s tip);
+  the command line answers them from `origin/develop`, else `develop`, and `main`.
+- **Ignorable against `additionalProperties`** (the review's Low, routed to this row). An entry of provider-role's
+  changelog that says `Ignorable: yes` and names, in backticks (`field`, `Type.field`, `Type::field`), a field its
+  change adds to an object whose older schema text closes it with `additionalProperties: false` is refused: an older
+  reader refuses that field, so the entry can't call it ignorable. Three entries said so and were wrong
+  (`answers_hold_requests`, a failed outcome's `fault`, a fee's `billed_separately`): each now says `Ignorable: no`. The
+  reserve declaration admits what a later version adds (`additionalProperties: true`, and `ReserveDeclaration` no longer
+  denies unknown fields), so the next optional field there is ignorable for real. Test
+  `reserve_declaration_admits_a_field_a_later_version_adds` (contracts) and `field_marked_ignorable_is_admitted_by_the_older_schema` (guard).
+- **The Lows of `T-020-45` (6).** `arrival-question.schema.json` and `ArrivalQuestion`'s doc say what a provider states,
+  and name core-internal's README for what the log binds. router-api's invalid fixtures are held to their one rule:
+  each `return Err(Violation(..))` that can go on is a `broke(..)?` (the `rule-switches` feature, the same switch as
+  core-internal's, now shared), and `each_router_api_invalid_fixture_breaks_only_the_rule_it_names` switches each
+  fixture's rule off and holds the rest to what it must be.
+- **The cutover is read** (`REQ-PRT-4`, `THR-64`). The catalogue holds the versions in force (`Catalogue::set_cutover`,
+  `protocol_versions`): its context's version, and each older one with its date. The operator's decided `cutover` setting
+  reaches it (`settings::apply_one`, and `Settings::apply` when a reopened Core puts its parts together). The catalogue's
+  advertisement `join` and `verify_statement` judge by those versions at the reader's clock, never the statement's
+  `made_at`: before the date a statement under either version is taken, from it a holdout's is refused
+  (`ContextMismatch::PastCutover`; `StatementRefusal::WrongContext` for a statement). The log's register reads them from
+  its own permitted `set_setting` effects (`Register::cutovers`), never from orchestration: a cutover counts from its
+  admitted effect, as a revocation does, and a `failed` result undoes it; the later of two for one version stands. The
+  log's advertisement `join` judges by them at the time it received it.
+- **Scope.** `REQ-PRT-2` and `REQ-PRT-4` move from `m4` to `m3` in `conformance/evidence/v0-scope`; `F-030` keeps running
+  the cutovers in production.
+
+### Defaults taken (reversible, fail closed)
+
+1. A base the guard can't place (no `develop` or `main` in the clone) is a release base: every rule applies, and it says so.
+2. Release-ness is by ancestry, not by name, so a SHA that is on `develop` is a release base.
+3. An entry that says `Ignorable: yes` and names a refused field fails; one that names no field is not read for one.
+4. The three entries above say `Ignorable: no` rather than the older schemas being re-opened (they are 3.0.0's, released).
+5. A cutover counts from its effect, not its result, and a version nobody put in force is refused as before.
+6. A statement under an older version after its date is refused whatever segment it answers (see gap 1).
+7. A cutover set for the current version changes nothing (`ProtocolVersions::with_older`).
+
+### Gaps, with owners
+
+1. **(Closed in round 2, below.) The per-segment reading.** `segment begun before a cutover resolves the same whether its result lands before or after
+   it` [`REQ-PRT-2`] is not built. The catalogue refuses an old-version statement after the date whichever operation it
+   answers, so a result that lands after the date for a segment begun before it is refused until Core records each
+   segment's version and the readers judge by it. Fails closed (nothing moves wrongly; the segment stalls to
+   its stuck handling). Owner: a follow-up row of `F-020` (core-orch `segments/`, `snapshot/`); the row's Done
+   needs it. Reported to the lead.
+2. **(Closed in round 2, below.) Readers that still take one version.** The platform's release-assertion admission (`Platform::admit`), the reversal
+   judge, the router's bounds and the stand-ins read `ProtocolVersions::only(..)`; only the catalogue's and the log's
+   advertisement and statement reads take the older versions. Owner: `F-013` (admission) and `F-020`, with gap 1.
+3. **(Narrowed in round 2, below.) router-api's fixtures.** `ALSO_BREAK` (20 fixtures that still break a second rule) and `UNSWITCHABLE` (15 whose
+   refusal returns where the check can't go on) are pinned in the test as they are, so each list can only shrink.
+   Mending them is fixture and check work in router-api's decision-record rules. Owner: a follow-up row of `F-004`/`F-020`.
+4. **The guard sees only what it can name.** An entry that says `Ignorable: yes` and names no field, a schema moved to
+   another pointer, a property added to an `oneOf` arm by position and an enumeration value are not read for a closed
+   older object; a backticked word that is also an added property (`terms`) counts. Owner: this guard, if a review finds one.
+5. **`change adding a protection binds every provider from its cutover`** is shown at the catalogue (every provider, by
+   advertisement); the module platform's own statements follow gap 2.
+6. **The unclean end.** The revoked provider's advertisement that still declares (the review's Low-Medium) is not this
+   row's: its row names `REQ-AUZ-9`.
+
+### Rule-off
+
+Each rule was switched off once, by an edit reverted after, and its named test went red on an assertion (the guard's tests and the
+contracts' were first seen red before the code, on assertions, with the rule not yet built).
+
+| Rule switched off | Red |
+|---|---|
+| a version no release holds is taken as released (the fold rule) | `fold_into_an_unreleased_version_against_a_milestone_base_passes`, `milestone_base_still_refuses_a_version_that_went_down_or_has_been_released`, `readme_only_change_to_an_unreleased_version_needs_no_new_bullet_against_a_milestone_base` |
+| a README-only change needs its bullet on a milestone base | `readme_only_change_to_an_unreleased_version_needs_no_new_bullet_against_a_milestone_base` (run beside the row above) |
+| an `Ignorable: yes` entry isn't read against the older schema | `field_marked_ignorable_is_admitted_by_the_older_schema` |
+| the reserve declaration is closed again | `reserve_declaration_admits_a_field_a_later_version_adds` |
+| a rule's switch is ignored (a rule can't be switched off) | `each_router_api_invalid_fixture_breaks_only_the_rule_it_names` |
+| the catalogue puts no older version in force | `a_holdout_at_a_cutover_is_refused_after_its_date`, `providers_statements_under_both_versions_are_taken_before_the_cutover_date`, `change_adding_a_protection_binds_every_provider_from_its_cutover` |
+| the operator's cutover isn't applied to the catalogue | `a_cutover_the_operator_sets_is_the_catalogues_older_version_in_force` |
+| the log puts no older version in force | `log_takes_an_advertisement_under_an_older_version_only_before_its_cutover` |
+| a cutover whose result failed still counts | `log_takes_an_advertisement_under_an_older_version_only_before_its_cutover` |
+
+- **Local checks** (through the lock, `contracts/src/lib.rs` touched first, on `origin/m3` `2c86d6a9`): `fmt --check` and
+  workspace `clippy --all-targets -D warnings` clean; `rutent-contract-guard`, `rutent-contracts`, `rutent-prov`,
+  `rutent-core-audit` and `rutent-core-orch` tests pass; core-authz `--lib` 165; the contract guard against
+  `origin/develop`: no violations; against `origin/m3`: no violations (the fold rule's proof; before it, the guard was
+  red there on every fold into `core-internal` 1.0.0); `plan-check --strict` 0 findings; `tag-check --strict` 0 findings.
+  Not run locally: the scenario binaries and `rutent-conformance` (no simulated provider or stand-in changed), and the
+  doc check, which is CI's.
+
+### T-020-54, round 2: the lead's gaps 1 to 3 (2026-11-27)
+
+The lead asked for the row to be finished on this branch: the per-segment reading, every other reader on the versions in
+force, and the router-api fixtures. Edits `contracts/` (router-api 4.0.0, folded: `policy-bounds`), `components/core-authz` is
+untouched; `components/prov/` (`catalogue/`, `module/platform.rs`), `components/core-orch/` (`segments/`, `reversal/`,
+`stuck/`, `settings/`), `components/router/`, `conformance/` (the stand-ins' context, the router double) and the assembly
+(`conformance/scenarios/src/assembly/mod.rs`, which hands the platform to the settings).
+
+**Gap 1, the per-segment reading.** No new log shape: Core already logs each segment's start, and the operation it signs
+carries the `made_at` Core stamped from its clock when the segment began, kept with the effect. A result is read by the
+protocol versions in force *then*: `Catalogue::verify_statement_begun(received, at, begun)` judges the key and skew at `at`
+(as ever) and the protocol version at `begun`; `segments::begun(operation.made_at, fallback)` derives it, and the result
+judge, the late-answer path, the reopen's re-judgement and both judges of the stuck mover (`stuck/mover.rs`) take it.
+A segment begun before a cutover resolves the same whether its result lands before or after the date; one begun at or after
+it takes no statement under the old version. An unreadable `made_at` begins now, which only voids an older version
+sooner. Test `segment_begun_before_a_cutover_resolves_the_same_whether_its_result_lands_before_or_after_it` (prov, at the
+catalogue the judges call). The three judge call sites are covered by the existing scenarios, which still pass, and not by an
+assembly-level cutover scenario: the simulated providers sign under the one current version (gap R2-1).
+
+**Gap 2, the other readers.**
+- *Router bounds* (router-api 4.0.0, folded): `PolicyBounds.older_protocol_versions`, optional, each older version with its
+  cutover (`OlderProtocolVersion`); `PolicyBounds::protocol_versions()`; refused by the Rust types when a version repeats or is
+  the current one. The router's `is_void`, the contract's own check and the conformance router read it, and
+  `Settings::bounds` fills it from the operator's decided cutovers. Fixtures: valid
+  `policy-bounds-with-an-older-protocol-version-in-force`; invalid `--naming-an-older-protocol-version-twice`,
+  `--whose-older-protocol-version-is-the-current-one`. Test `bounds_name_the_protocol_versions_in_force_and_their_cutovers`
+  and, in `settings.rs`, the cutover test now reads the bounds too.
+- *Platform release-assertion admission*: `Platform::set_cutover`/`protocol_versions`; `admit` reads the versions in force at
+  the clock it admits at. The operator's setting reaches it through `Targets.platform` (the `Cutovers` trait, which the
+  platform implements) beside the catalogue, on a set and on a reopen; the assembly passes both. Test
+  `platform_admits_a_release_assertion_under_an_older_version_only_before_its_cutover`.
+- *Reversal judge*: `attributable` judges an operator-published module's statement by the catalogue's versions in force.
+  Test `operator_modules_statement_under_an_older_version_is_attributed_only_before_its_cutover`.
+- *Stand-ins*: `SuiteContext.older_versions` (none by default), `SuiteContext::protocol_versions()`, read by the role
+  stand-ins and the suite.
+- `change adding a protection binds every provider from its cutover` now holds at the catalogue (advertisements and statements),
+  the platform's release assertions, the reversal judge and the router's snapshot.
+
+**Gap 3, router-api's fixtures.** Mended: `catalogue-snapshot-quote-made-after-the-snapshot` (its validity figure now follows
+its made_at), `decision-record-chosen-not-a-candidate` and `decision-record-chosen-candidate-with-a-drop-reason` (the
+chosen candidate takes a drop reason that carries no condition of its own). Eight rules were made switchable (the arms that
+return the check's result are `broke(..)`: below floor, no positive outcome, excluded by policy, outranked, and both fees
+above an amount in): their fixtures break only their rule. `UNSWITCHABLE` is now 7 and `ALSO_BREAK` 17.
+
+Why each remaining fixture can't be mended or switched, by fixture (superseded by round 3's table below, which re-reads each reason against the second rule the test pins):
+
+| Fixture | Why |
+|---|---|
+| `held-quote-of-a-record-choosing-nothing` | the check reads the chosen candidate to go on; with none there is nothing to compare |
+| `decision-record-naming-a-call-without-its-calls-figure`, `--citing-a-calls-figure-and-naming-no-call` | the match arm yields the declared calls the rest of the check counts |
+| `catalogue-snapshot-price-for-a-missing-figure`, `--price-of-a-price` | the figure lookup yields the tuple figure the price's rules read |
+| `decision-record-stale-reason-naming-a-missing-figure` | the reason's figure is read to judge the drop |
+| `decision-record-operation-citing-no-tuple` | the pattern `[tuple]` is the one tuple the operation's other rules read |
+| `decision-record-over-a-ceiling-at-other-decimals`, `--the-bounds-lack` | a ceiling the bounds don't hold is one no candidate can pass: one fault under two rules |
+| `decision-record-void-reason-naming-a-statement-valid-here`, `--quote-voided-by-a-condition-it-does-not-name`, `--quote-voided-by-an-unchanged-amount`, `--candidate-id-twice`, `--operation-citing-a-missing-figure`, `--choosing-an-unconfirmed-candidate` | a stale or void reason on a statement that isn't, or a candidate whose answers aren't there, is the same fault as "a usable answer covers its operation": one fault under two rules |
+| `decision-record-confirmed-by-an-answer-made-before-the-shortlist`, `--refining-a-shortlist-taken-after-its-snapshot` | moving the shortlist's time moves what its answers are judged against: the order of the two times is one fact |
+| `decision-record-batched-payout-naming-an-operation-before-the-last` | a deposit at a batching reserve is last by construction; one before the last isn't a deposit |
+| `decision-record-operation-citing-another-providers-tuple`, `--a-tuple-with-other-ends` | the figure an operation cites for its tuple is also the one its other figures must name |
+| `decision-record-drop-reason-naming-a-figure-its-candidate-does-not-cite`, `--refused-dry-run-moved-to-the-deposit`, `--no-price-naming-an-operation-before-the-last`, `candidate-with-a-gap-between-operations` | the second rule restates the first from the other end (the figure's candidate, the dry run's amount, the operation's place, the delivered amount) |
+
+The pins stay in the test, so each list can only shrink; the table above is the reason per fixture, and mending one means
+re-deriving its decision record so the second rule's premise no longer holds.
+
+### Gaps, round 2
+
+- **R2-1.** No assembly-level scenario runs a provider under the old version across a cutover: the simulated providers sign
+  under `SuiteContext.protocol_version` alone. The catalogue, platform, judge and router are tested at their own seams.
+  Owner: `F-024`, with `T-024-21`'s restart runs.
+- **R2-2.** Gaps 4 (the guard's reach) and 6 above stay as stated.
+- **R2-3.** `Platform::admit` takes its versions from the platform, not the catalogue: where the assembly sets a cutover it
+  reaches both (the setting's `Targets`), but a caller that wires only one has them differ. Owner: `F-030`'s start-up.
+
+### Rule-off, round 2
+
+| Rule switched off | Red |
+|---|---|
+| the platform reads one version | `platform_admits_a_release_assertion_under_an_older_version_only_before_its_cutover` |
+| the reversal judge reads one version | `operator_modules_statement_under_an_older_version_is_attributed_only_before_its_cutover` |
+| a result is judged at its landing, not its segment's beginning | `segment_begun_before_a_cutover_resolves_the_same_whether_its_result_lands_before_or_after_it` |
+| the bounds name no older version | `bounds_name_the_protocol_versions_in_force_and_their_cutovers`, `a_cutover_the_operator_sets_is_the_catalogues_older_version_in_force` |
+| an unswitched rule is pinned though it can be switched | `each_router_api_invalid_fixture_breaks_only_the_rule_it_names` (it names the fixture to unpin) |
+
+### T-020-54, round 3: the review of #345 at `b2187aa1`
+
+`origin/m3` (`f8bddbb4`) is merged (conflicts kept both sides: `Targets` holds `segments` and `platform`; the three
+`Targets` sites keep `platform:`, `..Targets::default()` at `reapply_catalogue_settings` among them, L5). Edits the `DEC-20`
+paths `tools/contract-guard/` and `contracts/`, and `components/prov/src/module/platform.rs` (round 2's first commit,
+`090e23b9`, didn't flag that file; this note and the round's commit body do).
+
+- **M2, a segment's version is recorded.** `segments::Began {at, versions}`: the instant the segment began and the protocol
+  versions in force then, each older one with the cutover the operator had set by then. Live it is taken from the
+  catalogue as the segment starts (`InFlight.began`); after a reopen it is derived from the log's settings up to the
+  segment's start effect (`Began::from_log`, `Settings::reopened` over `history[..start]`), so a restarted Core reads what the
+  live one read. `Catalogue::verify_statement_under(received, at, versions, begun)` judges a statement by it. Read by the result
+  judge, the late answer, the reopen's re-judgement, both judges of the stuck mover and its hand-on take (`Flight.began`,
+  `HandFlight.began`, taken when the move is made), and the provider reversals (`Segments::began_of(transaction)`,
+  `began_of_order(order)`; a statement about no segment Core holds is read by the catalogue's table, as before). No
+  core-internal shape changed: the signed operation's `made_at` is the instant, and the log's own settings entries are the
+  record of the versions. Moving a cutover earlier changes nothing for a segment begun, live or after a reopen.
+- **H1 (#143's blocker b).** `Core::relist` judges each advertisement by the cutovers the log held when it was received
+  (`Settings::reopened(&entries[..place]).apply_cutovers`, the cutovers only), then puts every cutover into the catalogue and
+  the platform before `rebuild_from_log` judges the log's results again. `Settings::apply_cutovers` is new.
+- **M1 and the tests.** `conformance/scenarios/tests/protocol_cutover.rs` runs a holdout fleet (`Config.holdout`,
+  `Scenario::holdout`: the fleet speaks the old version and takes the current one's operations through
+  `SuiteContext.older_versions`; the operator's cutover is set before it is listed) across its cutover: an old-version
+  advertisement taken before the date and listed again by a reopen, a settled withdrawal read again after the cutover was moved
+  to before it began, and a late answer taken. In core-orch's `tests/segments.rs`: `result_of_a_segment_begun_before_a_cutover_counts_whenever_it_lands`
+  (the result site, before, at and after the date, and a segment begun after it) and
+  `late_answer_of_a_segment_begun_before_a_cutover_is_taken_whatever_the_cutovers_say_since` (the late-answer site, the
+  cutover moved either side).
+- **Lows.** L1: the fold rule reads headings as semantic versions (`4.0.00` is `4.0.0`, released). L2: `is_release_base`: without
+  `develop` the base is a release base, whatever `main` says. L3: the ignorable rule reads a field named in plain words, and
+  a closed object with no `properties` key admits nothing. L4: the mover's hand-on take and the reversals read the segment's
+  version. L6: `decision-record-candidate-id-twice`, `--operation-citing-a-missing-figure` and
+  `--choosing-an-unconfirmed-candidate` are mended (the dropped candidate each adds takes an `outranked` reason of no
+  condition of its own); `ALSO_BREAK` is 14, `UNSWITCHABLE` 7. L8: core-audit's `reopen` tests open a store through
+  `settled`, a bounded retry (the pattern of `prov/src/module/record.rs`'s `reopen`).
+
+Pinned fixtures, each reason re-read against the second rule the test holds it to:
+
+| Fixture | Its second rule | Why it stays |
+|---|---|---|
+| `decision-record-batched-payout-naming-an-operation-before-the-last` | a batched-payout reason names a deposit at a batching reserve | a deposit at a batching reserve is last by construction; an operation before the last isn't a deposit |
+| `candidate-with-a-gap-between-operations` | each operation takes in what the one before delivered | a gap between two operations is that fact from both ends |
+| `decision-record-void-reason-naming-a-statement-valid-here`, `--quote-voided-by-a-condition-it-does-not-name`, `--quote-voided-by-an-unchanged-amount` | a stale, void or voided statement drops a candidate only where no usable answer covers its operation | their own rule is that the named statement isn't void: the drop's premise is false, and a usable answer then covers the operation. Same fault, two rules |
+| `decision-record-drop-reason-naming-a-figure-its-candidate-does-not-cite` | a drop reason's figure supports the drop | the figure not cited is the figure that can't support it |
+| `decision-record-operation-citing-another-providers-tuple` | every operation cites a tuple with its own two ends | a tuple of another provider is a tuple with other ends |
+| `decision-record-operation-citing-a-tuple-with-other-ends` | every other figure an operation cites names the operation's own tuple | the cited tuple stops being the one the other figures name |
+| `decision-record-over-a-ceiling-at-other-decimals`, `--the-bounds-lack` | an over-ceiling reason names a ceiling the candidate passes | a ceiling the bounds don't hold is one no candidate passes |
+| `decision-record-refused-dry-run-moved-to-the-deposit` | every dry run an operation cites is for its amount in | a dry run for another operation's amount |
+| `decision-record-no-price-naming-an-operation-before-the-last` | a no-price reason names an operation whose tuple has no price and which cites none | the earlier operation cites the price the reason says is missing |
+| `decision-record-confirmed-by-an-answer-made-before-the-shortlist` | the choice round chooses only a candidate whose every operation is confirmed | an answer made before the shortlist is no confirmation: one fact |
+| `decision-record-refining-a-shortlist-taken-after-its-snapshot` | a confirming answer is made at or after the shortlist it refines | moving the shortlist's time moves what its answers are judged against |
+
+`UNSWITCHABLE` (7), where the check can't go on past the refusal: `held-quote-of-a-record-choosing-nothing` (nothing is chosen to
+compare), `decision-record-naming-a-call-without-its-calls-figure` and `--citing-a-calls-figure-and-naming-no-call` (the match arm
+yields the declared calls the rest counts), `catalogue-snapshot-price-for-a-missing-figure` and `--price-of-a-price` (the lookup
+yields the tuple figure the price's rules read), `decision-record-stale-reason-naming-a-missing-figure` (the figure is read to
+judge the drop), `decision-record-operation-citing-no-tuple` (the pattern `[tuple]` is the one tuple the other rules read).
+
+**Rule-off, round 3.** Each was switched off once (an edit, reverted):
+
+| Rule switched off | Red |
+|---|---|
+| the result judge reads the segment's beginning (the landing time instead) | `result_of_a_segment_begun_before_a_cutover_counts_whenever_it_lands` |
+| the late answer reads the segment's beginning | `late_answer_of_a_segment_begun_before_a_cutover_is_taken_whatever_the_cutovers_say_since` |
+| the reopen derives the segment's table from the whole log, not up to its start | `old_version_provider_survives_its_cutover_and_a_reopen_by_the_version_its_segment_began_under` |
+| the relist judges an advertisement by the cutovers the log holds now | the same scenario (`kit::join` refuses it) |
+| the fold rule reads headings as strings; no `develop` isn't a release base; plain words and closed objects with no `properties` aren't read | `a_differently_spelled_heading_of_a_released_version_is_still_released`, `a_base_with_no_develop_is_a_release_base`, `ignorable_field_check_reads_plain_words_and_closed_objects_with_no_properties` |
+
+**Gaps, round 3.**
+- **R3-1.** The stuck mover's judges and its hand-on take, and the reversals' `show_fault` and `after`, read `began` (set when the move is
+  made; `Segments::began_of`), and no test of theirs lands an old-version answer after a cutover: swapping `began` for the landing
+  time there goes unseen. The scenario's late answer goes through the reversals' `after`, and passes with the swap too (its
+  statements are judged by the earlier sites first). Owner: a follow-up row of `F-020` with the mover's and the reversals'
+  harnesses.
+- **R3-2.** A mover flight doesn't survive a restart, so its `began` is taken again when it is made.
+- **R3-3.** `Began` for a segment of a Core that reopened with no log entry before its start (a segment begun with no settings
+  set) is the catalogue's one version, as live.
+
+**#346's addition (reopen order).** `Core::relist` puts the operator's public-node listings back, as the log held them when each
+advertisement was received, together with the cutovers, before it joins that advertisement (`Settings::apply_listings`), so a
+reopened Core judges a private claim against the public list it was judged against live. Test
+`operator_listed_public_node_stays_public_across_a_reopen` (a node listed stays public, one taken off stays off, the provider
+is listed again). It does not go red with the listings applied after the relist, since the final apply puts the same list back:
+no scenario here has an advertisement claiming a node the operator listed (the catalogue refuses one at its join, and a refused
+advertisement is never in the log), so the ordering is by construction and by review, not by a test (gap R3-4).
+The rule text in the changelog was reworded where the guard now reads plain words (`fault`, `terms`).
+
+### T-020-54, round 4: the mover's and the reversals' sites tested with a holdout
+
+R3-1 is closed except for the hand-on take (R4-1).
+- **The stuck mover** (`tests/stuck_mover.rs`, over `World::two_parties_holding_out`: the fleet speaks the old version, Core's side the
+  current one with the old still in force until a date, the catalogue reading it so): `stuck_mover_takes_a_holdouts_answer_landing_after_the_cutover_for_a_move_begun_before_it`
+  (the carry-out judge; the operation takes two hours, the answer lands after the date) and
+  `stuck_mover_takes_a_holdouts_later_statement_after_the_cutover_for_a_move_begun_before_it` (a move left unknown, its
+  provider's later statement after the date).
+- **The reversals.** The failed provider's answer (`judge_reversal`): `reversal_of_a_segment_begun_before_a_cutover_is_taken_when_a_holdouts_answer_lands_after_it`
+  (`protocol_cutover.rs`, the assembly's holdout fleet). The reserve's confirmation is answered through the assembly too: the first build left it
+  unanswered because the simulated reserve guest built its context with the default version while the holdout fleet's
+  platform signed under the old one, so the platform's signer refused the guest's nested confirmation
+  (`NestedOfAnotherVersion`); the guest now takes the fleet's version and older ones from the world (`PROTOCOL_KEY`),
+  as it takes the deployment, and the test asserts the confirmation is judged (`SamePublisher`), not refused. The judge's
+  version read is also tested at its seam, `reversal::judge::tests::confirmation_judge_reads_the_version_its_segment_began_under`:
+  a holdout's statement landing after the date passes the attribution for a segment begun before
+  it and is unattributable for one begun after. The reversals' `show_fault` and `after` read the same version through
+  `Segments::began_of` and `began_of_order`; no test lands an old-version statement there (R4-2).
+- Both reversal judges (`judge`, `judge_reversal`) now take the segment's `Began` (`Segments::began_of(reversed.transaction)`),
+  which round 3 left on the landing time.
+- **Rule-off.** Each site was switched to the landing time once: the mover's judge (`stuck_mover_takes_a_holdouts_answer_landing_...`
+  red), the mover's statement (`..._later_statement_...` red), `judge_reversal`'s call (the reversal scenario red), the
+  version read of `judge`/`attributable` (`confirmation_judge_reads_...` red).
+- **R4-1.** The mover's hand-on take (`Delivering::withdrawn`) reads `HandFlight.began` and has no holdout test: its route
+  (a linked order handed on from a node) has no holdout fleet here. R4-2: `show_fault`, `after` as above.

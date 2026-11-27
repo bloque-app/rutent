@@ -466,9 +466,7 @@ impl Run<'_> {
         }
         if let Err(e) = statement.check_context(
             &self.context.deployment,
-            &rutent_contracts::provider_role::ProtocolVersions::only(
-                self.context.protocol_version.as_str(),
-            ),
+            &self.context.protocol_versions(),
             TAKEN_AT,
         ) {
             self.flag(Check::EnvelopeWellFormed, format!("{what}: {e:?}"));

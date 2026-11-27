@@ -127,6 +127,23 @@ pub struct Targets<'a> {
     pub cadences: Option<&'a mut Cadences>,
     /// Arrivals and their waits.
     pub arrivals: Option<&'a mut Arrivals>,
+    /// The module platform, which admits a release assertion by the protocol versions in force (`REQ-PRT-4`,
+    /// `T-020-54`).
+    pub platform: Option<&'a mut dyn Cutovers>,
+}
+
+/// What takes an older protocol version's cutover date: the module platform's admission of a release assertion.
+pub trait Cutovers {
+    /// Puts the older protocol version `version` in force until `cutover`.
+    fn set_cutover(&mut self, version: &str, cutover: &str);
+}
+
+impl<W: rutent_prov::module::platform::World> Cutovers
+    for rutent_prov::module::platform::Platform<W>
+{
+    fn set_cutover(&mut self, version: &str, cutover: &str) {
+        rutent_prov::module::platform::Platform::set_cutover(self, version, cutover);
+    }
 }
 
 /// The catalogue's key for the router's tuple: an exchange where both ends are one node in two assets, a reserve where
@@ -471,6 +488,16 @@ impl Settings {
                 cadences.set_status_of(provider, *seconds);
             }
         }
+        if let Some(catalogue) = targets.catalogue.as_deref_mut() {
+            for (version, cutover) in &self.cutovers {
+                catalogue.set_cutover(version, cutover.as_str());
+            }
+        }
+        if let Some(platform) = targets.platform.as_deref_mut() {
+            for (version, cutover) in &self.cutovers {
+                platform.set_cutover(version, cutover.as_str());
+            }
+        }
         if let (Some(arrivals), Some(seconds)) =
             (targets.arrivals.as_deref_mut(), self.deposit_wait)
         {
@@ -482,6 +509,28 @@ impl Settings {
     /// place of its, each setting standing for its tuple, provider and asset, or publisher and asset.
     pub fn bounds(&self, base: &PolicyBounds) -> PolicyBounds {
         let mut bounds = base.clone();
+        // The older protocol versions in force, each with the operator's cutover date: the router judges the snapshot's
+        // statements by them (`REQ-PRT-4`, `T-020-54`). A cutover set for the current version is no older version.
+        for (version, cutover) in &self.cutovers {
+            if version == bounds.protocol_version.as_str() {
+                continue;
+            }
+            if let Some(known) = bounds
+                .older_protocol_versions
+                .iter_mut()
+                .find(|o| o.version.as_str() == version)
+            {
+                known.cutover = cutover.clone();
+            } else if let Some(older) = rutent_contracts::router_api::ProtocolVersion::new(version)
+            {
+                bounds.older_protocol_versions.push(
+                    rutent_contracts::router_api::OlderProtocolVersion {
+                        version: older,
+                        cutover: cutover.clone(),
+                    },
+                );
+            }
+        }
         if let Some(fee) = &self.fee {
             bounds.operator_fee = fee.clone();
         }
@@ -527,7 +576,45 @@ impl Settings {
         self.status_cadences.get(provider).copied()
     }
 
-    /// The cutover date the operator set for the older protocol version `version`, if any (read by `T-020-54`).
+    /// The protocol versions in force under these settings: `current`, and each older one until the cutover the operator
+    /// set (`REQ-PRT-4`). Built from the log up to a segment's start, it is what the segment began under.
+    pub fn protocol_versions(
+        &self,
+        current: &str,
+    ) -> rutent_contracts::provider_role::ProtocolVersions {
+        self.cutovers.iter().fold(
+            rutent_contracts::provider_role::ProtocolVersions::only(current),
+            |versions, (version, cutover)| versions.with_older(version.as_str(), cutover.as_str()),
+        )
+    }
+
+    /// Puts only the operator's public-node listings into `targets`' catalogue: each node listed or taken off as the
+    /// operator set it. A reopened Core does it before it lists its providers again, so an advertisement is judged by the
+    /// public list it was judged by live: a private claim of a node the operator listed stays refused (`REQ-CAT-23`,
+    /// `T-020-49`).
+    pub fn apply_listings(&self, targets: &mut Targets<'_>) {
+        if let Some(catalogue) = targets.catalogue.as_deref_mut() {
+            for (node, set) in &self.public_nodes {
+                let _ = list(catalogue, node, set.listed);
+            }
+        }
+    }
+
+    /// Puts only the cutovers into `targets`' catalogue and platform, as a reopened Core must before it lists its
+    /// providers again or judges what its log holds: an advertisement or a result taken before its cutover is read by it
+    /// still (`REQ-PRT-4`, `T-020-54`).
+    pub fn apply_cutovers(&self, targets: &mut Targets<'_>) {
+        for (version, cutover) in &self.cutovers {
+            if let Some(catalogue) = targets.catalogue.as_deref_mut() {
+                catalogue.set_cutover(version, cutover.as_str());
+            }
+            if let Some(platform) = targets.platform.as_deref_mut() {
+                platform.set_cutover(version, cutover.as_str());
+            }
+        }
+    }
+
+    /// The cutover date the operator set for the older protocol version `version`, if any (the catalogue holds it, `T-020-54`).
     pub fn cutover(&self, version: &str) -> Option<&Timestamp> {
         self.cutovers.get(version)
     }
@@ -538,7 +625,8 @@ impl Settings {
     }
 }
 
-/// Applies one setting to `targets`: an evidence floor and a listed public node to the catalogue, a cadence to the
+/// Applies one setting to `targets`: an evidence floor, a listed public node and a protocol version's cutover to the
+/// catalogue, a cadence to the
 /// schedule, the deposit wait to arrivals. The bounds and a node's confirmations are read from the settings.
 fn apply_one(setting: &OperatorSetting, targets: &mut Targets<'_>) -> Result<(), String> {
     match setting {
@@ -576,11 +664,20 @@ fn apply_one(setting: &OperatorSetting, targets: &mut Targets<'_>) -> Result<(),
                 arrivals.set_deposit_wait(*seconds);
             }
         }
+        // The older version is in force in the catalogue until the date, and a statement under it is void from then
+        // on (`REQ-PRT-4`, `THR-64`).
+        OperatorSetting::Cutover { version, cutover } => {
+            if let Some(catalogue) = targets.catalogue.as_deref_mut() {
+                catalogue.set_cutover(version.as_str(), cutover.as_str());
+            }
+            if let Some(platform) = targets.platform.as_deref_mut() {
+                platform.set_cutover(version.as_str(), cutover.as_str());
+            }
+        }
         OperatorSetting::OperatorFee { .. }
         | OperatorSetting::SlippageLimit { .. }
         | OperatorSetting::ProviderCeiling { .. }
-        | OperatorSetting::PublisherCeiling { .. }
-        | OperatorSetting::Cutover { .. } => {}
+        | OperatorSetting::PublisherCeiling { .. } => {}
     }
     Ok(())
 }
