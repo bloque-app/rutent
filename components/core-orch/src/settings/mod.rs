@@ -300,6 +300,7 @@ impl Settings {
             statement_key: None,
             setting: Some(Box::new(asked.setting.clone())),
             versions: Vec::new(),
+            public_network: None,
         };
         let at = now(clock)?;
         let request = DecisionRequest {

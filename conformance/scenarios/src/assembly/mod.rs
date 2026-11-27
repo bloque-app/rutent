@@ -1623,6 +1623,7 @@ impl Core {
                 statement_key: None,
                 setting: None,
                 versions: Vec::new(),
+                public_network: None,
             };
             let request = DecisionRequest {
                 request: self.fresh.id(),
@@ -2789,6 +2790,7 @@ mod tests {
             statement_key: None,
             setting: None,
             versions: Vec::new(),
+            public_network: None,
         };
         let request = DecisionRequest {
             request: core.fresh.id(),
