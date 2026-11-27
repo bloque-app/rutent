@@ -547,6 +547,10 @@ impl StatusReads for StatusReading {
         self.orders
             .opened(&record.order, &record.parties, &record.origin_reserve);
     }
+
+    fn withdrawn(&mut self, order: &Id) {
+        self.orders.withdrawn(order);
+    }
 }
 
 /// Policy's session register, as intake reads it: the sessions the engine opened.
@@ -1124,7 +1128,19 @@ impl Core {
                     catalogue: Some(&mut core.catalogue),
                     cadences: Some(core.schedule.cadences_mut()),
                     arrivals: Some(&mut core.arrivals),
+                    segments: None,
                 });
+            // A restrictive lifecycle effect whose result the log never took is completed from what the platform holds
+            // (`T-020-65`), as a setting's is.
+            {
+                let releases = core.fleet.releases();
+                Segments::reopen_lifecycle(&mut core.general, &releases, &core.clock, &kit::core())
+                    .map_err(|e| {
+                        AssemblyError::Listing(format!(
+                            "a lifecycle effect's result wasn't completed: {e:?}"
+                        ))
+                    })?;
+            }
             return Ok(core);
         }
         let installed = core.installed.clone();
@@ -1356,6 +1372,7 @@ impl Core {
                 catalogue: Some(&mut self.catalogue),
                 cadences: Some(self.schedule.cadences_mut()),
                 arrivals: Some(&mut self.arrivals),
+                segments: Some(&self.segments),
             },
             &rutent_core_orch::settings::SettingAsked {
                 setting,

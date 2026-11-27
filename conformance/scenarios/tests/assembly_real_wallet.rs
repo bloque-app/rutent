@@ -1923,3 +1923,90 @@ fn operators_catalogue_settings_stand_after_the_deployments_own_listing() {
         "the operator's setting stands after the wallet's install"
     );
 }
+
+/// The operator's `public_node` setting at `node`, listed or not.
+fn public_node(node: &str, listed: bool) -> rutent_contracts::core_internal::OperatorSetting {
+    serde_json::from_value(json!({
+        "setting": "public_node", "node": { "network": node }, "listed": listed,
+    }))
+    .expect("a setting")
+}
+
+/// How many `set_setting` effects Core's log holds.
+fn settings_set(core: &Core) -> usize {
+    core.verified_whats()
+        .iter()
+        .filter(|w| {
+            matches!(
+                w,
+                What::Effect {
+                    action: rutent_contracts::core_internal::Action::ChangeCatalogue {
+                        change: rutent_contracts::core_internal::CatalogueChange::SetSetting,
+                        ..
+                    },
+                    ..
+                }
+            )
+        })
+        .count()
+}
+
+/// A public node can't be unlisted while a segment or a holding rests there (`T-020-65`, `REQ-CAT-22`, the rule in
+/// `F-020`'s notes): with the order's value landed in the node's holding account, the operator's unlist is refused after
+/// policy is asked, no effect is recorded and the node stays on the public list. Once nothing of Core's rests at the
+/// node, an unlist is permitted, and the snapshot a route is chosen from leaves the node out: the same order is quoted
+/// no route through it.
+// verifies: REQ-CAT-22
+#[test]
+fn public_node_cannot_be_unlisted_while_a_segment_or_holding_rests_there() {
+    use rutent_core_orch::intake::{Status, Told};
+    use rutent_core_orch::settings::SettingRefused;
+    let mut stuck = stuck_at_the_public_node();
+    let before = settings_set(&stuck.core);
+    let refused = stuck.core.set_setting(&public_node(NODE, false));
+    assert!(
+        matches!(&refused, Err(SettingRefused::Rests { node }) if node == NODE),
+        "{refused:?}"
+    );
+    assert_eq!(settings_set(&stuck.core), before, "no effect recorded");
+    assert!(
+        stuck.core.catalogue().nodes().is_public(NODE),
+        "still public"
+    );
+
+    // Nothing of Core's rests at the node: the unlist takes effect, and the snapshot leaves the node out.
+    let (mut core, session) = core_with("AC-6", &[CHAIN_IN, RAMP_B, OUT_B]);
+    core.registers().accounts.insert(
+        ADDRESS.to_owned(),
+        kit::customer().party.as_str().to_owned(),
+    );
+    core.install_wallet(NODE, "USDC")
+        .expect("the wallet is installed");
+    core.set_setting(&public_node(NODE, false))
+        .expect("nothing rests there: unlisted");
+    assert!(!core.catalogue().nodes().is_public(NODE));
+    let (_, told) = quoted(
+        &mut core,
+        request(
+            "req-after-unlist",
+            &session,
+            AMOUNT,
+            CHAIN_IN,
+            outer("sim-chain-a", "USDC"),
+            outer("sim-chain-e", "USDC"),
+            OUT_B,
+            ADDRESS,
+            "lowest_total_cost",
+        ),
+    );
+    assert!(
+        !matches!(
+            told,
+            Told::Exists {
+                status: Status::Quoted { .. },
+                ..
+            }
+        ),
+        "no route through the unlisted node: {told:?}"
+    );
+}

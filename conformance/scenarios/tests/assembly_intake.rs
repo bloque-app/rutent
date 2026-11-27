@@ -300,6 +300,45 @@ fn agent_its_party_did_not_scope_to_read_learns_no_order_status_through_accept()
     ));
 }
 
+/// A request refused with no order, by an agent, over the real policy engine (`T-020-64`): its party's scope for reading
+/// decides what the agent is told. Scoped, it is told the class, so it can correct the request; the read is checked
+/// and recorded, allowed, as a filed order's read of the request's record. Unscoped, it is told `ReadRefused`, by the
+/// first answer and by a differing repeat alike, and the check is recorded refused.
+// verifies: REQ-AUZ-8, REQ-AUZ-7
+#[test]
+fn agent_its_party_scoped_to_read_is_told_its_refused_requests_class_over_the_real_policy() {
+    for scoped in [true, false] {
+        let (mut core, _) =
+            Scenario::new("Core alone", "AC-28", Given::one_reserve(Staged::AtOnce))
+                .core(1, &mut Reference);
+        let agent = the_customers_agent();
+        list_and_scope(&core, &agent, scoped);
+        let mut request = base_request("req-refused", AMOUNT, &id("no-such-session"));
+        request.caller = agent.clone();
+        let told = core.request(request.clone());
+        if scoped {
+            assert!(
+                matches!(&told, Ok(Told::Refused { .. })),
+                "a scoped agent is told the class: {told:?}"
+            );
+        } else {
+            assert!(
+                matches!(told, Err(StepError::Intake(IntakeError::ReadRefused))),
+                "an unscoped agent is told no more: {told:?}"
+            );
+        }
+        let reads = recorded_reads(&core);
+        assert_eq!(reads.len(), 1, "scoped {scoped}: {reads:?}");
+        assert_eq!(reads[0].1, scoped, "the check is recorded: {reads:?}");
+        assert_eq!(reads[0].0.reader, agent);
+        // Its person is told the class as ever, with no check.
+        let mut theirs = request;
+        theirs.caller = kit::customer();
+        assert!(matches!(core.request(theirs), Ok(Told::Refused { .. })));
+        assert_eq!(recorded_reads(&core).len(), 1, "a person's isn't checked");
+    }
+}
+
 /// An agent its party scoped for reading is told its party's order status at each call and the check is recorded,
 /// allowed: a filed order's while the acceptance isn't in the log, the order's state once it is (`REQ-AUZ-8`,
 /// `REQ-ORD-5`, `REQ-AUD-12`).

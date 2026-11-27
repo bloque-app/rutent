@@ -691,3 +691,112 @@ fn a_person_is_told_no_order_state_by_an_error_policy_refuses_to_read_and_the_ch
     assert!(!recorded_reads(&env).last().unwrap().1, "refused");
     assert_admitted(&env);
 }
+
+/// An agent its party scoped to read is told why its request was refused, so it can correct it: the class, by the
+/// first answer, by its status and by a repeat that differs (`Conflicting` naming no order); policy's read check is
+/// asked of the request's party and recorded. One its party didn't scope is told `ReadRefused` by each (`T-020-64`;
+/// the milestone reviewer's check of `T-020-62`).
+// verifies: REQ-AUZ-8, REQ-AUZ-7
+#[test]
+fn agent_its_party_scoped_to_read_is_told_its_refused_requests_class() {
+    use rutent_contracts::core_internal::OrderRefusalClass;
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    let mut refused = order_request("client-req-bad", agent());
+    refused.session = id("session-nobody-opened");
+    let class = Told::Refused {
+        class: OrderRefusalClass::RefusedByPolicy,
+    };
+    // Scoped: told the class.
+    assert_eq!(env.open(&mut sim, &refused), Ok(class.clone()));
+    assert_eq!(env.told(&agent(), "client-req-bad"), Some(class.clone()));
+    let mut other = refused.clone();
+    other.route = route("999");
+    assert_eq!(
+        env.open(&mut sim, &other),
+        Err(IntakeError::Conflicting { order: None }),
+        "a repeat that differs names no order, and a scoped agent is told so"
+    );
+    let reads = recorded_reads(&env);
+    assert_eq!(reads.len(), 3, "each answer is checked: {reads:?}");
+    assert!(
+        reads
+            .iter()
+            .all(|(c, allowed)| *allowed && c.reader == agent())
+    );
+    // Unscoped: told no more than a refused reader.
+    env.reads.scoped.clear();
+    assert_eq!(env.open(&mut sim, &refused), Err(IntakeError::ReadRefused));
+    assert_eq!(env.told(&agent(), "client-req-bad"), None);
+    assert_eq!(env.open(&mut sim, &other), Err(IntakeError::ReadRefused));
+    // The person who asked is told the class as ever.
+    let mut theirs = refused.clone();
+    theirs.caller = customer();
+    assert_eq!(env.open(&mut sim, &theirs), Ok(class));
+    assert_admitted(&env);
+}
+
+/// The record intake hands over for a refused request's read is withdrawn as soon as the check returns: the
+/// deployment's map of filed orders holds the orders alone, however many refused requests an agent makes under
+/// identifiers of its choosing (`T-020-64`, the review of `ca787c83`).
+// verifies: REQ-AUZ-8, NFR-6
+#[test]
+fn refused_requests_read_leaves_no_record_behind() {
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    let before = env.reads.filed.len();
+    for n in 0..25 {
+        let mut refused = order_request(&format!("client-req-bad-{n}"), agent());
+        refused.session = id("session-nobody-opened");
+        assert!(matches!(
+            env.open(&mut sim, &refused),
+            Ok(Told::Refused { .. })
+        ));
+        // A repeat that differs is asked as well.
+        refused.route = route("999");
+        assert!(matches!(
+            env.open(&mut sim, &refused),
+            Err(IntakeError::Conflicting { order: None })
+        ));
+    }
+    assert!(
+        env.reads
+            .asked
+            .iter()
+            .any(|(c, allowed)| *allowed && c.reader == agent()),
+        "the reads were asked"
+    );
+    assert_eq!(env.reads.filed.len(), before, "no record is left behind");
+    assert_admitted(&env);
+}
+
+/// No order's identifier can begin as a refused request's record's name does, so no filed order's record is ever
+/// overwritten or dropped by one: a source whose every other draw begins `request-` still gives orders names that don't,
+/// and one that gives only such names gives no order (`T-020-64`, the second review of `ca787c83`).
+// verifies: REQ-AUZ-8, NFR-6
+#[test]
+fn no_order_is_drawn_a_name_a_refused_requests_record_could_take() {
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    env.ids.alternate = true;
+    for n in 0..5 {
+        let order = order_of(
+            &env.open(
+                &mut sim,
+                &order_request(&format!("client-req-{n}"), customer()),
+            )
+            .expect("opens"),
+        );
+        assert!(
+            !order.as_str().starts_with("request-"),
+            "{order:?} could be a refused request's name"
+        );
+    }
+    // A source that draws only such names opens nothing.
+    env.ids.always = true;
+    assert_eq!(
+        env.open(&mut sim, &order_request("client-req-x", customer())),
+        Err(IntakeError::Fresh)
+    );
+    assert_admitted(&env);
+}

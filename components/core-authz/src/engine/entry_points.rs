@@ -25,9 +25,9 @@
 //!    lifecycle actions on the platform (`accept`, `withdraw`, `revoke`, `declare_exploited`, `mark_stale`,
 //!    `promote`, `roll_back`, `confirm`) is visible in the crate at most, or a method of a port's trait impl; and one
 //!    visible outside the crate that reaches one of the crate's carriers ([`CARRIERS`]: `carry_out_roll_back` and its
-//!    siblings) asks policy a decision itself: so no caller outside `core-orch` reaches one but through the decided
-//!    path, which asks policy, records the effect and carries it out (`F-025`'s note on `carry_out_roll_back`,
-//!    `T-020-49`, L1 of #337's review).
+//!    siblings), directly or through other functions of the crate, asks policy a decision itself and takes its permit:
+//!    so no caller outside `core-orch` reaches one but through the decided path, which asks policy, records the effect
+//!    and carries it out (`F-025`'s note on `carry_out_roll_back`, `T-020-49`, L1 of #337's review, `T-020-65`).
 //!
 //! The names the rules watch can't be renamed out of their sight: no `use .. as`, no type alias of a watched type, no
 //! import of a watched enum's variants (`use Answer::*`, `use Answer::Permit`). Nor can a file be mounted from
@@ -394,6 +394,66 @@ pub(super) struct Scan {
     pub functions: usize,
     /// What breaks a rule.
     pub findings: Vec<Finding>,
+    /// core-orch's functions as rule 4's reach reads them across the crate (`T-020-65`).
+    graph: Vec<Reach>,
+}
+
+/// One function of core-orch as rule 4's reach reads it: whether it is public (a trait impl's method included), whether
+/// it is a decided path (it asks policy, `.decide(..)`, and takes the permit its answer holds, `.permit()`), the names it
+/// calls or takes as a value, and the crate's carriers it names itself.
+#[derive(Debug, Clone)]
+struct Reach {
+    file: String,
+    name: String,
+    public: bool,
+    decided: bool,
+    callees: BTreeSet<String>,
+    carriers: Vec<String>,
+}
+
+/// The finding of rule 4's reach: a public function of core-orch that is no decided path, reaching one of the crate's
+/// carriers directly or through functions that are no decided path either, matched by name across the crate as the
+/// other rules match (it fails closed on a shared name).
+fn reach_findings(graph: &[Reach]) -> Vec<Finding> {
+    let mut reaching: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    loop {
+        let mut grew = false;
+        for f in graph.iter().filter(|f| !f.decided) {
+            if reaching.contains_key(&f.name) {
+                continue;
+            }
+            let reached = f
+                .carriers
+                .first()
+                .cloned()
+                .or_else(|| f.callees.iter().find_map(|c| reaching.get(c).cloned()));
+            if let Some(carrier) = reached {
+                reaching.insert(f.name.clone(), carrier);
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    let mut found = Vec::new();
+    for f in graph.iter().filter(|f| f.public && !f.decided) {
+        let mut carriers: Vec<String> = f.carriers.clone();
+        if carriers.is_empty()
+            && let Some(carrier) = f.callees.iter().find_map(|c| reaching.get(c))
+        {
+            carriers.push(carrier.clone());
+        }
+        for carrier in carriers {
+            found.push(Finding {
+                file: f.file.clone(),
+                function: f.name.clone(),
+                what: format!("reaches `{carrier}` from a public function that asks no decision"),
+            });
+        }
+    }
+    found
 }
 
 /// The function being visited, and what it holds and does.
@@ -402,6 +462,10 @@ struct Context {
     name: String,
     /// Visible outside its crate, and no method of a trait impl.
     exposed: bool,
+    /// Visible outside its crate, a trait impl's method included.
+    public: bool,
+    /// The names it calls or takes as a value (rule 4's reach).
+    callees: BTreeSet<String>,
     holds_effect: bool,
     holds_permit: bool,
     takes_permit: bool,
@@ -557,6 +621,7 @@ impl Visitor<'_> {
         let mut context = Context {
             name,
             exposed: public && !self.in_trait_impl,
+            public,
             ..Context::default()
         };
         for input in &sig.inputs {
@@ -588,12 +653,15 @@ impl Visitor<'_> {
                 ));
             }
         }
-        if self.krate == Crate::Orch && context.exposed && !context.decides {
-            for carrier in &context.reaches_carrier {
-                found.push(format!(
-                    "reaches `{carrier}` from a public function that asks no decision"
-                ));
-            }
+        if self.krate == Crate::Orch && context.name != "<module>" {
+            self.scan.graph.push(Reach {
+                file: self.file.to_string(),
+                name: context.name.clone(),
+                public: context.public,
+                decided: context.decides && context.takes_permit,
+                callees: context.callees.clone(),
+                carriers: context.reaches_carrier.clone(),
+            });
         }
         if context.records_effect > 0 {
             if self.krate != Crate::Orch {
@@ -765,12 +833,15 @@ impl<'ast> Visit<'ast> for Visitor<'_> {
 
     fn visit_expr_path(&mut self, expr: &'ast syn::ExprPath) {
         self.written(&expr.path);
-        // A carrier of the crate's own, called or taken as a value, by any path (rule 4).
-        if let Some(last) = expr.path.segments.last() {
+        // A carrier of the crate's own, called or taken as a value, by any path (rule 4); and any name, for its reach.
+        if let Some(last) = expr.path.segments.last()
+            && !self.stack.is_empty()
+        {
             let name = last.ident.to_string();
-            if CARRIERS.contains(&name.as_str()) && !self.stack.is_empty() {
-                self.context().reaches_carrier.push(name);
+            if CARRIERS.contains(&name.as_str()) {
+                self.context().reaches_carrier.push(name.clone());
             }
+            self.context().callees.insert(name);
         }
         // `Platform::handle`, called or taken as a value to call later.
         if expr.path.segments.len() > 1
@@ -789,6 +860,7 @@ impl<'ast> Visit<'ast> for Visitor<'_> {
         if method == "decide" {
             self.context().decides = true;
         }
+        self.context().callees.insert(method.clone());
         self.carry_out(&method);
         visit::visit_expr_method_call(self, expr);
     }
@@ -877,6 +949,10 @@ pub(super) fn scan_source(krate: Crate, file: &str, engine: bool, source: &str, 
     visitor.visit_file(&parsed);
     let module = visitor.stack.pop().expect("the module's context");
     visitor.judge(module);
+    // Rule 4's reach, over every function of core-orch scanned so far: found again as each file adds its own.
+    scan.findings.retain(|f| !f.what.starts_with("reaches `"));
+    let reached = reach_findings(&scan.graph);
+    scan.findings.extend(reached);
 }
 
 /// The files of a module tree, from `root`, that compile outside tests: each `mod name;` not marked test-only, and
@@ -1436,7 +1512,7 @@ pub(super) fn lifecycle_actions_are_reached_only_through_the_decided_path() {
         for kept in [
             format!("pub(crate) fn wrap(m: &mut M, effect: &Effect) {{ {carrier}(m, effect); }}"),
             format!(
-                "pub fn decided(&mut self, d: &mut dyn Decisions, r: &DecisionRequest) {{ let x = d.decide(r); {carrier}(self.m, x); }}"
+                "pub fn decided(&mut self, d: &mut dyn Decisions, r: &DecisionRequest) {{ let x = d.decide(r).permit(); {carrier}(self.m, x); }}"
             ),
         ] {
             assert_eq!(orch(&kept), Vec::<String>::new(), "{kept}");
@@ -1447,4 +1523,60 @@ pub(super) fn lifecycle_actions_are_reached_only_through_the_decided_path() {
         orch("pub fn go(m: &mut M, effect: &Effect) { m.handle(\"p\", effect); }"),
         Vec::<String>::new()
     );
+}
+
+/// Rule 4's two shapes from #337's round 2 (`T-020-65`): a public function that reaches one of the crate's carriers
+/// through a crate-only helper, and one that asks policy but never takes its permit, are each found; a public function
+/// that asks policy and takes the permit, reaching a carrier through a helper, is not.
+pub(super) fn public_wrappers_reaching_a_carrier_indirectly_are_found() {
+    let orch = |source: &str| {
+        let mut scan = Scan::default();
+        scan_source(Crate::Orch, "planted.rs", false, source, &mut scan);
+        scan.findings
+            .into_iter()
+            .map(|f| format!("{}: {}", f.function, f.what))
+            .collect::<Vec<_>>()
+    };
+    for carrier in CARRIERS {
+        assert_eq!(
+            orch(&format!(
+                "fn helper(m: &mut M, effect: &Effect) {{ {carrier}(m, effect); }} \
+                 pub fn wrap(m: &mut M, effect: &Effect) {{ helper(m, effect); }}"
+            )),
+            [format!(
+                "wrap: reaches `{carrier}` from a public function that asks no decision"
+            )],
+            "through a helper"
+        );
+        assert_eq!(
+            orch(&format!(
+                "fn deeper(m: &mut M, effect: &Effect) {{ {carrier}(m, effect); }} \
+                 fn helper(m: &mut M, effect: &Effect) {{ deeper(m, effect); }} \
+                 impl S {{ pub fn wrap(&mut self, effect: &Effect) {{ self.helper(effect); }} }}"
+            )),
+            [format!(
+                "wrap: reaches `{carrier}` from a public function that asks no decision"
+            )],
+            "through two helpers, the last by method"
+        );
+        assert_eq!(
+            orch(&format!(
+                "pub fn ignores(&mut self, d: &mut dyn Decisions, r: &DecisionRequest, effect: &Effect) {{ \
+                 let _ = d.decide(r); {carrier}(self.m, effect); }}"
+            )),
+            [format!(
+                "ignores: reaches `{carrier}` from a public function that asks no decision"
+            )],
+            "asks policy and ignores the answer"
+        );
+        assert_eq!(
+            orch(&format!(
+                "fn helper(m: &mut M, effect: &Effect) {{ {carrier}(m, effect); }} \
+                 pub fn decided(&mut self, d: &mut dyn Decisions, r: &DecisionRequest, effect: &Effect) {{ \
+                 let Some(p) = d.decide(r).permit() else {{ return }}; helper(self.m, effect); }}"
+            )),
+            Vec::<String>::new(),
+            "the decided path"
+        );
+    }
 }

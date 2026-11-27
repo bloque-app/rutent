@@ -1322,6 +1322,16 @@ mod tests {
         entry_points::every_entry_point_of_core_holds();
     }
 
+    /// A public function of core-orch that reaches one of its carriers indirectly is caught (`T-020-65`, #337's round
+    /// 2): through a crate-only helper, at any depth, or asking policy but never taking the permit its answer holds.
+    /// Only a decided path, which asks policy and takes the permit, reaches one; Core's own tree holds no other.
+    // verifies: REQ-AUZ-1
+    #[test]
+    fn public_wrapper_reaching_a_carrier_indirectly_is_caught_by_the_scan() {
+        entry_points::public_wrappers_reaching_a_carrier_indirectly_are_found();
+        entry_points::every_entry_point_of_core_holds();
+    }
+
     /// Each lifecycle action on a release, `accept`, `withdraw`, `revoke`, `declare_exploited` and `mark_stale`, is
     /// listed among the methods that carry out a decided action, each with its own change, and is no longer a method
     /// that carries out nothing, so orchestration may call it only where the effect it rests on is in hand, and

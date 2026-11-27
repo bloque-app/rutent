@@ -1378,3 +1378,46 @@ fn stuck_watch_notices_pairs_and_checkpoints_run_on_cores_schedule() {
     assert!(checked.findings.is_empty(), "{:?}", checked.findings);
     admitted(&core);
 }
+
+/// The unlist rule holds for a segment in flight (`T-020-65`, `REQ-CAT-22`): the ramp's transfer is left unknown, so its
+/// segment is in flight at both its nodes; the operator's unlist of either is refused after policy is asked, no effect
+/// is recorded, and a node on the public list stays on it, so the segment is graded as it began, against its public
+/// record.
+// verifies: REQ-CAT-22
+#[test]
+fn public_node_cannot_be_unlisted_while_a_segment_is_in_flight_there() {
+    use rutent_core_orch::settings::SettingRefused;
+    let Failed { mut core, .. } = ramp_left_unknown();
+    let record = core
+        .decision_records()
+        .last()
+        .cloned()
+        .expect("the route's record");
+    let ramp = record.chosen().expect("a route").parts[0]
+        .operations
+        .iter()
+        .find(|o| o.provider.as_str() == QUICK)
+        .cloned()
+        .expect("the ramp's operation");
+    for end in [&ramp.from.node, &ramp.to.node] {
+        let node = match end {
+            rutent_contracts::provider_role::NodeRef::Inner(id) => id.as_str().to_owned(),
+            rutent_contracts::provider_role::NodeRef::Outer(outer) => outer.network.clone(),
+        };
+        let listed = core.catalogue().nodes().is_public(&node);
+        let unlisted: rutent_contracts::core_internal::OperatorSetting = serde_json::from_value(
+            serde_json::json!({"setting": "public_node", "node": {"network": node}, "listed": false}),
+        )
+        .expect("a setting");
+        let refused = core.set_setting(&unlisted);
+        assert!(
+            matches!(&refused, Err(SettingRefused::Rests { node: n }) if n == &node),
+            "{node}: {refused:?}"
+        );
+        assert_eq!(
+            core.catalogue().nodes().is_public(&node),
+            listed,
+            "{node}: unchanged"
+        );
+    }
+}
