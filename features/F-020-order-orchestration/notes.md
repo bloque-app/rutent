@@ -9841,6 +9841,25 @@ staging `a_repeat_of_an_unanswered_operation_counts_for_nothing_towards_a_stagin
 | `result_matches` doesn't compare the node | `an_answer_about_another_node_is_no_result_of_the_question_of_a_nodes_record` |
 
 
+### T-020-63, review round 2 (#347 approved at `7f487d08`; the merge of m3 `d15553c4`, and three Lows)
+
+- **The merge** (`T-020-58`'s decided read of a private node's record beside this row's) kept both sides at every shared line;
+  the counts a conflict touched were recounted from the files: core-internal 30 schemas, 203 valid, 220 invalid, 794 admission
+  cases, 58 attribution cases, 121 relations, 153 `SCHEMA_RULES`; core-authz 31 actions, 41 permissions, 44 calls. `Ports`
+  lost `publishers_records` (T-020-58) and `ask_as_operator` and `holding_readings` (this row).
+- **L1: the relation also holds the repeat's `transaction` to its segment's.** It must be one Core's question of that segment
+  named (a stated `operation` about that order and segment under it), so a mislabelled repeat can't re-run another unanswered
+  segment at the same provider. Admission case `--another-segments-transaction`; test
+  `repeat_under_another_segments_transaction_is_refused_by_the_log`.
+- **L2: the rebuild reads repeats too.** `Schedule::recorded` takes a `repeat_operation` effect as it takes an `ask_status` one,
+  so a reopened Core doesn't carry out every repeatable unknown segment on its first tick (`schedule_rebuilt_from_the_log_keeps_
+  each_segments_last_status_question` has a repeat among its effects).
+- **L3: a callee's record inside a repeat isn't marked late.** `late_mark(repeating, answered, scope)` is true at the top level
+  only, so the callee's record is freed with its transaction's (`only_the_top_level_answer_to_a_repeat_is_marked_late`). The
+  rule is tested on its own function: a repeated operation that calls another module needs a stand-in the boundary suite
+  doesn't build for a record that holds an unanswered operation.
+- Rule-off: each of the three turns its test red.
+
 ## T-020-65: no provider held for good, and the public-node listing made a rule
 
 Branch `f-020/t-020-65`, from `2c86d6a9` (`origin/m3` with `T-020-49` merged), issue #341: the milestone reviewer's check of
