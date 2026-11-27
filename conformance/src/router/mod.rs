@@ -334,12 +334,10 @@ impl<'a> Reader<'a> {
     /// Whether a statement figure is usable here: within its validity and not void (`REQ-QTE-4`, `REQ-PRT-1`), and,
     /// for an accepted answer in a choice round, made at or after the shortlist round's `taken_at` (`REQ-CAT-5`).
     fn is_usable(&self, figure: &Figure) -> bool {
-        // One version in force, the bounds', judged at the snapshot's time (provider-role 4.0.0).
+        // The versions in force under the bounds, judged at the snapshot's time (provider-role 4.0.0, `REQ-PRT-4`).
         let (deployment, versions, at) = (
             &self.record.bounds.deployment,
-            rutent_contracts::provider_role::ProtocolVersions::only(
-                self.record.bounds.protocol_version.as_str(),
-            ),
+            self.record.bounds.protocol_versions(),
             self.record.snapshot.taken_at.as_str(),
         );
         let in_context = match &figure.value {

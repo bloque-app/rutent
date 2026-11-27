@@ -33,7 +33,7 @@ const SHAPES: [&str; 10] = [
 /// their first refusal (`T-020-45` (6), `T-020-54`) holds router-api's fixtures to one rule each; these are the ones
 /// not yet made to, pinned as they are so the list can only shrink: the test fails when one of them is mended or
 /// when another joins. `T-020-54`'s gap, in F-020's notes.
-const ALSO_BREAK: [(&str, &str); 20] = [
+const ALSO_BREAK: [(&str, &str); 17] = [
     (
         "decision-record-batched-payout-naming-an-operation-before-the-last",
         "a batched-payout reason names a deposit at a reserve tuple that pays out in batches",
@@ -43,20 +43,8 @@ const ALSO_BREAK: [(&str, &str); 20] = [
         "each operation of a part takes in what the one before it delivered",
     ),
     (
-        "catalogue-snapshot-quote-made-after-the-snapshot",
-        "a statement figure's validity runs from its making to its valid_until, rounded down",
-    ),
-    (
         "decision-record-candidate-id-twice",
         "a stale, void or voided statement drops its candidate only where no usable answer covers its operation",
-    ),
-    (
-        "decision-record-chosen-not-a-candidate",
-        "every candidate but the chosen one has a drop reason, and the chosen one has none",
-    ),
-    (
-        "decision-record-chosen-candidate-with-a-drop-reason",
-        "a below-floor reason names a candidate that leaves the customer less than the floor after the operator's fee",
     ),
     (
         "decision-record-operation-citing-a-missing-figure",
@@ -119,27 +107,27 @@ const ALSO_BREAK: [(&str, &str); 20] = [
 /// The invalid fixtures whose rule can't be switched off, because the check returns where it can't go on (a
 /// `let ... else`, a match arm, a rule whose refusal stands for a value the rest needs): read with the rule "off", the
 /// fixture is refused by it still, so the fixture is not shown to break that rule alone. Pinned the same way.
-const UNSWITCHABLE: [&str; 15] = [
+const UNSWITCHABLE: [&str; 7] = [
     "held-quote-of-a-record-choosing-nothing",
     "decision-record-naming-a-call-without-its-calls-figure",
     "decision-record-citing-a-calls-figure-and-naming-no-call",
-    "operation-fee-above-amount-in",
     "catalogue-snapshot-price-for-a-missing-figure",
     "catalogue-snapshot-price-of-a-price",
-    "catalogue-snapshot-quote-fee-above-amount-in",
     "decision-record-stale-reason-naming-a-missing-figure",
-    "decision-record-outranked-by-a-missing-candidate",
     "decision-record-operation-citing-no-tuple",
-    "decision-record-below-floor-without-a-floor",
-    "decision-record-below-floor-for-a-candidate-that-arrives-above-it",
-    "decision-record-below-floor-for-a-candidate-the-operator-s-fee-leaves-above-it",
-    "decision-record-no-positive-outcome-for-a-candidate-that-arrives",
-    "decision-record-excluded-without-an-exclusion",
 ];
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 135] = [
+const RUST_RULES: [(&str, &str); 137] = [
+    (
+        "policy-bounds-naming-an-older-protocol-version-twice",
+        "each older protocol version is named once and is not the current one",
+    ),
+    (
+        "policy-bounds-whose-older-protocol-version-is-the-current-one",
+        "each older protocol version is named once and is not the current one",
+    ),
     (
         "decision-record-batching-deposit-ending-a-kept-candidate",
         "a kept or outranked candidate doesn't end a part on a deposit at a reserve tuple that pays out in batches",
@@ -1787,4 +1775,25 @@ fn candidate_dropped_for_a_batched_payout_names_its_reason() {
             "{name}: {refused:?}"
         );
     }
+}
+
+/// The bounds name the protocol versions in force, each older one with the date from which a statement under it is void,
+/// and the router judges the snapshot's statements by them (`REQ-PRT-4`, `T-020-54`).
+// verifies: REQ-PRT-4
+#[test]
+fn bounds_name_the_protocol_versions_in_force_and_their_cutovers() {
+    let bounds: PolicyBounds = serde_json::from_value(fixture(
+        "valid",
+        "policy-bounds-with-an-older-protocol-version-in-force",
+    ))
+    .expect("reads");
+    let versions = bounds.protocol_versions();
+    assert_eq!(versions.current(), "2.0.1");
+    assert_eq!(versions.in_force("2.0.1", "2027-01-01T00:00:00Z"), Ok(()));
+    assert_eq!(versions.in_force("2.0.0", "2026-11-30T23:59:59Z"), Ok(()));
+    assert!(versions.in_force("2.0.0", "2026-12-01T00:00:00Z").is_err());
+    assert!(versions.in_force("1.9.0", "2026-11-01T00:00:00Z").is_err());
+    let plain: PolicyBounds =
+        serde_json::from_value(fixture("valid", "policy-bounds-without-splitting")).unwrap();
+    assert!(plain.protocol_versions().older().is_empty());
 }

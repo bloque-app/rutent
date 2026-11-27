@@ -981,3 +981,42 @@ fn change_adding_a_protection_binds_every_provider_from_its_cutover() {
     );
     assert!(catalogue.accepted_advertisement("bridge-pay").is_none());
 }
+
+/// A segment's result is read by the protocol version in force when the segment began: one begun before a cutover
+/// resolves the same whether its result lands before or after the date, and one begun at or after it takes no statement
+/// under the old version at all, whenever it lands (`REQ-PRT-2`, `REQ-PRT-4`, `T-020-54`).
+// verifies: REQ-PRT-2, REQ-PRT-4
+#[test]
+fn segment_begun_before_a_cutover_resolves_the_same_whether_its_result_lands_before_or_after_it() {
+    let catalogue = cutting_over();
+    let old = result_under("3.0.0", 2_500);
+    let current = result_under(VERSION, 2_500);
+    // Begun at 4 000, before the date of 5 000: landing before, at and long after the date, the old version's result
+    // and the current's are taken alike.
+    for lands in [4_100, 4_999, 5_000, 5_001, 90_000] {
+        for (what, bytes) in [("old", &old), ("current", &current)] {
+            assert_eq!(
+                catalogue.verify_statement_begun(bytes, Instant(lands), Instant(4_000)),
+                Ok(()),
+                "{what} result of a segment begun before the cutover, landing at {lands}"
+            );
+        }
+    }
+    // Begun at or after the date, the old version is void whenever it lands, the current one taken.
+    for began in [5_000, 5_001, 6_000] {
+        assert_eq!(
+            catalogue.verify_statement_begun(&old, Instant(9_000), Instant(began)),
+            Err(StatementRefusal::WrongContext),
+            "begun at {began}"
+        );
+        assert_eq!(
+            catalogue.verify_statement_begun(&current, Instant(9_000), Instant(began)),
+            Ok(())
+        );
+    }
+    // A statement with no segment is judged where it lands, as before.
+    assert_eq!(
+        catalogue.verify_statement(&old, Instant(5_000)),
+        Err(StatementRefusal::WrongContext)
+    );
+}

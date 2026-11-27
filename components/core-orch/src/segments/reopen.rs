@@ -1218,7 +1218,7 @@ fn settled_result(
         );
         match judge(
             catalogue,
-            at,
+            (at, super::begun(&statement.made_at, at)),
             handed.provider,
             &statement.statement,
             cited.terms,

@@ -9334,16 +9334,16 @@ What the row's author built, on `T-020-45`'s shapes and `T-020-49`'s recorded cu
 
 ### Gaps, with owners
 
-1. **The per-segment reading.** `segment begun before a cutover resolves the same whether its result lands before or after
+1. **(Closed in round 2, below.) The per-segment reading.** `segment begun before a cutover resolves the same whether its result lands before or after
    it` [`REQ-PRT-2`] is not built. The catalogue refuses an old-version statement after the date whichever operation it
    answers, so a result that lands after the date for a segment begun before it is refused until Core records each
    segment's version and the readers judge by it. Fails closed (nothing moves wrongly; the segment stalls to
    its stuck handling). Owner: a follow-up row of `F-020` (core-orch `segments/`, `snapshot/`); the row's Done
    needs it. Reported to the lead.
-2. **Readers that still take one version.** The platform's release-assertion admission (`Platform::admit`), the reversal
+2. **(Closed in round 2, below.) Readers that still take one version.** The platform's release-assertion admission (`Platform::admit`), the reversal
    judge, the router's bounds and the stand-ins read `ProtocolVersions::only(..)`; only the catalogue's and the log's
    advertisement and statement reads take the older versions. Owner: `F-013` (admission) and `F-020`, with gap 1.
-3. **router-api's fixtures.** `ALSO_BREAK` (20 fixtures that still break a second rule) and `UNSWITCHABLE` (15 whose
+3. **(Narrowed in round 2, below.) router-api's fixtures.** `ALSO_BREAK` (20 fixtures that still break a second rule) and `UNSWITCHABLE` (15 whose
    refusal returns where the check can't go on) are pinned in the test as they are, so each list can only shrink.
    Mending them is fixture and check work in router-api's decision-record rules. Owner: a follow-up row of `F-004`/`F-020`.
 4. **The guard sees only what it can name.** An entry that says `Ignorable: yes` and names no field, a schema moved to
@@ -9378,3 +9378,85 @@ contracts' were first seen red before the code, on assertions, with the rule not
   red there on every fold into `core-internal` 1.0.0); `plan-check --strict` 0 findings; `tag-check --strict` 0 findings.
   Not run locally: the scenario binaries and `rutent-conformance` (no simulated provider or stand-in changed), and the
   doc check, which is CI's.
+
+### T-020-54, round 2: the lead's gaps 1 to 3 (2026-11-27)
+
+The lead asked for the row to be finished on this branch: the per-segment reading, every other reader on the versions in
+force, and the router-api fixtures. Edits `contracts/` (router-api 4.0.0, folded: `policy-bounds`), `components/core-authz` is
+untouched; `components/prov/` (`catalogue/`, `module/platform.rs`), `components/core-orch/` (`segments/`, `reversal/`,
+`stuck/`, `settings/`), `components/router/`, `conformance/` (the stand-ins' context, the router double) and the assembly
+(`conformance/scenarios/src/assembly/mod.rs`, which hands the platform to the settings).
+
+**Gap 1, the per-segment reading.** No new log shape: Core already logs each segment's start, and the operation it signs
+carries the `made_at` Core stamped from its clock when the segment began, kept with the effect. A result is read by the
+protocol versions in force *then*: `Catalogue::verify_statement_begun(received, at, begun)` judges the key and skew at `at`
+(as ever) and the protocol version at `begun`; `segments::begun(operation.made_at, fallback)` derives it, and the result
+judge, the late-answer path, the reopen's re-judgement and both judges of the stuck mover (`stuck/mover.rs`) take it.
+A segment begun before a cutover resolves the same whether its result lands before or after the date; one begun at or after
+it takes no statement under the old version. An unreadable `made_at` begins now, which only voids an older version
+sooner. Test `segment_begun_before_a_cutover_resolves_the_same_whether_its_result_lands_before_or_after_it` (prov, at the
+catalogue the judges call). The three judge call sites are covered by the existing scenarios, which still pass, and not by an
+assembly-level cutover scenario: the simulated providers sign under the one current version (gap R2-1).
+
+**Gap 2, the other readers.**
+- *Router bounds* (router-api 4.0.0, folded): `PolicyBounds.older_protocol_versions`, optional, each older version with its
+  cutover (`OlderProtocolVersion`); `PolicyBounds::protocol_versions()`; refused by the Rust types when a version repeats or is
+  the current one. The router's `is_void`, the contract's own check and the conformance router read it, and
+  `Settings::bounds` fills it from the operator's decided cutovers. Fixtures: valid
+  `policy-bounds-with-an-older-protocol-version-in-force`; invalid `--naming-an-older-protocol-version-twice`,
+  `--whose-older-protocol-version-is-the-current-one`. Test `bounds_name_the_protocol_versions_in_force_and_their_cutovers`
+  and, in `settings.rs`, the cutover test now reads the bounds too.
+- *Platform release-assertion admission*: `Platform::set_cutover`/`protocol_versions`; `admit` reads the versions in force at
+  the clock it admits at. The operator's setting reaches it through `Targets.platform` (the `Cutovers` trait, which the
+  platform implements) beside the catalogue, on a set and on a reopen; the assembly passes both. Test
+  `platform_admits_a_release_assertion_under_an_older_version_only_before_its_cutover`.
+- *Reversal judge*: `attributable` judges an operator-published module's statement by the catalogue's versions in force.
+  Test `operator_modules_statement_under_an_older_version_is_attributed_only_before_its_cutover`.
+- *Stand-ins*: `SuiteContext.older_versions` (none by default), `SuiteContext::protocol_versions()`, read by the role
+  stand-ins and the suite.
+- `change adding a protection binds every provider from its cutover` now holds at the catalogue (advertisements and statements),
+  the platform's release assertions, the reversal judge and the router's snapshot.
+
+**Gap 3, router-api's fixtures.** Mended: `catalogue-snapshot-quote-made-after-the-snapshot` (its validity figure now follows
+its made_at), `decision-record-chosen-not-a-candidate` and `decision-record-chosen-candidate-with-a-drop-reason` (the
+chosen candidate takes a drop reason that carries no condition of its own). Eight rules were made switchable (the arms that
+return the check's result are `broke(..)`: below floor, no positive outcome, excluded by policy, outranked, and both fees
+above an amount in): their fixtures break only their rule. `UNSWITCHABLE` is now 7 and `ALSO_BREAK` 17.
+
+Why each remaining fixture can't be mended or switched, by fixture:
+
+| Fixture | Why |
+|---|---|
+| `held-quote-of-a-record-choosing-nothing` | the check reads the chosen candidate to go on; with none there is nothing to compare |
+| `decision-record-naming-a-call-without-its-calls-figure`, `--citing-a-calls-figure-and-naming-no-call` | the match arm yields the declared calls the rest of the check counts |
+| `catalogue-snapshot-price-for-a-missing-figure`, `--price-of-a-price` | the figure lookup yields the tuple figure the price's rules read |
+| `decision-record-stale-reason-naming-a-missing-figure` | the reason's figure is read to judge the drop |
+| `decision-record-operation-citing-no-tuple` | the pattern `[tuple]` is the one tuple the operation's other rules read |
+| `decision-record-over-a-ceiling-at-other-decimals`, `--the-bounds-lack` | a ceiling the bounds don't hold is one no candidate can pass: one fault under two rules |
+| `decision-record-void-reason-naming-a-statement-valid-here`, `--quote-voided-by-a-condition-it-does-not-name`, `--quote-voided-by-an-unchanged-amount`, `--candidate-id-twice`, `--operation-citing-a-missing-figure`, `--choosing-an-unconfirmed-candidate` | a stale or void reason on a statement that isn't, or a candidate whose answers aren't there, is the same fault as "a usable answer covers its operation": one fault under two rules |
+| `decision-record-confirmed-by-an-answer-made-before-the-shortlist`, `--refining-a-shortlist-taken-after-its-snapshot` | moving the shortlist's time moves what its answers are judged against: the order of the two times is one fact |
+| `decision-record-batched-payout-naming-an-operation-before-the-last` | a deposit at a batching reserve is last by construction; one before the last isn't a deposit |
+| `decision-record-operation-citing-another-providers-tuple`, `--a-tuple-with-other-ends` | the figure an operation cites for its tuple is also the one its other figures must name |
+| `decision-record-drop-reason-naming-a-figure-its-candidate-does-not-cite`, `--refused-dry-run-moved-to-the-deposit`, `--no-price-naming-an-operation-before-the-last`, `candidate-with-a-gap-between-operations` | the second rule restates the first from the other end (the figure's candidate, the dry run's amount, the operation's place, the delivered amount) |
+
+The pins stay in the test, so each list can only shrink; the table above is the reason per fixture, and mending one means
+re-deriving its decision record so the second rule's premise no longer holds.
+
+### Gaps, round 2
+
+- **R2-1.** No assembly-level scenario runs a provider under the old version across a cutover: the simulated providers sign
+  under `SuiteContext.protocol_version` alone. The catalogue, platform, judge and router are tested at their own seams.
+  Owner: `F-024`, with `T-024-21`'s restart runs.
+- **R2-2.** Gaps 4 (the guard's reach) and 6 above stay as stated.
+- **R2-3.** `Platform::admit` takes its versions from the platform, not the catalogue: where the assembly sets a cutover it
+  reaches both (the setting's `Targets`), but a caller that wires only one has them differ. Owner: `F-030`'s start-up.
+
+### Rule-off, round 2
+
+| Rule switched off | Red |
+|---|---|
+| the platform reads one version | `platform_admits_a_release_assertion_under_an_older_version_only_before_its_cutover` |
+| the reversal judge reads one version | `operator_modules_statement_under_an_older_version_is_attributed_only_before_its_cutover` |
+| a result is judged at its landing, not its segment's beginning | `segment_begun_before_a_cutover_resolves_the_same_whether_its_result_lands_before_or_after_it` |
+| the bounds name no older version | `bounds_name_the_protocol_versions_in_force_and_their_cutovers`, `a_cutover_the_operator_sets_is_the_catalogues_older_version_in_force` |
+| an unswitched rule is pinned though it can be switched | `each_router_api_invalid_fixture_breaks_only_the_rule_it_names` (it names the fixture to unpin) |

@@ -107,12 +107,23 @@ pub enum Counted {
     Refused(Refusal),
 }
 
+/// When a segment began, as its signed operation says: the `made_at` Core stamped on it from its clock, which the log
+/// keeps with the operation's effect. A result is read by the protocol versions in force then, whichever side of a cutover
+/// it lands on (`REQ-PRT-2`, `T-020-54`). An operation whose time can't be read begins `fallback`, Core's clock now,
+/// which only ever voids an older version's statement sooner.
+pub fn begun(operation_made_at: &str, fallback: Instant) -> Instant {
+    rutent_contracts::router_api::Timestamp::new(operation_made_at)
+        .and_then(|t| u64::try_from(t.unix_nanos().div_euclid(1_000_000_000)).ok())
+        .map_or(fallback, Instant)
+}
+
 /// Judges `received`, the bytes of a result, as an answer to `operation`, the segment's, at `provider`, against the
-/// tuple's `terms`, at Core's clock `at`; `units` are the decimals its two ends count in.
+/// tuple's `terms`, at Core's clock `at`; `begun` is when the segment began, by which the protocol version it names is
+/// judged ([`begun`]); `units` are the decimals its two ends count in.
 #[allow(clippy::too_many_arguments)]
 pub fn judge(
     catalogue: &Catalogue,
-    at: Instant,
+    (at, begun): (Instant, Instant),
     provider: &Id,
     operation: &Operation,
     terms: &Terms,
@@ -121,7 +132,7 @@ pub fn judge(
     received: &[u8],
 ) -> Result<Counted, NotCounted> {
     catalogue
-        .verify_statement(received, at)
+        .verify_statement_begun(received, at, begun)
         .map_err(|_| NotCounted::Unattributable)?;
     let result: Statement<ResultBody> =
         serde_json::from_slice(received).map_err(|_| NotCounted::Unreadable)?;

@@ -114,6 +114,23 @@ pub struct Targets<'a> {
     pub cadences: Option<&'a mut Cadences>,
     /// Arrivals and their waits.
     pub arrivals: Option<&'a mut Arrivals>,
+    /// The module platform, which admits a release assertion by the protocol versions in force (`REQ-PRT-4`,
+    /// `T-020-54`).
+    pub platform: Option<&'a mut dyn Cutovers>,
+}
+
+/// What takes an older protocol version's cutover date: the module platform's admission of a release assertion.
+pub trait Cutovers {
+    /// Puts the older protocol version `version` in force until `cutover`.
+    fn set_cutover(&mut self, version: &str, cutover: &str);
+}
+
+impl<W: rutent_prov::module::platform::World> Cutovers
+    for rutent_prov::module::platform::Platform<W>
+{
+    fn set_cutover(&mut self, version: &str, cutover: &str) {
+        rutent_prov::module::platform::Platform::set_cutover(self, version, cutover);
+    }
 }
 
 /// The catalogue's key for the router's tuple: an exchange where both ends are one node in two assets, a reserve where
@@ -430,6 +447,11 @@ impl Settings {
                 catalogue.set_cutover(version, cutover.as_str());
             }
         }
+        if let Some(platform) = targets.platform.as_deref_mut() {
+            for (version, cutover) in &self.cutovers {
+                platform.set_cutover(version, cutover.as_str());
+            }
+        }
         if let (Some(arrivals), Some(seconds)) =
             (targets.arrivals.as_deref_mut(), self.deposit_wait)
         {
@@ -441,6 +463,28 @@ impl Settings {
     /// place of its, each setting standing for its tuple, provider and asset, or publisher and asset.
     pub fn bounds(&self, base: &PolicyBounds) -> PolicyBounds {
         let mut bounds = base.clone();
+        // The older protocol versions in force, each with the operator's cutover date: the router judges the snapshot's
+        // statements by them (`REQ-PRT-4`, `T-020-54`). A cutover set for the current version is no older version.
+        for (version, cutover) in &self.cutovers {
+            if version == bounds.protocol_version.as_str() {
+                continue;
+            }
+            if let Some(known) = bounds
+                .older_protocol_versions
+                .iter_mut()
+                .find(|o| o.version.as_str() == version)
+            {
+                known.cutover = cutover.clone();
+            } else if let Some(older) = rutent_contracts::router_api::ProtocolVersion::new(version)
+            {
+                bounds.older_protocol_versions.push(
+                    rutent_contracts::router_api::OlderProtocolVersion {
+                        version: older,
+                        cutover: cutover.clone(),
+                    },
+                );
+            }
+        }
         if let Some(fee) = &self.fee {
             bounds.operator_fee = fee.clone();
         }
@@ -541,6 +585,9 @@ fn apply_one(setting: &OperatorSetting, targets: &mut Targets<'_>) {
         OperatorSetting::Cutover { version, cutover } => {
             if let Some(catalogue) = targets.catalogue.as_deref_mut() {
                 catalogue.set_cutover(version.as_str(), cutover.as_str());
+            }
+            if let Some(platform) = targets.platform.as_deref_mut() {
+                platform.set_cutover(version.as_str(), cutover.as_str());
             }
         }
         OperatorSetting::OperatorFee { .. }

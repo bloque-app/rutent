@@ -439,9 +439,10 @@ impl Delivering<'_> {
             flight.units,
         );
         let at = parts.clock.now().floor();
+        let began = crate::segments::begun(&flight.statement.made_at, at);
         self.ports
             .catalogue
-            .verify_statement(bytes, at)
+            .verify_statement_begun(bytes, at, began)
             .map_err(|_| NotTaken::Unattributable)?;
         let body: serde_json::Value =
             serde_json::from_slice(bytes).map_err(|_| NotTaken::Unreadable)?;
@@ -457,7 +458,7 @@ impl Delivering<'_> {
             Some(
                 match judge(
                     self.ports.catalogue,
-                    at,
+                    (at, began),
                     &provider,
                     &operation,
                     &terms,
@@ -879,9 +880,13 @@ impl Delivering<'_> {
             Answered::Refused(_) => return Ok((Resolved::Unknown, false)),
             Answered::Bytes(bytes) => bytes,
         };
+        let judged_at = parts.clock.now().floor();
         let counted = judge(
             self.ports.catalogue,
-            parts.clock.now().floor(),
+            (
+                judged_at,
+                crate::segments::begun(&flight.statement.made_at, judged_at),
+            ),
             &flight.provider,
             &flight.statement.statement,
             &flight.terms,

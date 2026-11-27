@@ -235,9 +235,7 @@ impl Signer {
         operation
             .check_context(
                 &self.context.deployment,
-                &rutent_contracts::provider_role::ProtocolVersions::only(
-                    self.context.protocol_version.as_str(),
-                ),
+                &self.context.protocol_versions(),
                 MADE_AT,
             )
             .is_ok()
@@ -1114,9 +1112,7 @@ impl Typed for Reserve {
         let from_the_operator = question
             .check_context(
                 &self.signer.context.deployment,
-                &rutent_contracts::provider_role::ProtocolVersions::only(
-                    self.signer.context.protocol_version.as_str(),
-                ),
+                &self.signer.context.protocol_versions(),
                 MADE_AT,
             )
             .is_ok()

@@ -121,16 +121,20 @@ fn attributable(catalogue: &Catalogue, keys: &ReleaseKeys, received: &[u8], at: 
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned)
     };
-    let (Some(maker), Some(key), Some(value), Some((deployment, version))) = (
+    let (Some(maker), Some(key), Some(value), Some((deployment, _)), Some(versions)) = (
         text(&["maker"]),
         text(&["signature", "key"]).and_then(PublicKey::new),
         text(&["signature", "value"]),
         catalogue.context(),
+        catalogue.protocol_versions(),
     ) else {
         return false;
     };
+    // The protocol versions in force, each older one until its cutover, judged at the caller's clock (`REQ-PRT-4`).
     let in_context = serde_json::to_value(deployment).ok().as_ref() == envelope.get("deployment")
-        && text(&["protocol_version"]).as_deref() == Some(version);
+        && at.rfc3339().is_some_and(|now| {
+            text(&["protocol_version"]).is_some_and(|sent| versions.in_force(&sent, &now).is_ok())
+        });
     in_context
         && catalogue.publishers().published_by_operator(&maker)
         && keys.get(&maker).is_some_and(|listed| listed.contains(&key))
@@ -289,4 +293,77 @@ pub(super) fn judge_reversal(
         word: Word::Publishers(Id::new(publisher.as_str()).ok_or(NotCounted::NoPublisher)?),
         back: back.amount.clone(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
+    use rutent_contracts::provider_role::{Deployment, RESULT_SHAPE, VERSION, signing_input};
+
+    fn base64url(bytes: &[u8]) -> String {
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let n = chunk
+                .iter()
+                .enumerate()
+                .fold(0u32, |n, (i, b)| n | u32::from(*b) << (16 - 8 * i));
+            for i in 0..=chunk.len() {
+                out.push(ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char);
+            }
+        }
+        out
+    }
+
+    /// A statement of the operator's own module `wallet`, under protocol `version`, signed with `key`.
+    fn statement(deployment: &Deployment, version: &str, key: &SigningKey) -> Vec<u8> {
+        let public = base64url(key.verifying_key().as_bytes());
+        let mut value = serde_json::json!({
+            "deployment": deployment,
+            "protocol_version": version,
+            "shape": RESULT_SHAPE,
+            "maker": "wallet",
+            "made_at": "2026-11-10T00:00:00Z",
+            "signature": {"scheme": "ed25519", "key": public, "value": base64url(&[0u8; 64])},
+            "statement": {}
+        });
+        let input = signing_input(&serde_json::to_vec(&value).unwrap()).unwrap();
+        value["signature"]["value"] = base64url(&key.sign(&input).to_bytes()).into();
+        serde_json::to_vec(&value).unwrap()
+    }
+
+    /// A statement of a module the operator publishes is attributed by the protocol versions in force: under an older
+    /// version before its cutover, and not from it, judged at the caller's clock (`REQ-PRT-4`, `THR-64`, `T-020-54`);
+    /// the current version always, and a version no cutover names never.
+    // verifies: REQ-PRT-4, THR-64
+    #[test]
+    fn operator_modules_statement_under_an_older_version_is_attributed_only_before_its_cutover() {
+        let key = SigningKey::from_bytes(&[5u8; 32]);
+        let operator = SigningKey::from_bytes(&[6u8; 32]);
+        let deployment = Deployment {
+            name: "rutent-test".to_owned(),
+            operator_key: PublicKey::new(base64url(operator.verifying_key().as_bytes())).unwrap(),
+        };
+        let mut catalogue = Catalogue::new();
+        catalogue.set_context(deployment.clone(), VERSION);
+        catalogue.publish_operator_module("wallet").unwrap();
+        let keys: ReleaseKeys = [(
+            "wallet".to_owned(),
+            vec![PublicKey::new(base64url(key.verifying_key().as_bytes())).unwrap()],
+        )]
+        .into();
+        let old = statement(&deployment, "3.0.0", &key);
+        let current = statement(&deployment, VERSION, &key);
+        let (before, after) = (Instant(4_999), Instant(5_000));
+        assert!(
+            !attributable(&catalogue, &keys, &old, before),
+            "no cutover names it"
+        );
+        catalogue.set_cutover("3.0.0", &Instant(5_000).rfc3339().unwrap());
+        assert!(attributable(&catalogue, &keys, &old, before));
+        assert!(!attributable(&catalogue, &keys, &old, after));
+        assert!(attributable(&catalogue, &keys, &current, after));
+    }
 }

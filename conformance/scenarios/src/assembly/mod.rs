@@ -1098,6 +1098,7 @@ impl Core {
                     catalogue: Some(&mut core.catalogue),
                     cadences: Some(core.schedule.cadences_mut()),
                     arrivals: Some(&mut core.arrivals),
+                    platform: Some(&mut core.fleet.platform),
                 });
             return Ok(core);
         }
@@ -1330,6 +1331,7 @@ impl Core {
                 catalogue: Some(&mut self.catalogue),
                 cadences: Some(self.schedule.cadences_mut()),
                 arrivals: Some(&mut self.arrivals),
+                platform: Some(&mut self.fleet.platform),
             },
             &rutent_core_orch::settings::SettingAsked {
                 setting,
@@ -1820,6 +1822,7 @@ impl Core {
         self.settings
             .apply(&mut rutent_core_orch::settings::Targets {
                 catalogue: Some(&mut self.catalogue),
+                platform: Some(&mut self.fleet.platform),
                 ..rutent_core_orch::settings::Targets::default()
             });
     }

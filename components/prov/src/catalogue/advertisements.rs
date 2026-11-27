@@ -411,6 +411,20 @@ impl Catalogue {
     /// statement (`THR-4`). Then the signature must verify over the statement's signing input. `at` is the caller's
     /// clock, as everywhere: a statement dated more than the skew ahead of it is refused.
     pub fn verify_statement(&self, received: &[u8], at: Instant) -> Result<(), StatementRefusal> {
+        self.verify_statement_begun(received, at, at)
+    }
+
+    /// [`Catalogue::verify_statement`] for a statement that answers a segment begun at `begun`: the protocol version it
+    /// names is judged as of the segment's beginning, not of the clock it lands on, so a segment begun before a cutover
+    /// resolves by the version it began under whether its result lands before or after the date (`REQ-PRT-2`,
+    /// `REQ-PRT-4`, `T-020-54`). A segment begun after the cutover takes no statement under the old version at all.
+    /// Everything else (the key, the skew) is judged at `at`, as always.
+    pub fn verify_statement_begun(
+        &self,
+        received: &[u8],
+        at: Instant,
+        begun: Instant,
+    ) -> Result<(), StatementRefusal> {
         let unreadable = |what: &str| StatementRefusal::Unreadable(what.to_owned());
         let text = |path: &[&str]| -> Result<String, StatementRefusal> {
             let bytes = rutent_contracts::provider_role::member(received, path)
@@ -428,12 +442,13 @@ impl Catalogue {
                 .flatten()
                 .and_then(|bytes| serde_json::from_slice(bytes).ok())
                 .ok_or_else(|| unreadable("deployment"))?;
-        // The version is judged at the caller's clock, never the statement's own `made_at`: a holdout can't date a statement
-        // back before its cutover (`REQ-PRT-4`, `THR-64`). A clock no time can be written for voids an older version's.
+        // The version is judged at the caller's clock (a segment's beginning, for its result), never the statement's own
+        // `made_at`: a holdout can't date a statement back before its cutover (`REQ-PRT-4`, `THR-64`). A clock no time
+        // can be written for voids an older version's.
         let sent_version = text(&["protocol_version"])?;
-        let in_force = at
+        let in_force = begun
             .rfc3339()
-            .is_some_and(|now| versions.in_force(&sent_version, &now).is_ok());
+            .is_some_and(|then| versions.in_force(&sent_version, &then).is_ok());
         if &sent_deployment != deployment || !in_force {
             return Err(StatementRefusal::WrongContext);
         }

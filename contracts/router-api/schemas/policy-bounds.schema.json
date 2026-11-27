@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:rutent:router-api:policy-bounds",
   "title": "Policy bounds",
-  "description": "What the operator allows the router (REQ-QTE-11, REQ-ORD-8, ADR-0006): the hop limit, the most parts a split may have, the providers and tuples never chosen, and the ceilings on value in flight, the operator's own fee and the slippage it sets per tuple, under a named policy version (REQ-AUD-4); and the deployment and protocol version every statement in the snapshot is judged against: a statement that names another is void here (REQ-PRT-1). At most one ceiling per provider or publisher and asset, an asset being its id and decimals, checked by the contract's Rust types. At most one slippage limit per tuple, and an operator's fee whose proportion is at most one, are checked by the Rust types too; so is the rule against a snapshot that every exchange tuple settling within three days has a slippage limit.",
+  "description": "What the operator allows the router (REQ-QTE-11, REQ-ORD-8, ADR-0006): the hop limit, the most parts a split may have, the providers and tuples never chosen, and the ceilings on value in flight, the operator's own fee and the slippage it sets per tuple, under a named policy version (REQ-AUD-4); and the deployment and protocol version every statement in the snapshot is judged against: a statement that names another is void here (REQ-PRT-1). At most one ceiling per provider or publisher and asset, an asset being its id and decimals, checked by the contract's Rust types. At most one slippage limit per tuple, and an operator's fee whose proportion is at most one, are checked by the Rust types too; so is the rule against a snapshot that every exchange tuple settling within three days has a slippage limit. The older protocol versions in force, with their cutover dates, are named beside it (REQ-PRT-4).",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -123,6 +123,28 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 10000
+          }
+        }
+      }
+    },
+    "older_protocol_versions": {
+      "description": "The older protocol versions still in force, each until its cutover date (REQ-PRT-4): a statement under one is taken before its date and void from it. Absent where none is. Each version is named once and is not protocol_version, checked by the contract's Rust types.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "cutover"
+        ],
+        "properties": {
+          "version": {
+            "$ref": "urn:rutent:provider-role:common#/$defs/protocol_version"
+          },
+          "cutover": {
+            "description": "The date from which a statement under the version is void.",
+            "$ref": "urn:rutent:provider-role:common#/$defs/timestamp",
+            "format": "date-time"
           }
         }
       }

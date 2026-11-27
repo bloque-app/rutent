@@ -415,6 +415,11 @@ pub struct PolicyBounds {
     pub deployment: Deployment,
     /// The protocol version routing belongs to. A statement that names another is void here.
     pub protocol_version: ProtocolVersion,
+    /// The older protocol versions still in force, each until its cutover date (`REQ-PRT-4`, `T-020-54`): a statement
+    /// under one is taken before its date and void from it, as `ProtocolVersions` reads them
+    /// ([`PolicyBounds::protocol_versions`]). Absent where none is.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub older_protocol_versions: Vec<OlderProtocolVersion>,
     /// The policy's version (`REQ-AUD-4`).
     pub policy_version: Version,
     /// The most operations a part may have: the search's hop limit.
@@ -444,6 +449,16 @@ pub struct PolicyBounds {
     /// routed under these bounds declares settling within [`THREE_DAYS_SECONDS`] has one
     /// ([`PolicyBounds::check_against`]). Empty if no such tuple is routed.
     pub slippage_limits: Vec<SlippageLimit>,
+}
+
+/// An older protocol version still in force, and the date from which a statement under it is void (`REQ-PRT-4`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OlderProtocolVersion {
+    /// The older version.
+    pub version: ProtocolVersion,
+    /// The cutover date: a statement under `version` is void at it and after it.
+    pub cutover: Timestamp,
 }
 
 /// Three calendar days, in seconds from segment start: the line `REQ-QTE-9` and `REQ-QTE-10` draw. A provider

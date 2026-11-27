@@ -240,6 +240,9 @@ pub struct SuiteContext {
     pub deployment: Deployment,
     /// The protocol version every statement must name. By default, the provider-role contract's `VERSION`.
     pub protocol_version: String,
+    /// The older protocol versions still in force, each with the cutover date from which a statement under it is void
+    /// (`REQ-PRT-4`). None by default.
+    pub older_versions: Vec<(String, String)>,
     /// The operator's party identifier, the maker of every operation.
     pub operator: String,
     /// The account holder's session, for balance checks and withdrawal dry runs (`REQ-CAT-3`). The suite also
@@ -251,6 +254,17 @@ pub struct SuiteContext {
     pub subject: String,
 }
 
+impl SuiteContext {
+    /// The protocol versions in force where the suite runs: the one every statement must name, and each older one
+    /// until its cutover date (`REQ-PRT-4`).
+    pub fn protocol_versions(&self) -> rutent_contracts::provider_role::ProtocolVersions {
+        self.older_versions.iter().fold(
+            rutent_contracts::provider_role::ProtocolVersions::only(self.protocol_version.as_str()),
+            |versions, (version, cutover)| versions.with_older(version.as_str(), cutover.as_str()),
+        )
+    }
+}
+
 impl Default for SuiteContext {
     fn default() -> Self {
         Self {
@@ -259,6 +273,7 @@ impl Default for SuiteContext {
                 operator_key: placeholder_key(0),
             },
             protocol_version: VERSION.to_owned(),
+            older_versions: Vec::new(),
             operator: "conformance-operator".to_owned(),
             session: "conformance-session".to_owned(),
             account: "conformance-account".to_owned(),

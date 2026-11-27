@@ -627,6 +627,23 @@ fn a_cutover_the_operator_sets_is_the_catalogues_older_version_in_force() {
     .expect("permitted");
     let expected = vec![("3.0.0".to_owned(), "2026-12-01T00:00:00Z".to_owned())];
     assert_eq!(older(&catalogue), expected);
+    // The router's bounds name it too, so a snapshot's statements are judged by the versions in force.
+    let routed = settings.bounds(&bounds());
+    assert_eq!(
+        routed
+            .older_protocol_versions
+            .iter()
+            .map(|o| (o.version.as_str(), o.cutover.as_str()))
+            .collect::<Vec<_>>(),
+        [("3.0.0", "2026-12-01T00:00:00Z")]
+    );
+    assert!(
+        settings
+            .bounds(&bounds())
+            .protocol_versions()
+            .in_force("3.0.0", "2026-12-01T00:00:00Z")
+            .is_err()
+    );
     assert_eq!(
         settings.cutover("3.0.0").map(|t| t.as_str().to_owned()),
         Some("2026-12-01T00:00:00Z".to_owned())

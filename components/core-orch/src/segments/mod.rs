@@ -138,7 +138,7 @@ pub(crate) use journal::stated_entry;
 pub use journal::{APPEND_TRIES, Unappended};
 /// What a segment that keeps its asset hands on, as the judge counts it: the quote shown reads it too (`T-020-07`).
 pub(crate) use judge::handed_on;
-pub use judge::{Counted, NotCounted, Quoted, Units, judge};
+pub use judge::{Counted, NotCounted, Quoted, Units, begun, judge};
 pub use landing::{Landed, Landings};
 pub use pairs::{Unbuilt, UnbuiltPair};
 pub use ports::{
@@ -2686,9 +2686,11 @@ impl Segments {
         let counted = match &self.flight(at)?.verdict {
             Some(verdict) => verdict.clone(),
             None => {
+                let judged_at = parts.clock.now().floor();
+                let began = begun(&self.flight(at)?.statement.made_at, judged_at);
                 let verdict = judge(
                     parts.catalogue,
-                    parts.clock.now().floor(),
+                    (judged_at, began),
                     &provider,
                     &self.flight(at)?.statement.statement,
                     cited.terms,
@@ -3040,19 +3042,21 @@ impl Segments {
             return Err(LateRefused::NotUnknown);
         }
         let at = (live.order.as_str().to_owned(), segment.as_str().to_owned());
-        let (provider, place, transaction, statement) = {
+        let (provider, place, transaction, statement, began) = {
             let flight = self.flights.get(&at).ok_or(LateRefused::NotUnknown)?;
             (
                 flight.provider.clone(),
                 flight.place,
                 flight.transaction.clone(),
                 flight.statement.statement.clone(),
+                flight.statement.made_at.clone(),
             )
         };
         let at_instant = parts.clock.now().floor();
+        let began = begun(&began, at_instant);
         parts
             .catalogue
-            .verify_statement(bytes, at_instant)
+            .verify_statement_begun(bytes, at_instant, began)
             .map_err(|_| LateRefused::Unattributable)?;
         let body: serde_json::Value =
             serde_json::from_slice(bytes).map_err(|_| LateRefused::Unreadable)?;
@@ -3070,7 +3074,7 @@ impl Segments {
             let cited = sign::cited(live.record, operation).ok_or(LateRefused::NotCounted)?;
             match judge(
                 parts.catalogue,
-                at_instant,
+                (at_instant, began),
                 &provider,
                 &statement,
                 cited.terms,

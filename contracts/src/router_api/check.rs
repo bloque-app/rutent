@@ -157,7 +157,7 @@ impl Operation {
         }
         match Amount::new(self.fee.amount.as_str()) {
             Some(fee) if &fee <= self.amount_in.amount() => {}
-            _ => return Err(Violation("an operation's fee is at most its amount in")),
+            _ => broke("an operation's fee is at most its amount in")?,
         }
         Ok(())
     }
@@ -345,7 +345,24 @@ impl PolicyBounds {
         if repeats(&providers) || repeats(&publishers) {
             broke("there is at most one ceiling per provider or publisher and asset")?;
         }
+        let older: Vec<_> = self
+            .older_protocol_versions
+            .iter()
+            .map(|o| o.version.as_str())
+            .collect();
+        if repeats(&older) || older.contains(&self.protocol_version.as_str()) {
+            broke("each older protocol version is named once and is not the current one")?;
+        }
         Ok(())
+    }
+
+    /// The protocol versions in force under these bounds: the current one, and each older one until its cutover date,
+    /// as provider-role's `check_context` reads them (`REQ-PRT-4`).
+    pub fn protocol_versions(&self) -> crate::provider_role::ProtocolVersions {
+        self.older_protocol_versions.iter().fold(
+            crate::provider_role::ProtocolVersions::only(self.protocol_version.as_str()),
+            |versions, older| versions.with_older(older.version.as_str(), older.cutover.as_str()),
+        )
     }
 
     /// Checks these bounds against the snapshot they route over (`REQ-QTE-9`): every exchange tuple of the
@@ -955,7 +972,7 @@ impl DecisionRecord {
         // (provider-role 4.0.0's versions in force: none older here).
         let (deployment, versions, at) = (
             &self.bounds.deployment,
-            crate::provider_role::ProtocolVersions::only(self.bounds.protocol_version.as_str()),
+            self.bounds.protocol_versions(),
             self.snapshot.taken_at.as_str(),
         );
         let context = match &figure.value {
@@ -1559,19 +1576,19 @@ impl DecisionRecord {
                 }
                 Ok(())
             }
-            DropReason::BelowFloor {} if !below_floor => Err(Violation(
+            DropReason::BelowFloor {} if !below_floor => broke(
                 "a below-floor reason names a candidate that leaves the customer less than the floor after the operator's fee",
-            )),
-            DropReason::NoPositiveOutcome {} if !a_part_arrives_with_nothing => Err(Violation(
+            ),
+            DropReason::NoPositiveOutcome {} if !a_part_arrives_with_nothing => broke(
                 "a no-positive-outcome reason names a candidate with a part that arrives with nothing",
-            )),
-            DropReason::ExcludedByPolicy {} if !excluded => Err(Violation(
+            ),
+            DropReason::ExcludedByPolicy {} if !excluded => broke(
                 "an excluded-by-policy reason names a candidate that uses an excluded provider or tuple",
-            )),
+            ),
             DropReason::Outranked { by }
                 if !self.candidates.iter().any(|c| &c.candidate_id == by) =>
             {
-                Err(Violation("an outranking candidate is in the record"))
+                broke("an outranking candidate is in the record")
             }
             _ => Ok(()),
         }
@@ -1915,7 +1932,7 @@ fn check_fee(fee: &Fee, amount_in: &str, tuple: &Figure) -> Result<(), Violation
     }
     match (Amount::new(fee.amount.as_str()), Amount::new(amount_in)) {
         (Some(fee), Some(amount_in)) if fee <= amount_in => Ok(()),
-        _ => Err(Violation("a quote's fee is at most its amount in")),
+        _ => broke("a quote's fee is at most its amount in"),
     }
 }
 

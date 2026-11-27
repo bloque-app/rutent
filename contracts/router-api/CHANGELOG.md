@@ -1,6 +1,13 @@
 # router-api changelog
 
 ## 4.0.0
+- The bounds name the protocol versions in force (`T-020-54`, finding 11 of `M3`'s milestone review): an optional
+  `older_protocol_versions`, each older version with the cutover date from which a statement under it is void
+  (`OlderProtocolVersion {version, cutover}`; `PolicyBounds::protocol_versions`, provider-role's `ProtocolVersions`).
+  The router and the contract's own check judge a statement figure by them at the snapshot's time, in place of the one
+  version they took, so a provider still on the old version is read until the date and not after. Absent, the bounds
+  name the one version, as before; a version named twice, or the current one as an older, is refused by the Rust types.
+  One valid fixture, `policy-bounds-with-an-older-protocol-version-in-force`; two invalid, for the Rust rule. (DEC-4, DEC-20, REQ-PRT-4, T-020-54)
 - Each Rust rule's refusal can be switched off in the contract's own tests (`T-020-54`, the milestone reviewer's check
   of `T-020-45`): the `rule-switches` feature's `without_rule`, which `core-internal` has, now reaches this contract's
   checks, so a test sees whether an invalid fixture breaks the one rule it names. Nothing shipped turns it on; no shape
