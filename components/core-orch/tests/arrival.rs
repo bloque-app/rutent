@@ -3611,7 +3611,7 @@ fn nothing_moves_while_the_filed_order_waits_and_the_funds_stay_with_the_holder(
         let mut providers = Reserve::new(&env);
         // The deposit credits the holder's account at the reserve; the book is the reserve's own.
         providers.book = Some(1000);
-        let mut arrivals = Arrivals::new().with_deposit_wait(Count::new(1_800).unwrap());
+        let mut arrivals = short_waits(&mut env);
         slow(&mut env, 4 * 86_400);
         let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
         let mut one = filing(reserve_filer(), &deposited);
@@ -3630,9 +3630,14 @@ fn nothing_moves_while_the_filed_order_waits_and_the_funds_stay_with_the_holder(
                 .verified()
                 .into_iter()
                 .filter(|w| {
+                    // Effects that move value: the operator's decided deposit wait (`short_waits`) is an effect too.
                     matches!(
                         w,
-                        What::Effect { .. } | What::Input { .. } | What::Acceptance { .. }
+                        What::Effect {
+                            action: rutent_contracts::core_internal::Action::MoveValue { .. },
+                            ..
+                        } | What::Input { .. }
+                            | What::Acceptance { .. }
                     )
                 })
                 .count()
@@ -4715,9 +4720,38 @@ fn first_shown_at(env: &Env) -> u64 {
         .expect("a quote was shown")
 }
 
-/// Arrivals whose waits last [`WAIT`] seconds.
-fn short_waits() -> Arrivals {
-    Arrivals::new().with_deposit_wait(Count::new(WAIT).unwrap())
+/// Arrivals whose waits last [`WAIT`] seconds: the operator's `deposit_wait`, decided through policy and recorded in
+/// `env`'s log by Core's command (`T-020-49`), so a Core reopened on that log waits as long.
+fn short_waits(env: &mut Env) -> Arrivals {
+    use rutent_core_orch::settings::{SettingAsked, Settings, Targets};
+    let mut arrivals = Arrivals::new();
+    let setting = rutent_contracts::core_internal::OperatorSetting::DepositWait {
+        seconds: Count::new(WAIT).unwrap(),
+    };
+    let clock = std::rc::Rc::clone(&env.clock);
+    Settings::new()
+        .set(
+            &mut env.log,
+            &mut env.deciding,
+            &*clock,
+            &mut env.ids,
+            &mut Targets {
+                arrivals: Some(&mut arrivals),
+                ..Targets::default()
+            },
+            &SettingAsked {
+                setting: &setting,
+                caller: &operator(),
+                core: &rutent_contracts::core_internal::Actor {
+                    party: id("rutent"),
+                    acts: id("rutent-core"),
+                    role: rutent_contracts::core_internal::Role::Core,
+                    kind: rutent_contracts::core_internal::ActorKind::Component,
+                },
+            },
+        )
+        .expect("the operator's deposit wait is set");
+    arrivals
 }
 
 /// The ends of waits the log holds, with why.
@@ -4741,7 +4775,7 @@ fn wait_ends_in_the_log(env: &Env) -> Vec<(Id, WaitEnd)> {
 fn customer_accepts_a_waiting_deposit_in_a_later_session_of_its_own() {
     let mut env = crate::env();
     let mut providers = Reserve::new(&env);
-    let mut arrivals = short_waits();
+    let mut arrivals = short_waits(&mut env);
     let (one, order, digest) = waiting_in_a_short_session(&mut env, &mut providers, &mut arrivals);
 
     // The filer's session is over: the wait is held, and its filer told so.
@@ -4826,7 +4860,7 @@ fn wait_past_its_lifetime_ends_and_frees_its_deposit() {
     for reader in ["schedule", "filing", "customer"] {
         let mut env = crate::env();
         let mut providers = Reserve::new(&env);
-        let mut arrivals = short_waits();
+        let mut arrivals = short_waits(&mut env);
         let (one, order, digest) =
             waiting_in_a_short_session(&mut env, &mut providers, &mut arrivals);
         let lasts = arrivals.wait_ends(&order).expect("a wait has its end");
@@ -4918,7 +4952,7 @@ fn wait_past_its_lifetime_ends_and_frees_its_deposit() {
 fn freed_deposit_is_filed_again_and_routed_once() {
     let mut env = crate::env();
     let mut providers = Reserve::new(&env);
-    let mut arrivals = short_waits();
+    let mut arrivals = short_waits(&mut env);
     let (one, first, _) = waiting_in_a_short_session(&mut env, &mut providers, &mut arrivals);
     // While it waits the deposit is held: another filing opens nothing.
     let mut other = filing(reserve_filer(), &one.arrival);
@@ -4979,13 +5013,13 @@ fn freed_deposit_is_filed_again_and_routed_once() {
 fn filed_order_waiting_for_its_customer_still_waits_after_core_reopens() {
     let mut env = crate::env();
     let mut providers = Reserve::new(&env);
-    let mut arrivals = short_waits();
+    let mut arrivals = short_waits(&mut env);
     let (one, order, digest) = waiting_in_a_short_session(&mut env, &mut providers, &mut arrivals);
     let lasts = arrivals.wait_ends(&order).unwrap();
 
     let history = env.history();
     let mut reopened = env.with_providers(&mut providers, |_, desk| {
-        Arrivals::reopened(&history, desk.kept).with_deposit_wait(Count::new(WAIT).unwrap())
+        Arrivals::reopened(&history, desk.kept)
     });
     assert_eq!(
         reopened.wait_ends(&order),
@@ -5068,11 +5102,11 @@ fn filed_order_waiting_for_its_customer_still_waits_after_core_reopens() {
     // A reopened Core's wait ends at its lifetime too.
     let mut env = crate::env();
     let mut providers = Reserve::new(&env);
-    let mut arrivals = short_waits();
+    let mut arrivals = short_waits(&mut env);
     let (one, order, _) = waiting_in_a_short_session(&mut env, &mut providers, &mut arrivals);
     let history = env.history();
     let mut reopened = env.with_providers(&mut providers, |_, desk| {
-        Arrivals::reopened(&history, desk.kept).with_deposit_wait(Count::new(WAIT).unwrap())
+        Arrivals::reopened(&history, desk.kept)
     });
     env.clock.set(seconds(&reopened.wait_ends(&order).unwrap()));
     let ended = env
@@ -5096,6 +5130,68 @@ fn filed_order_waiting_for_its_customer_still_waits_after_core_reopens() {
     next.session = short_session(&mut env, "session-next", START + 20_000);
     let filed = file(&mut env, &mut providers, &mut reopened, &next).unwrap();
     assert!(matches!(filed, Filed::Started { .. }), "{filed:?}");
+    assert_admitted(&env);
+}
+
+/// The deposit wait the operator sets through policy bounds a wait (`T-020-49`, `T-020-51`): a decided `deposit_wait`
+/// reaches arrivals, whose wait then ends at its lifetime from the first quote shown, not at the one-day default; and a
+/// reopened Core rebuilds it from the log, with nothing handed to it, so the wait ends there at the same time.
+// verifies: REQ-AUZ-6, REQ-QTE-10, NFR-6
+#[test]
+fn deposit_wait_set_by_the_operator_bounds_a_wait_and_survives_a_restart() {
+    use rutent_core_orch::settings::{SettingAsked, Settings, Targets};
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let setting = rutent_contracts::core_internal::OperatorSetting::DepositWait {
+        seconds: Count::new(WAIT).unwrap(),
+    };
+    let clock = std::rc::Rc::clone(&env.clock);
+    Settings::new()
+        .set(
+            &mut env.log,
+            &mut env.deciding,
+            &*clock,
+            &mut env.ids,
+            &mut Targets {
+                arrivals: Some(&mut arrivals),
+                ..Targets::default()
+            },
+            &SettingAsked {
+                setting: &setting,
+                caller: &operator(),
+                core: &rutent_contracts::core_internal::Actor {
+                    party: id("rutent"),
+                    acts: id("rutent-core"),
+                    role: rutent_contracts::core_internal::Role::Core,
+                    kind: rutent_contracts::core_internal::ActorKind::Component,
+                },
+            },
+        )
+        .expect("the operator's setting is permitted");
+    let (_, order, _) = waiting_in_a_short_session(&mut env, &mut providers, &mut arrivals);
+    let ends = arrivals.wait_ends(&order).unwrap();
+    assert_eq!(
+        seconds(&ends),
+        first_shown_at(&env) + WAIT,
+        "the operator's wait, not a day"
+    );
+
+    // Reopened from its log alone, the wait still ends then.
+    let history = env.history();
+    let mut reopened = env.with_providers(&mut providers, |_, desk| {
+        Arrivals::reopened(&history, desk.kept)
+    });
+    assert_eq!(
+        reopened.wait_ends(&order),
+        Some(ends.clone()),
+        "rebuilt from the log"
+    );
+    env.clock.set(seconds(&ends));
+    let ended = env
+        .with_providers(&mut providers, |_, desk| reopened.end_expired(desk))
+        .unwrap();
+    assert_eq!(ended, std::slice::from_ref(&order));
     assert_admitted(&env);
 }
 
@@ -5183,9 +5279,7 @@ fn waiting_with_inputs(
 
 /// Reopens `arrivals` over `history`, as a Core that stopped and opened again reads its own log.
 fn reopened_over(env: &mut Env, providers: &mut Reserve, history: &[(Receipt, Entry)]) -> Arrivals {
-    env.with_providers(providers, |_, desk| {
-        Arrivals::reopened(history, desk.kept).with_deposit_wait(Count::new(WAIT).unwrap())
-    })
+    env.with_providers(providers, |_, desk| Arrivals::reopened(history, desk.kept))
 }
 
 /// The hold arrivals of `history`, with the digest each names its filing's statement by, set by `change`.
@@ -5224,7 +5318,7 @@ fn with_statements(
 fn waiting_deposit_is_accepted_after_core_reopens_with_no_new_filing() {
     let mut env = crate::env();
     let mut providers = Reserve::new(&env);
-    let mut arrivals = short_waits();
+    let mut arrivals = short_waits(&mut env);
     let (one, order, digest) =
         waiting_with_inputs(&mut env, &mut providers, &mut arrivals, 0, "deposit-1");
 
@@ -5314,7 +5408,7 @@ fn reopened_waiting_deposit_whose_statement_cannot_be_read_stays_held() {
     ] {
         let mut env = crate::env();
         let mut providers = Reserve::new(&env);
-        let mut arrivals = short_waits();
+        let mut arrivals = short_waits(&mut env);
         let (_, first, first_digest) =
             waiting_with_inputs(&mut env, &mut providers, &mut arrivals, 0, "deposit-1");
         let (_, second, _) =
@@ -5396,7 +5490,7 @@ fn reopened_waiting_deposit_whose_statement_cannot_be_read_stays_held() {
 fn filing_restated_after_a_reopen_changes_nothing_the_statement_fixed() {
     let mut env = crate::env();
     let mut providers = Reserve::new(&env);
-    let mut arrivals = short_waits();
+    let mut arrivals = short_waits(&mut env);
     let (one, order, digest) =
         waiting_with_inputs(&mut env, &mut providers, &mut arrivals, 0, "deposit-1");
     let history = env.history();
@@ -5466,7 +5560,7 @@ fn filing_restated_after_a_reopen_changes_nothing_the_statement_fixed() {
 fn reopened_wait_reads_the_filings_needs_back_from_the_statement() {
     let mut env = crate::env();
     let mut providers = Reserve::new(&env);
-    let mut arrivals = short_waits();
+    let mut arrivals = short_waits(&mut env);
     slow(&mut env, 4 * 86_400);
     let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
     let mut one = filing(reserve_filer(), &deposited);

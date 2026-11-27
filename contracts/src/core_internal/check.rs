@@ -77,6 +77,7 @@ impl Action {
             statement_key,
             setting,
             provider,
+            versions,
         } = self
         {
             if change.is_about_a_release() != version.is_some() {
@@ -112,6 +113,23 @@ impl Action {
             // An operator's setting names itself and its value, and nothing of a release or a tuple (`T-020-45`).
             if change.is_a_setting() != setting.is_some() {
                 broke("a catalogue change names an operator's setting exactly when it sets one")?;
+            }
+            // A confirmation of a provider's releases names the versions it puts back, and nothing else does
+            // (`T-020-49`).
+            if change.confirms_releases() == versions.is_empty() || !distinct(versions) {
+                broke(
+                    "a catalogue change names the versions it confirms, at least one, each once, exactly when it confirms a provider's releases",
+                )?;
+            }
+            // A provider's own cadence is the status question's alone (`T-020-49`).
+            if let Some(OperatorSetting::Cadence {
+                job,
+                provider: Some(_),
+                ..
+            }) = setting.as_deref()
+                && job.as_str() != STATUS_ASKS_JOB
+            {
+                broke("a cadence names a provider only for the status question's job")?;
             }
             // A setting about a provider (a tuple's, or a provider's ceiling) names that provider, so policy and the
             // log hold it against the provider whose value it sets (the review of `1bb5f4cb`).

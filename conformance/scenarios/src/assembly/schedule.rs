@@ -79,16 +79,27 @@ impl Core {
         round
     }
 
-    /// Sets how often `job` runs (the operator's setting of the job's cadence; `T-020-49` decides it).
+    /// Sets how often `job` runs, through the operator's command (`Core::set_setting`, `T-020-49`): decided by
+    /// policy, recorded in the log and rebuilt from it when Core reopens. A period past 2^53 - 1 seconds, which no setting
+    /// holds, is set at that (never, in practice).
+    ///
+    /// # Panics
+    ///
+    /// If policy doesn't permit the setting.
     pub fn set_cadence(&mut self, job: Job, seconds: u64) {
-        self.schedule.cadences_mut().set(job, seconds);
+        self.set_setting(&cadence(job.name(), seconds, None))
+            .expect("the job's cadence is set");
     }
 
-    /// Sets how often a segment unknown at `provider` is asked its status again.
+    /// Sets how often a segment unknown at `provider` is asked its status again, through the operator's command, as
+    /// [`Core::set_cadence`] does: the status question's cadence for that provider.
+    ///
+    /// # Panics
+    ///
+    /// If policy doesn't permit the setting.
     pub fn set_status_cadence(&mut self, provider: &str, seconds: u64) {
-        self.schedule
-            .cadences_mut()
-            .set_status_of(provider, seconds);
+        self.set_setting(&cadence(Job::StatusAsks.name(), seconds, Some(provider)))
+            .expect("the provider's status cadence is set");
     }
 
     /// Installs the plain wallet as the account `publisher` keeps for the private node `node`, holding `asset`: the
@@ -560,4 +571,18 @@ impl Ports for Due<'_> {
         let core = &mut *self.0;
         with(&mut core.notices, &mut core.notice_signer, &mut core.wire);
     }
+}
+
+/// The operator's cadence setting of the job named `job`, at `seconds` (at most 2^53 - 1), for `provider` where given.
+fn cadence(
+    job: &str,
+    seconds: u64,
+    provider: Option<&str>,
+) -> rutent_contracts::core_internal::OperatorSetting {
+    let seconds = seconds.min(rutent_contracts::provider_role::SafeInteger::MAX);
+    let mut setting = serde_json::json!({"setting": "cadence", "job": job, "seconds": seconds});
+    if let Some(provider) = provider {
+        setting["provider"] = provider.into();
+    }
+    serde_json::from_value(setting).expect("a cadence setting")
 }

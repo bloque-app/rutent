@@ -113,6 +113,16 @@ impl<L: Log> Log for GeneralHandle<L> {
     }
 }
 
+/// Orchestration's handle on the assembled Core's log reads its history too, as core-orch's [`Journal`] port asks: a
+/// confirmation reads the restrictions it takes again from the log it appends to (`T-020-49`).
+///
+/// [`Journal`]: rutent_core_orch::segments::lifecycle::Journal
+impl rutent_core_orch::segments::lifecycle::Journal for GeneralHandle<assembly::CoreLog> {
+    fn history(&self) -> Vec<(Receipt, rutent_contracts::core_internal::Entry)> {
+        self.0.borrow().entries().to_vec()
+    }
+}
+
 /// The log's policy handle: it implements [`PolicyLog`] and nothing else, can't be built outside this crate and
 /// isn't `Clone`, so the one [`Assembly::new`] hands the policy engine is the only one.
 pub struct PolicyHandle<L>(Rc<RefCell<L>>);

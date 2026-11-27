@@ -483,6 +483,18 @@ impl Log for General {
     }
 }
 
+/// The log's history, as a confirmation reads it (`T-020-49`): each entry with the receipt this log gave it.
+impl rutent_core_orch::segments::lifecycle::Journal for General {
+    fn history(&self) -> Vec<(Receipt, Entry)> {
+        let log = self.0.borrow();
+        log.entries
+            .iter()
+            .enumerate()
+            .map(|(at, (entry, _))| (receipt_of(&log.attributed, at, entry), entry.clone()))
+            .collect()
+    }
+}
+
 // The evidence store ------------------------------------------------------------------------------------------------
 
 /// The evidence store's stand-in: each statement's bytes, by the place they were kept at. A clone shares them, so a
@@ -701,9 +713,8 @@ impl authz::Sources for Register {
             }
             authz::Source::Permissions { permission, .. } => yes(match permission {
                 Permission::CarryOnward => need.input == core().acts,
-                Permission::Change(CatalogueChange::Promote) | Permission::ReadOrderState => {
-                    need.input == operator().acts
-                }
+                Permission::Change(CatalogueChange::Promote | CatalogueChange::MarkStale)
+                | Permission::ReadOrderState => need.input == operator().acts,
                 _ => false,
             }),
             // The deployment operator's logins (`T-021-15`): a catalogue change is held to one, as the assembly's
@@ -2803,6 +2814,7 @@ pub fn release_change(
         advertising_keys: Vec::new(),
         statement_key,
         setting: None,
+        versions: Vec::new(),
     }
 }
 

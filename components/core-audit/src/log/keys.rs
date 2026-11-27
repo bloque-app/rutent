@@ -655,7 +655,10 @@ impl Register {
     }
 
     /// The advertisement of `provider` the register accepted last, with the commitment of the stated entry that brought
-    /// it: the one in force, by every rule [`Register::join`] holds an advertisement to (`T-020-55`).
+    /// it: the one in force, by every rule [`Register::join`] holds an advertisement to (`T-020-55`). None where no grant
+    /// of the provider stands: once every grant is revoked, from the revocation's effect until a `failed` result undoes
+    /// it, nothing it advertised is trusted, its declarations included (`T-020-49`, the milestone reviewer's check of
+    /// `T-020-55`). A grant made again stands again, and its advertisement with it.
     pub(super) fn accepted(
         &self,
         provider: &str,
@@ -663,10 +666,19 @@ impl Register {
         &rutent_contracts::module_interface::Digest,
         &Statement<Advertisement>,
     )> {
+        if !self.stands(provider) {
+            return None;
+        }
         self.ads
             .get(provider)
             .and_then(|h| h.last())
             .map(|a| (&a.commitment, &a.statement))
+    }
+
+    /// Whether a grant of `provider` stands now: for one of its tuples, or a verifier's class, its latest grant or
+    /// revocation the register holds granted it, a tie in time going to the later effect in the log.
+    fn stands(&self, provider: &str) -> bool {
+        self.in_force(provider, i128::MAX)
     }
 
     /// The rules across history: a dropped statements key stays dropped, and a key's purpose holds everywhere.

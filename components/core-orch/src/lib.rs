@@ -22,5 +22,6 @@ pub mod reversal;
 pub mod rounds;
 pub mod schedule;
 pub mod segments;
+pub mod settings;
 pub mod snapshot;
 pub mod stuck;

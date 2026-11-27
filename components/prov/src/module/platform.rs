@@ -649,25 +649,30 @@ impl<W: World> Platform<W> {
                 .and_then(|entry| platform.read_back(entry))
                 .map_err(|e| format!("the platform's record, entry {}: {e}", n + 1))?;
         }
-        // A record that doesn't end with the platform's clean close can't vouch for a decision the platform took and
-        // couldn't write: every provider with a release in force or staged waits for the operator (`T-013-11`).
-        let closed = lines
-            .last()
-            .is_none_or(|line| matches!(Entry::read(line), Ok(Entry::Closed)));
-        if !closed {
-            platform.unconfirmed = platform
-                .lifecycle
-                .providers()
-                .filter(|p| {
-                    platform
-                        .lifecycle
-                        .in_force(p)
-                        .or_else(|| platform.lifecycle.staged(p))
-                        .is_some()
-                })
-                .map(str::to_owned)
-                .collect();
-        }
+        // A record that doesn't end with one of the platform's whole closes can't vouch for a decision the platform took
+        // and couldn't write: every provider with a release in force or staged waits for the operator (`T-013-11`).
+        // One that ends with a whole close while some providers still waited holds those again, and only those: the
+        // operator's confirmations of the others stand, since the platform wrote every decision it took after them
+        // (`T-020-49`). A record with no entry holds nothing.
+        let held_again: Option<BTreeSet<String>> = match lines.last().map(|line| Entry::read(line))
+        {
+            None | Some(Ok(Entry::Closed)) => Some(BTreeSet::new()),
+            Some(Ok(Entry::ClosedHolding { held })) => Some(held.into_iter().collect()),
+            Some(_) => None,
+        };
+        platform.unconfirmed = platform
+            .lifecycle
+            .providers()
+            .filter(|p| {
+                platform
+                    .lifecycle
+                    .in_force(p)
+                    .or_else(|| platform.lifecycle.staged(p))
+                    .is_some()
+                    && held_again.as_ref().is_none_or(|held| held.contains(*p))
+            })
+            .map(str::to_owned)
+            .collect();
         platform.free_spent();
         let lines = platform
             .held()
@@ -744,7 +749,7 @@ impl<W: World> Platform<W> {
                 }
             }
             Entry::Releases(release) => self.restore_releases(&release)?,
-            Entry::Closed => {}
+            Entry::Closed | Entry::ClosedHolding { .. } => {}
             Entry::Ended { transaction } => {
                 self.carried.remove(&transaction);
                 self.lifecycle.spend(&transaction);
@@ -2502,10 +2507,18 @@ fn placeholder_signature() -> String {
 
 impl<W: World> Drop for Platform<W> {
     fn drop(&mut self) {
-        // A record this platform could write to the end, and whose releases nothing waits on, ends whole: the next
-        // opening knows every decision this one took (`T-013-11`).
-        if self.unconfirmed.is_empty() && !self.record_failed {
-            let _ = self.write(&Entry::Closed);
+        // A record this platform could write to the end ends whole: the next opening knows every decision this one took
+        // (`T-013-11`), and holds again only the providers that still wait for the operator's word (`T-020-49`). One
+        // whose write failed takes no more, so it ends with neither, and the next opening holds every provider.
+        if !self.record_failed {
+            let close = if self.unconfirmed.is_empty() {
+                Entry::Closed
+            } else {
+                Entry::ClosedHolding {
+                    held: self.unconfirmed.iter().cloned().collect(),
+                }
+            };
+            let _ = self.write(&close);
         }
         // Every provider's process is killed and reaped as its slot drops.
         self.providers.clear();
@@ -3023,6 +3036,15 @@ impl<W: World> Platform<W> {
             self.start_restored(provider, &version);
         }
         Ok(())
+    }
+
+    /// The versions of the provider's releases held out of force until the operator confirms them (`Platform::confirm`),
+    /// as the record holds them: the one in force, the staged one and every one a segment in flight runs on. `None` where
+    /// nothing of the provider waits (`T-013-11`, `T-020-49`).
+    pub fn awaiting_confirmation(&self, provider: &str) -> Option<BTreeSet<String>> {
+        self.unconfirmed
+            .contains(provider)
+            .then(|| self.lifecycle.wanted(provider))
     }
 
     /// [`Platform::handle`], in the segment of `transaction` if one holds it, and on the version in force for

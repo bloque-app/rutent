@@ -7,10 +7,10 @@
 //! | Source | Answered by | From |
 //! |---|---|---|
 //! | `Requester`, `OrderOrigin` | Core | the order's record: the one its filing handed over before the log holds it ([`OpenedOrders`]), else the log's `order_opened`, else its acceptance |
-//! | `OrderParties` | Core | the order's acceptance, as the log holds it; before it, the order's record, as above |
+//! | `OrderParties` | Core | the order's record, as above: one precedence for every answer about an order (`T-020-49`) |
 //! | `SegmentOrder` | Core | the plan that lists the segment: the order's `route_chosen` input, as the log holds it |
 //! | `SegmentProvider` | Core | the effect that moved value on the segment, as the log holds it |
-//! | `Statement` | Core | the stated entry naming the commitment: its maker's party, as the log attributed it |
+//! | `Statement` | Core | the first stated entry naming the commitment that the log verified: its maker's party; an unverified entry's claimed maker is never answered (`T-020-49`) |
 //! | `Showing` | Core | the stated entry of a provider's result under the showing's commitment, about its order, segment and transaction, verified and received no later than the acceptance is decided |
 //! | `Declarations` | Core | the reserve's advertisement the log's key register accepted last ([`AcceptedAdvertisements`]), its stated entry in the log: its reserve declaration |
 //! | `Kept`, `KeptAbout` | Core | the log's stated entries, each naming a statement Core kept by its commitment |
@@ -251,19 +251,6 @@ fn logged_record(entries: &[(Receipt, Entry)], order: &Id) -> Option<Opened> {
     accepted
 }
 
-/// The parties of `order`'s first acceptance in `entries`.
-fn accepted_parties(entries: &[(Receipt, Entry)], order: &Id) -> Option<Parties> {
-    entries.iter().find_map(|(_, e)| match e {
-        Entry::Verified(v) => match &v.what {
-            What::Acceptance {
-                order: o, parties, ..
-            } if o == order => Some(parties.clone()),
-            _ => None,
-        },
-        Entry::Stated(_) => None,
-    })
-}
-
 /// The order the first `route_chosen` in `entries` listing `segment` gives it to.
 fn order_of_segment(entries: &[(Receipt, Entry)], segment: &Id) -> Option<String> {
     entries.iter().find_map(|(_, e)| {
@@ -302,12 +289,15 @@ fn provider_of_segment(entries: &[(Receipt, Entry)], order: &Id, segment: &Id) -
     })
 }
 
-/// The party of the maker of the first stated entry in `entries` naming `commitment`, as the log attributed it.
+/// The party of the maker of the first stated entry in `entries` naming `commitment` that the log attributed as
+/// verified: an unverified entry names only who the statement claims made it, which Core never answers for
+/// (`T-020-49`, the milestone reviewer's check of `T-020-55`).
 fn maker_of(entries: &[(Receipt, Entry)], commitment: &Digest) -> Option<Id> {
     entries.iter().find_map(|(_, e)| match e {
-        Entry::Stated(s) if &s.commitment == commitment => {
-            Some(s.attribution.maker().party.clone())
-        }
+        Entry::Stated(s) if &s.commitment == commitment => match &s.attribution {
+            Attribution::Verified { who } => Some(who.party.clone()),
+            Attribution::Unverified { .. } => None,
+        },
         _ => None,
     })
 }
@@ -368,12 +358,12 @@ impl<L: LogEntries, A: AcceptedAdvertisements, R> CoreSources<L, A, R> {
         self.log.read(|entries| logged_record(entries, order))
     }
 
-    /// Whether `party` is `order`'s requester, beneficiary or payer: by its acceptance, else by its record.
+    /// Whether `party` is `order`'s requester, beneficiary or payer, by its record: read in the one precedence every
+    /// answer about an order reads (the filing's hand-over, then `order_opened`, then the acceptance), so no two of
+    /// Core's answers about one order can rest on two records (`T-020-49`, the milestone reviewer's check of
+    /// `T-020-55`).
     fn order_parties(&mut self, order: &Id, party: &Id) -> Result<Option<bool>, ReadFailure> {
-        let parties = match self.log.read(|entries| accepted_parties(entries, order))? {
-            Some(parties) => Some(parties),
-            None => self.record(order)?.map(|r| r.parties),
-        };
+        let parties = self.record(order)?.map(|r| r.parties);
         // Its requester, beneficiary or payer, as the log's `customer-read-is-of-its-own-order` holds it: the
         // reserve a settlement account is at is none of them.
         Ok(parties.map(|p| &p.requester == party || &p.beneficiary == party || &p.payer == party))

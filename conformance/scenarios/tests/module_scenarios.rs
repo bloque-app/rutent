@@ -264,7 +264,8 @@ fn upgrade_of_one_provider_interrupts_no_order_at_another_and_a_failed_one_leave
 /// A staged release rolled back (`T-021-12`, `T-020-42`, ADR-0014): the operator's login asks, policy decides, and a
 /// permitted roll back ends the provider's staging, keeping the version in force, with its effect recorded before
 /// its result. A refused one (a login the register doesn't list for it, or a version that isn't the one staged) moves
-/// nothing and records no effect.
+/// nothing and records no effect; each is asked of policy first, before the staging is read (`F-025`'s L6,
+/// `T-020-49`), so each attempt is a decision of the log's.
 // verifies: REQ-AUZ-6
 #[test]
 fn a_permitted_roll_back_ends_the_staging_and_a_refused_one_moves_nothing() {
@@ -323,7 +324,11 @@ fn a_permitted_roll_back_ends_the_staging_and_a_refused_one_moves_nothing() {
         Some("1.1.0"),
         "the staging stays"
     );
-    assert_eq!(recorded(&core), ["decide"], "only the refusal is recorded");
+    assert_eq!(
+        recorded(&core),
+        ["decide", "decide"],
+        "only the two decisions are recorded"
+    );
 
     // Permitted: the staging ends, the version in force stays, and the effect is recorded.
     assert_eq!(core.roll_back(OTHER, "1.1.0"), Ok("1.1.0".to_owned()));
@@ -332,7 +337,7 @@ fn a_permitted_roll_back_ends_the_staging_and_a_refused_one_moves_nothing() {
         core.fleet().platform.active_version(OTHER).as_deref(),
         Some("1.0.0")
     );
-    assert_eq!(recorded(&core), ["decide", "decide", "effect"]);
+    assert_eq!(recorded(&core), ["decide", "decide", "decide", "effect"]);
     let effect_at = core
         .log()
         .entries()
@@ -593,4 +598,152 @@ fn modules_in_rust_and_in_c_run_sandboxed_and_read_no_other_providers_state_or_s
     for canary in [CANARY_SECRET, CANARY_STATE] {
         assert!(!held.contains(canary), "{canary} reached what Core keeps");
     }
+}
+
+// --- T-020-49: a release's lifecycle actions through policy ----------------------------------------------------------
+
+/// The effects and results Core's log holds of `change`, each with its outcome.
+fn changes_of(core: &Core, change: CatalogueChange) -> Vec<Outcome> {
+    let entries = core.log().entries().to_vec();
+    entries
+        .iter()
+        .filter_map(|(receipt, e)| match e {
+            Entry::Verified(v) => match &v.what {
+                What::Effect {
+                    action: Action::ChangeCatalogue { change: c, .. },
+                    ..
+                } if *c == change => entries.iter().find_map(|(_, r)| match r {
+                    Entry::Verified(r) => match &r.what {
+                        What::Result { effect } if effect == receipt => Some(r.outcome),
+                        _ => None,
+                    },
+                    Entry::Stated(_) => None,
+                }),
+                _ => None,
+            },
+            Entry::Stated(_) => None,
+        })
+        .collect()
+}
+
+/// An operator who must declare a version exploited has a permitted way (`REQ-MDL-20`, `T-020-49`): its login asks
+/// Core's decided path, policy permits it, the effect is recorded before the platform is asked and its result after, and
+/// the platform marks the version exploited and runs nothing of it: the order waiting at the provider runs no segment
+/// on it, and nothing moves at the provider. A login the register doesn't list for it is refused, and nothing is
+/// marked.
+// verifies: REQ-MDL-20
+#[test]
+fn operator_declares_a_version_exploited_through_policy_and_its_segments_stop_on_it() {
+    use rutent_core_orch::segments::lifecycle::{Changed, ReleaseChange, ReleaseRefused};
+    use rutent_prov::module::lifecycle::Mark;
+    let (mut core, orders) = accepted(two_reserves(), 1);
+    let version = kit::id("1.0.0");
+    assert!(matches!(
+        core.change_release_as(
+            &kit::customer(),
+            RESERVE,
+            ReleaseChange::DeclareExploited { version: &version }
+        ),
+        Err(ReleaseRefused::NotPermitted(_))
+    ));
+    assert_eq!(
+        core.fleet().platform.lifecycle().mark(RESERVE, "1.0.0"),
+        None
+    );
+    assert!(changes_of(&core, CatalogueChange::DeclareExploited).is_empty());
+
+    let declared = core
+        .change_release(
+            RESERVE,
+            ReleaseChange::DeclareExploited { version: &version },
+        )
+        .expect("permitted and carried out");
+    assert!(
+        matches!(declared, Changed::DeclaredExploited(_)),
+        "{declared:?}"
+    );
+    assert_eq!(
+        core.fleet().platform.lifecycle().mark(RESERVE, "1.0.0"),
+        Some(Mark::Exploited)
+    );
+    assert_eq!(
+        changes_of(&core, CatalogueChange::DeclareExploited),
+        [Outcome::Done {}],
+        "one effect, its result done"
+    );
+    assert_eq!(
+        core.fleet().platform.version_process(RESERVE, "1.0.0"),
+        None,
+        "stopped"
+    );
+
+    // Its segments stop on it: the order at the provider moves nothing there.
+    let before = books(&mut core, RESERVE);
+    let _ = core.run(&orders[0]);
+    assert!(!complete(&mut core, &orders[0]));
+    assert_eq!(
+        books(&mut core, RESERVE),
+        before,
+        "nothing moved at the exploited version"
+    );
+    assert!(at(&core, RESERVE).iter().all(|s| s.runs_on != "1.0.0"));
+}
+
+/// A publisher can't mark its own version stale (`REQ-MDL-5`, `T-020-49`): its login, in the provider's role or stating
+/// the operator's, asks Core's decided path and policy refuses it; nothing is marked, no effect is recorded, and each
+/// attempt is the decision's entry, naming the publisher's login. The operator's login is permitted.
+// verifies: REQ-MDL-5
+#[test]
+fn publisher_cannot_mark_its_own_version_stale() {
+    use rutent_contracts::core_internal::{Actor, ActorKind, Role};
+    use rutent_core_orch::segments::lifecycle::{ReleaseChange, ReleaseRefused};
+    let staging = Staging::new(1, 0, 0).expect("a staging policy");
+    let (mut core, _) = accepted(two_reserves_under(Staged::Under(staging)), 1);
+    let ad = core
+        .installed
+        .iter()
+        .find(|i| i.advertisement.statement().statement.provider == RESERVE)
+        .map(|i| i.advertisement.statement().clone())
+        .expect("installed");
+    let publisher = Actor {
+        party: kit::id(&ad.statement.publisher),
+        acts: kit::id(&ad.maker),
+        role: Role::Provider,
+        kind: ActorKind::Component,
+    };
+    let stating_the_operator = Actor {
+        role: Role::Operator,
+        ..publisher.clone()
+    };
+    let version = kit::id("1.0.0");
+    for caller in [&publisher, &stating_the_operator] {
+        let before = core.log().len();
+        assert!(
+            matches!(
+                core.change_release_as(
+                    caller,
+                    RESERVE,
+                    ReleaseChange::MarkStale { version: &version }
+                ),
+                Err(ReleaseRefused::NotPermitted(_))
+            ),
+            "{caller:?}"
+        );
+        assert_eq!(
+            core.log().len(),
+            before + 1,
+            "the attempt is recorded, and nothing else"
+        );
+        let entries = core.log().entries().to_vec();
+        let Some((_, Entry::Verified(decided))) = entries.last() else {
+            panic!("a decision");
+        };
+        assert!(matches!(&decided.what, What::Decide { request, .. } if &request.caller == caller));
+        assert_eq!(&decided.who, caller);
+    }
+    assert_eq!(
+        core.fleet().platform.lifecycle().mark(RESERVE, "1.0.0"),
+        None
+    );
+    assert!(changes_of(&core, CatalogueChange::MarkStale).is_empty());
 }

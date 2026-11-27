@@ -729,9 +729,11 @@ fn caller_without_the_read_permission_is_handed_nothing_of_the_trail() {
 }
 
 /// Policy's log-backed answers are Core's own (`T-020-55` (1), finding 4): over an order the assembled Core opened,
-/// accepted and ran, Core's sources answer its requester, origin reserve and parties, the order of a segment and the
-/// provider value moved through on it, the maker of a statement and its keeping about the order, and the origin
-/// reserve's declarations, each from the log and the evidence store. With the deployment's registers emptied and its
+/// accepted and ran, Core's sources answer all ten of Core's own, each checked for its value (`T-020-49`, the milestone
+/// reviewer's check): its requester, origin reserve and parties, the order of a segment and the provider value moved
+/// through on it, the maker of a statement, a provider's showing of its result, its keeping (about the order, and about
+/// it or no order), and the origin reserve's two declarations as its advertisement makes them, each from the log and
+/// the evidence store. With the deployment's registers emptied and its
 /// verifier saying yes to anything, each of those answers is unchanged, as the deployment is asked none of them; the
 /// registers' own answers, which are all the assembly supplies, change with them.
 // verifies: REQ-AUZ-5
@@ -798,6 +800,39 @@ fn policys_log_backed_answers_are_cores_and_the_assembly_supplies_only_the_deplo
             _ => None,
         })
         .expect("a verified statement about the order");
+    // A provider's verified result about one of the order's segments: what a showing names.
+    let (shown_segment, showing) = core
+        .log()
+        .entries()
+        .iter()
+        .find_map(|(_, e)| match e {
+            Entry::Stated(s)
+                if matches!(s.attribution, Attribution::Verified { .. })
+                    && s.what.statement.as_str()
+                        == rutent_contracts::provider_role::RESULT_SHAPE
+                    && s.about.as_ref().and_then(|a| a.order.as_ref()) == Some(&order) =>
+            {
+                let about = s.about.as_ref()?;
+                Some((
+                    about.segment.clone()?,
+                    rutent_contracts::core_internal::ShowingNamed {
+                        transaction: about.transaction.clone()?,
+                        commitment: s.commitment.clone(),
+                    },
+                ))
+            }
+            _ => None,
+        })
+        .expect("a provider's result about one of the order's segments");
+    // The origin reserve's declaration, as its installed advertisement makes it.
+    let declared = core
+        .installed
+        .iter()
+        .find(|i| i.advertisement.statement().statement.provider == origin.as_str())
+        .and_then(|i| i.advertisement.statement().statement.offers.reserve.clone())
+        .map(|r| r.declaration)
+        .expect("the origin reserve declares");
+    let statement = commitment.clone();
     let need = |input: &Id, from: Source| Need {
         input: input.clone(),
         from,
@@ -815,6 +850,16 @@ fn policys_log_backed_answers_are_cores_and_the_assembly_supplies_only_the_deplo
             },
         ),
         need(&maker, Source::Statement(commitment.clone())),
+        need(
+            &order,
+            Source::Showing {
+                order: order.clone(),
+                segment: shown_segment,
+                showing,
+                decided_at: core.clock.timestamp(),
+            },
+        ),
+        need(&order, Source::Kept(commitment.clone())),
         need(&order, Source::KeptAbout(commitment)),
         need(
             &id(NO_USER_WITHDRAWAL),
@@ -822,14 +867,41 @@ fn policys_log_backed_answers_are_cores_and_the_assembly_supplies_only_the_deplo
         ),
         need(&id(AUTOMATIC_DEPOSIT), Source::Declarations(origin.clone())),
     ];
+    let said = |yes: bool| Reply::Given(if yes { Said::Yes } else { Said::No });
+    let expected: Vec<Reply<Said>> = std::iter::repeat_n(Reply::Given(Said::Yes), 9)
+        .chain([
+            said(!declared.can_require_user_initiated_withdrawal),
+            said(declared.starts_routes_on_automatic_deposits),
+        ])
+        .collect();
     let mut sources = core.sources();
     let before: Vec<Reply<Said>> = cores.iter().map(|n| sources.supply(n)).collect();
-    for (n, answer) in cores.iter().zip(&before).take(7) {
-        assert_eq!(answer, &Reply::Given(Said::Yes), "{n:?}");
-    }
-    for (n, answer) in cores.iter().zip(&before).skip(7) {
-        assert!(matches!(answer, Reply::Given(_)), "{n:?}: {answer:?}");
-    }
+    let asked: std::collections::BTreeSet<String> = cores
+        .iter()
+        .map(|n| {
+            format!("{:?}", n.from)
+                .split(['(', ' ', '{'])
+                .next()
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(
+        asked.len(),
+        10,
+        "every one of Core's ten sources is asked: {asked:?}"
+    );
+    assert_eq!(before, expected, "each answers its value");
+    // Another party is no requester, and no maker of the statement.
+    let other = id("someone-else");
+    assert_eq!(
+        sources.supply(&need(&other, Source::Requester(order.clone()))),
+        Reply::Given(Said::No)
+    );
+    assert_eq!(
+        sources.supply(&need(&other, Source::Statement(statement.clone()))),
+        Reply::Given(Said::No)
+    );
     assert_eq!(
         sources.order_record(&order),
         Reply::Given(parties.clone()),
@@ -1133,8 +1205,9 @@ fn segment_order_answer_is_the_logs_plan_for_every_segment() {
 }
 
 /// Core's `Statement` against the log, statement by statement (`T-020-55`, the review of `8f7ddefd`: no scenario asked
-/// it): each commitment a stated entry names is its first such entry's maker's, as the log attributed it, and no other
-/// party's; a commitment the log names nowhere is nothing.
+/// it): each commitment a verified stated entry names is its first such entry's maker's, as the log attributed it, and
+/// no other party's; one only unverified entries name (an advertisement, signed by an advertising key) has no maker Core
+/// answers for (`T-020-49`, the milestone reviewer's check); a commitment the log names nowhere is nothing.
 // verifies: REQ-AUD-5
 #[test]
 fn statement_answer_is_the_logs_maker_for_every_statement() {
@@ -1154,15 +1227,51 @@ fn statement_answer_is_the_logs_maker_for_every_statement() {
         rutent_contracts::module_interface::Digest,
         rutent_contracts::router_api::Id,
     )> = Vec::new();
+    let mut claimed_only: Vec<rutent_contracts::module_interface::Digest> = Vec::new();
     for (_, e) in core.log().entries() {
-        if let Entry::Stated(s) = e
-            && !first.iter().any(|(c, _)| c == &s.commitment)
-        {
-            first.push((s.commitment.clone(), s.attribution.maker().party.clone()));
+        if let Entry::Stated(s) = e {
+            match &s.attribution {
+                rutent_contracts::core_internal::Attribution::Verified { who }
+                    if !first.iter().any(|(c, _)| c == &s.commitment) =>
+                {
+                    first.push((s.commitment.clone(), who.party.clone()));
+                }
+                rutent_contracts::core_internal::Attribution::Unverified { .. }
+                    if !claimed_only.contains(&s.commitment) =>
+                {
+                    claimed_only.push(s.commitment.clone());
+                }
+                _ => {}
+            }
         }
     }
+    claimed_only.retain(|c| !first.iter().any(|(f, _)| f == c));
     assert!(first.len() > 1, "the log holds statements");
+    assert!(
+        !claimed_only.is_empty(),
+        "and statements only claimed, its advertisements among them"
+    );
     let mut sources = core.sources();
+    for commitment in &claimed_only {
+        let entries = core.log().entries().to_vec();
+        let claimed = entries
+            .iter()
+            .find_map(|(_, e)| match e {
+                Entry::Stated(s) if &s.commitment == commitment => {
+                    Some(s.attribution.maker().party.clone())
+                }
+                _ => None,
+            })
+            .expect("its claim");
+        assert_eq!(
+            sources.supply(&Need {
+                input: claimed,
+                from: Source::Statement(commitment.clone()),
+            }),
+            Reply::Missing,
+            "an unverified claim answers for no maker: {commitment:?}"
+        );
+    }
     for (commitment, party) in &first {
         let ask = |sources: &mut rutent_scenarios::assembly::policy::CoreSources, who: &str| {
             sources.supply(&Need {

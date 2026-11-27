@@ -84,7 +84,19 @@ const REFERRED: [&str; 4] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 60] = [
+const RUST_RULES: [(&str, &str); 63] = [
+    (
+        "decision-request-to-confirm-releases-naming-no-versions",
+        "a catalogue change names the versions it confirms, at least one, each once, exactly when it confirms a provider's releases",
+    ),
+    (
+        "decision-request-to-promote-naming-versions-to-confirm",
+        "a catalogue change names the versions it confirms, at least one, each once, exactly when it confirms a provider's releases",
+    ),
+    (
+        "decision-request-to-set-a-providers-cadence-of-another-job",
+        "a cadence names a provider only for the status question's job",
+    ),
     (
         "decision-request-to-set-a-providers-ceiling-naming-another-provider",
         "an operator's setting about a provider names that provider",
@@ -336,7 +348,12 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 133] = [
+const SCHEMA_RULES: [SchemaRule; 134] = [
+    (
+        "decision-request-to-confirm-releases-naming-a-version-twice",
+        &[("/action/versions", "uniqueItems")],
+        "a catalogue change names the versions it confirms, at least one, each once, exactly when it confirms a provider's releases",
+    ),
     (
         "filing-inputs-without-its-objective",
         &[("", "required")],
@@ -2648,6 +2665,7 @@ fn a_value_built_in_memory_is_held_to_the_same_rules_as_one_read() {
         advertising_keys: vec![],
         statement_key: None,
         setting: None,
+        versions: Vec::new(),
     };
     assert_eq!(
         effect.check(),
@@ -4971,6 +4989,7 @@ fn operator_setting_is_a_catalogue_change_of_its_own() {
     ];
     let key = |k: &SettingKind| format!("{k:?}");
     kinds.sort_by_key(key);
+    kinds.dedup();
     every.sort_by_key(key);
     assert_eq!(kinds, every, "a valid fixture for each setting");
     assert_eq!(
@@ -5082,6 +5101,59 @@ fn each_lifecycle_action_is_a_catalogue_change_of_its_own() {
     ] {
         assert_accepted_by_both(name);
     }
+}
+
+/// `T-020-49` (5): the platform's confirmation of a provider's releases after an unclean end is a sixth lifecycle action,
+/// a catalogue change of its own naming the provider and the versions it confirms, at least one, each once, and no single
+/// release; no other change names versions. A provider's own status cadence names that provider, for the status
+/// question's job alone.
+// verifies: REQ-AUZ-6
+#[test]
+fn confirming_a_providers_releases_is_a_catalogue_change_of_its_own() {
+    use rutent_contracts::core_internal::{CONFIRM_RELEASES, STATUS_ASKS_JOB};
+    assert_eq!(
+        CONFIRM_RELEASES,
+        ("confirm", CatalogueChange::ConfirmReleases)
+    );
+    let change = CatalogueChange::ConfirmReleases;
+    assert!(change.is_a_lifecycle_action() && change.confirms_releases());
+    assert!(!change.is_about_a_release() && !change.is_about_a_tuple() && !change.is_a_setting());
+    assert!(!LIFECYCLE_ACTIONS.iter().any(|(_, c)| *c == change));
+    assert_eq!(serde_json::to_value(change).unwrap(), "confirm_releases");
+    let name = "decision-request-to-confirm-a-providers-releases";
+    assert_accepted_by_both(name);
+    let request: DecisionRequest = serde_json::from_value(fixture("valid", name)).unwrap();
+    let Action::ChangeCatalogue {
+        versions, version, ..
+    } = &request.action
+    else {
+        panic!("a catalogue change");
+    };
+    assert_eq!(versions.len(), 2);
+    assert!(version.is_none());
+    for name in [
+        "decision-request-to-confirm-releases-naming-no-versions",
+        "decision-request-to-confirm-releases-naming-a-version-twice",
+        "decision-request-to-promote-naming-versions-to-confirm",
+        "decision-request-to-set-a-providers-cadence-of-another-job",
+    ] {
+        assert_rejected(name);
+    }
+    let name = "decision-request-to-set-a-providers-status-cadence";
+    assert_accepted_by_both(name);
+    let request: DecisionRequest = serde_json::from_value(fixture("valid", name)).unwrap();
+    let Action::ChangeCatalogue {
+        provider,
+        setting: Some(setting),
+        ..
+    } = &request.action
+    else {
+        panic!("a setting");
+    };
+    assert!(
+        matches!(&**setting, OperatorSetting::Cadence { job, .. } if job.as_str() == STATUS_ASKS_JOB)
+    );
+    assert_eq!(setting.provider(), Some(provider));
 }
 
 /// The review's Low on fixtures pinned by their first refusal: each invalid fixture only the Rust types refuse breaks

@@ -385,6 +385,15 @@ pub(crate) enum Entry {
     /// entry isn't this one ended some other way, and what the platform held in memory beyond it, a restrictive
     /// decision it couldn't write, isn't known (`T-013-11`).
     Closed,
+    /// The platform was dropped with its record whole, every decision it took in the record, while the providers
+    /// `held` still waited for the operator's confirmation after an earlier unclean end (`T-020-49`): the next opening
+    /// holds those, and only those, again. Like [`Entry::Closed`], it is written only by a platform none of whose writes
+    /// failed, so a crash, or a record that failed (a restriction taken unrecorded among what it may lack), leaves
+    /// neither, and the next opening holds every provider.
+    ClosedHolding {
+        /// The providers still held, in name order.
+        held: Vec<String>,
+    },
     /// The transaction ended: its segment ended, or its record was freed after its provider's evidence window. It
     /// never begins or carries out anything again.
     Ended { transaction: String },

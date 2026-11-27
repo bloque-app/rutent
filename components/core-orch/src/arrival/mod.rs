@@ -36,7 +36,7 @@
 //!
 //! **A wait for the customer outlives the filer's session** (`T-020-51`): an order filed on a deposit whose route has no
 //! firm rate waits for its customer ([`Arrivals::accept`]) for a lifetime of its own, the operator's deposit-wait
-//! setting counted from the first quote shown ([`Arrivals::set_deposit_wait`]), and the customer accepts it in any
+//! setting counted from the first quote shown (the operator's decided `deposit_wait`, `crate::settings`), and the customer accepts it in any
 //! session policy opened for it that is still open, not only the one the deposit was filed in. A wait past its
 //! lifetime ends with the log's `wait_ended` and the order's refusal, whether Core's schedule ends it
 //! ([`Arrivals::end_expired`]) or the next call that reads it does, and frees the deposit: the funds never left the
@@ -506,16 +506,14 @@ impl Arrivals {
         Self::default()
     }
 
-    /// These arrivals with `seconds` as the lifetime of a wait for a customer (the operator's deposit-wait setting).
-    pub fn with_deposit_wait(mut self, seconds: Count) -> Self {
-        self.deposit_wait = Some(seconds);
-        self
-    }
-
     /// Sets the lifetime of a wait for a customer, in whole seconds from the first quote shown (the operator's
-    /// deposit-wait setting): it applies to every wait, those under way too.
-    pub fn set_deposit_wait(&mut self, seconds: Count) {
-        self.deposit_wait = Some(seconds);
+    /// deposit-wait setting): it applies to every wait, those under way too. Only the operator's decided setting sets
+    /// it (`crate::settings::Settings`, `T-020-49`), so it is visible in this crate alone, and a lifetime above
+    /// [`crate::settings::DEPOSIT_WAIT_CEILING_SECONDS`] is never taken.
+    pub(crate) fn set_deposit_wait(&mut self, seconds: Count) {
+        if seconds.get() <= crate::settings::DEPOSIT_WAIT_CEILING_SECONDS {
+            self.deposit_wait = Some(seconds);
+        }
     }
 
     /// The lifetime of a wait for a customer, in nanoseconds.

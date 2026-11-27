@@ -189,7 +189,7 @@
       }
     },
     "catalogue_change": {
-      "description": "A change to the catalogue, each a permission of its own (REQ-AUZ-6). accept_module, revoke_release, mark_stale, declare_exploited, reinstate, withdraw_release, promote and roll_back (a staging ended with the version in force kept, ADR-0014) are about one module release, and only they name its version; grant, revoke_grant and set_slippage are about one tuple, and only they name it, save that a grant and its revocation name a verifier's class in its place (REQ-CAT-13).; set_setting sets one of the operator's settings, and only it names one (T-020-45). The Rust types check these.",
+      "description": "A change to the catalogue, each a permission of its own (REQ-AUZ-6). accept_module, revoke_release, mark_stale, declare_exploited, reinstate, withdraw_release, promote and roll_back (a staging ended with the version in force kept, ADR-0014) are about one module release, and only they name its version; grant, revoke_grant and set_slippage are about one tuple, and only they name it, save that a grant and its revocation name a verifier's class in its place (REQ-CAT-13).; set_setting sets one of the operator's settings, and only it names one (T-020-45); confirm_releases is the operator's word that a provider's releases may come back into force after the platform's unclean end (T-013-11), and only it names the versions it confirms (T-020-49). The Rust types check these.",
       "enum": [
         "grant",
         "revoke_grant",
@@ -202,7 +202,8 @@
         "set_slippage",
         "promote",
         "roll_back",
-        "set_setting"
+        "set_setting",
+        "confirm_releases"
       ]
     },
     "action": {
@@ -494,6 +495,15 @@
         "setting": {
           "description": "The operator's setting it sets, and its value: named exactly by set_setting, which the Rust types check. For a setting about a provider, provider is that provider; for one about the whole deployment, the deployment's operator.",
           "$ref": "#/$defs/operator_setting"
+        },
+        "versions": {
+          "description": "The provider's versions a confirmation of its releases puts back in force, as the platform's record holds them, at least one, each once: named exactly by confirm_releases, which the Rust types check (T-020-49).",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+          }
         }
       }
     },
@@ -999,8 +1009,12 @@
           "$ref": "#/$defs/token"
         },
         "seconds": {
-          "description": "Its period, in whole seconds.",
-          "$ref": "#/$defs/count"
+          "description": "Its period, in whole seconds: zero runs it on every tick of Core's schedule (T-020-49).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/safe_integer"
+        },
+        "provider": {
+          "description": "The provider whose segments left unknown are asked their status again at this cadence: named only for the status question's job, status_asks, which the Rust types check (T-020-49). The change's provider is then this provider.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         }
       }
     },

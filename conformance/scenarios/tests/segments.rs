@@ -156,6 +156,168 @@ fn segments_record_of_its_versions_and_moves_reaches_the_log_when_it_ends() {
         .expect("the log admits every entry");
 }
 
+/// A segment on a version the operator marks stale through policy moves to the newest (`REQ-MDL-19`, `T-020-49`): the
+/// withdrawal begins on 1.0.0 while 1.1.0 is staged; mid-flight the operator's login promotes 1.1.0 and marks 1.0.0
+/// stale, each through Core's decided path (policy, then the effect, then the platform, then the result), and the
+/// segment moves, its record naming the move. A mark asked by a login the register doesn't list is refused and moves
+/// nothing.
+// verifies: REQ-MDL-19
+#[test]
+fn segment_on_a_version_marked_stale_through_policy_moves_to_the_newest() {
+    use rutent_core_orch::segments::lifecycle::{
+        Changed, Judged, ReleaseAsked, ReleaseChange, ReleaseRefused,
+    };
+    struct Fresh(u64);
+    impl rutent_core_orch::rounds::Fresh for Fresh {
+        fn id(&mut self) -> rutent_contracts::router_api::Id {
+            self.0 += 1;
+            id(&format!("stale-{}", self.0))
+        }
+    }
+    let mut world = World::of(&[RESERVE]);
+    admit_release(&mut world, "1.1.0", Staging::new(1, 0, 0));
+    let mut core = Core::over(&mut world);
+    let catalogue = std::mem::replace(
+        &mut world.catalogue,
+        rutent_prov::catalogue::Catalogue::new(),
+    );
+    let judge = catalogue.clone();
+    let (log, clock) = (
+        std::rc::Rc::clone(&core.log),
+        std::rc::Rc::clone(&core.clock),
+    );
+    let mut policy = Policy::new(std::rc::Rc::clone(&log));
+    let marked = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let seen = std::rc::Rc::clone(&marked);
+    let mut watched = Watched::new(&mut world.fleet.platform);
+    let mut first = true;
+    watched.during = Some(Box::new(move |platform, _| {
+        if !std::mem::take(&mut first) {
+            return;
+        }
+        let (provider, version, stale) = (id(RESERVE), id("1.1.0"), id("1.0.0"));
+        let (caller, core_actor) = (operator(), segments_support::core());
+        let mut general = General(std::rc::Rc::clone(&log));
+        let mut fresh = Fresh(0);
+        let mut segments = rutent_core_orch::segments::Segments::new();
+        segments
+            .promote(
+                &mut general,
+                &mut policy,
+                platform,
+                &*clock,
+                &mut fresh,
+                &Promotion {
+                    provider: &provider,
+                    version: &version,
+                    caller: &caller,
+                    core: &core_actor,
+                },
+            )
+            .expect("1.1.0 in force");
+        let mark = |segments: &mut rutent_core_orch::segments::Segments,
+                    policy: &mut Policy,
+                    general: &mut General,
+                    fresh: &mut Fresh,
+                    platform: &mut rutent_prov::module::platform::Platform<
+            rutent_scenarios::sim::SimWorld,
+        >,
+                    caller: &rutent_contracts::core_internal::Actor| {
+            segments.change_release(
+                general,
+                policy,
+                &mut Judged {
+                    platform,
+                    judge: &judge,
+                },
+                &*clock,
+                fresh,
+                &ReleaseAsked {
+                    provider: &provider,
+                    change: ReleaseChange::MarkStale { version: &stale },
+                    caller,
+                    core: &core_actor,
+                },
+            )
+        };
+        seen.borrow_mut().push(mark(
+            &mut segments,
+            &mut policy,
+            &mut general,
+            &mut fresh,
+            platform,
+            &customer(),
+        ));
+        seen.borrow_mut().push(mark(
+            &mut segments,
+            &mut policy,
+            &mut general,
+            &mut fresh,
+            platform,
+            &caller,
+        ));
+    }));
+    let ran = core.run_over(&catalogue, &mut watched);
+    drop(watched);
+    world.catalogue = catalogue;
+    assert!(matches!(
+        marked.borrow()[0],
+        Err(ReleaseRefused::NotPermitted(_))
+    ));
+    assert_eq!(
+        marked.borrow()[1],
+        Ok(Changed::MarkedStale(1)),
+        "the segment moved"
+    );
+    let done = segments(&ran);
+    assert!(
+        done.iter()
+            .all(|d| matches!(d.outcome, SegmentOutcome::Settled { .. })),
+        "{done:?}"
+    );
+    let log = core.log.borrow();
+    let moved: Vec<_> = log
+        .records()
+        .into_iter()
+        .filter_map(|(_, w)| match w {
+            What::HandOver {
+                item:
+                    HandedOver::SegmentRecord {
+                        began_on,
+                        runs_on,
+                        moves,
+                        ..
+                    },
+                ..
+            } => Some((began_on.clone(), runs_on.clone(), moves.len())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(moved[0].0.as_str(), "1.0.0");
+    assert_eq!(moved[0].1.as_str(), "1.1.0", "moved to the newest");
+    assert_eq!(moved[0].2, 1);
+    let stale_effects = log
+        .records()
+        .into_iter()
+        .filter(|(_, w)| {
+            matches!(
+                w,
+                What::Effect {
+                    action: rutent_contracts::core_internal::Action::ChangeCatalogue {
+                        change: CatalogueChange::MarkStale,
+                        ..
+                    },
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(stale_effects, 1, "the permitted mark alone took effect");
+    drop(log);
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
 /// Every outbound call record the platform reports reaches the log, each in its drain at its place, though the log
 /// couldn't take one drain at first: it is kept and appended whole, once.
 // verifies: REQ-MDL-8
@@ -1315,8 +1477,9 @@ fn effect_receipt_acted_on_before_is_not_acted_on_again() {
     );
 }
 
-/// 1.1.0 is staged beside 1.0.0. A promotion naming another version is refused before policy is asked; one naming
-/// 1.1.0 is decided, recorded as an effect, carried out by the decision's caller, and its result recorded.
+/// 1.1.0 is staged beside 1.0.0. A promotion naming another version is asked of policy first, before the staging is
+/// read (`F-025`'s L6, `T-020-49`), and, permitted, refused for its version with no effect; one naming 1.1.0 is
+/// decided, recorded as an effect, carried out by the decision's caller, and its result recorded.
 // verifies: REQ-AUZ-6
 #[test]
 fn promotion_whose_staged_version_differs_from_its_permit_is_refused() {
@@ -1345,7 +1508,7 @@ fn promotion_whose_staged_version_differs_from_its_permit_is_refused() {
             staged: "1.1.0".into()
         })
     );
-    assert!(core.policy.asked.is_empty(), "policy isn't asked");
+    assert_eq!(core.policy.asked.len(), 1, "policy is asked first");
     assert_eq!(
         world.fleet.platform.lifecycle().in_force(RESERVE),
         Some("1.0.0")

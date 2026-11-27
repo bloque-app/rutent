@@ -672,6 +672,8 @@ impl Core {
             .borrow_mut()
             .holding_accounts
             .insert(node.to_owned(), wallet.provider.clone());
+        // The node listed for its wallet gives way to the operator's own setting of it (L2 of #337's review).
+        self.reapply_catalogue_settings();
         Ok(wallet)
     }
 
@@ -683,7 +685,7 @@ impl Core {
     ///
     /// If policy doesn't permit the change, or the log takes no step of it.
     pub fn accept_release(&mut self, wallet: &InstalledWallet) -> Result<Receipt, AssemblyError> {
-        self.change_release(
+        self.log_wallet_release_change(
             wallet,
             CatalogueChange::AcceptModule,
             Some(wallet.statement_key()),
@@ -698,11 +700,12 @@ impl Core {
     ///
     /// If policy doesn't permit the change, or the log takes no step of it.
     pub fn revoke_release(&mut self, wallet: &InstalledWallet) -> Result<Receipt, AssemblyError> {
-        self.change_release(wallet, CatalogueChange::RevokeRelease, None)
+        self.log_wallet_release_change(wallet, CatalogueChange::RevokeRelease, None)
     }
 
-    /// `change` of `wallet`'s release, decided by the operator's login, its effect recorded and its result `done`.
-    fn change_release(
+    /// `change` of `wallet`'s release, decided by the operator's login, its effect recorded and its result `done`
+    /// (`T-020-57`; named apart from the lifecycle command, `Core::change_release`, of `T-020-49`).
+    fn log_wallet_release_change(
         &mut self,
         wallet: &InstalledWallet,
         change: CatalogueChange,
@@ -723,6 +726,7 @@ impl Core {
             advertising_keys: Vec::new(),
             statement_key,
             setting: None,
+            versions: Vec::new(),
         };
         let request = DecisionRequest {
             request: self.fresh.id(),

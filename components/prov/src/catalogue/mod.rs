@@ -316,6 +316,12 @@ impl Catalogue {
         self.nodes.add_public(node, private)
     }
 
+    /// Takes a node off the operator's public list (the operator's `public_node` setting, `listed: false`,
+    /// `T-020-49`); whether it was on it. Its holding account stays on record, for the value resting there.
+    pub fn remove_public_node(&mut self, node: &str) -> bool {
+        self.nodes.remove_public(node)
+    }
+
     /// Registers a public node's holding account, by default a plain wallet, as a module outside the core
     /// (`REQ-CAT-23`). `reference` must be a module the operator publishes ([`Self::publish_operator_module`]):
     /// a provider's module is never a node's holding account (`T-016-04`).
