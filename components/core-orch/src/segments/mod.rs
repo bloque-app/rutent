@@ -92,6 +92,7 @@ mod measured;
 mod pairs;
 mod ports;
 mod reopen;
+mod repeats;
 #[cfg(test)]
 mod returned;
 pub mod roll_back;
@@ -148,6 +149,7 @@ pub use ports::{
     ToKeep, Uses,
 };
 pub use reopen::Reopening;
+pub use repeats::{RepeatOf, Repeated};
 pub use sign::Unwritten;
 pub(crate) use sign::sign as sign_operation;
 

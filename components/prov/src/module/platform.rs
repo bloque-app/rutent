@@ -544,6 +544,8 @@ pub struct Platform<W: World> {
     /// name for a call a module made into it. A second one in a scope is a repeat, whatever its kind (`INV-8`,
     /// `REQ-CAT-10`, `T-013-09`). Kept in the platform's record too (`T-013-10`).
     carried: BTreeMap<String, BTreeMap<String, Carried>>,
+    /// Whether the operation being handled is Core's repeat of one that had no answer ([`Platform::repeat_operation`]).
+    repeating: bool,
     /// The callees' versions whose process ended during a top-level operation, started again at the platform's
     /// next call, after that operation's answer was handed back ([`Platform::restart_ended`]).
     restarts: Vec<(String, String)>,
@@ -609,6 +611,7 @@ impl<W: World> Platform<W> {
             told: BTreeMap::new(),
             runs: BTreeMap::new(),
             carried: BTreeMap::new(),
+            repeating: false,
             restarts: Vec::new(),
             record: Box::new(MemoryRecord::new()),
             record_failed: false,
@@ -756,7 +759,7 @@ impl<W: World> Platform<W> {
             Entry::Releases(release) => self.restore_releases(&release)?,
             Entry::Closed | Entry::ClosedHolding { .. } => {}
             Entry::Ended { transaction } => {
-                self.carried.remove(&transaction);
+                self.drop_carried(&transaction);
                 self.lifecycle.spend(&transaction);
             }
             Entry::Decided {
@@ -812,9 +815,21 @@ impl<W: World> Platform<W> {
         (!state.is_empty()).then(|| ReleasesEntry::of(provider, &state, accepted))
     }
 
+    /// Drops what was carried out under `transaction`, but for a late answer its taker hasn't said it kept: a segment that
+    /// ends leaves it waiting (`T-020-63`).
+    fn drop_carried(&mut self, transaction: &str) {
+        if let Some(scopes) = self.carried.get_mut(transaction) {
+            scopes.retain(|_, carried| carried.late);
+            if scopes.is_empty() {
+                self.carried.remove(transaction);
+            }
+        }
+    }
+
     /// Holds `carried` as the record of its transaction in its scope, unless the transaction ended.
     fn carried_again(&mut self, carried: CarriedEntry) {
-        if self.lifecycle.has_ended(&carried.transaction) {
+        // A late answer nobody has said it kept outlives its segment's end (`T-020-63`).
+        if self.lifecycle.has_ended(&carried.transaction) && !carried.late {
             return;
         }
         self.carried.entry(carried.transaction).or_default().insert(
@@ -3129,7 +3144,8 @@ impl<W: World> Platform<W> {
             // A status question asks about an operation that was counted when it ran, so it counts for nothing: a version
             // that answers every operation as unknown would otherwise reach its minimum on the questions about them
             // (`T-013-11`).
-            let asks_status = matches!(operation.statement, Operation::StatusQuery(_));
+            let asks_status =
+                matches!(operation.statement, Operation::StatusQuery(_)) || self.repeating;
             let answered = is_an_answer(&handled);
             let counted =
                 (!asks_status && self.lifecycle.staged(provider).is_some()).then_some(answered);
@@ -3144,6 +3160,7 @@ impl<W: World> Platform<W> {
                     Handled::Answered(result) => Some(result.clone()),
                     Handled::Refused(_) => None,
                 };
+                let answer_held = answer.is_some();
                 let free_at = self.free_at(provider, &transaction);
                 let carried = self.carried.entry(transaction.clone()).or_default();
                 // The first answer stays the record, whoever asks again.
@@ -3157,7 +3174,7 @@ impl<W: World> Platform<W> {
                         answer,
                         free_at,
                         version: Some(version.clone()),
-                        late: false,
+                        late: self.repeating && answer_held,
                     };
                     kept = Some(Box::new(first.entry(&transaction, &scope)));
                     carried.insert(scope, first);
@@ -3225,50 +3242,43 @@ impl<W: World> Platform<W> {
         first.answer.clone().map(Handled::Answered)
     }
 
-    /// The late answers to the operations of `transactions`: its provider, its transaction and the answer's bytes, each
-    /// handed over again every time this is asked until [`Platform::late_kept`] says it was kept (`AC-5`, `NFR-6`,
-    /// `T-020-63`). A late answer is a provider's answer to an operation the platform handed over and got none to, a first
-    /// run the platform ended at its deadline: it comes by the provider's repeat of the same operation, which only a
-    /// provider that declares a repeat safe is asked, the module run again as [`Platform::handle`] runs it
-    /// (`REQ-CAT-10`). The answer is held in the platform's record as late until it is acknowledged, so a platform
-    /// restarted on the record hands it over again, and it is never freed while it waits. An operation of other scope, one
-    /// that has an answer of its own, or one whose repeat gives none, is no late answer.
+    /// Carries out again the operation the platform handed over under `transaction` to `provider` and got no answer to,
+    /// as [`Platform::handle`] does a repeat, where the provider declares a repeat safe (`REQ-CAT-10`, `AC-5`,
+    /// `T-020-63`). It is the move's first carrying-out where the first run was ended before it took effect, so Core
+    /// takes it only as a decided effect lets it (`Modules::repeat_operation`), on its provider's status cadence. The
+    /// answer, where there is one, is held as late in the same record entry that holds the answer, so a stop between
+    /// the two loses neither: [`Platform::late_answers`] hands it over until [`Platform::late_kept`]. The run counts
+    /// for nothing towards a staging (`T-013-11`): it is Core's retry, not traffic. Refused as `DuplicateTransaction`,
+    /// the module not run, where the platform holds no unanswered operation of that provider's under the transaction.
+    pub fn repeat_operation(&mut self, provider: &str, transaction: &str) -> Handled {
+        self.restart_ended();
+        self.free_spent();
+        let Some(first) = self
+            .carried
+            .get(transaction)
+            .and_then(|scopes| scopes.get(TOP_LEVEL))
+            .filter(|first| first.provider == provider && first.answer.is_none())
+        else {
+            return Handled::Refused(PlatformRefusal::DuplicateTransaction);
+        };
+        let operation = first.operation.clone();
+        self.repeating = true;
+        let handled = self.handle(provider, &operation);
+        self.repeating = false;
+        handled
+    }
+
+    /// The late answers held for the operations of `transactions`: its provider, its transaction and the answer's
+    /// bytes, each handed over again every time this is asked until [`Platform::late_kept`] says it was kept (`AC-5`,
+    /// `NFR-6`, `T-020-63`). One is held by [`Platform::repeat_operation`]'s answer; the record holds it, so a platform
+    /// restarted on it hands it over again, and nothing of it is freed, nor dropped as its segment ends, while it
+    /// waits. This runs no module.
     pub fn late_answers(
         &mut self,
         transactions: &BTreeSet<String>,
     ) -> Vec<(String, String, Vec<u8>)> {
         self.restart_ended();
         self.free_spent();
-        let unanswered: Vec<(String, String, Statement<Operation>)> = transactions
-            .iter()
-            .filter_map(|transaction| {
-                let carried = self.carried.get(transaction)?.get(TOP_LEVEL)?;
-                carried.answer.is_none().then(|| {
-                    (
-                        transaction.clone(),
-                        carried.provider.clone(),
-                        carried.operation.clone(),
-                    )
-                })
-            })
-            .collect();
-        for (transaction, provider, operation) in unanswered {
-            if !matches!(self.handle(&provider, &operation), Handled::Answered(_)) {
-                continue;
-            }
-            if let Some(carried) = self
-                .carried
-                .get_mut(&transaction)
-                .and_then(|scopes| scopes.get_mut(TOP_LEVEL))
-                && carried.answer.is_some()
-            {
-                carried.late = true;
-                let entry = Entry::Carried(Box::new(carried.entry(&transaction, TOP_LEVEL)));
-                // Held late in memory whether or not the record took it: handed over now, and again, and a restart that
-                // lost the mark would hold the answer as an ordinary one.
-                let _ = self.write(&entry);
-            }
-        }
         transactions
             .iter()
             .filter_map(|transaction| {
@@ -3493,7 +3503,7 @@ impl<W: World> Platform<W> {
     pub fn end_segment(&mut self, transaction: &str) -> Option<SegmentRecord> {
         self.restart_ended();
         let record = self.lifecycle.end_segment(transaction)?;
-        self.carried.remove(transaction);
+        self.drop_carried(transaction);
         // A record that can't be written holds the segment in flight and its operations carried out: a restarted
         // platform refuses their repeats all the same, and the segment can be ended again.
         let _ = self.write(&Entry::Ended {

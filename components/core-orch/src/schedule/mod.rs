@@ -63,6 +63,11 @@ pub use jobs::{
 /// provider is not pressed (an hour).
 pub const DEFAULT_STATUS_SECONDS: u64 = 3600;
 
+/// How often an account the holding check couldn't read, or couldn't check, is read again until it is (five minutes): its
+/// own cadence, so one unreadable account neither presses its module every tick nor makes the accounts that were read
+/// wait again (`T-020-63`). A reading, reversible.
+pub const HOLDING_RETRY_SECONDS: u64 = 300;
+
 /// One of Core's scheduled jobs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Job {
@@ -219,6 +224,16 @@ pub struct LateTaken {
     pub kept: Result<Receipt, String>,
 }
 
+/// What the late-answers job did: the answers taken, and the segments whose own operation it carried out again.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Late {
+    /// The late answers taken.
+    pub taken: Vec<LateTaken>,
+    /// The unknown segments whose operation was carried out again (or refused by policy), which count as asked for their
+    /// provider's cadence.
+    pub repeated: Vec<Unknown>,
+}
+
 /// One holding account, read and checked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HoldingChecked {
@@ -366,8 +381,10 @@ impl Round {
 /// What a tick calls: each job, its body [`jobs::Jobs`]'s over the deployment's [`jobs::Ports`]. The seam is a trait so
 /// that the schedule's own rules (cadences, order, what a round says) are tested apart from the jobs.
 pub trait Duties {
-    /// Takes the late answers the platform holds for Core's segments, each kept once as a statement.
-    fn late_answers(&mut self) -> Vec<LateTaken>;
+    /// Carries the own operation of each segment left unknown out again that `due` says is due, where its provider
+    /// declares that safe and no status query, as a decided effect, and takes the late answers the platform holds for
+    /// Core's segments, each kept once as a statement.
+    fn late_answers(&mut self, due: &dyn Fn(&Unknown) -> bool) -> Late;
     /// Lands what settled at a public node a holding account holds; how many segments were landed.
     fn land_settled(&mut self) -> usize;
     /// Writes the measure records the segments' endings gave; how many the log took.
@@ -380,8 +397,8 @@ pub trait Duties {
     fn write_pairs(&mut self) -> Result<usize, String>;
     /// Closes the orders that completed and reports each one's executed price, once.
     fn close_completed(&mut self) -> Vec<Priced>;
-    /// Reads each holding account through the platform and checks it.
-    fn check_holdings(&mut self) -> Vec<HoldingChecked>;
+    /// Reads each holding account through the platform and checks it: only the accounts at `only`, where it names them.
+    fn check_holdings(&mut self, only: Option<&BTreeSet<String>>) -> Vec<HoldingChecked>;
     /// Reads the publishers' records of their private nodes.
     fn read_publishers(&mut self) -> Vec<Published>;
     /// The segments whose outcome Core holds unknown.
@@ -422,6 +439,9 @@ pub struct Schedule {
     asked: BTreeMap<(String, String), u64>,
     /// The pairs already told to the operator, by order and later segment.
     told: BTreeSet<(String, String)>,
+    /// The holding accounts the last check couldn't read or check, by node, and when each was last tried: each is read
+    /// again at [`HOLDING_RETRY_SECONDS`], alone.
+    unread: BTreeMap<String, u64>,
 }
 
 impl Schedule {
@@ -504,16 +524,35 @@ impl Schedule {
     pub fn tick(&mut self, now: u64, duties: &mut dyn Duties) -> Round {
         let mut round = Round::default();
         for job in Job::ALL {
-            if !self.due(job, now) {
+            // The holding check not due may still have accounts to read again, alone.
+            let again: Option<BTreeSet<String>> = if self.due(job, now) {
+                None
+            } else if job == Job::HoldingCheck {
+                let due: BTreeSet<String> = self
+                    .unread
+                    .iter()
+                    .filter(|(_, at)| now < **at || now - **at >= HOLDING_RETRY_SECONDS)
+                    .map(|(node, _)| node.clone())
+                    .collect();
+                if due.is_empty() {
+                    continue;
+                }
+                Some(due)
+            } else {
                 continue;
-            }
+            };
             round.ran.push(job);
             // A job counts as run, and waits its cadence, only once it succeeded: one that failed (a holding account not
             // read or not checked, a comparison, a notice or a checkpoint the log or the store didn't take) is due again
             // on the next tick, never held off for a whole cadence (`T-020-63`).
             let succeeded = match job {
                 Job::LateAnswers => {
-                    round.late = duties.late_answers();
+                    let late = duties.late_answers(&|unknown| self.status_due(unknown, now));
+                    // A segment's operation carried out again counts as its provider asked, for its cadence.
+                    for unknown in &late.repeated {
+                        self.note_asked(unknown, now);
+                    }
+                    round.late = late.taken;
                     round.late.iter().all(|late| late.kept.is_ok())
                 }
                 Job::LandSettled => {
@@ -541,12 +580,28 @@ impl Schedule {
                     true
                 }
                 Job::HoldingCheck => {
-                    round.holding = duties.check_holdings();
-                    round.holding.iter().all(|held| {
-                        held.reading.is_ok()
-                            && held.check.is_ok()
-                            && held.against_wallet.as_ref().is_none_or(|w| w.check.is_ok())
-                    })
+                    round.holding = duties.check_holdings(again.as_ref());
+                    // An account that was read and checked waits its cadence; one that wasn't is read again alone, at its
+                    // own, never making the others wait again nor pressing its module every tick (`T-020-63`).
+                    if let Some(nodes) = &again {
+                        self.unread.retain(|node, _| {
+                            !nodes.contains(node) || round.holding.iter().any(|h| &h.node == node)
+                        });
+                    }
+                    for held in &round.holding {
+                        let failed = held.reading.is_err()
+                            || held.check.is_err()
+                            || held
+                                .against_wallet
+                                .as_ref()
+                                .is_some_and(|w| w.check.is_err());
+                        if failed {
+                            self.unread.insert(held.node.clone(), now);
+                        } else {
+                            self.unread.remove(&held.node);
+                        }
+                    }
+                    true
                 }
                 Job::PublishersRecords => {
                     round.published = duties.read_publishers();
@@ -608,7 +663,7 @@ impl Schedule {
                     succeeded
                 }
             };
-            if succeeded {
+            if succeeded && again.is_none() {
                 self.last.insert(job, now);
             }
         }
@@ -627,9 +682,18 @@ mod tests {
         unknown: Vec<Unknown>,
         /// Whether a status question put again goes out (a receipt) or doesn't (a stand-in's refusal).
         asks_go_out: bool,
-        /// How many times the holding check ran, and whether it finds the account unread.
-        checked: usize,
-        unread: bool,
+        /// The accounts the holding check was asked about, in order, and the ones it can't read.
+        checked: Vec<String>,
+        unread: Vec<&'static str>,
+    }
+
+    fn reading() -> HoldingReading {
+        serde_json::from_value(serde_json::json!({
+            "account": "holding-a", "provider": "p", "node": "a",
+            "asset": { "id": "USDC", "decimals": 2 }, "balance": "0", "word": "checked",
+            "held_for": [], "at": "2026-11-10T09:00:00Z",
+        }))
+        .expect("a reading")
     }
 
     fn receipt() -> Receipt {
@@ -642,8 +706,8 @@ mod tests {
     }
 
     impl Duties for Counting {
-        fn late_answers(&mut self) -> Vec<LateTaken> {
-            Vec::new()
+        fn late_answers(&mut self, _: &dyn Fn(&Unknown) -> bool) -> Late {
+            Late::default()
         }
         fn land_settled(&mut self) -> usize {
             self.landed += 1;
@@ -658,18 +722,30 @@ mod tests {
         fn close_completed(&mut self) -> Vec<Priced> {
             Vec::new()
         }
-        fn check_holdings(&mut self) -> Vec<HoldingChecked> {
-            self.checked += 1;
-            if !self.unread {
-                return Vec::new();
-            }
-            vec![HoldingChecked {
-                node: "ledger".to_owned(),
-                reading: Err("the module gave no balance".to_owned()),
-                check: Err("the module gave no balance".to_owned()),
-                not_read: None,
-                against_wallet: None,
-            }]
+        fn check_holdings(&mut self, only: Option<&BTreeSet<String>>) -> Vec<HoldingChecked> {
+            ["a", "b"]
+                .into_iter()
+                .filter(|node| only.is_none_or(|nodes| nodes.contains(*node)))
+                .map(|node| {
+                    self.checked.push(node.to_owned());
+                    let failed = self.unread.contains(&node);
+                    HoldingChecked {
+                        node: node.to_owned(),
+                        reading: if failed {
+                            Err("the module gave no balance".to_owned())
+                        } else {
+                            Ok(reading())
+                        },
+                        check: if failed {
+                            Err("the module gave no balance".to_owned())
+                        } else {
+                            Ok(receipt())
+                        },
+                        not_read: None,
+                        against_wallet: None,
+                    }
+                })
+                .collect()
         }
         fn read_publishers(&mut self) -> Vec<Published> {
             Vec::new()
@@ -758,28 +834,42 @@ mod tests {
         assert_eq!(duties.asked.len(), 1, "and not again before it passes");
     }
 
+    /// One account the holding check can't read doesn't make the check run, and every other account be read again, on every
+    /// tick: it is read again alone, at its own cadence, and the accounts that were read wait theirs (`NFR-6`, `REQ-AUD-15`,
+    /// `T-020-63`; review M1).
     // verifies: NFR-6, REQ-AUD-15
     #[test]
-    fn a_job_that_failed_is_due_again_on_the_next_tick_not_after_its_cadence() {
+    fn an_unreadable_account_is_read_again_alone_at_its_own_cadence() {
         let mut schedule = Schedule::new();
         let mut duties = Counting {
-            unread: true,
+            unread: vec!["a"],
             ..Counting::default()
         };
-        // The holding check is hourly by default, and it found its account unread: it isn't counted as run.
+        let asked = |duties: &Counting| duties.checked.join("");
         assert!(schedule.tick(1_000, &mut duties).did(Job::HoldingCheck));
-        assert!(schedule.tick(1_001, &mut duties).did(Job::HoldingCheck));
-        assert_eq!(duties.checked, 2, "tried again on the next tick");
-        // Read at last: it has run, and waits its cadence from there.
-        duties.unread = false;
-        assert!(schedule.tick(1_002, &mut duties).did(Job::HoldingCheck));
-        assert!(!schedule.tick(1_003, &mut duties).did(Job::HoldingCheck));
+        assert_eq!(asked(&duties), "ab", "every account, the first time");
+        // Ticks every ten seconds, well inside the retry's cadence and the hour: nothing is asked of anyone.
+        for at in (1_010..1_300).step_by(10) {
+            assert!(!schedule.tick(at, &mut duties).did(Job::HoldingCheck));
+        }
+        assert_eq!(asked(&duties), "ab");
+        // The unreadable account alone, once its own cadence has passed, and again after the next.
+        assert!(schedule.tick(1_300, &mut duties).did(Job::HoldingCheck));
+        assert_eq!(asked(&duties), "aba");
+        assert!(!schedule.tick(1_301, &mut duties).did(Job::HoldingCheck));
+        assert!(schedule.tick(1_600, &mut duties).did(Job::HoldingCheck));
+        assert_eq!(asked(&duties), "abaa");
+        // Read at last: it waits no more, and the hour comes round for both.
+        duties.unread.clear();
+        assert!(schedule.tick(1_900, &mut duties).did(Job::HoldingCheck));
+        assert!(!schedule.tick(2_200, &mut duties).did(Job::HoldingCheck));
+        assert_eq!(asked(&duties), "abaaa");
         assert!(
             schedule
-                .tick(1_002 + 3_600, &mut duties)
+                .tick(1_000 + 3_600, &mut duties)
                 .did(Job::HoldingCheck)
         );
-        assert_eq!(duties.checked, 4);
+        assert_eq!(asked(&duties), "abaaaab");
     }
 
     // verifies: NFR-6, REQ-ORD-1

@@ -57,6 +57,12 @@ pub(super) const CARRY_OUT: &[(&str, &str, &str)] = &[
         "prov/src/module/platform.rs",
         "move_value, resolve_stuck, read_holding_balance",
     ),
+    // Carries a segment's own operation out again on a decided effect, which may be that move's first carrying-out (`T-020-63`).
+    (
+        "repeat_operation",
+        "prov/src/module/platform.rs",
+        "repeat_operation",
+    ),
     (
         "accept",
         "prov/src/module/platform.rs",
@@ -124,19 +130,15 @@ pub(super) const CARRIES_OUT_NOTHING: &[(&str, &str, &str)] = &[
         "prov/src/module/platform.rs",
         "a read that moves nothing",
     ),
-    // The late answers a provider gives to an operation the platform handed over and got none to (`AC-5`, `T-020-63`):
-    // `late_answers` asks the provider's module the same operation again, which a provider that declares a repeat safe
-    // answers as it did, moving nothing a second time (`REQ-CAT-10`), and holds the answer; `late_kept` only says it was
-    // kept. The first run was a decided effect's, and the repeat is the platform's own retry of it (`INV-8`).
-    (
-        "late_answers",
-        "prov/src/module/platform.rs",
-        "a repeat of a carried-out operation, whose provider declares it safe, that moves nothing again",
-    ),
     (
         "late_kept",
         "prov/src/module/platform.rs",
         "an acknowledgement that moves nothing",
+    ),
+    (
+        "late_answers",
+        "prov/src/module/platform.rs",
+        "what the platform holds of a repeat's late answer, which it hands over and moves nothing by",
     ),
     (
         "set_bounds",

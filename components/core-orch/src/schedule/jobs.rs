@@ -36,14 +36,16 @@ use rutent_contracts::core_internal::{
     Actor, ActorKind, Difference, Entry, HoldingNotRead, HoldingReading, Receipt, Role, RouteEnd,
     What, Word,
 };
-use rutent_contracts::provider_role::{Denomination, HoldingBalanceOutcome, ResultBody, Statement};
+use rutent_contracts::provider_role::{
+    Denomination, HoldingBalanceOutcome, ResultBody, Statement, Tracking,
+};
 use rutent_contracts::router_api::{Amount, DecisionRecord, Id, PolicyBounds, PositiveAmount};
 use rutent_contracts::state_machine::PartPlan;
 use rutent_prov::catalogue::{Catalogue, Publisher};
 use rutent_prov::holding::HeldForOrder;
 
 use super::{
-    Duties, HoldingChecked, LateTaken, Priced, Published, Reported, StatusTried, Unknown,
+    Duties, HoldingChecked, Late, LateTaken, Priced, Published, Reported, StatusTried, Unknown,
     WalletCompared, Watched,
 };
 use crate::arrival::Arrivals;
@@ -52,7 +54,8 @@ use crate::intake::Desk;
 use crate::notice::{NoticeKey, Notices, Transport};
 use crate::reversal::{At, Moving, Parts as ReversalParts, ReversalError, Reversals};
 use crate::segments::{
-    Balance, BalanceRead, Landings, Live, Parts as SegmentParts, Says, Segments, UnbuiltPair,
+    Balance, BalanceRead, Landings, Live, Parts as SegmentParts, RepeatOf, Repeated, Says,
+    Segments, UnbuiltPair,
 };
 use crate::snapshot::Clock;
 use crate::stuck::{
@@ -489,15 +492,31 @@ impl Jobs<'_> {
     /// beside the wallet host's own record too, where that record's total differs from Core's, since where the two are
     /// the same the second comparison can't say another thing. A holding account the catalogue lists that the register
     /// doesn't name is not read, and says so; a clock that gives no time reads none, and says so for each (`T-020-63`).
-    fn read_accounts(&mut self) -> Vec<ToCheck> {
+    fn read_accounts(&mut self, only: Option<&BTreeSet<String>>) -> Vec<ToCheck> {
         let at = self.ports.clock().now().timestamp();
-        let public = self.ports.public_accounts();
-        let private = self.ports.publisher_accounts();
+        let wanted = |node: &str| only.is_none_or(|nodes| nodes.contains(node));
+        let public: Vec<PublicAccount> = self
+            .ports
+            .public_accounts()
+            .into_iter()
+            .filter(|a| wanted(&a.node))
+            .collect();
+        let private: Vec<PublisherAccount> = self
+            .ports
+            .publisher_accounts()
+            .into_iter()
+            .filter(|a| wanted(&a.node))
+            .collect();
+        let registered_all: BTreeSet<String> = self
+            .ports
+            .public_accounts()
+            .into_iter()
+            .map(|a| a.node)
+            .chain(self.ports.publisher_accounts().into_iter().map(|a| a.node))
+            .collect();
         let resting = self.ports.segments().resting_totals();
         let mut checks = Vec::new();
-        let mut registered: BTreeSet<String> = BTreeSet::new();
         for account in public {
-            registered.insert(account.node.clone());
             let reading = match &at {
                 Some(at) => self
                     .read_balance(&account.node, &account.provider, &account.asset)
@@ -560,7 +579,6 @@ impl Jobs<'_> {
             });
         }
         for account in private {
-            registered.insert(account.node.clone());
             let reading = match &at {
                 Some(at) => self
                     .read_balance(&account.node, &account.module, &account.asset)
@@ -589,21 +607,27 @@ impl Jobs<'_> {
                 wallet: None,
             });
         }
-        // The register is the definition of what is checked: a node the catalogue lists a holding account at, and the
-        // register doesn't name, where Core's own segments rest value, is raised as not read, never silently left out
-        // (`T-020-63`). One that holds nothing of Core's is not: the scenario kit lists a holder at every node its
-        // providers reach, which no register names, and a check of an account Core rests nothing in is a check of
-        // nothing.
-        for (node, holder) in self.ports.catalogue().nodes().holders() {
-            if registered.contains(node) || !resting.keys().any(|(at, _)| at == node) {
+        // The register is the definition of what is checked: a node where Core's own segments rest value, which the
+        // register names in neither list, is raised as not read, never silently left out (`T-020-63`). The nodes walked
+        // are the ones Core rests value at, not the catalogue's holders: value at a node with no holder listed is
+        // checked by nothing else. A node where Core rests nothing is not: the scenario kit lists a holder at every
+        // node its providers reach, which no register names, and a check of an account Core rests nothing in is a check
+        // of nothing.
+        let resting_nodes: BTreeSet<&str> = resting.keys().map(|(node, _)| node.as_str()).collect();
+        for node in resting_nodes {
+            if registered_all.contains(node) || !wanted(node) {
                 continue;
             }
+            let provider = self.ports.catalogue().nodes().holding(node).map_or_else(
+                || "unregistered".to_owned(),
+                |holder| holder.reference.clone(),
+            );
             checks.push(ToCheck {
                 node: node.to_owned(),
-                provider: holder.reference.clone(),
+                provider,
                 reading: Err((
                     HoldingNotRead::NotRegistered {},
-                    "the catalogue lists a holding account here that the register doesn't name"
+                    "Core rests value at a node the register of holding accounts doesn't name"
                         .to_owned(),
                 )),
                 wallet: None,
@@ -611,6 +635,56 @@ impl Jobs<'_> {
         }
         self.ports.fed();
         checks
+    }
+
+    /// Carries the own operation of each segment of `order` left unknown out again, where it is due its provider's status
+    /// cadence (`due`), the provider declares a repeat safe and no status query to ask where it stands by, and policy
+    /// permits it: a decided effect, as the original move was (`REQ-AUZ-1`, `T-020-63`). Which segments were tried, whether
+    /// or not the platform had an answer: a refusal by policy waits its cadence as an answer does, and a failure to record
+    /// it is tried again next tick.
+    fn repeat_unknown(
+        &mut self,
+        order: &Id,
+        sent: &BTreeMap<String, Id>,
+        due: &dyn Fn(&Unknown) -> bool,
+    ) -> Vec<Unknown> {
+        let core = self.ports.actors().core;
+        let mut tried = Vec::new();
+        for (transaction, segment) in sent {
+            let Some(moved) = self.ports.segments().unknown_move(order, segment) else {
+                continue;
+            };
+            let unknown = Unknown {
+                order: order.clone(),
+                segment: segment.clone(),
+                provider: moved.provider.as_str().to_owned(),
+            };
+            let declared = self.ports.catalogue().declared_by(&unknown.provider);
+            let repeatable = declared.is_some_and(|d| {
+                d.safe_retry == Some(true) && !d.tracking.contains(&Tracking::StatusQuery)
+            });
+            let (Some(tx), true) = (id(transaction), repeatable && due(&unknown)) else {
+                continue;
+            };
+            let mut outcome = Repeated::Failed;
+            self.ports.with_segments(&mut |segments, parts| {
+                outcome = segments.carry_again(
+                    parts,
+                    &RepeatOf {
+                        order,
+                        segment,
+                        provider: &moved.provider,
+                        transaction: &tx,
+                        core: &core,
+                    },
+                );
+            });
+            if outcome != Repeated::Failed {
+                tried.push(unknown);
+            }
+        }
+        self.ports.fed();
+        tried
     }
 
     /// The balance `provider`'s module states for the account of `node` in `asset`: the read is decided and recorded as
@@ -835,8 +909,9 @@ pub fn confirm_reported_failure(
 }
 
 impl Duties for Jobs<'_> {
-    fn late_answers(&mut self) -> Vec<LateTaken> {
+    fn late_answers(&mut self, due: &dyn Fn(&Unknown) -> bool) -> Late {
         let mut taken = Vec::new();
+        let mut repeated = Vec::new();
         for order in orders(&*self.ports) {
             let Some(started) = self.ports.started().get(order.as_str()).cloned() else {
                 continue;
@@ -850,6 +925,7 @@ impl Duties for Jobs<'_> {
             if sent.is_empty() {
                 continue;
             }
+            repeated.extend(self.repeat_unknown(&order, &sent, due));
             let transactions = sent.keys().cloned().collect();
             for (transaction, bytes) in self.ports.late_answers(&transactions) {
                 let Some(segment) = sent.get(&transaction) else {
@@ -908,7 +984,7 @@ impl Duties for Jobs<'_> {
                 });
             }
         }
-        taken
+        Late { taken, repeated }
     }
 
     fn land_settled(&mut self) -> usize {
@@ -979,10 +1055,10 @@ impl Duties for Jobs<'_> {
         priced
     }
 
-    fn check_holdings(&mut self) -> Vec<HoldingChecked> {
+    fn check_holdings(&mut self, only: Option<&BTreeSet<String>>) -> Vec<HoldingChecked> {
         let history = self.ports.history();
         let mut checked = Vec::new();
-        for one in self.read_accounts() {
+        for one in self.read_accounts(only) {
             let (reading, check, unread, wallet) = match one.reading {
                 Ok(reading) => {
                     let mut check = Err("the comparisons weren't lent".to_owned());

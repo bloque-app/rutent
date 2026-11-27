@@ -348,7 +348,7 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 134] = [
+const SCHEMA_RULES: [SchemaRule; 136] = [
     (
         "decision-request-to-confirm-releases-naming-a-version-twice",
         &[("/action/versions", "uniqueItems")],
@@ -413,6 +413,16 @@ const SCHEMA_RULES: [SchemaRule; 134] = [
         "decision-request-to-read-a-holding-balance-without-its-asset",
         &[("/action", "required")],
         "missing field `asset`",
+    ),
+    (
+        "decision-request-to-repeat-an-operation-without-its-segment",
+        &[("/action", "required")],
+        "missing field `segment`",
+    ),
+    (
+        "decision-request-to-repeat-an-operation-without-its-transaction",
+        &[("/action", "required")],
+        "missing field `transaction`",
     ),
     (
         "stated-entry-naming-a-node-for-a-result",
@@ -3359,6 +3369,14 @@ fn a_holding_account_not_read_names_why_among_the_reasons_core_has() {
 #[test]
 fn a_stuck_call_at_the_floor_window_is_on_record_with_a_basis_of_its_own() {
     assert_accepted_by_both("verified-entry-of-the-figures-behind-a-stuck-call-at-the-floor");
+}
+
+// verifies: REQ-ORD-1, REQ-AUZ-1
+#[test]
+fn request_to_repeat_an_operation_names_its_segment_and_transaction() {
+    assert_accepted_by_both("decision-request-to-repeat-an-operation");
+    assert_rejected("decision-request-to-repeat-an-operation-without-its-segment");
+    assert_rejected("decision-request-to-repeat-an-operation-without-its-transaction");
 }
 
 // verifies: REQ-ORD-1, INV-4

@@ -436,6 +436,19 @@ impl Modules for Running<'_> {
         answered
     }
 
+    fn repeat_operation(
+        &mut self,
+        effect: &rutent_contracts::core_internal::Effect,
+        provider: &Id,
+        transaction: &Id,
+    ) -> rutent_core_orch::segments::Answered {
+        // The production platform carries it, at Core's clock (`T-020-63`).
+        self.platform.world.set_clock(self.clock.instant());
+        let answered = Modules::repeat_operation(self.platform, effect, provider, transaction);
+        self.readings.refresh(&self.platform.world);
+        answered
+    }
+
     fn ask_for_balance(
         &mut self,
         effect: &rutent_contracts::core_internal::Effect,
@@ -906,6 +919,8 @@ impl Core {
             // Core reads each holding account's balance where policy decides it, carrying the operator's standing
             // permission onward, beside `CarryOnward` (`REQ-AUD-15`, `REQ-AUZ-1`, `T-020-63`).
             r.permit(&kit::core(), Permission::ReadHoldingBalance);
+            // And carries a segment's own operation out again where policy decides it (`REQ-ORD-1`, `T-020-63`).
+            r.permit(&kit::core(), Permission::RepeatOperation);
             for change in [
                 CatalogueChange::Grant,
                 CatalogueChange::Promote,

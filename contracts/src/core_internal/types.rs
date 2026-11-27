@@ -713,6 +713,22 @@ pub enum Action {
         /// The fresh transaction it is asked under: no entry before it names it.
         transaction: Id,
     },
+    /// Asking a segment's provider to carry out the segment's own operation again (`REQ-ORD-1`, `REQ-CAT-10`, `AC-5`,
+    /// `T-020-63`), where the segment was left with its outcome unknown and the provider declares no status query but
+    /// declares a repeat safe: a decided action like any other, taken as an effect, appended before the operation is
+    /// handed over again, because a first run the platform ended before it took effect makes the repeat that move's first
+    /// carrying-out. The provider answers as it would the same operation asked again, and its answer is kept as its
+    /// statement and moves nothing a second time (`INV-8`). It names the segment's own transaction, which a repeat is.
+    RepeatOperation {
+        /// The order.
+        order: Id,
+        /// The segment whose operation is carried out again.
+        segment: Id,
+        /// The segment's provider, asked.
+        provider: Id,
+        /// The segment's own transaction, which the repeat is of.
+        transaction: Id,
+    },
     /// The customer accepting a provider's showing that a failed segment's failure was its fault (`REQ-ORD-11`): a
     /// decision of policy's on the policy handle, as an order's authorisation is, asked by the order's requester in its
     /// open session and naming the showing it accepts, so it can't be read as accepting another. It takes no effect:

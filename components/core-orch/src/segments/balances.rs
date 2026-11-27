@@ -109,7 +109,10 @@ impl Segments {
             receipt: receipt.clone(),
         };
         // The result's time is read now, before anything is asked, so no early return can follow the question.
-        let result_at = now(parts.clock);
+        let timed = now(parts.clock);
+        // A clock that fails after the effect still has its result recorded, `failed`, at the effect's own time
+        // (`REQ-AUD-1`, `T-020-63`): nothing is asked of the module then.
+        let result_at = timed.clone().unwrap_or_else(|_| effect_at.clone());
         let question = self
             .act_on(&receipt)
             .then(|| {
@@ -117,7 +120,7 @@ impl Segments {
                     parts.operator_key,
                     read.bounds,
                     &read.operator.acts,
-                    result_at.as_ref().ok()?,
+                    timed.as_ref().ok()?,
                     Operation::HoldingBalance(HoldingBalance {
                         transaction: transaction.as_str().to_owned(),
                         provider: read.provider.to_owned(),
@@ -140,13 +143,16 @@ impl Segments {
             (Some(_), Answered::Refused(_)) => Outcome::Unanswered {},
             (None, _) => Outcome::Failed {},
         };
-        let wrote = result_at.ok().and_then(|at| {
-            journal::append(
-                parts.log,
-                journal::verified(read.core, What::Result { effect: receipt }, &at, outcome),
-            )
-            .ok()
-        });
+        let wrote = journal::append(
+            parts.log,
+            journal::verified(
+                read.core,
+                What::Result { effect: receipt },
+                &result_at,
+                outcome,
+            ),
+        )
+        .ok();
         // An answer is used only once the entry that records how the read came out is in the log.
         match (answered, wrote) {
             (Answered::Bytes(bytes), Some(_)) => Balance::Answered(transaction, bytes),

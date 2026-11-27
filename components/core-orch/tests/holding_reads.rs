@@ -34,11 +34,20 @@ fn id(text: &str) -> Id {
     Id::new(text).unwrap()
 }
 
-struct TestClock(Cell<Reading>);
+/// A clock that gives a time for its first `fails_after` readings and none after (past the year 9999).
+struct TestClock {
+    at: Cell<Reading>,
+    read: Cell<usize>,
+    fails_after: usize,
+}
 
 impl Clock for TestClock {
     fn now(&self) -> Reading {
-        self.0.get()
+        self.read.set(self.read.get() + 1);
+        if self.read.get() > self.fails_after {
+            return Reading::at(u64::MAX / 2);
+        }
+        self.at.get()
     }
 }
 
@@ -241,6 +250,11 @@ struct Done {
 /// The read of `fx-desk`'s balance at `fx-desk-ledger`, asked of `platform` under `policy`, with the log taking `takes`
 /// entries and no more; the platform answers with `answer`, a result's body, where it does.
 fn read(permits: bool, takes: usize, answer: Option<Value>) -> Done {
+    read_on(permits, takes, answer, usize::MAX)
+}
+
+/// [`read`] on a clock that fails after `fails_after` readings.
+fn read_on(permits: bool, takes: usize, answer: Option<Value>, fails_after: usize) -> Done {
     let log = KeptLog {
         entries: Rc::default(),
         takes: Rc::new(Cell::new(takes)),
@@ -254,7 +268,11 @@ fn read(permits: bool, takes: usize, answer: Option<Value>) -> Done {
         permits,
         asked: Vec::new(),
     };
-    let clock = TestClock(Cell::new(Reading::at(1_794_200_000)));
+    let clock = TestClock {
+        at: Cell::new(Reading::at(1_794_200_000)),
+        read: Cell::new(0),
+        fails_after,
+    };
     let catalogue = Catalogue::new();
     let mut append = log.clone();
     let mut store = Store;
@@ -433,4 +451,22 @@ fn holding_balance_with_no_answer_or_no_record_of_its_result_hands_back_none() {
     assert_eq!(done.read, Balance::Failed);
     assert_eq!(done.platform.asked.len(), 1);
     assert_eq!(whats(&done).len(), 1, "the effect alone");
+}
+
+/// A clock that fails after the effect is recorded still has the read's result recorded, `failed`, and the module is
+/// asked nothing: an effect is never left with no result (`REQ-AUD-1`, `INV-7`, `T-020-63`; review L6).
+// verifies: REQ-AUD-1, INV-7
+#[test]
+fn holding_balance_whose_clock_fails_after_its_effect_still_has_its_result_recorded() {
+    let done = read_on(true, usize::MAX, Some(answering("id-0001", "1500")), 2);
+    assert_eq!(done.read, Balance::Failed);
+    assert!(done.platform.asked.is_empty(), "nothing was asked");
+    let recorded = whats(&done);
+    assert!(matches!(
+        recorded.as_slice(),
+        [
+            (What::Effect { .. }, _),
+            (What::Result { .. }, Outcome::Failed {})
+        ]
+    ));
 }

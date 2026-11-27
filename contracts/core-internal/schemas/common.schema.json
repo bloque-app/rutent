@@ -224,7 +224,8 @@
             "accept_fault",
             "erase_statement",
             "resolve_stuck",
-            "read_holding_balance"
+            "read_holding_balance",
+            "repeat_operation"
           ]
         }
       },
@@ -377,6 +378,21 @@
           },
           "then": {
             "$ref": "#/$defs/action_read_holding_balance"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "repeat_operation"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/action_repeat_operation"
           }
         }
       ]
@@ -594,6 +610,38 @@
         },
         "transaction": {
           "description": "The fresh transaction it is asked under: no entry before it names it.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "action_repeat_operation": {
+      "description": "Asking a segment's provider to carry out the segment's own operation again (REQ-ORD-1, REQ-CAT-10, T-020-63): where its outcome was left unknown and the provider declares no status query but a repeat safe. A decided action, taken as an effect before the operation is handed over again, since a first run the platform ended before it took effect makes the repeat that move's first carrying-out. It names the segment's own transaction.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "order",
+        "segment",
+        "provider",
+        "transaction"
+      ],
+      "properties": {
+        "kind": {
+          "const": "repeat_operation"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "description": "The segment whose operation is carried out again.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "description": "The segment's provider, asked.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "transaction": {
+          "description": "The segment's own transaction, which the repeat is of.",
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         }
       }

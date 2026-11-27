@@ -13,7 +13,11 @@
     holding account at the node and the deployment's register of holding accounts doesn't name it). `StuckBasis` gains
     `floor`, what a stuck call's clock ran on for a tuple with neither a history nor an advertised time, which was logged as
     `twice_advertised` though nothing was advertised (`INV-3`, `REQ-ORD-29`). No relation of its own, so the relation count is
-    unmoved. Fixtures: valid `decision-request-to-read-a-holding-balance`,
+    unmoved. (Review round 1 of #347 adds `Action::RepeatOperation {order, segment, provider, transaction}`
+    (`repeat_operation`), the carrying-out again of a segment's own operation where its outcome was left unknown, which the
+    platform's `late_answers` did undecided: a decided action taken as an effect before the operation is handed over again;
+    valid `decision-request-to-repeat-an-operation`, invalid `--without-its-segment`, `--without-its-transaction`.) Fixtures:
+    valid `decision-request-to-read-a-holding-balance`,
     `raise-of-a-holding-account-not-read-for-want-of-a-permit`, `--for-want-of-a-time`,
     `raise-of-a-holding-account-the-register-does-not-name`, `verified-entry-of-the-figures-behind-a-stuck-call-at-the-floor`;
     invalid `decision-request-to-read-a-holding-balance-without-its-node`, `--without-its-asset`. Ignorable: no, `read_holding_balance`
@@ -142,7 +146,7 @@
 
   Valid fixtures for each new shape and setting, an invalid one per rule broken, and admission cases for each new
   row and field. With `T-020-44`'s, `T-020-50`'s, `T-020-46`'s (five rounds), `T-021-16`'s, `T-020-51`'s, `T-020-52`'s,
-  `T-020-48`'s, `T-020-57`'s, `T-020-49`'s and `T-020-63`'s rounds, merged beside it: thirty schemas, 198 valid fixtures and 197
+  `T-020-48`'s, `T-020-57`'s, `T-020-49`'s and `T-020-63`'s rounds, merged beside it: thirty schemas, 199 valid fixtures and 199
   invalid, 789 admission cases and 58 attribution cases (counted from the files); 120
   relations and 5 closing ones, three stated. (DEC-4, DEC-20, REQ-QTE-10, REQ-AUZ-7, REQ-AUZ-6, REQ-AUZ-8, THR-3, GUA-1, REQ-ORD-20, T-020-45)
 - The interfaces between `CMP-CORE-ORCH`, `CMP-CORE-AUTHZ` and `CMP-CORE-AUDIT`, settled as a sixth contract before the

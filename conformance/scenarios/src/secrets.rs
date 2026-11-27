@@ -623,13 +623,15 @@ fn read_core(core: &mut Core, surfaces: &mut Vec<Surface>) {
     for (n, record) in core.disk.records().into_iter().enumerate() {
         // A holding account's difference stated by a raise is a figure of the raise (`T-020-63`): where Core's own
         // segments rest nothing at the wallet's node, which the scenario's landings leave it, what the account holds is
-        // what it is over by, and the raise states it. It is the difference the contract carries, never a reading, which
-        // the scan seeks, so the raise is left out, and a figure planted in any other record is still found.
-        if serde_json::from_slice::<serde_json::Value>(&record)
-            .is_ok_and(|value| states_a_holding_difference(&value))
-        {
-            continue;
-        }
+        // what it is over by, and the raise states it as its `by`. That value alone is left out, never the record: every
+        // other field of a holding raise is scanned as any record is, and a figure planted anywhere else in one is found.
+        let record = match serde_json::from_slice::<serde_json::Value>(&record) {
+            Ok(mut value) if states_a_holding_difference(&value) => {
+                without_the_difference(&mut value);
+                serde_json::to_vec(&value).expect("JSON")
+            }
+            _ => record,
+        };
         surfaces.push(Surface {
             name: format!("Core's log, record {n}"),
             bytes: record,
@@ -653,10 +655,17 @@ fn read_core(core: &mut Core, surfaces: &mut Vec<Surface>) {
     }
 }
 
-/// Whether a log record is a raise of a holding account's difference (`Difference::Holding`): the figure it carries is
-/// the difference between the balance and what the orders hold, which the contract states (`T-020-63`).
+/// Whether a log record is a raise of a holding account's difference (`Difference::Holding`).
 pub fn states_a_holding_difference(record: &serde_json::Value) -> bool {
     record["what"]["call"] == "raise" && record["what"]["raise"]["difference"]["kind"] == "holding"
+}
+
+/// `record`, where it is a holding account's difference, without the figure by which the account is over or short: the one
+/// value of it the contract carries as a difference and not as a reading (`T-020-63`). Every other field stays.
+pub fn without_the_difference(record: &mut serde_json::Value) {
+    if states_a_holding_difference(record) {
+        record["what"]["raise"]["difference"]["by"] = serde_json::Value::Null;
+    }
 }
 
 /// Holds that a run completed, with one more order on the host where an input was let in.
@@ -678,16 +687,10 @@ fn completed(run: &Run, leaked: bool) {
 
 /// What the run, once read, adds: the log as read back and the inputs fed to the host.
 fn read_run(run: &Run, surfaces: &mut Vec<Surface>) {
-    let log = serde_json::to_value(&run.log).expect("the log is JSON");
-    let log: Vec<&serde_json::Value> = log
-        .as_array()
-        .map(|entries| {
-            entries
-                .iter()
-                .filter(|entry| !states_a_holding_difference(entry))
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut log = serde_json::to_value(&run.log).expect("the log is JSON");
+    if let Some(entries) = log.as_array_mut() {
+        entries.iter_mut().for_each(without_the_difference);
+    }
     surfaces.push(Surface::of("the log read back", serde_json::to_vec(&log)));
     surfaces.push(Surface::of(
         "the inputs fed to the host",

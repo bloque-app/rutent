@@ -164,6 +164,9 @@ pub enum Permission {
     /// An operator's login reading a holding account's balance from the module that holds it (`REQ-AUD-15`, `T-020-63`), or
     /// one of Core's own actors carrying that standing permission onward, which holds it beside [`Permission::CarryOnward`].
     ReadHoldingBalance,
+    /// An operator's login asking a segment's provider to carry out the segment's own operation again (`REQ-ORD-1`,
+    /// `T-020-63`), or one of Core's own actors carrying that standing permission onward beside [`Permission::CarryOnward`].
+    RepeatOperation,
     /// An operator's login filing an arrival anew against the order it differed from (`REQ-ORD-23`, `T-020-52`),
     /// a permission of its own: the deployment operator's, by the register. A reserve files its own arrival by being
     /// the order's origin reserve, with no permission of the operator's.
@@ -309,6 +312,27 @@ fn needs_of(asked: Asked<'_>) -> Option<Needs> {
                         vec![
                             listed(caller, Permission::CarryOnward),
                             listed(caller, Permission::ReadHoldingBalance),
+                        ]
+                        .into(),
+                    ),
+                    Role::Customer
+                    | Role::Provider
+                    | Role::Verifier
+                    | Role::Regulator
+                    | Role::Checker => None,
+                },
+                // Carrying a segment's own operation out again (`REQ-ORD-1`, `T-020-63`), which may be that move's first
+                // carrying-out: an operator's login the register lists for it, a permission of its own, or one of Core's own
+                // actors, which carries the operator's standing permission onward, listed for `CarryOnward` and for this
+                // permission both. Nobody else, and an unknown role fails closed.
+                Action::RepeatOperation { .. } => match caller.role {
+                    Role::Operator => {
+                        operator_holds(caller, Permission::RepeatOperation).map(Needs::from)
+                    }
+                    Role::Core => Some(
+                        vec![
+                            listed(caller, Permission::CarryOnward),
+                            listed(caller, Permission::RepeatOperation),
                         ]
                         .into(),
                     ),

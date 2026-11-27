@@ -773,6 +773,67 @@ fn public_nodes_reading_is_stated_in_the_decimals_the_register_gives_its_asset()
     assert_eq!(reading.asset.decimals, 6, "as the register now gives them");
 }
 
+/// One account that can't be read doesn't make the check read every account again on every tick: it is read again alone,
+/// at its own cadence, and the accounts read keep their hour, so neither the modules are pressed nor the log and the
+/// operator filled with what was said already (`NFR-6`, `REQ-AUD-15`, `T-020-63`; review M1).
+// verifies: NFR-6, REQ-AUD-15
+#[test]
+fn one_unreadable_account_does_not_make_the_check_read_every_account_every_tick() {
+    use rutent_contracts::core_internal::Difference;
+    use rutent_core_orch::schedule::{HOLDING_RETRY_SECONDS, Job};
+    let mut stuck = stuck_at_the_public_node();
+    let wallet = stuck.wallet.clone();
+    let core = &mut stuck.core;
+    core.set_cadence(Job::HoldingCheck, 3600);
+    // A private node's account whose module can't sign an answer: never read; and a difference at the wallet's node.
+    let account = core
+        .install_publisher_account("sim-chain-ledger", "sim-chain-publisher", "USDC")
+        .expect("the publisher's account");
+    core.world().make_key_store_unavailable(&account.provider);
+    core.land(NODE, "USDC", "ord-elsewhere", "100")
+        .expect("the wallet takes the value");
+    // The hour has come round: the check reads both, raises the difference once, and the unread account once.
+    core.clock.advance(3600);
+    let round = core.tick();
+    assert!(round.did(Job::HoldingCheck));
+    let (log_after_hour, asked_wallet, asked_account) = (
+        core.log().entries().len(),
+        core.operations_received(&wallet.provider),
+        core.operations_received(&account.provider),
+    );
+    let raised = core.raised().len();
+    // Ticks every ten seconds inside the retry's cadence: nothing is asked of any module, nothing recorded or raised.
+    for _ in 0..(HOLDING_RETRY_SECONDS / 10 - 1) {
+        core.clock.advance(10);
+        let round = core.tick();
+        assert!(!round.did(Job::HoldingCheck));
+    }
+    assert_eq!(core.operations_received(&wallet.provider), asked_wallet);
+    assert_eq!(core.operations_received(&account.provider), asked_account);
+    assert_eq!(core.raised().len(), raised);
+    // At its own cadence the unreadable account alone is read again: the wallet keeps its hour, and nothing is raised
+    // again for what is raised already.
+    core.clock.advance(10);
+    let round = core.tick();
+    assert!(round.did(Job::HoldingCheck));
+    assert_eq!(round.holding.len(), 1, "{:?}", round.holding);
+    assert_eq!(round.holding[0].node, "sim-chain-ledger");
+    assert_eq!(core.operations_received(&wallet.provider), asked_wallet);
+    assert_eq!(core.raised().len(), raised, "once in a spell");
+    assert!(
+        core.log().entries().len() - log_after_hour < 10,
+        "a decision, an effect and a result"
+    );
+    assert_eq!(
+        core.raised()
+            .iter()
+            .filter(|r| matches!(r.difference, Difference::Holding { .. }))
+            .count(),
+        1,
+        "the difference at the wallet's node was raised once"
+    );
+}
+
 /// The stuck order's value is handed on through the real plain wallet: the operator decides and another desk moves it,
 /// the operator's question and the wallet's own answer are the log's stated entries about the linked order, the
 /// answer verified under the wallet's accepted release, the effect's result is done, and the hand-on, the linked
