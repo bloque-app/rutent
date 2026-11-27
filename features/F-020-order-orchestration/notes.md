@@ -9674,3 +9674,27 @@ is listed again). It does not go red with the listings applied after the relist,
 no scenario here has an advertisement claiming a node the operator listed (the catalogue refuses one at its join, and a refused
 advertisement is never in the log), so the ordering is by construction and by review, not by a test (gap R3-4).
 The rule text in the changelog was reworded where the guard now reads plain words (`fault`, `terms`).
+
+### T-020-54, round 4: the mover's and the reversals' sites tested with a holdout
+
+R3-1 is closed except for the hand-on take (R4-1).
+- **The stuck mover** (`tests/stuck_mover.rs`, over `World::two_parties_holding_out`: the fleet speaks the old version, Core's side the
+  current one with the old still in force until a date, the catalogue reading it so): `stuck_mover_takes_a_holdouts_answer_landing_after_the_cutover_for_a_move_begun_before_it`
+  (the carry-out judge; the operation takes two hours, the answer lands after the date) and
+  `stuck_mover_takes_a_holdouts_later_statement_after_the_cutover_for_a_move_begun_before_it` (a move left unknown, its
+  provider's later statement after the date).
+- **The reversals.** The failed provider's answer (`judge_reversal`): `reversal_of_a_segment_begun_before_a_cutover_is_taken_when_a_holdouts_answer_lands_after_it`
+  (`protocol_cutover.rs`, the assembly's holdout fleet). The confirmation judge (`judge`, `attributable`) and the version-read
+  seam (`verify`) can't be reached through the assembly with a holdout: Core's own question to a holdout reserve for a
+  reversal's confirmation goes unanswered there, before the cutover too (a holdout infrastructure limit, not the version's:
+  the same call answers with the current-version fleet), so `reversal::judge::tests::confirmation_judge_reads_the_version_its_segment_began_under`
+  tests it at the judge's seam: a holdout's statement landing after the date passes the attribution for a segment begun before
+  it and is unattributable for one begun after. The reversals' `show_fault` and `after` read the same version through
+  `Segments::began_of` and `began_of_order`; no test lands an old-version statement there (R4-2).
+- Both reversal judges (`judge`, `judge_reversal`) now take the segment's `Began` (`Segments::began_of(reversed.transaction)`),
+  which round 3 left on the landing time.
+- **Rule-off.** Each site was switched to the landing time once: the mover's judge (`stuck_mover_takes_a_holdouts_answer_landing_...`
+  red), the mover's statement (`..._later_statement_...` red), `judge_reversal`'s call (the reversal scenario red), the
+  version read of `judge`/`attributable` (`confirmation_judge_reads_...` red).
+- **R4-1.** The mover's hand-on take (`Delivering::withdrawn`) reads `HandFlight.began` and has no holdout test: its route
+  (a linked order handed on from a node) has no holdout fleet here. R4-2: `show_fault`, `after` as above.

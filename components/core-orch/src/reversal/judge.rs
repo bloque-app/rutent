@@ -438,7 +438,8 @@ mod tests {
             versions,
         };
         let lands = Instant(9_000);
-        let judged = |began: Option<&Began>| judge(&catalogue, &keys, lands, began, &reversed, None, &old);
+        let judged =
+            |began: Option<&Began>| judge(&catalogue, &keys, lands, began, &reversed, None, &old);
         assert_eq!(judged(Some(&before)), Err(NotCounted::Unreadable));
         assert_eq!(judged(Some(&after)), Err(NotCounted::Unattributable));
         assert_eq!(judged(None), Err(NotCounted::Unattributable));
