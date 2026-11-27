@@ -1291,6 +1291,12 @@ mod tests {
         // And reading a private node's record from its publisher's provider (`T-020-58`).
         let read: DecisionRequest = fixture!("decision-request-to-read-a-private-nodes-record");
         actions.push(read.action);
+        // And reading a holding account's balance from its module (`T-020-63`).
+        let read: DecisionRequest = fixture!("decision-request-to-read-a-holding-balance");
+        actions.push(read.action);
+        // And carrying a segment's own operation out again (`T-020-63`).
+        let repeated: DecisionRequest = fixture!("decision-request-to-repeat-an-operation");
+        actions.push(repeated.action);
         // And erasing a kept statement (`T-021-10`), the fixtures' commitment.
         let erased: DecisionRequest = fixture!("decision-request-to-erase-a-kept-statement");
         actions.push(erased.action);
@@ -1306,6 +1312,10 @@ mod tests {
                 Action::AskStatus { .. } => {}
                 // In policy's tables since `T-020-58`: the operator's permission alone.
                 Action::ReadNodeRecord { .. } => {}
+                // In policy's tables since `T-020-63`: the operator's permission, which Core carries onward.
+                Action::ReadHoldingBalance { .. } => {}
+                // In policy's tables since `T-020-63`: the operator's permission, which Core carries onward.
+                Action::RepeatOperation { .. } => {}
                 // Decided and never an effect: orchestration records the refiling on its permit
                 // (`refiling-rests-on-policys-permit`); its own tests are `roles`'.
                 Action::RefileArrival { .. } => unreachable!("tested apart: it has no effect"),
@@ -1577,7 +1587,7 @@ mod tests {
     fn every_value_moving_action_is_refused_when_policy_denies() {
         let denies = || Service::ruling(Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted)));
         let actions = every_decided_action();
-        assert_eq!(actions.len(), 29);
+        assert_eq!(actions.len(), 31);
         let requests: Vec<DecisionRequest> = actions.iter().cloned().map(request).collect();
         let mut policy = Engine::with_policy(
             Guarded::with_a_decision_record(),
@@ -1620,10 +1630,11 @@ mod tests {
             let effect = policy.log.effect(action, permit);
             match action {
                 // Its permit holds, and the log goes on to want the authorisation and acceptance it rests on, or, for
-                // a reversal asked, a segment of this log that owes it.
+                // a reversal asked, a segment of this log that owes it, or, for a repeat, a segment of this log whose move has no outcome.
                 Action::MoveValue { .. }
                 | Action::AskReversal { .. }
-                | Action::AskStatus { .. } => assert!(
+                | Action::AskStatus { .. }
+                | Action::RepeatOperation { .. } => assert!(
                     matches!(effect, Err(AppendFailure::Refused(v)) if v.0 != RELATIONS[0].refusal)
                 ),
                 _ => assert!(effect.is_ok(), "{action:?}"),
@@ -1690,7 +1701,10 @@ mod tests {
                 Action::MoveValue { .. } => {
                     matches!(caller.role, Role::Customer | Role::Core | Role::Operator)
                 }
-                Action::AskReversal { .. } | Action::AskStatus { .. } => {
+                Action::AskReversal { .. }
+                | Action::AskStatus { .. }
+                | Action::ReadHoldingBalance { .. }
+                | Action::RepeatOperation { .. } => {
                     matches!(caller.role, Role::Core | Role::Operator)
                 }
                 Action::ReadNodeRecord { .. } => matches!(caller.role, Role::Core | Role::Operator),
@@ -1710,8 +1724,8 @@ mod tests {
         }
         assert_eq!(
             callers.len(),
-            3 * 29 + 2 * 3 + 3 + 3 + 3,
-            "the operator on every action, the user and Core on a move, Core on a reversal, a status or a read of a node's record asked"
+            3 * 31 + 2 * 3 + 3 + 3 + 3 + 3 + 3,
+            "the operator on every action, the user and Core on a move, Core on a reversal, a status, a read of a node's record, a balance read or a repeat asked"
         );
         let seen: Vec<Actor> = policy
             .policy

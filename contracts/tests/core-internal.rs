@@ -365,7 +365,7 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 149] = [
+const SCHEMA_RULES: [SchemaRule; 153] = [
     (
         "decision-request-to-list-a-public-network-under-a-hexadecimal-ip-subject-name",
         &[("/action/public_network/listing/reader/subject_name", "not")],
@@ -517,6 +517,26 @@ const SCHEMA_RULES: [SchemaRule; 149] = [
         "decision-request-to-read-a-private-nodes-record-without-the-transactions-it-is-about",
         &[("/action", "required")],
         "missing field `about`",
+    ),
+    (
+        "decision-request-to-read-a-holding-balance-without-its-node",
+        &[("/action", "required")],
+        "missing field `node`",
+    ),
+    (
+        "decision-request-to-read-a-holding-balance-without-its-asset",
+        &[("/action", "required")],
+        "missing field `asset`",
+    ),
+    (
+        "decision-request-to-repeat-an-operation-without-its-segment",
+        &[("/action", "required")],
+        "missing field `segment`",
+    ),
+    (
+        "decision-request-to-repeat-an-operation-without-its-transaction",
+        &[("/action", "required")],
+        "missing field `transaction`",
     ),
     (
         "stated-entry-naming-a-node-for-a-result",
@@ -3440,6 +3460,40 @@ fn an_order_refused_for_an_input_policy_could_not_read_is_told_its_class() {
     assert_accepted_by_both("verified-entry-of-a-refusal-for-an-input-policy-could-not-read");
 }
 
+// verifies: REQ-AUD-15, REQ-AUZ-1
+#[test]
+fn request_to_read_a_holding_balance_names_its_node_asset_and_fresh_transaction() {
+    assert_accepted_by_both("decision-request-to-read-a-holding-balance");
+    assert_rejected("decision-request-to-read-a-holding-balance-without-its-node");
+    assert_rejected("decision-request-to-read-a-holding-balance-without-its-asset");
+}
+
+// verifies: REQ-AUD-15, INV-1
+#[test]
+fn a_holding_account_not_read_names_why_among_the_reasons_core_has() {
+    for name in [
+        "raise-of-a-holding-account-not-read-for-want-of-a-permit",
+        "raise-of-a-holding-account-not-read-for-want-of-a-time",
+        "raise-of-a-holding-account-the-register-does-not-name",
+    ] {
+        assert_accepted_by_both(name);
+    }
+}
+
+// verifies: INV-3, REQ-ORD-29
+#[test]
+fn a_stuck_call_at_the_floor_window_is_on_record_with_a_basis_of_its_own() {
+    assert_accepted_by_both("verified-entry-of-the-figures-behind-a-stuck-call-at-the-floor");
+}
+
+// verifies: REQ-ORD-1, REQ-AUZ-1
+#[test]
+fn request_to_repeat_an_operation_names_its_segment_and_transaction() {
+    assert_accepted_by_both("decision-request-to-repeat-an-operation");
+    assert_rejected("decision-request-to-repeat-an-operation-without-its-segment");
+    assert_rejected("decision-request-to-repeat-an-operation-without-its-transaction");
+}
+
 // verifies: REQ-ORD-41, REQ-AUZ-1
 #[test]
 fn request_to_read_a_private_nodes_record_names_its_node_and_provider() {
@@ -3463,6 +3517,29 @@ fn request_for_a_providers_late_status_without_its_segment_is_invalid() {
     assert_case("world--decide_status");
     assert_case("world--effect_status");
     assert_case_refused("status-is-asked-of-the-segments-provider--missing");
+}
+
+// verifies: REQ-ORD-1, INV-8
+#[test]
+fn repeat_of_a_segment_that_already_has_an_outcome_is_refused_by_the_log() {
+    // Decided, then taken as an effect, of the segment's own provider only, and only while its move has no outcome.
+    assert_case("world--decide_repeat");
+    assert_case("world--effect_repeat");
+    assert_case_refused("repeat-is-of-an-unsettled-segment-at-its-provider--missing");
+    assert_case_refused("repeat-is-of-an-unsettled-segment-at-its-provider--a-settled-segment");
+    // And only under the segment's own transaction, never another segment's of the same provider.
+    assert_case_refused(
+        "repeat-is-of-an-unsettled-segment-at-its-provider--another-segments-transaction",
+    );
+}
+
+// verifies: REQ-ORD-1, INV-8
+#[test]
+fn repeat_under_another_segments_transaction_is_refused_by_the_log() {
+    assert_case("world--effect_repeat");
+    assert_case_refused(
+        "repeat-is-of-an-unsettled-segment-at-its-provider--another-segments-transaction",
+    );
 }
 
 // verifies: REQ-AUZ-1

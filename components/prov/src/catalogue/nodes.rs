@@ -136,4 +136,12 @@ impl NodeBook {
     pub fn holding(&self, node: &str) -> Option<&HoldingAccount> {
         self.holdings.get(node)
     }
+
+    /// Every node that has a holding account, with the way to it, in node order: what Core's schedule holds the
+    /// deployment's register of holding accounts to (`T-020-63`).
+    pub fn holders(&self) -> impl Iterator<Item = (&str, &HoldingAccount)> {
+        self.holdings
+            .iter()
+            .map(|(node, account)| (node.as_str(), account))
+    }
 }

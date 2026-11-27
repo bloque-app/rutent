@@ -886,6 +886,8 @@ fn every_permission_held() -> Vec<Permission> {
         Permission::AskReversal,
         Permission::AskStatus,
         Permission::ReadNodeRecord,
+        Permission::ReadHoldingBalance,
+        Permission::RepeatOperation,
         Permission::RefileArrival,
         Permission::DeclineOutcome,
         Permission::EraseStatement,
@@ -907,6 +909,8 @@ fn every_permission_held() -> Vec<Permission> {
             | Permission::AskReversal
             | Permission::AskStatus
             | Permission::ReadNodeRecord
+            | Permission::ReadHoldingBalance
+            | Permission::RepeatOperation
             | Permission::RefileArrival
             | Permission::DeclineOutcome
             | Permission::EraseStatement
@@ -1134,6 +1138,18 @@ fn every_call() -> Vec<Call> {
         ));
     }
     calls.push(decide(
+        "repeat an operation by the operator".into(),
+        Permission::RepeatOperation,
+        repeat_asked(&operator()),
+        false,
+    ));
+    calls.push(decide(
+        "read a holding balance by the operator".into(),
+        Permission::ReadHoldingBalance,
+        balance_read_asked(&operator()),
+        false,
+    ));
+    calls.push(decide(
         "read a private node's record by the operator".into(),
         Permission::ReadNodeRecord,
         record_read_asked(&operator()),
@@ -1346,9 +1362,9 @@ fn every_call() -> Vec<Call> {
 #[test]
 fn each_permission_alone_allows_only_its_own_action() {
     let all = every_permission_held();
-    assert_eq!(all.len(), 39, "every permission of the register's");
+    assert_eq!(all.len(), 41, "every permission of the register's");
     let calls = every_call();
-    assert_eq!(calls.len(), 42, "every call a permission lets through");
+    assert_eq!(calls.len(), 44, "every call a permission lets through");
     for permission in &all {
         assert!(
             calls.iter().any(|c| &c.owner == permission),
@@ -2739,6 +2755,181 @@ fn a_private_nodes_record_is_read_by_core_carrying_the_operators_permission_onwa
     for caller in [customer, provider].iter().chain(&others) {
         assert_eq!(
             policy.decide(&record_read_asked(caller)).unwrap().outcome,
+            NOT_PERMITTED,
+            "{caller:?}"
+        );
+    }
+    assert_eq!(
+        policy.policy.1.ruled, 0,
+        "none reached the deployment's policy"
+    );
+}
+
+/// The request that `caller` read the balance of the holding account of `fx-desk-ledger`, from `fx-desk` (`T-020-63`).
+fn balance_read_asked(caller: &Actor) -> DecisionRequest {
+    let mut request: DecisionRequest = valid!("decision-request-to-read-a-holding-balance");
+    request.request = id(&format!("req-balance-{}", caller.acts.as_str()));
+    request.caller = caller.clone();
+    request
+}
+
+/// The request that `caller` carry out the operation of `seg-2` of `ord-17` again (`T-020-63`).
+fn repeat_asked(caller: &Actor) -> DecisionRequest {
+    let mut request: DecisionRequest = valid!("decision-request-to-repeat-an-operation");
+    request.request = id(&format!("req-repeat-{}", caller.acts.as_str()));
+    request.caller = caller.clone();
+    request
+}
+
+/// The operator the register lists for it carries a segment's operation out again, and so does Core, which carries that
+/// standing permission onward beside `CarryOnward`; Core with either alone is refused, the operator without it, and
+/// nobody else, whatever the register lists for them (`REQ-ORD-1`, `REQ-AUZ-1`, `T-020-63`).
+// verifies: REQ-AUZ-1, REQ-ORD-1
+#[test]
+fn an_operation_is_repeated_by_core_carrying_the_operators_permission_onward() {
+    let mut policy = engine(
+        Kept::with_a_decision_record(),
+        Register::holding(&operator(), &[Permission::RepeatOperation]).and_holding(
+            &core(),
+            &[Permission::CarryOnward, Permission::RepeatOperation],
+        ),
+    );
+    for caller in [operator(), core()] {
+        let decision = policy.decide(&repeat_asked(&caller)).unwrap();
+        assert_eq!(decision.outcome, Answer::Permit {}, "{caller:?}");
+    }
+    for held in [
+        vec![Permission::CarryOnward],
+        vec![Permission::RepeatOperation],
+    ] {
+        let mut policy = engine(
+            Kept::with_a_decision_record(),
+            Register::holding(&core(), &held),
+        );
+        assert_eq!(
+            policy.decide(&repeat_asked(&core())).unwrap().outcome,
+            NOT_PERMITTED,
+            "{held:?}"
+        );
+    }
+    let mut every_other: Vec<Permission> = every_permission(&operator())
+        .into_iter()
+        .map(|(p, _)| p)
+        .filter(|p| *p != Permission::RepeatOperation)
+        .collect();
+    every_other.extend([Permission::ActForUser, Permission::CarryOnward]);
+    let mut policy = engine(
+        Kept::with_a_decision_record(),
+        Register::holding(&operator(), &every_other),
+    );
+    assert_eq!(
+        policy.decide(&repeat_asked(&operator())).unwrap().outcome,
+        NOT_PERMITTED
+    );
+    let customer = actor("cust-1", "cust-1", Role::Customer, ActorKind::Person);
+    let provider = actor(
+        "bridge-pay",
+        "bridge-pay",
+        Role::Provider,
+        ActorKind::Component,
+    );
+    let mut policy = engine(
+        Kept::with_a_decision_record(),
+        Register::holding(&customer, &[Permission::RepeatOperation])
+            .and_holding(&provider, &[Permission::RepeatOperation]),
+    );
+    for caller in [customer, provider] {
+        assert_eq!(
+            policy.decide(&repeat_asked(&caller)).unwrap().outcome,
+            NOT_PERMITTED,
+            "{caller:?}"
+        );
+    }
+}
+
+/// The operator the register lists for it reads a holding account's balance, and so does Core, which carries that
+/// standing permission onward: listed for it beside `CarryOnward`, both. Core with either alone is refused, as is the
+/// operator without the permission, and nobody else reads one, whatever the register lists for them (`REQ-AUD-15`,
+/// `REQ-AUZ-1`, `T-020-63`).
+// verifies: REQ-AUZ-1, REQ-AUD-15
+#[test]
+fn a_holding_balance_is_read_by_core_carrying_the_operators_permission_onward() {
+    let mut policy = engine(
+        Kept::with_a_decision_record(),
+        Register::holding(&operator(), &[Permission::ReadHoldingBalance]).and_holding(
+            &core(),
+            &[Permission::CarryOnward, Permission::ReadHoldingBalance],
+        ),
+    );
+    for caller in [operator(), core()] {
+        let decision = policy.decide(&balance_read_asked(&caller)).unwrap();
+        assert_eq!(decision.outcome, Answer::Permit {}, "{caller:?}");
+        assert_eq!(policy.log().entry_of(&decision).who, caller);
+    }
+    // Core with one of the two alone: refused.
+    for held in [
+        vec![Permission::CarryOnward],
+        vec![Permission::ReadHoldingBalance],
+    ] {
+        let mut policy = engine(
+            Kept::with_a_decision_record(),
+            Register::holding(&core(), &held),
+        );
+        assert_eq!(
+            policy.decide(&balance_read_asked(&core())).unwrap().outcome,
+            NOT_PERMITTED,
+            "{held:?}"
+        );
+    }
+    // The operator holding every other permission but this one.
+    let mut every_other: Vec<Permission> = every_permission(&operator())
+        .into_iter()
+        .map(|(p, _)| p)
+        .filter(|p| *p != Permission::ReadHoldingBalance)
+        .collect();
+    every_other.extend([
+        Permission::ActForUser,
+        Permission::CarryOnward,
+        Permission::AskStatus,
+    ]);
+    let mut policy = engine(
+        Kept::with_a_decision_record(),
+        Register::holding(&operator(), &every_other),
+    );
+    assert_eq!(
+        policy
+            .decide(&balance_read_asked(&operator()))
+            .unwrap()
+            .outcome,
+        NOT_PERMITTED
+    );
+    // Nobody else: refused before the deployment's policy is asked.
+    let customer = actor("cust-1", "cust-1", Role::Customer, ActorKind::Person);
+    let provider = actor(
+        "bridge-pay",
+        "bridge-pay",
+        Role::Provider,
+        ActorKind::Component,
+    );
+    let mut register = Register::holding(&customer, &[Permission::ReadHoldingBalance])
+        .and_holding(&provider, &[Permission::ReadHoldingBalance]);
+    let others = [
+        actor("kyc-co", "kyc-co", Role::Verifier, ActorKind::Component),
+        actor(
+            "fin-regulator",
+            "examiner-3",
+            Role::Regulator,
+            ActorKind::Person,
+        ),
+        actor("audit-co", "checker-1", Role::Checker, ActorKind::Person),
+    ];
+    for other in &others {
+        register = register.and_holding(other, &[Permission::ReadHoldingBalance]);
+    }
+    let mut policy = engine(Kept::with_a_decision_record(), register);
+    for caller in [customer, provider].iter().chain(&others) {
+        assert_eq!(
+            policy.decide(&balance_read_asked(caller)).unwrap().outcome,
             NOT_PERMITTED,
             "{caller:?}"
         );

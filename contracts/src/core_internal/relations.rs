@@ -309,6 +309,34 @@ fn segment_provider<'a>(order: &Id, segment: &Id, history: &'a History) -> Optio
         })
 }
 
+/// Whether the `move_value` effect of `segment` of `order` has no final outcome in `history`: a result `done` or `failed`,
+/// or a permitted confirmation of its outcome ([`settled`]).
+fn move_without_outcome(order: &Id, segment: &Id, history: &History) -> bool {
+    history.iter().any(|(_, e)| {
+        verified(e)
+            .and_then(effect_action)
+            .is_some_and(|(action, _)| {
+                matches!(action, Action::MoveValue { order: o, segment: s, .. } if o == order && s == segment)
+            })
+            && !settled(e, history)
+    })
+}
+
+/// Whether `transaction` is one Core's own question about `segment` of `order` names: a stated `operation` about that order
+/// and segment under it. A repeat names the segment's own transaction, never another segment's (`T-020-63`).
+fn is_segments_transaction(order: &Id, segment: &Id, transaction: &Id, history: &History) -> bool {
+    history.iter().any(|(_, e)| {
+        stated(e).is_some_and(|s| {
+            s.what.statement.as_str() == crate::provider_role::OPERATION_SHAPE
+                && s.about.as_ref().is_some_and(|a| {
+                    a.order.as_ref() == Some(order)
+                        && a.segment.as_ref() == Some(segment)
+                        && a.transaction.as_ref() == Some(transaction)
+                })
+        })
+    })
+}
+
 /// The citing entry's recorded input, if it records one.
 fn input(entry: &VerifiedEntry) -> Option<&crate::state_machine::RecordedInput> {
     match &entry.what {
@@ -489,7 +517,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 120] = [
+pub static RELATIONS: [Relation; 121] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -2535,6 +2563,35 @@ pub static RELATIONS: [Relation; 120] = [
                 },
                 _,
             )) if segment_provider(order, segment, h) != Some(provider) => by_fields(0),
+            _ => none(),
+        },
+        answers: |_, _, _, _| Match::NotTarget,
+    },
+    Relation {
+        name: "repeat-is-of-an-unsettled-segment-at-its-provider",
+        spec: &["REQ-ORD-1", "INV-8"],
+        quantifier: Quantifier::Exists,
+        refusal: "a segment's operation is carried out again only by the provider its move went to, under the transaction its question named, and only while that move has no final outcome",
+        fields: &[],
+        // None to point to: a `repeat_operation` effect is refused unless its provider is the one the segment's move
+        // went to, its transaction one Core's question of that segment (`operation`, stated about it) named, and that move has no final result nor a permitted confirmation of its outcome (`T-020-63`). That the
+        // provider declares a safe repeat and no status query is its accepted advertisement's, which the log holds by
+        // commitment alone: the platform refuses the repeat of a provider that doesn't declare it (`REQ-CAT-10`).
+        cites: |e, h| match effect_action(e) {
+            Some((
+                Action::RepeatOperation {
+                    order,
+                    segment,
+                    provider,
+                    transaction,
+                },
+                _,
+            )) if !(segment_provider(order, segment, h) == Some(provider)
+                && move_without_outcome(order, segment, h)
+                && is_segments_transaction(order, segment, transaction, h)) =>
+            {
+                by_fields(0)
+            }
             _ => none(),
         },
         answers: |_, _, _, _| Match::NotTarget,
@@ -5708,12 +5765,13 @@ fn operator_question<'a>(statement: &'a StatedEntry, operator: &Id) -> Option<&'
         .flatten()
 }
 
-/// The transactions a decided action names: a late status's, a stuck resolution's, and the one an accepted showing
-/// of fault is about.
+/// The transactions a decided action names: a late status's, a holding balance read's (`T-020-63`), a stuck
+/// resolution's, and the one an accepted showing of fault is about.
 fn action_transactions(action: &Action) -> Option<&str> {
     match action {
         Action::AskStatus { transaction, .. }
         | Action::ReadNodeRecord { transaction, .. }
+        | Action::ReadHoldingBalance { transaction, .. }
         | Action::ResolveStuck { transaction, .. } => Some(transaction.as_str()),
         Action::AcceptFault { showing, .. } => Some(showing.transaction.as_str()),
         _ => None,

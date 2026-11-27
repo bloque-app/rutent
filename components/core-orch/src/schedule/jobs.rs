@@ -5,11 +5,11 @@
 //!
 //! | Job | Core's body here | What the deployment answers ([`Ports`]) |
 //! |---|---|---|
-//! | late answers | the transactions each segment was sent under, the answer kept once as its maker's statement (`Reversals::later`) | the platform's held late answers to those transactions |
+//! | late answers | the transactions each segment was sent under, the answer kept once as its maker's statement (`Reversals::later`), and acknowledged to the platform once kept or refused for good | the platform's held late answers to those transactions, which it hands over again until acknowledged |
 //! | landing | `Segments::land_settled` | the register of holding accounts, asked through the platform ([`Landings`]) |
 //! | measures, pairs, unbuilt pairs | `Segments::write_measures`, `write_pairs`, `write_unbuilt` | the log's comparisons and measure writer (`CMP-CORE-AUDIT`) |
 //! | closing | which orders, the records of the routes each ran, `closing::report_logged_price` | the decision records Core's key signed, held to the log's digest |
-//! | holding check | each account read once a check (`L3`), the reading built (account, provider, word, what the orders hold, time), checked; an account not read raised once a spell (`holding_not_read`) | the register's readings of public accounts, through the platform; the publishers' modules, asked through the platform in the operator's name |
+//! | holding check | each account of the register read once a check (`L3`) by a decided read ([`Segments::read_holding_balance`]), the reading built (account, provider, word, what Core's segments rest there, time) and checked, a public node's beside the wallet host's own record as a second comparison; an account not read, or the catalogue's holder the register doesn't name, raised once a spell (`holding_not_read`) | the register of holding accounts and the host's record of each; the platform, which carries the question to the module |
 //! | status questions | which segments are unknown, at whose cadence ([`super::Schedule`]), `Reversals::ask_unknown_status_again` | the platform, policy |
 //! | stuck watch | which orders, their current route, `Stuck::watch` | the notices channel |
 //! | stuck reports | only a stuck part, only the move's own provider's typed answer (`L5`), the mover as reporter, the kept statement named once | policy |
@@ -29,30 +29,34 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use rutent_contracts::core_internal::calls::{Comparisons, Measures, Operator, StuckOrders};
+use rutent_contracts::core_internal::calls::{
+    AppendFailure, Comparisons, Measures, Operator, StuckOrders,
+};
 use rutent_contracts::core_internal::{
     Actor, ActorKind, Difference, Entry, HoldingNotRead, HoldingReading, Receipt, Role, RouteEnd,
     What, Word,
 };
 use rutent_contracts::provider_role::{
-    Denomination, HoldingBalance, HoldingBalanceOutcome, Operation, ResultBody,
+    Denomination, HoldingBalanceOutcome, ResultBody, Statement, Tracking,
 };
-use rutent_contracts::router_api::{Amount, DecisionRecord, Id, PositiveAmount};
+use rutent_contracts::router_api::{Amount, DecisionRecord, Id, PolicyBounds, PositiveAmount};
 use rutent_contracts::state_machine::PartPlan;
 use rutent_prov::catalogue::{Catalogue, Publisher};
-use rutent_prov::holding::BalanceSource;
-use rutent_prov::holding::wallet::WalletError;
-use rutent_prov::module::types::Handled;
+use rutent_prov::holding::HeldForOrder;
 
 use super::{
-    Duties, HoldingChecked, LateTaken, Priced, Published, Reported, StatusTried, Unknown, Watched,
+    Duties, HoldingChecked, Late, LateTaken, Priced, Published, Reported, StatusTried, Unknown,
+    WalletCompared, Watched,
 };
 use crate::arrival::Arrivals;
 use crate::closing::{PriceDesk, report_logged_price};
 use crate::intake::Desk;
 use crate::notice::{NoticeKey, Notices, Transport};
-use crate::reversal::{At, Moving, Parts as ReversalParts, Reversals};
-use crate::segments::{Landings, Live, Parts as SegmentParts, Says, Segments, UnbuiltPair};
+use crate::reversal::{At, Moving, Parts as ReversalParts, ReversalError, Reversals};
+use crate::segments::{
+    Balance, BalanceRead, Landings, Live, Parts as SegmentParts, RepeatOf, Repeated, Says,
+    Segments, UnbuiltPair,
+};
 use crate::snapshot::Clock;
 use crate::stuck::{
     ConfirmingSegment, Moved, Parts as StuckParts, Reporting, ResolveError, Resolved, Stated,
@@ -164,18 +168,23 @@ pub struct Actors {
     pub operator: Actor,
 }
 
-/// A public node's holding account, as the deployment's register reads it through the platform: its module's balance
-/// beside the host's attribution of what each order holds there (`REQ-AUD-15`).
+/// A public node's holding account, as the deployment's register of holding accounts names it (`REQ-CAT-23`): the module
+/// that holds it and its asset, with the decimals the register gives the asset, beside the wallet host's own record of
+/// what each order holds there (`REQ-AUD-15`). The balance is not here: Core reads it from the module, as a decided read
+/// ([`Segments::read_holding_balance`]), and compares it with what its own segments rest at the node
+/// ([`Segments::resting_totals`]), keeping the host's record as a second comparison (`T-020-63`).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AccountRead {
+pub struct PublicAccount {
     /// The node.
     pub node: String,
     /// The provider whose module holds the account.
     pub provider: String,
-    /// The decimals of the account's asset.
+    /// The asset the account holds.
+    pub asset: String,
+    /// The decimals of the account's asset, as the register gives them.
     pub decimals: u8,
-    /// What the register read, or why it couldn't.
-    pub read: Result<rutent_prov::holding::HoldingReading, WalletError>,
+    /// What the wallet host's own record says each order holds there, in order name order.
+    pub attribution: Vec<HeldForOrder>,
 }
 
 /// The account a private node's publisher keeps for the value resting inside it, as the deployment's register of
@@ -224,14 +233,21 @@ pub trait Ports {
     /// A fresh identifier.
     fn fresh(&mut self) -> Id;
 
-    /// The platform's late answers to the operations of `transactions`, each once: its transaction and its bytes.
+    /// The bounds Core's questions are made in: the deployment's and protocol version, as the operator's settings leave
+    /// them.
+    fn bounds(&self) -> PolicyBounds;
+    /// The platform's late answers to the operations of `transactions`: its transaction and its bytes. The platform holds
+    /// each until Core says it kept it ([`Ports::late_kept`]), so one Core couldn't record now (the log down) comes again
+    /// the next tick, a restart included, and is never dropped (`NFR-6`, `T-020-63`).
     fn late_answers(&mut self, transactions: &BTreeSet<String>) -> Vec<(String, Vec<u8>)>;
-    /// The register's public holding accounts, each read once through the platform.
-    fn holding_readings(&mut self) -> Vec<AccountRead>;
+    /// That Core has done with the late answer to `transaction`: kept, or refused for good. The platform hands it over no
+    /// more.
+    fn late_kept(&mut self, transaction: &str);
+    /// The register's public holding accounts, with the wallet host's own record of each. Core reads their balances
+    /// itself, through [`Ports::with_segments`].
+    fn public_accounts(&self) -> Vec<PublicAccount>;
     /// The register's private nodes' accounts.
     fn publisher_accounts(&self) -> Vec<PublisherAccount>;
-    /// Hands `operation` to `module`, signed in the operator's name at Core's clock, through the platform.
-    fn ask_as_operator(&mut self, module: &str, operation: Operation) -> Handled;
     /// Runs the checkpointer's ticks due and publishes what they issue (`REQ-AUD-14`); how many it published.
     ///
     /// # Errors
@@ -370,20 +386,6 @@ fn handed_over_by(catalogue: &Catalogue, bytes: &[u8]) -> Option<Actor> {
     })
 }
 
-/// What a module's failure to give a balance is, as the raise names it.
-fn not_read(why: &WalletError) -> HoldingNotRead {
-    match why {
-        WalletError::NotAnswered(_) => HoldingNotRead::NotAnswered {},
-        WalletError::NotSucceeded | WalletError::NotKnown => HoldingNotRead::Refused {},
-        WalletError::WrongResult | WalletError::Disagrees { .. } => {
-            HoldingNotRead::AnotherAnswer {}
-        }
-        WalletError::Holding(_) | WalletError::NoHoldingAccount(_) => {
-            HoldingNotRead::NotABalance {}
-        }
-    }
-}
-
 /// Whether the log holds a spell of `account` not read: a raise of it since its last check, so it is not raised again
 /// until it is read (rebuilt from the log, so a restart raises no spell twice). And the account's last check.
 fn spell_of(history: &[(Receipt, Entry)], account: &Id) -> (bool, Option<Receipt>) {
@@ -450,123 +452,302 @@ fn reading_of(
 struct ToCheck {
     node: String,
     provider: String,
+    /// The account's balance beside what Core's segments rest at the node, or why it couldn't be read.
     reading: Result<HoldingReading, (HoldingNotRead, String)>,
+    /// A public node's balance beside the wallet host's own record, where that record's total isn't Core's: the same
+    /// balance, a second comparison (`T-020-63`).
+    wallet: Option<HoldingReading>,
+}
+
+/// What Core's segments rest at `node` for each order (`Segments::resting_totals`): each order once, as its name and its
+/// amount.
+fn held_by(resting: &BTreeMap<(String, String), Amount>, node: &str) -> Vec<(String, String)> {
+    resting
+        .iter()
+        .filter(|((at, _), _)| at == node)
+        .map(|((_, order), amount)| (order.clone(), amount.as_str().to_owned()))
+        .collect()
+}
+
+/// Why an account is not read where Core's clock gives no time to stamp the reading with.
+fn not_timed() -> (HoldingNotRead, String) {
+    (
+        HoldingNotRead::NotTimed {},
+        "Core's clock gave no time to stamp a reading with".to_owned(),
+    )
+}
+
+/// The sum of `amounts`, whole units, where each is a plain number: `None` where one is past a `u128`.
+fn total<'a>(mut amounts: impl Iterator<Item = &'a str>) -> Option<u128> {
+    amounts.try_fold(0u128, |sum, a| sum.checked_add(a.parse::<u128>().ok()?))
 }
 
 impl Jobs<'_> {
-    /// Every holding account read, each once this check (`REQ-AUD-15`, the review's `L3`): a public node's through the
-    /// register, its module's balance beside the host's attribution; a private node's through its publisher's module,
-    /// asked in the operator's name, its balance the publisher's word beside what Core's segments rest there.
-    fn read_accounts(&mut self) -> Vec<ToCheck> {
-        let Some(at) = self.ports.clock().now().timestamp() else {
-            return Vec::new();
-        };
+    /// Every holding account of the deployment's register read once, each once this check (`REQ-AUD-15`, the review's
+    /// `L3`): a public node's from its wallet, a private node's from its publisher's module, each balance asked as a
+    /// decided read and set beside what Core's own segments rest at the node (`INV-1`'s second half); a public node's
+    /// beside the wallet host's own record too, where that record's total differs from Core's, since where the two are
+    /// the same the second comparison can't say another thing. A holding account the catalogue lists that the register
+    /// doesn't name is not read, and says so; a clock that gives no time reads none, and says so for each (`T-020-63`).
+    fn read_accounts(&mut self, only: Option<&BTreeSet<String>>) -> Vec<ToCheck> {
+        let at = self.ports.clock().now().timestamp();
+        let wanted = |node: &str| only.is_none_or(|nodes| nodes.contains(node));
+        let public: Vec<PublicAccount> = self
+            .ports
+            .public_accounts()
+            .into_iter()
+            .filter(|a| wanted(&a.node))
+            .collect();
+        let private: Vec<PublisherAccount> = self
+            .ports
+            .publisher_accounts()
+            .into_iter()
+            .filter(|a| wanted(&a.node))
+            .collect();
+        let registered_all: BTreeSet<String> = self
+            .ports
+            .public_accounts()
+            .into_iter()
+            .map(|a| a.node)
+            .chain(self.ports.publisher_accounts().into_iter().map(|a| a.node))
+            .collect();
+        let resting = self.ports.segments().resting_totals();
         let mut checks = Vec::new();
-        for read in self.ports.holding_readings() {
-            let reading = match read.read {
-                Ok(got) => {
-                    let word = match got.source {
-                        BalanceSource::Module => Word::Checked,
-                        BalanceSource::Publisher(_) => Word::Publisher,
-                    };
-                    let held: Vec<(String, String)> = got
-                        .held
+        for account in public {
+            let reading = match &at {
+                Some(at) => self
+                    .read_balance(&account.node, &account.provider, &account.asset)
+                    .and_then(|balance| {
+                        let core = held_by(&resting, &account.node);
+                        reading_of(
+                            &account.node,
+                            &account.provider,
+                            &account.asset,
+                            account.decimals,
+                            &balance,
+                            Word::Checked,
+                            &core,
+                            at,
+                        )
+                        .map(|reading| (reading, balance))
+                        .ok_or((
+                            HoldingNotRead::NotABalance {},
+                            "the balance isn't an amount".to_owned(),
+                        ))
+                    }),
+                None => Err(not_timed()),
+            };
+            let (reading, wallet) = match reading {
+                Ok((reading, balance)) => {
+                    let host: Vec<(String, String)> = account
+                        .attribution
                         .iter()
                         .map(|h| (h.order.clone(), h.amount.to_string()))
                         .collect();
-                    reading_of(
-                        &got.node,
-                        &read.provider,
-                        &got.asset,
-                        read.decimals,
-                        &got.balance.to_string(),
-                        word,
-                        &held,
-                        &at,
-                    )
-                    .ok_or((
-                        HoldingNotRead::NotABalance {},
-                        "the reading isn't one the contract carries".to_owned(),
-                    ))
+                    let core: Vec<(String, String)> = held_by(&resting, &account.node);
+                    let same = total(host.iter().map(|(_, a)| a.as_str()))
+                        == total(core.iter().map(|(_, a)| a.as_str()))
+                        && total(core.iter().map(|(_, a)| a.as_str())).is_some();
+                    let wallet = (!same)
+                        .then(|| {
+                            at.as_ref().and_then(|at| {
+                                reading_of(
+                                    &account.node,
+                                    &account.provider,
+                                    &account.asset,
+                                    account.decimals,
+                                    &balance,
+                                    Word::Checked,
+                                    &host,
+                                    at,
+                                )
+                            })
+                        })
+                        .flatten();
+                    (Ok(reading), wallet)
                 }
-                Err(why) => Err((not_read(&why), format!("{why:?}"))),
+                Err(why) => (Err(why), None),
             };
             checks.push(ToCheck {
-                node: read.node,
-                provider: read.provider,
+                node: account.node,
+                provider: account.provider,
                 reading,
+                wallet,
             });
         }
-        let resting = self.ports.segments().resting_totals();
-        for account in self.ports.publisher_accounts() {
-            let reading = self.publisher_reading(&account, &resting, &at);
+        for account in private {
+            let reading = match &at {
+                Some(at) => self
+                    .read_balance(&account.node, &account.module, &account.asset)
+                    .and_then(|balance| {
+                        reading_of(
+                            &account.node,
+                            &account.module,
+                            &account.asset,
+                            account.decimals,
+                            &balance,
+                            Word::Publisher,
+                            &held_by(&resting, &account.node),
+                            at,
+                        )
+                        .ok_or((
+                            HoldingNotRead::NotABalance {},
+                            "the balance isn't an amount".to_owned(),
+                        ))
+                    }),
+                None => Err(not_timed()),
+            };
             checks.push(ToCheck {
                 node: account.node,
                 provider: account.module,
                 reading,
+                wallet: None,
             });
         }
+        // The register is the definition of what is checked: a node where Core's own segments rest value, which the
+        // register names in neither list, is raised as not read, never silently left out (`T-020-63`). The nodes walked
+        // are the ones Core rests value at, not the catalogue's holders: value at a node with no holder listed is
+        // checked by nothing else. A node where Core rests nothing is not: the scenario kit lists a holder at every
+        // node its providers reach, which no register names, and a check of an account Core rests nothing in is a check
+        // of nothing.
+        let resting_nodes: BTreeSet<&str> = resting.keys().map(|(node, _)| node.as_str()).collect();
+        for node in resting_nodes {
+            if registered_all.contains(node) || !wanted(node) {
+                continue;
+            }
+            let provider = self.ports.catalogue().nodes().holding(node).map_or_else(
+                || "unregistered".to_owned(),
+                |holder| holder.reference.clone(),
+            );
+            checks.push(ToCheck {
+                node: node.to_owned(),
+                provider,
+                reading: Err((
+                    HoldingNotRead::NotRegistered {},
+                    "Core rests value at a node the register of holding accounts doesn't name"
+                        .to_owned(),
+                )),
+                wallet: None,
+            });
+        }
+        self.ports.fed();
         checks
     }
 
-    /// The reading of a private node's account: its publisher's module's answer to the operator's `holding_balance`,
-    /// under a fresh transaction of Core's, and what Core's segments rest at the node for each order.
-    fn publisher_reading(
+    /// Carries the own operation of each segment of `order` left unknown out again, where it is due its provider's status
+    /// cadence (`due`), the provider declares a repeat safe and no status query to ask where it stands by, and policy
+    /// permits it: a decided effect, as the original move was (`REQ-AUZ-1`, `T-020-63`). Which segments were tried, whether
+    /// or not the platform had an answer: a refusal by policy waits its cadence as an answer does, and a failure to record
+    /// it is tried again next tick.
+    fn repeat_unknown(
         &mut self,
-        account: &PublisherAccount,
-        resting: &BTreeMap<(String, String), Amount>,
-        at: &rutent_contracts::router_api::Timestamp,
-    ) -> Result<HoldingReading, (HoldingNotRead, String)> {
-        let transaction = self.ports.fresh().as_str().to_owned();
-        let operation = Operation::HoldingBalance(HoldingBalance {
-            transaction: transaction.clone(),
-            provider: account.module.clone(),
-            node: account.node.clone(),
-            asset: account.asset.clone(),
+        order: &Id,
+        sent: &BTreeMap<String, Id>,
+        due: &dyn Fn(&Unknown) -> bool,
+    ) -> Vec<Unknown> {
+        let core = self.ports.actors().core;
+        let mut tried = Vec::new();
+        for (transaction, segment) in sent {
+            let Some(moved) = self.ports.segments().unknown_move(order, segment) else {
+                continue;
+            };
+            let unknown = Unknown {
+                order: order.clone(),
+                segment: segment.clone(),
+                provider: moved.provider.as_str().to_owned(),
+            };
+            let declared = self.ports.catalogue().declared_by(&unknown.provider);
+            let repeatable = declared.is_some_and(|d| {
+                d.safe_retry == Some(true) && !d.tracking.contains(&Tracking::StatusQuery)
+            });
+            let (Some(tx), true) = (id(transaction), repeatable && due(&unknown)) else {
+                continue;
+            };
+            let mut outcome = Repeated::Failed;
+            self.ports.with_segments(&mut |segments, parts| {
+                outcome = segments.carry_again(
+                    parts,
+                    &RepeatOf {
+                        order,
+                        segment,
+                        provider: &moved.provider,
+                        transaction: &tx,
+                        core: &core,
+                    },
+                );
+            });
+            if outcome != Repeated::Failed {
+                tried.push(unknown);
+            }
+        }
+        self.ports.fed();
+        tried
+    }
+
+    /// The balance `provider`'s module states for the account of `node` in `asset`: the read is decided and recorded as
+    /// an effect before the module is asked ([`Segments::read_holding_balance`]), and the answer is taken only as the
+    /// answer to that question: a result of the transaction asked under, stating a balance. Why it wasn't read, else.
+    fn read_balance(
+        &mut self,
+        node: &str,
+        provider: &str,
+        asset: &str,
+    ) -> Result<String, (HoldingNotRead, String)> {
+        let actors = self.ports.actors();
+        let bounds = self.ports.bounds();
+        let mut read = Balance::Failed;
+        self.ports.with_segments(&mut |segments, parts| {
+            read = segments.read_holding_balance(
+                parts,
+                &BalanceRead {
+                    node,
+                    provider,
+                    asset,
+                    bounds: &bounds,
+                    operator: &actors.operator,
+                    core: &actors.core,
+                },
+            );
         });
-        let answered = match self.ports.ask_as_operator(&account.module, operation) {
-            Handled::Answered(result) => result.statement,
-            Handled::Refused(why) => {
+        let (transaction, bytes) = match read {
+            Balance::Denied => {
                 return Err((
-                    HoldingNotRead::NotAnswered {},
-                    format!("the platform passed no answer: {why:?}"),
+                    HoldingNotRead::NotPermitted {},
+                    "policy didn't permit the read".to_owned(),
                 ));
             }
+            Balance::Failed => {
+                return Err((
+                    HoldingNotRead::NotAnswered {},
+                    "the platform passed no answer".to_owned(),
+                ));
+            }
+            Balance::Answered(transaction, bytes) => (transaction, bytes),
         };
-        let ResultBody::HoldingBalance(result) = answered else {
+        let Ok(answered) = serde_json::from_slice::<Statement<ResultBody>>(&bytes) else {
+            return Err((
+                HoldingNotRead::AnotherAnswer {},
+                "the answer isn't a result".to_owned(),
+            ));
+        };
+        let ResultBody::HoldingBalance(result) = answered.statement else {
             return Err((
                 HoldingNotRead::AnotherAnswer {},
                 "the module answered another question".to_owned(),
             ));
         };
-        if result.transaction != transaction {
+        if result.transaction != transaction.as_str() {
             return Err((
                 HoldingNotRead::AnotherAnswer {},
                 "the answer names another transaction".to_owned(),
             ));
         }
-        let HoldingBalanceOutcome::Answered(answer) = result.outcome else {
-            return Err((HoldingNotRead::Refused {}, "the module refused".to_owned()));
-        };
-        let held: Vec<(String, String)> = resting
-            .iter()
-            .filter(|((node, _), _)| node == &account.node)
-            .map(|((_, order), amount)| (order.clone(), amount.as_str().to_owned()))
-            .collect();
-        reading_of(
-            &account.node,
-            &account.module,
-            &account.asset,
-            account.decimals,
-            &answer.balance,
-            Word::Publisher,
-            &held,
-            at,
-        )
-        .ok_or((
-            HoldingNotRead::NotABalance {},
-            "the balance isn't an amount".to_owned(),
-        ))
+        match result.outcome {
+            HoldingBalanceOutcome::Answered(answer) => Ok(answer.balance),
+            HoldingBalanceOutcome::Refused(_) => {
+                Err((HoldingNotRead::Refused {}, "the module refused".to_owned()))
+            }
+        }
     }
 
     /// The stuck move `one` reported to its mover from what Core kept of its provider's answers (`AC-6`, `REQ-ORD-1`):
@@ -725,8 +906,9 @@ pub fn confirm_reported_failure(
 }
 
 impl Duties for Jobs<'_> {
-    fn late_answers(&mut self) -> Vec<LateTaken> {
+    fn late_answers(&mut self, due: &dyn Fn(&Unknown) -> bool) -> Late {
         let mut taken = Vec::new();
+        let mut repeated = Vec::new();
         for order in orders(&*self.ports) {
             let Some(started) = self.ports.started().get(order.as_str()).cloned() else {
                 continue;
@@ -740,6 +922,7 @@ impl Duties for Jobs<'_> {
             if sent.is_empty() {
                 continue;
             }
+            repeated.extend(self.repeat_unknown(&order, &sent, due));
             let transactions = sent.keys().cloned().collect();
             for (transaction, bytes) in self.ports.late_answers(&transactions) {
                 let Some(segment) = sent.get(&transaction) else {
@@ -750,11 +933,15 @@ impl Duties for Jobs<'_> {
                 };
                 let history = self.ports.history();
                 let mut kept = Err("the reversals weren't lent".to_owned());
+                // Whether it is worth handing over again: nothing was recorded for want of the reversals, the log or the
+                // segment's own answer, none of which is the answer's fault.
+                let mut again = true;
                 self.ports.with_reversals(&mut |reversals, parts, _| {
                     reversals.follow(&order, &history);
                     // The platform hands over its provider's own late answer: the maker its envelope names presents it.
                     let Some(presented_by) = handed_over_by(parts.catalogue, &bytes) else {
                         kept = Err("the answer names no maker".to_owned());
+                        again = false;
                         return;
                     };
                     kept = reversals
@@ -768,9 +955,25 @@ impl Duties for Jobs<'_> {
                             &bytes,
                             &presented_by,
                         )
-                        .map_err(|why| format!("{why:?}"));
+                        .map_err(|why| {
+                            again = matches!(
+                                why,
+                                ReversalError::NotAnswered
+                                    | ReversalError::Append(AppendFailure::Unavailable)
+                            );
+                            format!("{why:?}")
+                        });
+                    if kept.is_ok() {
+                        again = false;
+                    }
                 });
                 self.ports.fed();
+                // Kept, or refused for good: the platform hands it over no more. One Core couldn't record now (the log
+                // down, the segment's answer not yet taken) stays with the platform, which hands it over again the next
+                // tick, so it is never dropped (`T-020-63`, `NFR-6`).
+                if !again {
+                    self.ports.late_kept(&transaction);
+                }
                 taken.push(LateTaken {
                     order: order.clone(),
                     segment: segment.clone(),
@@ -778,7 +981,7 @@ impl Duties for Jobs<'_> {
                 });
             }
         }
-        taken
+        Late { taken, repeated }
     }
 
     fn land_settled(&mut self) -> usize {
@@ -849,11 +1052,11 @@ impl Duties for Jobs<'_> {
         priced
     }
 
-    fn check_holdings(&mut self) -> Vec<HoldingChecked> {
+    fn check_holdings(&mut self, only: Option<&BTreeSet<String>>) -> Vec<HoldingChecked> {
         let history = self.ports.history();
         let mut checked = Vec::new();
-        for one in self.read_accounts() {
-            let (reading, check, unread) = match one.reading {
+        for one in self.read_accounts(only) {
+            let (reading, check, unread, wallet) = match one.reading {
                 Ok(reading) => {
                     let mut check = Err("the comparisons weren't lent".to_owned());
                     self.ports.with_audit(&mut |_, comparisons, _| {
@@ -861,7 +1064,17 @@ impl Duties for Jobs<'_> {
                             .holding_reading(&reading)
                             .map_err(|why| format!("{why:?}"));
                     });
-                    (Ok(reading), check, None)
+                    // The wallet host's own record, beside the same balance (`T-020-63`).
+                    let wallet = one.wallet.map(|reading| {
+                        let mut check = Err("the comparisons weren't lent".to_owned());
+                        self.ports.with_audit(&mut |_, comparisons, _| {
+                            check = comparisons
+                                .holding_reading(&reading)
+                                .map_err(|why| format!("{why:?}"));
+                        });
+                        WalletCompared { reading, check }
+                    });
+                    (Ok(reading), check, None, wallet)
                 }
                 Err((kind, why)) => {
                     // Raised to the operator, once in a spell of failure (fails closed: a module that keeps refusing
@@ -893,7 +1106,7 @@ impl Duties for Jobs<'_> {
                         }
                         _ => Err("the account isn't named by identifiers".to_owned()),
                     };
-                    (Err(why.clone()), Err(why), Some(raised))
+                    (Err(why.clone()), Err(why), Some(raised), None)
                 }
             };
             checked.push(HoldingChecked {
@@ -901,6 +1114,7 @@ impl Duties for Jobs<'_> {
                 reading,
                 check,
                 not_read: unread,
+                against_wallet: wallet,
             });
         }
         checked
@@ -1196,8 +1410,7 @@ mod tests {
     use crate::snapshot::Reading;
     use rutent_contracts::core_internal::calls::AppendFailure;
     use rutent_contracts::core_internal::{MeasureRecord, PairNotBuilt, ReportPair};
-    use rutent_contracts::module_interface::PlatformRefusal;
-    use rutent_prov::holding::{HeldForOrder, HoldingReading as Read};
+    use rutent_prov::holding::HeldForOrder;
 
     struct At(u64);
 
@@ -1255,9 +1468,9 @@ mod tests {
         }
     }
 
-    /// A deployment that answers only its ports: its register holds one public account, read through the platform,
-    /// and one private node's, whose module gives no answer; it lends Core's parts to the log's comparisons alone, and
-    /// no other (each other job finds them not lent, so nothing moves on it, `REQ-AUZ-5`).
+    /// A deployment that answers only its ports: its register holds one public account, with the wallet host's record of
+    /// what its orders hold there, and one private node's; it lends Core's parts to the log's comparisons alone, and no
+    /// other (each other job finds them not lent, so nothing moves on it, and no balance is read, `REQ-AUZ-5`).
     struct Bare {
         clock: At,
         started: BTreeMap<String, Started>,
@@ -1266,9 +1479,9 @@ mod tests {
         reversals: Reversals,
         catalogue: Catalogue,
         told: Told,
-        read: usize,
-        asked: Vec<String>,
         next: u32,
+        /// The nodes the register names: the public account's and the private node's, unless left out.
+        register: bool,
     }
 
     impl Ports for Bare {
@@ -1312,34 +1525,41 @@ mod tests {
             self.next += 1;
             id(&format!("fresh-{}", self.next)).unwrap()
         }
+        fn bounds(&self) -> PolicyBounds {
+            serde_json::from_str(include_str!(
+                "../../../../contracts/router-api/fixtures/valid/policy-bounds-without-splitting.json"
+            ))
+            .expect("bounds")
+        }
         fn late_answers(&mut self, _: &BTreeSet<String>) -> Vec<(String, Vec<u8>)> {
             Vec::new()
         }
-        fn holding_readings(&mut self) -> Vec<AccountRead> {
-            self.read += 1;
-            vec![AccountRead {
+        fn late_kept(&mut self, _: &str) {}
+        fn public_accounts(&self) -> Vec<PublicAccount> {
+            if !self.register {
+                return Vec::new();
+            }
+            vec![PublicAccount {
                 node: "bank-ledger".to_owned(),
                 provider: "operator-wallet".to_owned(),
+                asset: "USDC".to_owned(),
                 decimals: 2,
-                read: Ok(Read {
-                    node: "bank-ledger".to_owned(),
-                    asset: "USDC".to_owned(),
-                    balance: 1500,
-                    source: BalanceSource::Module,
-                    held: vec![
-                        HeldForOrder {
-                            order: "ord-1".to_owned(),
-                            amount: 1500,
-                        },
-                        HeldForOrder {
-                            order: "ord-2".to_owned(),
-                            amount: 0,
-                        },
-                    ],
-                }),
+                attribution: vec![
+                    HeldForOrder {
+                        order: "ord-1".to_owned(),
+                        amount: 1500,
+                    },
+                    HeldForOrder {
+                        order: "ord-2".to_owned(),
+                        amount: 0,
+                    },
+                ],
             }]
         }
         fn publisher_accounts(&self) -> Vec<PublisherAccount> {
+            if !self.register {
+                return Vec::new();
+            }
             vec![PublisherAccount {
                 node: "rail".to_owned(),
                 publisher: "rail-publisher".to_owned(),
@@ -1347,10 +1567,6 @@ mod tests {
                 asset: "USDC".to_owned(),
                 decimals: 2,
             }]
-        }
-        fn ask_as_operator(&mut self, module: &str, _: Operation) -> Handled {
-            self.asked.push(module.to_owned());
-            Handled::Refused(PlatformRefusal::Unavailable)
         }
         fn run_checkpoints(&mut self) -> Result<usize, String> {
             Err("the checkpointer can't be reached".to_owned())
@@ -1391,17 +1607,16 @@ mod tests {
             reversals: Reversals::new(),
             catalogue: Catalogue::new(),
             told: Told::default(),
-            read: 0,
-            asked: Vec::new(),
             next: 0,
+            register: true,
         }
     }
 
     /// Every job's body is Core's: over a deployment that answers only its ports, the tick runs every job, and what
-    /// each job makes of the answers is Core's rule, not the deployment's: the holding reading built (its account, its
-    /// word, what each order holds, nothing at zero) from the register's one read of each account, the account whose
-    /// module gives no answer raised as not read, each account asked once (`L3`); and a job whose parts or port the
-    /// deployment can't lend or answer moves nothing and says so (`REQ-AUZ-5`: an input taken away is no permit).
+    /// each job makes of the answers is Core's rule, not the deployment's: each account of the register is read by Core's
+    /// own decided read, which the deployment here can't lend (no balance is asked of any module), so each is raised as
+    /// not read, once, citing nothing, and never read as zero; and a job whose parts or port the deployment can't lend or
+    /// answer moves nothing and says so (`REQ-AUZ-5`: an input taken away is no permit).
     // verifies: REQ-AUZ-5
     #[test]
     fn every_job_of_the_schedule_is_cores_and_the_deployment_answers_only_its_ports() {
@@ -1410,45 +1625,39 @@ mod tests {
         let round = schedule.tick(1_764_000_000, &mut Jobs::new(&mut deployment));
         assert_eq!(round.ran, Job::ALL, "every job, in its order");
 
-        // The holding check: one read of each account, the public one through the register, the private one through
-        // its publisher's module, asked in the operator's name.
-        assert_eq!(deployment.read, 1, "the register is read once a check");
-        assert_eq!(
-            deployment.asked,
-            ["rail-account"],
-            "the module is asked once"
+        // The holding check: the register's two accounts, neither read, each raised, citing nothing: it was never
+        // checked. No reading is built from a balance Core wasn't given.
+        assert!(
+            deployment.told.readings.is_empty(),
+            "no balance, no reading"
         );
-        let [reading] = deployment.told.readings.as_slice() else {
-            panic!("one reading: {:?}", deployment.told.readings);
-        };
-        assert_eq!(reading.account.as_str(), "holding-bank-ledger");
-        assert_eq!(reading.provider.as_str(), "operator-wallet");
-        assert_eq!(reading.word, Word::Checked);
-        assert_eq!(reading.balance.as_str(), "1500");
+        let mut unread = deployment.told.unread.clone();
+        unread.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
         assert_eq!(
-            reading
-                .held_for
-                .iter()
-                .map(|h| (h.order.as_str(), h.amount.amount().as_str()))
-                .collect::<Vec<_>>(),
-            [("ord-1", "1500")],
-            "an order holding nothing there is not named"
+            unread,
+            [
+                (
+                    id("holding-bank-ledger").unwrap(),
+                    id("bank-ledger").unwrap(),
+                    id("operator-wallet").unwrap(),
+                    HoldingNotRead::NotAnswered {},
+                    None,
+                ),
+                (
+                    id("holding-rail").unwrap(),
+                    id("rail").unwrap(),
+                    id("rail-account").unwrap(),
+                    HoldingNotRead::NotAnswered {},
+                    None,
+                ),
+            ],
+            "the accounts nobody answered for are raised, citing nothing: they were never checked"
         );
-        assert_eq!(
-            deployment.told.unread,
-            [(
-                id("holding-rail").unwrap(),
-                id("rail").unwrap(),
-                id("rail-account").unwrap(),
-                HoldingNotRead::NotAnswered {},
-                None,
-            )],
-            "the account its module didn't answer for is raised, citing nothing: it was never checked"
-        );
-        let rail = round
-            .holding_of("rail")
-            .expect("the private account is in the round");
-        assert!(rail.reading.is_err() && rail.check.is_err() && rail.not_read.is_some());
+        for node in ["bank-ledger", "rail"] {
+            let one = round.holding_of(node).expect("the account is in the round");
+            assert!(one.reading.is_err() && one.check.is_err() && one.not_read.is_some());
+            assert!(one.against_wallet.is_none());
+        }
 
         // What the deployment can't lend or answer moves nothing, and the round says so.
         assert_eq!(round.landed, 0);
@@ -1460,5 +1669,68 @@ mod tests {
             Some(Ok(0)),
             "the comparisons were lent: nothing waits"
         );
+    }
+
+    /// A clock that gives no time to stamp a reading with doesn't skip the accounts: each is raised as not read, and
+    /// nothing is asked of any module (`INV-1`, `REQ-AUD-15`, `T-020-63`; the review of `T-020-48`'s first build).
+    // verifies: INV-1
+    #[test]
+    fn account_the_clock_cannot_time_is_raised_as_not_read() {
+        let mut deployment = bare();
+        // Past the year 9999: a time no timestamp states.
+        deployment.clock = At(u64::MAX / 2);
+        let mut schedule = Schedule::new();
+        let round = schedule.tick(1_764_000_000, &mut Jobs::new(&mut deployment));
+        assert_eq!(round.holding.len(), 2, "both accounts: {:?}", round.holding);
+        for one in &round.holding {
+            assert!(one.reading.is_err() && one.check.is_err(), "{one:?}");
+            assert!(one.not_read.is_some(), "raised, not skipped: {one:?}");
+        }
+        let mut unread: Vec<_> = deployment
+            .told
+            .unread
+            .iter()
+            .map(|(account, _, _, why, _)| (account.as_str().to_owned(), why.clone()))
+            .collect();
+        unread.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            unread,
+            [
+                (
+                    "holding-bank-ledger".to_owned(),
+                    HoldingNotRead::NotTimed {}
+                ),
+                ("holding-rail".to_owned(), HoldingNotRead::NotTimed {}),
+            ]
+        );
+    }
+
+    /// A node the catalogue lists a holding account at that the deployment's register doesn't name is raised as not
+    /// read only where Core's own segments rest value there: where they rest none, nothing is read or raised, as the
+    /// scenario kit lists a holder at every node its providers reach, which no register names. With value resting there,
+    /// it is raised (the assembled Core's `holder_the_register_does_not_name_is_raised_as_not_read`,
+    /// `REQ-AUD-15`, `T-020-63`).
+    // verifies: REQ-AUD-15
+    #[test]
+    fn holder_with_nothing_of_cores_resting_in_it_is_not_raised_though_the_register_does_not_name_it()
+     {
+        let mut deployment = bare();
+        deployment.register = false;
+        deployment
+            .catalogue
+            .publish_operator_module("operator-wallet")
+            .expect("the operator publishes the wallet");
+        deployment
+            .catalogue
+            .add_public_node("bank-ledger")
+            .expect("a public node");
+        deployment
+            .catalogue
+            .register_public_holding("bank-ledger", "operator-wallet")
+            .expect("its holding account");
+        let mut schedule = Schedule::new();
+        let round = schedule.tick(1_764_000_000, &mut Jobs::new(&mut deployment));
+        assert!(round.holding.is_empty(), "{:?}", round.holding);
+        assert!(deployment.told.unread.is_empty());
     }
 }

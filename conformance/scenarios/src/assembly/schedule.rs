@@ -19,8 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rutent_contracts::core_internal::calls::{Comparisons, Measures, Operator, StuckOrders};
 use rutent_contracts::core_internal::{Actor, Entry, Receipt};
-use rutent_contracts::provider_role::Operation;
-use rutent_contracts::router_api::{DecisionRecord, Id};
+use rutent_contracts::router_api::{DecisionRecord, Id, PolicyBounds};
 use rutent_core_audit::compare::Compare;
 use rutent_core_audit::log::General;
 use rutent_core_orch::arrival::Arrivals;
@@ -30,21 +29,21 @@ use rutent_core_orch::notice::{Channel, NoticeKey, Notices, Transport};
 use rutent_core_orch::reversal::{Moving, Parts as ReversalParts, Reversals};
 use rutent_core_orch::rounds::Fresh as _;
 use rutent_core_orch::schedule::{
-    AccountRead, Actors, Job, Jobs, Ports, PublisherAccount, Round, Started, StuckLent,
+    Actors, Job, Jobs, Ports, PublicAccount, PublisherAccount, Round, Started, StuckLent,
 };
 use rutent_core_orch::segments::{Landings, NoProxy, Parts as SegmentParts, Segments};
 use rutent_core_orch::snapshot::Clock;
 use rutent_core_orch::stuck::{OperatorSigns, Parts as StuckParts, Stuck};
 use rutent_prov::catalogue::Catalogue;
-use rutent_prov::module::types::Handled;
 
 use super::{AssemblyError, Core, CoreLog, Running};
 use crate::kit::{self, RealKey, SharedClock};
 use crate::sim::InstalledWallet;
 
-/// The decimals of every asset the simulated world moves (`kit`): an account's reading is stated in them, as the
-/// deployment's register names its asset.
-const DECIMALS: u8 = 2;
+/// The decimals of every asset the simulated world moves (`kit`): what the deployment's register of holding accounts is
+/// given for each account's asset where an account is installed (`T-020-63`: the schedule reads them from the register,
+/// never from a constant of its own).
+pub(super) const DECIMALS: u8 = 2;
 
 impl Core {
     /// Core's own clock, in whole seconds: what the schedule's cadences count in. Reading it moves nothing.
@@ -100,6 +99,24 @@ impl Core {
     pub fn set_status_cadence(&mut self, provider: &str, seconds: u64) {
         self.set_setting(&cadence(Job::StatusAsks.name(), seconds, Some(provider)))
             .expect("the provider's status cadence is set");
+    }
+
+    /// From now on the record `order`'s route was chosen on states no price or quote for any of its operations, so no
+    /// operation of it has a declared settlement time: the router's "never settles" (`declared_times`), a fault the
+    /// scenarios plant to show Core's tick holds such a tuple to the floor window (`T-020-63`). Whether the order is one
+    /// Core started.
+    pub fn plant_unpriced_route(&mut self, order: &Id) -> bool {
+        let Some(started) = self.started.get_mut(order.as_str()) else {
+            return false;
+        };
+        started.record.snapshot.figures.retain(|figure| {
+            !matches!(
+                figure.value,
+                rutent_contracts::router_api::FigureValue::Price { .. }
+                    | rutent_contracts::router_api::FigureValue::FreshQuote { .. }
+            )
+        });
+        true
     }
 
     /// Installs the plain wallet as the account `publisher` keeps for the private node `node`, holding `asset`: the
@@ -344,6 +361,10 @@ impl Ports for Due<'_> {
         self.0.fresh.id()
     }
 
+    fn bounds(&self) -> PolicyBounds {
+        self.0.bounds.clone()
+    }
+
     fn late_answers(&mut self, transactions: &BTreeSet<String>) -> Vec<(String, Vec<u8>)> {
         let core = &mut *self.0;
         core.fleet.platform.world.set_clock(core.clock.instant());
@@ -354,24 +375,31 @@ impl Ports for Due<'_> {
             .collect()
     }
 
-    fn holding_readings(&mut self) -> Vec<AccountRead> {
-        self.as_operator(|core, operator| {
-            let mut holdings = core.holdings.borrow_mut();
-            let readings = holdings.readings(&mut core.fleet.platform, operator);
-            readings
-                .into_iter()
-                .map(|(node, read)| AccountRead {
-                    provider: holdings
-                        .account(&node)
-                        .map(|a| a.provider().to_owned())
-                        .unwrap_or_default(),
-                    node,
-                    decimals: DECIMALS,
-                    read,
+    fn late_kept(&mut self, transaction: &str) {
+        self.0.fleet.late_kept(transaction);
+    }
+
+    fn public_accounts(&self) -> Vec<PublicAccount> {
+        // The register names each account and the decimals of its asset; the host's holdings give the asset the wallet
+        // holds and its own record of each order. A node the register gives no decimals is left out, and so is read as not
+        // named: the register is the definition of what is checked (`T-020-63`).
+        let registers = self.0.deployed.registers.borrow();
+        let holdings = self.0.holdings.borrow();
+        registers
+            .holding_accounts
+            .iter()
+            .filter_map(|(node, provider)| {
+                let decimals = *registers.holding_decimals.get(node)?;
+                let account = holdings.account(node);
+                Some(PublicAccount {
+                    node: node.clone(),
+                    provider: provider.clone(),
+                    asset: account.map(|a| a.asset().to_owned()).unwrap_or_default(),
+                    decimals,
+                    attribution: account.map(|a| a.attribution()).unwrap_or_default(),
                 })
-                .collect()
-        })
-        .unwrap_or_default()
+            })
+            .collect()
     }
 
     fn publisher_accounts(&self) -> Vec<PublisherAccount> {
@@ -383,18 +411,6 @@ impl Ports for Due<'_> {
             .values()
             .cloned()
             .collect()
-    }
-
-    fn ask_as_operator(&mut self, module: &str, operation: Operation) -> Handled {
-        self.as_operator(|core, operator| {
-            core.fleet.platform.handle(
-                module,
-                &rutent_prov::holding::wallet::Operator::statement(operator, operation),
-            )
-        })
-        .unwrap_or(Handled::Refused(
-            rutent_contracts::module_interface::PlatformRefusal::Unavailable,
-        ))
     }
 
     fn run_checkpoints(&mut self) -> Result<usize, String> {

@@ -215,6 +215,204 @@ fn a_repeat_after_the_platform_restarts_moves_nothing_twice() {
     let _ = std::fs::remove_dir_all(path.parent().expect("a directory"));
 }
 
+/// A late answer is held until its taker says it kept it, across a restart of the platform (`AC-5`, `NFR-6`, `INV-8`,
+/// `T-020-63`): an operation handed over and never answered, which the platform's record holds, is carried out again
+/// when Core asks (`Platform::repeat_operation`, a provider that declares a repeat safe); the answer is held as late in
+/// the record entry that holds it, handed over each time it is asked, the module run once for it, and a restart holds
+/// it; once acknowledged it is handed over no more, and no restart brings it
+/// back. The repeat counts for nothing towards a staging.
+// verifies: AC-5, NFR-6
+#[test]
+fn late_answer_is_held_until_it_is_acknowledged_across_a_restart() {
+    use std::collections::BTreeSet;
+    let memory = MemoryRecord::new();
+    let operation = withdrawal(RAMP, 7);
+    let asked = BTreeSet::from([tx(RAMP, 7).as_str().to_owned()]);
+    // Stopped while the module ran: the operation was written before it was handed over, and its answer never was.
+    let mut s = opened(
+        Box::new(StopsAt::new(&memory, "ran")),
+        TestWorld::default(),
+        &[RAMP],
+    );
+    assert!(matches!(
+        s.platform.handle(RAMP, &operation),
+        Handled::Answered(_)
+    ));
+    let world = stop(s);
+    let mut s = Signed::on(Box::new(memory.clone()), world);
+    admit_version(&mut s, RAMP, "1.0.0");
+    s.platform
+        .confirm(RAMP, "test-operator", AT)
+        .expect("confirmed");
+    assert_eq!(
+        s.platform.operations_run(RAMP),
+        0,
+        "nothing of it ran since"
+    );
+    // Nothing is owed until the operation is carried out again, and nothing is run to find out.
+    assert!(s.platform.late_answers(&asked).is_empty());
+    assert_eq!(s.platform.operations_run(RAMP), 0);
+    // A transaction the platform holds no unanswered operation of is not repeated.
+    assert_eq!(
+        s.platform.repeat_operation(RAMP, tx(RAMP, 8).as_str()),
+        Handled::Refused(PlatformRefusal::DuplicateTransaction)
+    );
+
+    // Core asks: the provider's module runs the operation again, and its answer is held.
+    assert!(matches!(
+        s.platform.repeat_operation(RAMP, tx(RAMP, 7).as_str()),
+        Handled::Answered(_)
+    ));
+    assert_eq!(s.platform.operations_run(RAMP), 1);
+    let owed = s.platform.late_answers(&asked);
+    let [(provider, transaction, bytes)] = owed.as_slice() else {
+        panic!("one late answer: {owed:?}");
+    };
+    assert_eq!(
+        (provider.as_str(), transaction.as_str()),
+        (RAMP, tx(RAMP, 7).as_str())
+    );
+    assert_eq!(
+        s.platform.late_answers(&asked),
+        owed,
+        "not acknowledged: again"
+    );
+    assert_eq!(
+        s.platform.operations_run(RAMP),
+        1,
+        "and the module is not run again"
+    );
+    // A repeat of the repeat is refused: it has its answer.
+    assert_eq!(
+        s.platform.repeat_operation(RAMP, tx(RAMP, 7).as_str()),
+        Handled::Refused(PlatformRefusal::DuplicateTransaction)
+    );
+
+    // A restart holds it, unacknowledged.
+    let world = stop(s);
+    let mut s = opened(Box::new(memory.clone()), world, &[RAMP]);
+    assert_eq!(
+        s.platform.late_answers(&asked),
+        owed,
+        "held across the restart"
+    );
+    assert_eq!(
+        s.platform.operations_run(RAMP),
+        1,
+        "the one run, counted again from the record, and none more"
+    );
+
+    // Acknowledged: no more, and no restart brings it back; the transaction is still carried out, so its repeat is
+    // answered from the record, byte for byte.
+    assert!(s.platform.late_kept(tx(RAMP, 7).as_str()));
+    assert!(!s.platform.late_kept(tx(RAMP, 7).as_str()), "once");
+    assert!(s.platform.late_answers(&asked).is_empty());
+    let Handled::Answered(again) = s.platform.handle(RAMP, &operation) else {
+        panic!("answered from the record");
+    };
+    assert_eq!(&serde_json::to_vec(&*again).expect("JSON"), bytes);
+    let world = stop(s);
+    let mut s = opened(Box::new(memory), world, &[RAMP]);
+    assert!(
+        s.platform.late_answers(&asked).is_empty(),
+        "acknowledged for good"
+    );
+}
+
+/// Core's repeat of an operation counts for nothing towards a staging (`T-013-11`, `T-020-63`; review M2): the staged
+/// version's counts after the repeat are the ones the record gave it, the repeat's answer among none of them.
+// verifies: REQ-MDL-4, NFR-6
+#[test]
+fn a_repeat_of_an_unanswered_operation_counts_for_nothing_towards_a_staging() {
+    let policy = Staging::new(100, 60, 2).expect("a policy");
+    let memory = MemoryRecord::new();
+    let mut s = Signed::on(Box::new(StopsAt::new(&memory, "ran")), TestWorld::default());
+    admitted_as(&mut s, RAMP, "1.0.0");
+    s.platform.set_staging(Some(policy));
+    admitted_as(&mut s, RAMP, "1.1.0");
+    assert_eq!(
+        s.platform.begin_segment(RAMP, &tx(RAMP, 3)).as_deref(),
+        Ok("1.1.0")
+    );
+    // The staged version runs the operation and answers it; the record stops before it takes the run.
+    assert!(matches!(
+        s.platform.handle(RAMP, &withdrawal(RAMP, 3)),
+        Handled::Answered(_)
+    ));
+    let world = stop(s);
+    let mut s = Signed::on(Box::new(memory), world);
+    s.platform.set_staging(Some(policy));
+    for version in ["1.0.0", "1.1.0"] {
+        assert!(matches!(
+            readmitted(&mut s, RAMP, version),
+            Admitted::Artefact(_)
+        ));
+    }
+    s.platform
+        .confirm(RAMP, "test-operator", AT)
+        .expect("confirmed");
+    let counts = |s: &Signed| {
+        s.platform
+            .lifecycle()
+            .observation(RAMP)
+            .expect("staged")
+            .staged_counts
+    };
+    let before = counts(&s);
+    assert_eq!(before.answered, 0, "the run the record didn't take");
+    assert!(matches!(
+        s.platform.repeat_operation(RAMP, tx(RAMP, 3).as_str()),
+        Handled::Answered(_)
+    ));
+    assert_eq!(
+        counts(&s),
+        before,
+        "the repeat is Core's retry, not traffic"
+    );
+}
+
+/// The end of a segment whose late answer waits for acknowledgement drops nothing of it, in memory or in the record
+/// (`T-020-63`, review L2).
+// verifies: NFR-6
+#[test]
+fn ending_a_segment_keeps_the_late_answer_waiting_in_it() {
+    use std::collections::BTreeSet;
+    let memory = MemoryRecord::new();
+    let asked = BTreeSet::from([tx(RAMP, 9).as_str().to_owned()]);
+    let mut s = opened(
+        Box::new(StopsAt::new(&memory, "ran")),
+        TestWorld::default(),
+        &[RAMP],
+    );
+    s.platform
+        .begin_segment(RAMP, &tx(RAMP, 9))
+        .expect("a segment");
+    assert!(matches!(
+        s.platform.handle(RAMP, &withdrawal(RAMP, 9)),
+        Handled::Answered(_)
+    ));
+    let world = stop(s);
+    let mut s = Signed::on(Box::new(memory.clone()), world);
+    admit_version(&mut s, RAMP, "1.0.0");
+    s.platform
+        .confirm(RAMP, "test-operator", AT)
+        .expect("confirmed");
+    assert!(matches!(
+        s.platform.repeat_operation(RAMP, tx(RAMP, 9).as_str()),
+        Handled::Answered(_)
+    ));
+    let owed = s.platform.late_answers(&asked);
+    assert_eq!(owed.len(), 1);
+    s.platform
+        .end_segment(tx(RAMP, 9).as_str())
+        .expect("the segment ends");
+    assert_eq!(s.platform.late_answers(&asked), owed, "kept in memory");
+    let world = stop(s);
+    let mut s = opened(Box::new(memory), world, &[RAMP]);
+    assert_eq!(s.platform.late_answers(&asked), owed, "and in the record");
+    assert!(s.platform.late_kept(tx(RAMP, 9).as_str()));
+}
+
 /// An operation the platform can't write to its record before the hand-over is not handed over: a restart could
 /// lose it, and a repeat after it move value twice.
 // verifies: INV-8

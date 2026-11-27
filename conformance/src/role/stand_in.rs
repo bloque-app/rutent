@@ -376,6 +376,9 @@ pub struct Shape {
     /// For a reserve that holds quotes: holds each for at most this many seconds from when it was asked, less than
     /// the validity asked where that is later (`T-020-57`): a hold the signer signs, valid no later than asked.
     pub holds_for: Option<u64>,
+    /// A reserve that declares no status query beside its safe repeat (`REQ-CAT-10`, `T-020-63`): where its outcome is
+    /// left unknown, the only way to ask where it stands is to carry its operation out again.
+    pub untracked: bool,
 }
 
 /// A real value-moving operation's transaction: the one a repeat would name.
@@ -702,6 +705,12 @@ impl Reserve {
             && let Some(offer) = advertisement.offers.reserve.as_mut()
         {
             offer.declaration.answers_hold_requests = Some(true);
+        }
+        if shape.untracked {
+            advertisement
+                .declarations
+                .tracking
+                .retain(|tracking| *tracking != Tracking::StatusQuery);
         }
         if shape.public_node || shape.undeclared_node {
             advertisement.private_nodes.clear();

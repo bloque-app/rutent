@@ -835,16 +835,19 @@ impl Core {
                 Err(other) => Err(other),
             };
             let _ = self.feed();
-            // The step that left the segment unknown asked once: the schedule's cadence counts from it.
-            let now = self.clock_seconds();
-            self.schedule.note_asked(
-                &rutent_core_orch::schedule::Unknown {
-                    order: order.clone(),
-                    segment: segment.clone(),
-                    provider: unknown.provider.as_str().to_owned(),
-                },
-                now,
-            );
+            // The step that left the segment unknown asked once, where the question went out: the schedule's cadence
+            // counts from it. A question that didn't is asked again on the next tick (`T-020-63`).
+            if asked.is_ok() {
+                let now = self.clock_seconds();
+                self.schedule.note_asked(
+                    &rutent_core_orch::schedule::Unknown {
+                        order: order.clone(),
+                        segment: segment.clone(),
+                        provider: unknown.provider.as_str().to_owned(),
+                    },
+                    now,
+                );
+            }
             self.life.status_asks.insert(
                 (order.as_str().to_owned(), segment.as_str().to_owned()),
                 asked.map_err(|why| format!("{why:?}")),
