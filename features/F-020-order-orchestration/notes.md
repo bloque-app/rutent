@@ -9909,11 +9909,13 @@ R3-1 is closed except for the hand-on take (R4-1).
   `stuck_mover_takes_a_holdouts_later_statement_after_the_cutover_for_a_move_begun_before_it` (a move left unknown, its
   provider's later statement after the date).
 - **The reversals.** The failed provider's answer (`judge_reversal`): `reversal_of_a_segment_begun_before_a_cutover_is_taken_when_a_holdouts_answer_lands_after_it`
-  (`protocol_cutover.rs`, the assembly's holdout fleet). The confirmation judge (`judge`, `attributable`) and the version-read
-  seam (`verify`) can't be reached through the assembly with a holdout: Core's own question to a holdout reserve for a
-  reversal's confirmation goes unanswered there, before the cutover too (a holdout infrastructure limit, not the version's:
-  the same call answers with the current-version fleet), so `reversal::judge::tests::confirmation_judge_reads_the_version_its_segment_began_under`
-  tests it at the judge's seam: a holdout's statement landing after the date passes the attribution for a segment begun before
+  (`protocol_cutover.rs`, the assembly's holdout fleet). The reserve's confirmation is answered through the assembly too: the first build left it
+  unanswered because the simulated reserve guest built its context with the default version while the holdout fleet's
+  platform signed under the old one, so the platform's signer refused the guest's nested confirmation
+  (`NestedOfAnotherVersion`); the guest now takes the fleet's version and older ones from the world (`PROTOCOL_KEY`),
+  as it takes the deployment, and the test asserts the confirmation is judged (`SamePublisher`), not refused. The judge's
+  version read is also tested at its seam, `reversal::judge::tests::confirmation_judge_reads_the_version_its_segment_began_under`:
+  a holdout's statement landing after the date passes the attribution for a segment begun before
   it and is unattributable for one begun after. The reversals' `show_fault` and `after` read the same version through
   `Segments::began_of` and `began_of_order`; no test lands an old-version statement there (R4-2).
 - Both reversal judges (`judge`, `judge_reversal`) now take the segment's `Began` (`Segments::began_of(reversed.transaction)`),

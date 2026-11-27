@@ -57,6 +57,12 @@ pub const BOOK_KEY: &str = "book";
 /// suite's default context (`T-024-02`: the assembly's deployment names the operator's real key).
 pub const DEPLOYMENT_KEY: &str = "deployment";
 
+/// The state key under which the platform's world names the protocol version a simulated provider signs under, with the
+/// older versions it takes, as the JSON of `(version, [(older version, cutover)])`: a holdout fleet speaks an old version
+/// (`REQ-PRT-4`, `T-020-54`), which the platform's signer requires of what it passes on. Where the world names none, the
+/// provider serves the suite's default version.
+pub const PROTOCOL_KEY: &str = "protocol";
+
 /// The state key a scenario that sets a reserve's opening balance seeds it under, as text (`T-024-22`): the sandboxed
 /// part builds its stand-in with that figure in the account, in place of [`Reserve::OPENING`]. Where none is seeded,
 /// it keeps the stand-in's own.

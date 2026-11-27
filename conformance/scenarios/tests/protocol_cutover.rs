@@ -11,6 +11,7 @@ use failure_support::*;
 use rutent_conformance::sim::{Act, Behaviour};
 use rutent_contracts::core_internal::OperatorSetting;
 use rutent_contracts::router_api::{ProtocolVersion, Timestamp};
+use rutent_core_orch::reversal::{Confirmation, NotCounted};
 use rutent_core_orch::segments::SegmentOutcome;
 use rutent_scenarios::assembly::machine::Reference;
 use rutent_scenarios::harness::Scenario;
@@ -136,10 +137,10 @@ const EXCHANGE: &str = "sim-join-exchange";
 const QUICK: &str = "sim-join-ramp-quick";
 const OUT: &str = "sim-join-out";
 
-/// A holdout fleet's exchange fails mid-route and the reversal is asked after the cutover: the failed provider's answer,
-/// under the old version, is taken by the version the segment began under (`REQ-PRT-2`, `REQ-PRT-4`, `T-020-54`). The
-/// confirmation judge's site is tested at its seam, in `core-orch`'s `reversal::judge`: a reserve's confirmation can't be
-/// had from a holdout through the assembly (Core's own question to it goes unanswered there, before or after the date).
+/// A holdout fleet's exchange fails mid-route and the reversal is asked after the cutover: the failed provider's answer
+/// and a reserve's confirmation, under the old version, are taken by the version the segment began under (`REQ-PRT-2`,
+/// `REQ-PRT-4`, `T-020-54`). The simulated reserve guest signs under the fleet's version, as the platform's signer
+/// requires of the nested confirmation it passes on.
 // verifies: REQ-PRT-2, REQ-PRT-4
 #[test]
 fn reversal_of_a_segment_begun_before_a_cutover_is_taken_when_a_holdouts_answer_lands_after_it() {
@@ -174,6 +175,17 @@ fn reversal_of_a_segment_begun_before_a_cutover_is_taken_when_a_holdouts_answer_
     core.set_cadence(rutent_core_orch::schedule::Job::StatusAsks, u64::MAX);
     core.set_cadence(rutent_core_orch::schedule::Job::StuckReports, u64::MAX);
     core.world().script(IN, Behaviour::crediting_a_reversal());
+    let done = core.confirm_reversal(&order, &exchange).expect("asked");
+    assert!(
+        matches!(
+            done,
+            Confirmation::NotCompleted {
+                why: NotCounted::SamePublisher,
+                ..
+            }
+        ),
+        "the holdout's confirmation is answered and judged, not refused for its version: {done:?}"
+    );
     let asked = core.ask_reversal(&order, &exchange).expect("asked");
     assert!(
         asked.completed.is_some(),

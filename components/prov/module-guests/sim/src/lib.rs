@@ -82,16 +82,27 @@ mod sandboxed {
     fn provider<'a>(
         held: &'a mut Option<Simulated>,
         provider: &str,
-        deployment: Option<&Value>,
+        begun: Option<&Value>,
         opening: Option<u128>,
     ) -> &'a mut Simulated {
         held.get_or_insert_with(|| {
             let mut context = SuiteContext::default();
-            if let Some(deployment) = deployment
+            if let Some(deployment) = begun
+                .map(|b| &b["deployment"])
                 .and_then(Value::as_str)
                 .and_then(|text| serde_json::from_str(text).ok())
             {
                 context.deployment = deployment;
+            }
+            // The protocol version the world's platform speaks, and the older ones it takes, where the world names them:
+            // a holdout fleet signs under the old version (`T-020-54`), as the platform's signer requires of what it passes on.
+            if let Some((version, older)) = begun
+                .map(|b| &b["protocol"])
+                .and_then(Value::as_str)
+                .and_then(|text| serde_json::from_str::<(String, Vec<(String, String)>)>(text).ok())
+            {
+                context.protocol_version = version;
+                context.older_versions = older;
             }
             let mut spec = Spec::of(ROLE, provider);
             spec.opening = opening;
@@ -138,7 +149,7 @@ mod sandboxed {
             return self::provider(
                 held,
                 provider,
-                deployment.as_ref().map(|begun| &begun["deployment"]),
+                deployment.as_ref(),
                 None,
             )
             .answer(operation, &Behaviour::default())
@@ -158,7 +169,7 @@ mod sandboxed {
         let sim = self::provider(
             held,
             provider,
-            begun.as_ref().map(|b| &b["deployment"]),
+            begun.as_ref(),
             opening,
         );
         let provider = sim.spec().provider.clone();
@@ -229,7 +240,7 @@ mod sandboxed {
 #[cfg(feature = "outside")]
 mod outside {
     use rutent_conformance::sim::{
-        BEGIN, BOOK, BOOK_KEY, BOOK_LENGTH_KEY, CHAIN, CREDENTIAL, DEPLOYMENT_KEY, OPENING_KEY,
+        BEGIN, BOOK, BOOK_KEY, BOOK_LENGTH_KEY, CHAIN, CREDENTIAL, DEPLOYMENT_KEY, OPENING_KEY, PROTOCOL_KEY,
         PRIVATE_NOTES_KEY, SETTLE, chain_host, rail_host, script_key,
     };
     use serde_json::{Value, json};
@@ -266,6 +277,7 @@ mod outside {
                             .and_then(|n| n.parse::<u64>().ok())
                             .unwrap_or(0),
                         "deployment": state::read(DEPLOYMENT_KEY),
+                        "protocol": state::read(PROTOCOL_KEY),
                         "opening": state::read(OPENING_KEY),
                     })
                 }
