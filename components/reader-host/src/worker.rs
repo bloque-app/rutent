@@ -107,7 +107,7 @@ impl Gauge {
     /// Marks the process to be stopped for `why`, unless it already is for another reason; gives the reason it is.
     fn stop(&self, why: &'static str) -> &'static str {
         match self.stopped.lock() {
-            Ok(mut stopped) => *stopped.get_or_insert(why),
+            Ok(mut stopped) => stopped.get_or_insert(why),
             Err(_) => why,
         }
     }
