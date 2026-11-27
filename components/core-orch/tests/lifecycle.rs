@@ -249,6 +249,12 @@ impl Releases for Platform {
     ) -> Result<String, LifecycleRefusal> {
         RollsBack::roll_back(self, effect, provider, by, at)
     }
+    fn mark(&self, _: &Id, _: &Id) -> Option<rutent_prov::module::lifecycle::Mark> {
+        None
+    }
+    fn in_force(&self, _: &Id) -> Option<String> {
+        None
+    }
 }
 
 impl RollsBack for Platform {
@@ -705,6 +711,12 @@ impl Releases for Crashing {
     ) -> Result<String, LifecycleRefusal> {
         unreachable!()
     }
+    fn mark(&self, _: &Id, _: &Id) -> Option<rutent_prov::module::lifecycle::Mark> {
+        None
+    }
+    fn in_force(&self, _: &Id) -> Option<String> {
+        None
+    }
 }
 
 /// A restriction the platform could not record before a crash still holds after Core reopens (`T-020-49`, gap 3 of its
@@ -846,4 +858,164 @@ fn restriction_whose_result_the_log_did_not_take_is_taken_again_before_a_confirm
         ]
     );
     assert!(platform.exploited.contains("2.2.0"), "it still holds");
+}
+
+/// A platform whose one version is in force and has nothing newer: marking it stale never takes effect.
+struct Unstalable {
+    held: Option<BTreeSet<String>>,
+    calls: Vec<String>,
+}
+
+impl Releases for Unstalable {
+    fn waiting(&self, _: &Id) -> Option<Waiting> {
+        None
+    }
+    fn held(&self, _: &Id) -> Option<BTreeSet<String>> {
+        self.held.clone()
+    }
+    fn accept(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        _: &Digest,
+        _: &Id,
+        _: Instant,
+    ) -> Result<(), LifecycleRefusal> {
+        unreachable!()
+    }
+    fn withdraw(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        _: &Digest,
+        _: &Id,
+        _: Instant,
+    ) -> Result<(), LifecycleRefusal> {
+        unreachable!()
+    }
+    fn revoke(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        _: &Id,
+        _: &Id,
+        _: Instant,
+    ) -> Result<Option<String>, LifecycleRefusal> {
+        unreachable!()
+    }
+    fn declare_exploited(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        _: &Id,
+        _: &Id,
+        _: Instant,
+    ) -> Result<Option<String>, LifecycleRefusal> {
+        unreachable!()
+    }
+    fn mark_stale(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        version: &Id,
+        _: &Id,
+        _: Instant,
+    ) -> Result<usize, LifecycleRefusal> {
+        self.calls.push(format!("mark_stale {version}"));
+        Err(LifecycleRefusal::NoNewerVersion)
+    }
+    fn confirm(&mut self, _: &Effect, _: &Id, _: &Id, _: Instant) -> Result<(), LifecycleRefusal> {
+        self.calls.push("confirm".to_owned());
+        self.held = None;
+        Ok(())
+    }
+    fn staged(&self, _: &Id) -> Option<String> {
+        None
+    }
+    fn roll_back(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        _: &Id,
+        _: Instant,
+    ) -> Result<String, LifecycleRefusal> {
+        unreachable!()
+    }
+    fn mark(&self, _: &Id, _: &Id) -> Option<rutent_prov::module::lifecycle::Mark> {
+        None
+    }
+    fn in_force(&self, _: &Id) -> Option<String> {
+        Some("2.1.0".to_owned())
+    }
+}
+
+/// A restriction the platform refused before its result was written does not hold its provider for good (`T-020-65`,
+/// the milestone reviewer's check of `T-020-49`): the operator's `mark_stale` of the version in force is refused by the
+/// platform (nothing newer to move to), and Core stops before the `failed` result is written. The platform ends unclean
+/// and holds the provider. Core completes the effect's missing result from what the platform answers: the mark never took
+/// effect, so it is `failed`, and the confirmation, which would otherwise take it again and be refused at every attempt,
+/// confirms the provider. Reopening Core completes it the same way before any confirmation (`reopen_lifecycle`).
+// verifies: NFR-6, REQ-MDL-4
+#[test]
+fn restriction_refused_before_its_result_was_written_does_not_hold_its_provider_for_good() {
+    let (provider, caller, core) = (id("bridge-pay"), operator(), core());
+    let mut platform = Unstalable {
+        held: None,
+        calls: Vec::new(),
+    };
+    let mut policy = Answering::with(Answer::Permit {});
+    let mut log = KeptLog(Vec::new(), Some(1));
+    let stale = id("2.1.0");
+    let marked = Segments::new().change_release(
+        &mut log,
+        &mut policy,
+        &mut platform,
+        &clock(),
+        &mut Ids::default(),
+        &ReleaseAsked {
+            provider: &provider,
+            change: ReleaseChange::MarkStale { version: &stale },
+            caller: &caller,
+            core: &core,
+        },
+    );
+    assert!(
+        matches!(marked, Err(ReleaseRefused::Append(_))),
+        "{marked:?}"
+    );
+    assert_eq!(log.0.len(), 1, "the effect, and no result");
+    platform.held = Some(BTreeSet::from(["2.1.0".to_owned()]));
+
+    // Core reopens and completes the result from what the platform answers.
+    log.1 = None;
+    let mut reopened_log = KeptLog(log.0.clone(), None);
+    let completed = Segments::reopen_lifecycle(&mut reopened_log, &platform, &clock(), &core)
+        .expect("completed");
+    assert_eq!(completed, 1);
+    assert!(matches!(
+        reopened_log.0.last(),
+        Some(Entry::Verified(v)) if matches!(v.what, What::Result { .. }) && v.outcome == Outcome::Failed {}
+    ));
+
+    // On the log as it stood (no reopening ran), the confirmation completes it first and confirms.
+    let held = [id("2.1.0")];
+    let confirmed = Segments::new().change_release(
+        &mut log,
+        &mut policy,
+        &mut platform,
+        &clock(),
+        &mut Ids::default(),
+        &ReleaseAsked {
+            provider: &provider,
+            change: ReleaseChange::Confirm { versions: &held },
+            caller: &caller,
+            core: &core,
+        },
+    );
+    assert_eq!(confirmed, Ok(Changed::Confirmed));
+    assert_eq!(
+        platform.calls,
+        ["mark_stale 2.1.0", "confirm"],
+        "not taken again"
+    );
 }

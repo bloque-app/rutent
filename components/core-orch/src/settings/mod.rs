@@ -93,6 +93,16 @@ pub enum SettingRefused {
     },
     /// Policy didn't permit it: no effect was recorded, and nothing changed.
     NotPermitted(Answer),
+    /// Permitted and recorded, but its target refused it (the catalogue won't list a node a provider declared private):
+    /// its result is `failed` and the setting isn't the operator's.
+    NotTaken(String),
+    /// Permitted, but the node it unlists has value of an order Core follows resting at it, or a segment in flight from
+    /// or to it, or there was no record of the segments to tell: an unlist would change how they are graded, and let a
+    /// publisher claim the node as its own private one (`T-020-65`). No effect was recorded.
+    Rests {
+        /// The node.
+        node: String,
+    },
     /// The log refused or failed an append: before the effect's receipt nothing changed; after it, the setting is in
     /// force now, and a reopened Core holds it too and completes its result ([`Settings::reopen`]).
     Append(AppendFailure),
@@ -105,9 +115,12 @@ impl From<AppendFailure> for SettingRefused {
 }
 
 /// What a setting is applied to beyond the settings' own record: the catalogue (evidence floors, public nodes), Core's
-/// schedule (cadences) and arrivals (the deposit wait). Each is optional, for a caller that holds only some of them.
+/// schedule (cadences) and arrivals (the deposit wait). Each is optional, for a caller that holds only some of them. The
+/// segments, read only, are what an unlist is held to: with none, no node is unlisted (it fails closed).
 #[derive(Default)]
 pub struct Targets<'a> {
+    /// Core's segments, read: whether value rests at a node, or a segment in flight moves value from or to it.
+    pub segments: Option<&'a crate::segments::Segments>,
     /// Core's catalogue.
     pub catalogue: Option<&'a mut Catalogue>,
     /// Core's schedule's cadences.
@@ -313,6 +326,22 @@ impl Settings {
                 ceiling: DEPOSIT_WAIT_CEILING_SECONDS,
             });
         }
+        // A node is unlisted only while nothing of Core's rests at it or moves through it (`T-020-65`, the rule in
+        // `F-020`'s notes): an unlist would regrade a segment in flight there as non-public and let a publisher claim
+        // the node as private, so it is refused while either could matter, and where the segments can't be read.
+        if let OperatorSetting::PublicNode {
+            node,
+            listed: false,
+            ..
+        } = asked.setting
+            && targets
+                .segments
+                .is_none_or(|segments| segments.touches_node(&node.network))
+        {
+            return Err(SettingRefused::Rests {
+                node: node.network.clone(),
+            });
+        }
         let receipt = journal::append(
             log,
             journal::verified(
@@ -330,7 +359,7 @@ impl Settings {
             decision: permit,
             receipt,
         };
-        self.apply_effect(&effect, targets);
+        let applied = self.apply_effect(&effect, targets);
         journal::append(
             log,
             journal::verified(
@@ -339,25 +368,31 @@ impl Settings {
                     effect: effect.receipt.clone(),
                 },
                 &now(clock)?,
-                Outcome::Done {},
+                match applied {
+                    Ok(()) => Outcome::Done {},
+                    Err(_) => Outcome::Failed {},
+                },
             ),
         )?;
+        applied.map_err(SettingRefused::NotTaken)?;
         Ok(effect.receipt)
     }
 
     /// Applies the setting `effect` permits, to these settings and to `targets`; anything but a `set_setting` sets
     /// nothing.
-    fn apply_effect(&mut self, effect: &Effect, targets: &mut Targets<'_>) {
+    fn apply_effect(&mut self, effect: &Effect, targets: &mut Targets<'_>) -> Result<(), String> {
         let Action::ChangeCatalogue {
             change: CatalogueChange::SetSetting,
             setting: Some(setting),
             ..
         } = &effect.action
         else {
-            return;
+            return Ok(());
         };
+        // Applied first: a setting its target refuses is no setting of the operator's, and its result is `failed`.
+        apply_one(setting, targets)?;
         self.take(setting);
-        apply_one(setting, targets);
+        Ok(())
     }
 
     /// Takes `setting` into these settings, in place of any earlier one for the same thing.
@@ -419,7 +454,7 @@ impl Settings {
     /// Applies every setting held to `targets`, as a reopened Core does once its parts are put together again.
     pub fn apply(&self, targets: &mut Targets<'_>) {
         for (tuple, grade) in &self.floors {
-            apply_one(
+            let _ = apply_one(
                 &OperatorSetting::EvidenceFloor {
                     tuple: tuple.clone(),
                     grade: *grade,
@@ -429,7 +464,7 @@ impl Settings {
         }
         for (node, set) in &self.public_nodes {
             if let Some(catalogue) = targets.catalogue.as_deref_mut() {
-                list(catalogue, node, set.listed);
+                let _ = list(catalogue, node, set.listed);
             }
         }
         if let Some(cadences) = targets.cadences.as_deref_mut() {
@@ -544,7 +579,7 @@ impl Settings {
 /// Applies one setting to `targets`: an evidence floor, a listed public node and a protocol version's cutover to the
 /// catalogue, a cadence to the
 /// schedule, the deposit wait to arrivals. The bounds and a node's confirmations are read from the settings.
-fn apply_one(setting: &OperatorSetting, targets: &mut Targets<'_>) {
+fn apply_one(setting: &OperatorSetting, targets: &mut Targets<'_>) -> Result<(), String> {
     match setting {
         OperatorSetting::EvidenceFloor { tuple, grade } => {
             if let Some(catalogue) = targets.catalogue.as_deref_mut() {
@@ -553,7 +588,7 @@ fn apply_one(setting: &OperatorSetting, targets: &mut Targets<'_>) {
         }
         OperatorSetting::PublicNode { node, listed, .. } => {
             if let Some(catalogue) = targets.catalogue.as_deref_mut() {
-                list(catalogue, &node.network, *listed);
+                list(catalogue, &node.network, *listed)?;
             }
         }
         OperatorSetting::Cadence {
@@ -595,15 +630,19 @@ fn apply_one(setting: &OperatorSetting, targets: &mut Targets<'_>) {
         | OperatorSetting::ProviderCeiling { .. }
         | OperatorSetting::PublisherCeiling { .. } => {}
     }
+    Ok(())
 }
 
 /// Puts `node` on the catalogue's public list, or takes it off, as the operator's setting says. Until `T-020-59`'s
 /// listing change replaces it, unlisting is this setting's.
-fn list(catalogue: &mut Catalogue, node: &str, listed: bool) {
+fn list(catalogue: &mut Catalogue, node: &str, listed: bool) -> Result<(), String> {
     if listed {
-        let _ = catalogue.add_public_node(node);
+        catalogue
+            .add_public_node(node)
+            .map_err(|e| format!("the catalogue refuses to list {node} public: {e:?}"))
     } else {
         catalogue.remove_public_node(node);
+        Ok(())
     }
 }
 

@@ -149,6 +149,11 @@ pub trait StatusReads: ReadPort {
     /// policy's `Requester` source answers from it, never from the read's word (`T-021-16`'s round 4). It is the
     /// deployment's to keep, as it keeps a filed order's (`FiledOrders::opened`).
     fn filed(&mut self, record: &OrderRecord);
+
+    /// The record handed over by [`StatusReads::filed`] for `order` is dropped: intake hands over one for a request
+    /// refused with no order only for the read and withdraws it as soon as the check returns, so the deployment's map of
+    /// filed orders never grows with the identifiers callers choose (`T-020-64`).
+    fn withdrawn(&mut self, order: &Id);
 }
 
 /// An order request, as a person or an agent makes it (`REQ-OPS-5`).
@@ -469,6 +474,20 @@ impl Kept {
     }
 }
 
+/// The prefix of the name intake gives a refused request's record for its read (`T-020-64`). `Id` allows no character
+/// outside the order-id space for a key beyond it, so no order's identifier is let begin with it instead: every order
+/// Core opens, by intake or by the arrival filing, draws its identifier through [`draw_order`].
+pub(crate) const REQUEST_NAME: &str = "request-";
+
+/// A fresh identifier for an order: one that doesn't begin with [`REQUEST_NAME`], so a refused request's record can never
+/// take an order's name in the deployment's map. A source that draws only such names gives none, and the call is
+/// refused as an identifier Core used before is.
+pub(crate) fn draw_order(fresh: &mut dyn crate::rounds::Fresh) -> Option<Id> {
+    (0..16)
+        .map(|_| fresh.id())
+        .find(|id| !id.as_str().starts_with(REQUEST_NAME))
+}
+
 /// A request identifier, under the party that requested it: one party's identifiers say nothing of another's.
 type Key = (String, String);
 
@@ -508,7 +527,7 @@ impl Intake {
         if !kept.opening.is_empty() {
             return None;
         }
-        self.read(desk, caller, kept.told()).ok()
+        self.read(desk, caller, kept.told(), Some(request)).ok()
     }
 
     /// `told`, once policy lets `caller` read the order's status it names, which is asked of the order's record in
@@ -522,19 +541,72 @@ impl Intake {
         desk: &mut Desk<'_, '_>,
         caller: &Actor,
         told: Told,
+        request: Option<&Id>,
     ) -> Result<Told, IntakeError> {
         let Told::Exists { order, .. } = &told else {
-            // A refused request's class is a status of the party's request, not the caller's own to know: an agent is
-            // told what its repeat is told (`Conflicting { order: None }`), `ReadRefused`, whatever its scope, as no
-            // order exists for policy to be asked about (`T-020-62`).
-            return if caller.kind == ActorKind::Agent {
-                Err(IntakeError::ReadRefused)
-            } else {
-                Ok(told)
+            // A request refused with no order: a person is told its class as it is. An agent is told it where policy's
+            // read check lets it read the request's party's request, the scope an order's read uses, and
+            // [`IntakeError::ReadRefused`] where not, as its repeat is (`T-020-62`, `T-020-64`).
+            if caller.kind != ActorKind::Agent {
+                return Ok(told);
+            }
+            return match request {
+                Some(request) => self.read_request(desk, caller, request).map(|()| told),
+                None => Err(IntakeError::ReadRefused),
             };
         };
         self.read_order(desk, caller, order)?;
         Ok(told)
+    }
+
+    /// Asks policy whether `caller`, an agent, may read the status of its party's request `request`, refused with no
+    /// order: a refused request has no order but has a requester, so intake hands over its own record of the request
+    /// under an identifier of its own naming ("request-" and the request's), and the read is a filed order's of that
+    /// record by the requester the request states, which policy's `Requester` source confirms against the record: the
+    /// same scope an order's read uses (`T-020-64`). [`IntakeError::ReadRefused`] where it may not, or where intake
+    /// holds no such request or already holds an order of the name; a check that couldn't be made is the log's failure,
+    /// nothing told. The record is withdrawn as soon as the check returns.
+    fn read_request(
+        &self,
+        desk: &mut Desk<'_, '_>,
+        caller: &Actor,
+        request: &Id,
+    ) -> Result<(), IntakeError> {
+        let kept = self
+            .requests
+            .get(&key(&caller.party, request))
+            .ok_or(IntakeError::ReadRefused)?;
+        let named = Id::new(format!("{REQUEST_NAME}{}", request.as_str()))
+            .ok_or(IntakeError::ReadRefused)?;
+        // Never a name an order of intake's already has: the record handed over would overwrite that order's, and its
+        // withdrawal would drop it. No order is drawn a name beginning [`REQUEST_NAME`] ([`draw_order`]), so this is a
+        // second line that cannot be reached; an agent is refused, failing closed (`T-020-64`).
+        if self.orders.contains_key(named.as_str()) {
+            return Err(IntakeError::ReadRefused);
+        }
+        let at = record::now(desk.parts.clock)?;
+        desk.reads.filed(&OrderRecord {
+            order: named.clone(),
+            request: request.clone(),
+            parties: kept.asked.parties.clone(),
+            origin_reserve: kept.asked.origin_reserve.clone(),
+        });
+        let checked = desk.reads.check_read(&ReadCheck {
+            request: desk.parts.fresh.id(),
+            reader: caller.clone(),
+            reads: Read::FiledOrder {
+                order: named.clone(),
+                requester: kept.asked.parties.requester.clone(),
+            },
+            permission: None,
+            at,
+        });
+        // Withdrawn as soon as the check returns, whatever it answered.
+        desk.reads.withdrawn(&named);
+        match checked?.outcome {
+            ReadOutcome::Allowed {} => Ok(()),
+            ReadOutcome::Refused { .. } => Err(IntakeError::ReadRefused),
+        }
     }
 
     /// Asks policy whether `caller` may read the status of `order`, as [`Intake::read`] does, recording the check.
@@ -611,13 +683,8 @@ impl Intake {
     ) -> IntakeError {
         let named = match &error {
             IntakeError::Conflicting { order: Some(named) } => Some(named),
-            IntakeError::Conflicting { order: None } => {
-                return if caller.kind == ActorKind::Agent {
-                    IntakeError::ReadRefused
-                } else {
-                    error
-                };
-            }
+            // Asked of an agent by `open`, which knows the request (`T-020-64`).
+            IntakeError::Conflicting { order: None } => return error,
             IntakeError::NoSuchOrder
             | IntakeError::NotTheRequester
             | IntakeError::ReadRefused
@@ -865,13 +932,24 @@ impl Intake {
         request: OrderRequest,
     ) -> Result<Told, IntakeError> {
         let caller = request.caller.clone();
+        let request_id = request.request.clone();
         let told = match self.open_inner(desk, request) {
             Ok(told) => told,
             Err(error) => {
+                // Another request under the identifier of one refused with no order names no order: an agent is told
+                // what the request's own status is told it, ReadRefused where its party didn't scope it (`T-020-64`).
+                if matches!(error, IntakeError::Conflicting { order: None })
+                    && caller.kind == ActorKind::Agent
+                {
+                    return Err(match self.read_request(desk, &caller, &request_id) {
+                        Ok(()) => error,
+                        Err(refused) => refused,
+                    });
+                }
                 return Err(self.told_error(desk, &caller, None, error));
             }
         };
-        self.read(desk, &caller, told)
+        self.read(desk, &caller, told, Some(&request_id))
     }
 
     fn open_inner(
@@ -928,7 +1006,7 @@ impl Intake {
             Ok(told) => told,
             Err(error) => return Err(self.told_error(desk, caller, Some(order), error)),
         };
-        self.read(desk, caller, told)
+        self.read(desk, caller, told, None)
     }
 
     fn quote_inner<R: Router>(
@@ -1136,7 +1214,7 @@ impl Intake {
             Ok(told) => told,
             Err(error) => return Err(self.told_error(desk, by, Some(order), error)),
         };
-        self.read(desk, by, told)
+        self.read(desk, by, told, None)
     }
 
     fn accept_inner(
@@ -1494,7 +1572,7 @@ fn opened(desk: &mut Desk<'_, '_>, request: OrderRequest) -> Result<Kept, Intake
         refused(desk, &mut kept, class)?;
         return Ok(kept);
     }
-    let order = desk.parts.fresh.id();
+    let order = draw_order(&mut *desk.parts.fresh).ok_or(IntakeError::Fresh)?;
     kept.request = request;
     kept.order = Some(order.clone());
     // The order as opened, the log's one record of it before its acceptance, for a Core that reopens to read its open

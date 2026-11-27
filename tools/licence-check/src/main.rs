@@ -1,8 +1,8 @@
 //! Runs the licence record check on every `Cargo.lock` in the repository, `licences/RECORD` and the workspace members.
 
 use rutent_licence_check::{
-    ArtifactInput, ArtifactViolation, LockFile, Member, Violation, check_artifacts, check_locks,
-    find_all_locks, member_paths, package_identity, workspace_member_paths,
+    ArtifactInput, ArtifactViolation, LockFile, Member, Violation, check_artifacts_with,
+    check_locks, find_all_locks, member_paths, package_identity, workspace_member_paths,
 };
 use std::fs;
 use std::path::Path;
@@ -73,7 +73,8 @@ fn run(root: &Path) -> Result<(Vec<Violation>, Vec<ArtifactViolation>), String> 
             metadata: cargo_metadata(root, &lock.path)?,
         });
     }
-    Ok((found, check_artifacts(&inputs, &record)?))
+    let read = |path: &str| fs::read_to_string(path).ok();
+    Ok((found, check_artifacts_with(&inputs, &record, &read)?))
 }
 
 /// `cargo metadata` for the workspace beside a lock, with all features so that an optional dependency is read too.

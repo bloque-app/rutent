@@ -19,8 +19,9 @@
 # When the owner adopts it, the dependency enters Cargo.lock and its line needs a
 # real version and a decision.
 #
-# The check reads every Cargo.lock in the repository: the root one, and each one anywhere below it, found by
-# walking the whole tree (a `target` or `.git` directory is skipped). One record serves them all. A package locked at
+# The check reads every Cargo.lock that git lists (`git ls-files --cached --others --exclude-standard`): the root
+# one, and each one anywhere below it that is tracked, or untracked and not ignored. It does not walk the tree, so an
+# ignored build artefact is not read and a tracked lock that .gitignore also matches is. One record serves them all. A package locked at
 # the same name and version in several locks has one line; the same name at different versions has one line per
 # version.
 #

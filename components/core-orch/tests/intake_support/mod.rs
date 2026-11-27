@@ -489,6 +489,10 @@ impl StatusReads for ReadPolicy {
         self.filed
             .insert(record.order.as_str().to_owned(), record.clone());
     }
+
+    fn withdrawn(&mut self, order: &Id) {
+        self.filed.remove(order.as_str());
+    }
 }
 
 /// Policy's session register, as intake reads it.
@@ -610,7 +614,7 @@ pub struct Env {
     pub bound: Bound,
     pub people: People,
     pub key: RecordingKey,
-    pub ids: Ids,
+    pub ids: Drawing,
     pub issued: Issued,
     pub policy: Policy,
     pub deciding: Deciding,
@@ -679,7 +683,7 @@ impl Env {
                 inner: TestKey(operator_key()),
                 signed: Vec::new(),
             },
-            ids: Ids::default(),
+            ids: Drawing::default(),
             issued: Issued::new(),
             policy: Policy {
                 book: book.clone(),
@@ -1228,6 +1232,32 @@ pub fn call_of(what: &What) -> &'static str {
         What::Authorise { .. } => "authorise",
         What::OpenSession { .. } => "open_session",
         _ => "other",
+    }
+}
+
+/// Fresh identifiers: the generator's, except any `next` names, drawn first (a test that needs Core to draw one).
+#[derive(Debug, Default)]
+pub struct Drawing {
+    pub ids: Ids,
+    pub next: Vec<Id>,
+    /// Every other draw begins as a refused request's record's name does: a source that could collide with it.
+    pub alternate: bool,
+    /// Every draw does.
+    pub always: bool,
+    drawn: usize,
+}
+
+impl rutent_core_orch::rounds::Fresh for Drawing {
+    fn id(&mut self) -> Id {
+        self.drawn += 1;
+        if self.always || (self.alternate && self.drawn % 2 == 1) {
+            return id(&format!("request-{}", self.ids.id().as_str()));
+        }
+        if self.next.is_empty() {
+            self.ids.id()
+        } else {
+            self.next.remove(0)
+        }
     }
 }
 

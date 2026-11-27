@@ -512,12 +512,27 @@ fn public_node_unlisted_by_the_operator_is_no_longer_on_the_catalogues_public_li
     let _ = catalogue.add_public_node(node);
     let (mut log, mut policy) = (KeptLog::default(), Answering::with(Answer::Permit {}));
     let mut settings = Settings::new();
+    // Core's segments, nothing of them at the node: an unlist is held to them (`T-020-65`), and refused where they
+    // aren't read.
+    let segments = rutent_core_orch::segments::Segments::new();
     set(
         &mut settings,
         &mut log,
         &mut policy,
         &mut Targets {
             catalogue: Some(&mut catalogue),
+            ..Targets::default()
+        },
+        &listing(false),
+    )
+    .expect_err("no segments read: refused");
+    set(
+        &mut settings,
+        &mut log,
+        &mut policy,
+        &mut Targets {
+            catalogue: Some(&mut catalogue),
+            segments: Some(&segments),
             ..Targets::default()
         },
         &listing(false),
