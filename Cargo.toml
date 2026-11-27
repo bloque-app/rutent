@@ -11,6 +11,7 @@ members = [
     "components/core-authz",
     "components/core-audit",
     "components/evidence",
+    "components/reader-host",
     "tools/boundary-check",
     "tools/records",
     "tools/licence-check",

@@ -89,6 +89,8 @@ security review. It may land on `develop` before that, once the reviewer approve
   which hold earlier ones (`experiments/2026-11-07-module-format/wasm-binding/` and `pvm-binding/`);
 - `CMP-CORE-AUTHZ`'s policy engine (`components/core-authz/`);
 - the log's and the checkpoints' signing (`components/core-audit/`);
+- the reader host (`components/reader-host/`, `CMP-EVIDENCE`'s standalone part, `DEC-28`): the readers' answers'
+  signing, the mTLS link to Core and the readers' egress;
 - the repository's own gates: `.github/`, `licences/`, `tools/licence-check/` and `tools/contract-guard/`.
 
 `.github/CODEOWNERS` holds each of these paths for the owner, and `main`'s protection requires code-owner review.
