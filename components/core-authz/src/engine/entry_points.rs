@@ -216,6 +216,11 @@ pub(super) const CARRIES_OUT_NOTHING: &[(&str, &str, &str)] = &[
     ),
     (
         "set_cutover",
+        "prov/src/module/platform.rs",
+        "an older protocol version's cutover date, for a release assertion: only the operator's decided setting calls it (`T-020-49`, `T-020-54`)",
+    ),
+    (
+        "set_cutover",
         "prov/src/catalogue/advertisements.rs",
         "an older protocol version's cutover date: only the operator's decided setting calls it (`T-020-49`, `T-020-54`), as `set_evidence_floor` is",
     ),
