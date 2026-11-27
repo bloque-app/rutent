@@ -688,10 +688,7 @@ fn read_run(run: &Run, surfaces: &mut Vec<Surface>) {
                 .collect()
         })
         .unwrap_or_default();
-    surfaces.push(Surface::of(
-        "the log read back",
-        serde_json::to_vec(&log),
-    ));
+    surfaces.push(Surface::of("the log read back", serde_json::to_vec(&log)));
     surfaces.push(Surface::of(
         "the inputs fed to the host",
         serde_json::to_vec(&run.inputs),
