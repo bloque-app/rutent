@@ -50,7 +50,7 @@ pub enum Read {
     /// It couldn't be done now (an entry the log couldn't take, no answer from the platform): worth trying again.
     Failed,
     /// The question as put and the answer as the platform passed it on.
-    Answered(Statement<Operation>, Vec<u8>),
+    Answered(Box<Statement<Operation>>, Vec<u8>),
 }
 
 impl Segments {
@@ -73,7 +73,7 @@ impl Segments {
             if self.records_read.contains(&asked) {
                 continue;
             }
-            let about: Vec<Id> = wanted.about.iter().filter_map(|t| Id::new(t)).collect();
+            let about: Vec<Id> = wanted.about.iter().filter_map(Id::new).collect();
             let read = RecordRead {
                 order: live.order,
                 segment: settled.segment,
@@ -199,7 +199,9 @@ impl Segments {
         });
         // An answer is used only once the entry that records how the read came out is in the log.
         match (question, answered, wrote) {
-            (Some(question), Answered::Bytes(bytes), Some(_)) => Read::Answered(question, bytes),
+            (Some(question), Answered::Bytes(bytes), Some(_)) => {
+                Read::Answered(Box::new(question), bytes)
+            }
             _ => Read::Failed,
         }
     }

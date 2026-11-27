@@ -1327,9 +1327,9 @@ fn every_call() -> Vec<Call> {
 #[test]
 fn each_permission_alone_allows_only_its_own_action() {
     let all = every_permission_held();
-    assert_eq!(all.len(), 36, "every permission of the register's");
+    assert_eq!(all.len(), 37, "every permission of the register's");
     let calls = every_call();
-    assert_eq!(calls.len(), 39, "every call a permission lets through");
+    assert_eq!(calls.len(), 40, "every call a permission lets through");
     for permission in &all {
         assert!(
             calls.iter().any(|c| &c.owner == permission),
