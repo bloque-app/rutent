@@ -163,10 +163,6 @@ mod linux {
     /// Sets `RLIMIT_AS`, soft and hard, at a provider's process's bound: the reader's own `confine` sets the same
     /// bound again, which a process may always do, and nothing in the jail may raise it.
     fn bound_address_space() -> std::io::Result<()> {
-        // RULE-OFF (T-015-05, reverted in the next commit): the host's launcher sets no bound.
-        if PROVIDER_ADDRESS_SPACE > 0 {
-            return Ok(());
-        }
         let limit = libc::rlimit {
             rlim_cur: PROVIDER_ADDRESS_SPACE as libc::rlim_t,
             rlim_max: PROVIDER_ADDRESS_SPACE as libc::rlim_t,
@@ -238,9 +234,7 @@ mod linux {
         };
         let reader = *reader;
         // Its address space, bounded by the host's launcher whatever the reader did itself (`T-015-05`).
-        // RULE-OFF (T-015-05, reverted in the next commit): the check reads no limit.
         match std::fs::read_to_string(format!("/proc/{reader}/limits")) {
-            Ok(_) if PROVIDER_ADDRESS_SPACE > 0 => {}
             Ok(limits) if super::address_space_bounded(&limits, PROVIDER_ADDRESS_SPACE) => {}
             Ok(_) => return Some("reader_memory_unbounded"),
             Err(_) => return Some("reader_limits_unreadable"),
