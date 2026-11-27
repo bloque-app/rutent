@@ -2160,4 +2160,31 @@ re-advertises), the bounded `WouldBlock` retry (it only shows as a flake).
 | the reserve's other sessions (`in_session` reads its own session only) | `order in a second session of a long run is quoted` |
 | the refusal of an installed advertisement the log committed to in no entry (`relist`) | `reopened core joins only the advertisement its log committed to` (the tampered installed advertisement reopens) |
 
+**Review round 2 of #350** (CHANGES at `5e1c64fb`, held by a red CI step).
+- *Medium, the guests' format.* The sim guest's `SESSIONS_KEY` import ran past 100 columns; the module guests' workspace is
+  formatted and checked (`cargo fmt --manifest-path components/prov/module-guests/Cargo.toml --all -- --check`) and linted
+  as `ci.yml`'s "Lint, module guests" step does, each role's sandboxed part and the outside part.
+- *The counter rebuilt from every transaction the record knows.* `WalletHolding::reopened` takes up the host's numbers
+  after the highest `{provider}-{deposit,withdrawal,balance}-{n}` the platform's record knows of, held or ended
+  (`Platform::known_transactions`, a read of the record's carried transactions and its ended ones, in
+  `components/prov/src/module/platform.rs`, a `DEC-20` path), with no gap rule: a number drawn and refused before the
+  platform ran anything of it is in no record, and a run of them no longer rewinds the counter onto a used one. Test
+  `reopened account takes up its transactions after the highest the record knows` (prov, `holding_wallet.rs`): one
+  landing, twenty refused (the statement key unavailable), one more, a restart, and the next landing goes under the
+  number after the last taken.
+- *The restore's raise of the attribution has a test:* `restore on a reopened account attributes what the wallet still
+  holds` (prov): a reopened account's empty attribution is raised to the log's figure where the wallet still holds it,
+  nothing landed again.
+- *Sessions to their reserves only.* `Core::open_session` hands each simulated reserve the sessions the register issued
+  for the account it holds, to that account's holder, and no other provider any (`REQ-CAT-3`). The second-session test
+  stays green.
+- *Seed 117's late answer after a restart* is `T-020-61`'s, as the lead added to its plan row.
+
+**Rule-offs of round 2.**
+
+| Switched off | Red |
+|---|---|
+| the counter's rebuild (a reopened account starts at 0) | RO5_RESULT |
+| the restore's raise of the attribution | RO6_RESULT |
+
 **Run id.** Pending: CI's run on this row's pull request goes here.

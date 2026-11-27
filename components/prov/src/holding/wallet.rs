@@ -147,11 +147,11 @@ impl WalletHolding {
     /// The account of `node` held in `asset` by the wallet of `provider`, as a host that restarted opens it again
     /// (`T-024-21`, `REQ-ORD-43`): nothing of what the host held in memory survives, so it is built from what is kept
     /// beyond it. Its attribution starts empty, and is what the log holds once Core restores each order the log
-    /// settled at the node ([`Self::restore`]). Its transactions follow the last one the platform's record holds as
-    /// carried out under the host's names (`{provider}-{deposit,withdrawal,balance}-{n}`), so none is asked again
-    /// (each `n` from 1 is probed until [`REOPEN_PROBE_GAP`] in a row are not held). The start it last saw is none the
-    /// platform ever minted: the wallet is taken as restarted until it confirms a movement, so nothing in its own record
-    /// is trusted before it is asked.
+    /// settled at the node ([`Self::restore`]). Its transactions follow the highest the platform's record knows of
+    /// under the host's names (`{provider}-{deposit,withdrawal,balance}-{n}`), held or ended
+    /// ([`Platform::known_transactions`]), so none is asked again, however many numbers before it were drawn and never
+    /// reached the platform. The start it last saw is none the platform ever minted: the wallet is taken as restarted
+    /// until it confirms a movement, so nothing in its own record is trusted before it is asked.
     pub fn reopened<W: World>(
         node: impl Into<String>,
         asset: impl Into<String>,
@@ -159,19 +159,20 @@ impl WalletHolding {
         platform: &Platform<W>,
     ) -> Self {
         let provider = provider.into();
-        let (mut sent, mut n, mut misses) = (0, 0, 0);
-        while misses < REOPEN_PROBE_GAP {
-            n += 1;
-            let held = ["deposit", "withdrawal", "balance"]
-                .iter()
-                .any(|kind| platform.carries(&format!("{provider}-{kind}-{n}")));
-            if held {
-                sent = n;
-                misses = 0;
-            } else {
-                misses += 1;
-            }
-        }
+        let sent = platform
+            .known_transactions()
+            .filter_map(|transaction| {
+                ["deposit", "withdrawal", "balance"]
+                    .iter()
+                    .find_map(|kind| {
+                        transaction
+                            .strip_prefix(&format!("{provider}-{kind}-"))?
+                            .parse::<u64>()
+                            .ok()
+                    })
+            })
+            .max()
+            .unwrap_or(0);
         Self {
             provider,
             ledger: OrderLedger::new(node, asset),
@@ -506,11 +507,6 @@ impl WalletHolding {
         Ok((next, settled, transaction, signed))
     }
 }
-
-/// How many of the host's transaction numbers in a row a reopened account finds not held in the platform's record
-/// before it takes the last one held as the last it asked under ([`WalletHolding::reopened`]): a number asked and
-/// refused before anything passed out is held by no record, so a few gaps are passed over.
-pub const REOPEN_PROBE_GAP: u64 = 16;
 
 /// The holding accounts of the operator's public nodes: one plain wallet each.
 #[derive(Debug, Clone, Default)]

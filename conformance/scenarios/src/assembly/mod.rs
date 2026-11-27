@@ -2225,8 +2225,17 @@ impl Core {
                     .borrow()
                     .register()
                     .open_in(&mut self.catalogue);
-                // The reserves are told every session the holder's register issued, so a check in any of them is one in
-                // the holder's session (`T-024-21`): the world holds them where each simulated reserve reads them.
+                // Each reserve is told the sessions the register issued for the account it holds, to that account's own
+                // holder, and no other, so it answers a check in its holder's sessions only (`REQ-CAT-3`, `T-024-21`):
+                // the world holds them where each simulated reserve reads them.
+                let account = context.account.clone();
+                let holder = self
+                    .deployed
+                    .registers
+                    .borrow()
+                    .accounts
+                    .get(&account)
+                    .cloned();
                 let issued: Vec<String> = self
                     .policy
                     .engine()
@@ -2234,15 +2243,20 @@ impl Core {
                     .register()
                     .sessions()
                     .iter()
+                    .filter(|s| {
+                        s.account.as_str() == account
+                            && holder.as_deref() == Some(s.holder.as_str())
+                    })
                     .map(|s| s.session.as_str().to_owned())
                     .collect();
                 let issued = serde_json::to_string(&issued).unwrap_or_default();
-                let providers: Vec<String> = self
+                let reserves: Vec<String> = self
                     .installed
                     .iter()
+                    .filter(|one| one.spec.role == rutent_conformance::sim::Role::Reserve)
                     .map(|one| one.spec.provider.clone())
                     .collect();
-                for provider in providers {
+                for provider in reserves {
                     self.fleet.platform.world.seed_state(
                         &provider,
                         rutent_conformance::sim::SESSIONS_KEY,

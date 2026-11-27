@@ -221,6 +221,11 @@ impl TestWorld {
         self.keys_down.insert(provider.to_owned());
     }
 
+    /// Brings the store holding `provider`'s statement key back up.
+    pub fn make_key_store_available(&mut self, provider: &str) {
+        self.keys_down.remove(provider);
+    }
+
     /// Holds `key` as `provider`'s statement key, in place of the standard one.
     pub fn hold_statement_key(&mut self, provider: &str, key: &Ed25519Key) {
         self.statement_keys.insert(

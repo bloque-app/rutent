@@ -1032,6 +1032,17 @@ impl<W: World> Platform<W> {
         self.carried.contains_key(transaction)
     }
 
+    /// Every transaction the platform's record knows of: each it carries an operation of ([`Platform::carries`]) and
+    /// each that ended, its segment ended or its record freed (`Lifecycle::ended`), so none is taken for unused after a
+    /// restart (`T-024-21`). In no particular order, each once.
+    pub fn known_transactions(&self) -> impl Iterator<Item = &str> {
+        self.carried.keys().map(String::as_str).chain(
+            self.lifecycle
+                .ended()
+                .filter(|t| !self.carried.contains_key(*t)),
+        )
+    }
+
     /// The directory the platform keeps its children's working directories in: one for each child running, none
     /// for one that ended.
     pub fn workdir(&self) -> &std::path::Path {
