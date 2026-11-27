@@ -123,9 +123,14 @@ mod linux {
                 .find(|l| l.starts_with(&format!("probe {target}: ")))
                 .unwrap_or_else(|| panic!("the unconfined reader probed {target}: {loose_log:?}"));
             // No route in the namespace: no interface is up for IPv4, and no IPv6 source address at all.
-            let no_route = ["NetworkUnreachable", "AddrNotAvailable", "HostUnreachable"]
-                .iter()
-                .any(|kind| line.contains(&format!("refused: {kind} ")));
+            let kind = line
+                .split("refused: ")
+                .nth(1)
+                .and_then(|rest| rest.split(' ').next());
+            let no_route = matches!(
+                kind,
+                Some("NetworkUnreachable" | "AddrNotAvailable" | "HostUnreachable")
+            );
             assert!(
                 no_route && !line.contains("PermissionDenied") && !line.contains("connected"),
                 "the network namespace alone refuses {target}: {line}"
