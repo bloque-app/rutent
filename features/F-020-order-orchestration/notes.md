@@ -9469,3 +9469,30 @@ already answers `is_accepted`.
 - **Defaults** (reversible, fail closed). (1) An unlist is refused while any order Core follows that hasn't ended names the
   node. (2) A withdrawal with no result stays without one. (3) The fleet's restart re-asserts every release, waiting ones
   included, as a deployment's start would.
+- **Red first.** The named tests' reds are their rules switched back to the code as it stood (R1, R2c, R3, R4 below): the
+  three scenario tests needed new assembly support (the fleet's restart, the effect left without its result, the unlist
+  helper) written in the same pass as the rules, and the withdrawal test's first run built the fix in with it.
+- **Rule-off table** (each alone unless said, its test run through the lock, the file restored from git; `ruleoff.py` in
+  the row's scratch folder; every red an assertion, no build failure).
+
+  | Rule switched off | Red |
+  |---|---|
+  | R1: nothing marked and a release staged completes `failed` | `stale_mark_refused_while_a_release_is_staged_does_not_hold_its_provider_after_core_restarts` |
+  | R2a: a failed segment counts until its reversal completes (alone) | green: the open order's route names the node too, which the route rule refuses alone; the outcome rule alone guards an order that ended with a reversal still owed |
+  | R2b: an open order's route counts | `public_node_cannot_be_unlisted_while_an_open_orders_route_names_it` |
+  | R2c: R2a and R2b together | `public_node_cannot_be_unlisted_while_a_failed_segments_reversal_is_owed_there` |
+  | R3: a setting's result completed from its target's answer | `listing_the_catalogue_refused_is_not_completed_done_on_reopen` |
+  | R4: a withdrawal is never taken again at a confirmation | `withdrawal_is_not_taken_again_for_a_release_resubmitted_under_a_new_digest` |
+  | R5: a version the platform holds no release of stays open | `stale_mark_of_a_version_the_platform_holds_no_release_of_stays_open` |
+  | R6: a module-level `const` is a node of rule 4's reach | `scan_rule_four_finds_function_pointers_and_unchecked_permits` |
+  | R7: a permit guards only a call after it | the same |
+  | R8: a discarded permit is not kept | the same |
+  | R9: an `OR` expression's operands are ordered | `or_operands_compare_in_any_order` |
+  | R10: one place builds `Conflicting` | `conflicting_with_no_order_comes_only_from_open` |
+- **Local checks** (through the lock, `contracts/src/lib.rs` touched first): `fmt --check` and workspace `clippy
+  --all-targets -D warnings` clean; core-orch, contracts and core-audit 763 passed with one transient failure,
+  core-audit's `store_whose_verified_entrys_statement_was_erased_still_opens` (`Unavailable` reopening its stores; this
+  row changes no core-audit file, and its binary passed three runs out of three after); core-authz `--lib` 167;
+  licence-check 46; prov (lib, `module_record`, `module_lifecycle`, `catalogue_snapshot`, `catalogue`) 146; scenarios
+  (lib and ten binaries) 168; `invariants` on seeds 11 to 15, 10; `plan-check --strict` 0 findings, `tag-check --strict`
+  2547 tests, 0 findings; the contract guard against `origin/develop`: no violations. No `cargo doc` locally.
