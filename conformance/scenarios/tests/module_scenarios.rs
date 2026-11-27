@@ -925,3 +925,43 @@ fn stale_mark_refused_while_a_release_is_staged_does_not_hold_its_provider_after
         "never marked"
     );
 }
+
+/// A lifecycle effect the platform already carried out is completed `done` on reopen (`T-020-67`, the milestone reviewer's
+/// check of `T-020-66`: the converse of the staged stale mark that was refused): the operator's roll-back of 1.2.0 is
+/// decided and its effect appended, and Core stops before its result, but no staging of 1.2.0 is left at the platform (it
+/// ended already). The reopened Core completes the result from the platform's standing, `done`.
+// verifies: NFR-6, REQ-MDL-4
+#[test]
+fn lifecycle_effect_the_platform_already_took_is_completed_done_on_reopen() {
+    let scenario = Scenario::new("orders wait to run", "AC-28", two_reserves());
+    let (mut core, _) = scenario.core(1, &mut Reference);
+    artefact(core.publish_release(RESERVE, &Release::at("1.1.0")));
+    assert_eq!(core.fleet().platform.lifecycle().staged(RESERVE), None);
+    let effect = core
+        .effect_without_its_result(Action::ChangeCatalogue {
+            change: CatalogueChange::RollBack,
+            provider: kit::id(RESERVE),
+            version: Some(kit::id("1.2.0")),
+            tuple: None,
+            class: None,
+            advertising_keys: Vec::new(),
+            statement_key: None,
+            setting: None,
+            versions: Vec::new(),
+            public_network: None,
+        })
+        .expect("decided, its effect appended");
+    let core = scenario.reopen(core, 1, &mut Reference);
+    let completed = core.log().entries().iter().find_map(|(_, e)| match e {
+        Entry::Verified(v) => match &v.what {
+            What::Result { effect: e } if *e == effect => Some(v.outcome),
+            _ => None,
+        },
+        Entry::Stated(_) => None,
+    });
+    assert_eq!(
+        completed,
+        Some(Outcome::Done {}),
+        "completed from the platform's standing, done"
+    );
+}

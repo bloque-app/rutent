@@ -634,9 +634,10 @@ fn a_reserve_confirms_a_reversal_through_the_platform_only_when_scripted_to() {
 // verifies: DEC-24, REQ-ORD-41
 #[test]
 fn two_private_nodes_each_record_their_inner_segments() {
-    // The fleet's self-test, with no Core: it reads each node's record from the world (`recorded_segments`) as the
-    // test's own oracle for what a provider's book holds. This is the one exception to Core asking for a record through the
-    // platform (`T-020-58`, `T-020-67`); every scenario with a Core takes it from the provider's answer.
+    // The fleet's self-test, with no Core: it reads each node's record from the world (`recorded_segments`) as the test's
+    // own oracle for what a provider's book holds, as other tests that run no Core's asking do (`closing.rs`,
+    // `gross_charged.rs`, the `invariants` support). A scenario with a Core takes a record from the provider's answer
+    // through the platform (`T-020-58`, `T-020-67`).
     use rutent_conformance::sim::recorded_segments;
     use rutent_evidence::replay::{
         NodeRecord, PublicExit, RecordedSegment, Replay, RouteEnd, Stated, replay_route,

@@ -105,6 +105,11 @@ impl Readings {
             .insert(provider.to_owned(), how);
     }
 
+    /// From now on, `provider`'s answer to the question of its record is as it made it.
+    pub(crate) fn unforge(&self, provider: &str) {
+        self.read.borrow_mut().forged.remove(provider);
+    }
+
     /// Notes a question of `provider`'s record of `node` that Core put under `transaction`.
     pub(crate) fn note_asked(&self, provider: &str, node: &str, transaction: &str) {
         self.read.borrow_mut().asked.push((

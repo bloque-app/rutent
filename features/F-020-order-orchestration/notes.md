@@ -9161,9 +9161,9 @@ gap is fixed now), below.
    cap Core asks no more and the segment waits on what it waits on, which the stuck check reports. A record the log holds for the order, node and maker
    doesn't count toward the cap after a restart. The tick's read (`Job::PublishersRecords`) is on its own cadence and not capped; its
    reads count toward the same segment's tries when it names that segment. The books keep what was read; a record that
-   changes while the segment waits is read at the next segment's grading. Default, reversible. Not wired: the
-   operator's `publishers_records` cadence setting doesn't reach `Segments` (owner: the lead; the default is the
-   same 3600 s).
+   changes while the segment waits is read at the next segment's grading. Default, reversible. The retry is the
+   operator's `publishers_records` cadence, set on the segments wherever a setting is taken and again on reopen from
+   the settings the log holds (`Core::sync_record_retry` in the assembly: a deployment does the same).
 6. The planted crashes (`Fault::CrashAfterRecord { call: "effect", .. }`) count move effects only: a `read_node_record`
    effect is no move (`durable.rs`).
 
@@ -10745,3 +10745,52 @@ scenario tests) and `tools/licence-check/src/artifact.rs`, a `DEC-20` path. No o
   `protocol_cutover`'s `old_version_provider_survives_its_cutover_and_a_reopen_by_the_version_its_segment_began_under` fails
   (`one late answer: []`) on `19e6984d` itself, without this row's changes; not this row's (reported to the coordinator;
   stale sim guests are the suspect).
+
+### T-020-67, review round 1 (#351's review at `8c8577e8`)
+
+- **M1: the tick's reads are held to the grading's due time and to a bound of their own.** `Segments::read_node_record_on_tick`
+  (used by `Job::PublishersRecords`) puts a read only when the retry cadence has passed since the last read of the key,
+  whoever put it, only while fewer than `MAX_TICK_TRIES` (72, three days at the hourly retry) have been put by the tick in
+  this Core's life, and never once the key's record is taken (`note_record_taken`, called for each record the tick took).
+  Its reads are not counted among the grading's `MAX_RECORD_TRIES` (24), so the tick can't spend the grading's tries; the
+  grading's own bound is as before. The tick's count is not rebuilt on a restart (the cadence bounds it between restarts).
+  Because the due time is shared, tick and grading together put at most one read an hour. A segment that waits more than a
+  day is still graded with a record the publisher has by then, which the tick takes and feeds the books: test
+  `segment_waiting_more_than_a_day_is_graded_with_the_record_the_publisher_has_by_then_and_the_ticks_reads_stay_bounded`.
+- **L1: the restart exemption is per segment.** Of the reads of a segment, node and provider in the log, the last doesn't
+  count where the log holds that provider's record of the node for the order, since it produced it (`rebuilt_tries`); a
+  second segment's reads at the same node count in full. Test `restart_exemption_of_a_held_record_is_one_read_of_each_segment_and_not_all_of_a_second`.
+- **L2 and item (c): the end-to-end `THR-64` test** `statement_about_an_order_by_a_provider_whose_segment_began_after_the_cutover_is_void_under_the_old_version_end_to_end`
+  (`protocol_cutover.rs`): the cutover falls between an order's two segments (`Faults::operation_takes`), and the reserve's
+  old-version statement about the order is refused `Unattributable`, taken under the current version.
+- **Item (a): an old-version advertisement accepted before a cutover leaves routing at the date.** The catalogue keeps the
+  protocol version of each joined advertisement, and `admit` leaves its tuples out as `LeftOutReason::PastCutover` once the
+  version is past its cutover (`prov/src/catalogue/`, a `DEC-20` path; not a contract). Test
+  `old_version_advertisement_accepted_before_its_cutover_is_dropped_from_routing_at_the_date`. The platform's `deadline()`
+  accessor (`prov/src/module/platform.rs`, also `DEC-20`) is new.
+- **L3: the answer-time cap is the platform's configured deadline.** `Modules::operation_deadline` (the platform's
+  `deadline()`, the default for the others) bounds the time an answer is judged at, in the segments; `record_read` uses the
+  time it is handed.
+- **L4: the restriction case of done-on-reopen** is `lifecycle_effect_the_platform_already_took_is_completed_done_on_reopen`
+  (`module_scenarios.rs`): a roll-back of a staging the platform has already ended, its result missing, is completed `done`.
+- **L5: live and reopened versions are taken at the same point**, just before the start effect is appended: a first try that
+  failed before it no longer leaves the versions it built. No test of its own (it needs a first try to fail between a cutover
+  and the effect); owner: the `F-024` fleet's fault hooks.
+- **L6.** Gap 5 above no longer says the cadence isn't wired. `sim_providers`' comment says other tests read the world too
+  where no Core asks. `or_operands_compare_in_any_order` asserts `MIT AND Apache-2.0` compares as written.
+- **Item (b): a later private claim through Core** stays an owned gap: the fleet must install a provider whose ledger the
+  operator listed and a join must return its refusal (`kit::join` panics on one); owner: `F-024`'s assembly.
+- **Rule-offs, round 1** (each alone, the file restored; every red an assertion):
+
+  | Rule switched off | Red |
+  |---|---|
+  | R12: the tick's due time | `segment_waiting_more_than_a_day_is_graded_with_the_record_…` |
+  | R13: the restart exemption per segment | `restart_exemption_of_a_held_record_is_one_read_of_each_segment_…` |
+  | R14: the answer's judging time held to the platform's deadline | `node_record_answer_made_a_little_after_its_question_is_judged_at_the_time_core_got_it` |
+  | R15: a past-cutover advertisement dropped from routing | `old_version_advertisement_accepted_before_its_cutover_is_dropped_from_routing_at_the_date` |
+  | R16: a maker read by the order's earliest segment | `…_is_void_under_the_old_version_end_to_end` (and the unit test) |
+  | R17: a roll-back already ended completed `done` | `lifecycle_effect_the_platform_already_took_is_completed_done_on_reopen` |
+
+  Not switched off: the tick's bound and its stop once taken (the order has completed by then, so no tick reads either way),
+  and L5's refresh of the versions (no test). `protocol_cutover`'s
+  `old_version_provider_survives_its_cutover_…` fails here as on `19e6984d`; its fix is `de9d9728`, not yet in `m3`.

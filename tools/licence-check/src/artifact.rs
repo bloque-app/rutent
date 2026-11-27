@@ -595,6 +595,10 @@ mod tests {
             canon("Apache-2.0 WITH LLVM-exception OR MIT"),
             canon("MIT OR Apache-2.0 WITH LLVM-exception")
         );
+        // An `AND` of two licences compares as written, and is not an `OR` of them.
+        assert_ne!(canon("MIT AND Apache-2.0"), canon("Apache-2.0 AND MIT"));
+        assert_ne!(canon("MIT AND Apache-2.0"), canon("MIT OR Apache-2.0"));
+        assert_eq!(canon("MIT AND Apache-2.0"), canon("MIT  AND   Apache-2.0"));
         // An operator in any other case is an operator, not an operand: the expression keeps its order.
         assert_ne!(
             canon("MIT OR Apache-2.0 and BSD-3-Clause"),

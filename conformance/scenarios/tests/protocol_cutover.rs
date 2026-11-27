@@ -192,3 +192,67 @@ fn reversal_of_a_segment_begun_before_a_cutover_is_taken_when_a_holdouts_answer_
         "the failed provider's answer under the old version is taken: {asked:?}"
     );
 }
+
+/// A reserve's deposit result that says the payment came back, signed with its statements key under protocol `version`.
+fn returned_under(core: &rutent_scenarios::assembly::Core, version: &str) -> Vec<u8> {
+    let mut statement = serde_json::json!({
+        "deployment": rutent_scenarios::assembly::context().deployment,
+        "protocol_version": version,
+        "shape": rutent_contracts::provider_role::RESULT_SHAPE,
+        "maker": RESERVE,
+        "made_at": core.clock.timestamp().as_str(),
+        "signature": { "scheme": "ed25519", "key": "", "value": "" },
+        "statement": {
+            "kind": "deposit",
+            "transaction": "tx-returned",
+            "outcome": {
+                "status": "failed",
+                "evidence": [{ "grade": 3, "reference": format!("{RESERVE}:returned-1"), "by": RESERVE }],
+            },
+        },
+    });
+    rutent_conformance::signing::sign_value(&mut statement, &statements_key(RESERVE));
+    serde_json::to_vec(&statement).expect("bytes")
+}
+
+/// A statement about an order by a provider whose own segment of it began after a cutover is void under the old version,
+/// though the order's first segment began before it (`REQ-PRT-2`, `THR-64`, `T-020-54`, `T-020-67`): read by the versions the
+/// maker's segment began under, the old version is past its date; read by the earliest segment's, as it was, it was still in
+/// force and the statement was taken. The same statement under the current version is taken.
+// verifies: REQ-PRT-2, THR-64
+#[test]
+fn statement_about_an_order_by_a_provider_whose_segment_began_after_the_cutover_is_void_under_the_old_version_end_to_end()
+ {
+    use rutent_core_orch::reversal::ReversalError;
+    use rutent_scenarios::assembly::StepError;
+    let (mut core, session) = core_with("AC-5", &[RESERVE]);
+    // The old version is in force until the cutover, which falls between the order's two segments: the first begins
+    // before it, and the deposit, which begins after the first has taken its 400 s, after it.
+    let t0 = core.clock.instant().0;
+    core.set_setting(&cutover(
+        &rutent_prov::catalogue::Instant(t0 + 200)
+            .rfc3339()
+            .expect("a time"),
+    ))
+    .expect("the operator sets the cutover");
+    core.faults.operation_takes = 400;
+    let (order, _) = run(
+        &mut core,
+        within("req-between", &session, AMOUNT, RESERVE, OTHER),
+    );
+    core.faults.operation_takes = 0;
+    assert_eq!(
+        state(&mut core, &order),
+        rutent_contracts::state_machine::OrderState::Complete
+    );
+    let old = core.returned(&order, &returned_under(&core, OLD));
+    assert!(
+        matches!(old, Err(StepError::Reversal(ReversalError::Unattributable))),
+        "the old version is past its date for the maker's later segment: {old:?}"
+    );
+    core.returned(
+        &order,
+        &returned_under(&core, rutent_contracts::provider_role::VERSION),
+    )
+    .expect("the same statement under the current version is taken");
+}

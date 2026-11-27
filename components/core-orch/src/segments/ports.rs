@@ -83,6 +83,12 @@ pub trait Modules {
         Answered::Refused(PlatformRefusal::NotHandled)
     }
 
+    /// The longest an operation may take on this platform: the bound an answer is judged within from its question's time
+    /// (`T-020-67`). The platform's own default unless the deployment's differs.
+    fn operation_deadline(&self) -> std::time::Duration {
+        rutent_prov::module::platform::OPERATION_DEADLINE
+    }
+
     /// Hands the module of `provider` `question`, the operator's question of its record of a private node, in its
     /// envelope signed with the operator key, as `effect` (the permitted `read_node_record`) lets (`REQ-ORD-41`,
     /// `REQ-AUZ-1`, `T-020-58`). The question moves nothing; Core holds the answer to it with
@@ -146,6 +152,10 @@ pub trait Modules {
 }
 
 impl<W: World> Modules for Platform<W> {
+    fn operation_deadline(&self) -> std::time::Duration {
+        Platform::deadline(self)
+    }
+
     fn begin_segment(
         &mut self,
         provider: &Id,

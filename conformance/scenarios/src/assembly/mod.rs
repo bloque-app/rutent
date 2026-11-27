@@ -365,6 +365,10 @@ struct Running<'a> {
 }
 
 impl Modules for Running<'_> {
+    fn operation_deadline(&self) -> std::time::Duration {
+        Modules::operation_deadline(&*self.platform)
+    }
+
     fn begin_segment(
         &mut self,
         provider: &Id,
@@ -1352,6 +1356,12 @@ impl Core {
     /// it only as a record of the node asked about, so the replay finds nothing recorded.
     pub fn tamper_with_record_of(&mut self, provider: &str, how: Tamper) {
         self.readings.forge(provider, how);
+    }
+
+    /// From now on, `provider`'s answer to the question of its record is as it made it, a fault planted by
+    /// [`Core::tamper_with_record_of`] lifted (`T-020-67`).
+    pub fn lift_tamper_of_record_of(&mut self, provider: &str) {
+        self.readings.unforge(provider);
     }
 
     /// How many records closing's books hold now, whatever the node: the orders still in flight through a private node

@@ -79,7 +79,6 @@ use rutent_evidence::{
     grade_outcome, public_record_check, verify_movement,
 };
 use rutent_prov::catalogue::{Catalogue, Category, Endpoint, Instant, TupleKey};
-use rutent_prov::module::platform::OPERATION_DEADLINE;
 
 use crate::segments::{Graded, Grading, RaiseDesk, RecordWanted, Short, ToGrade, ToKeep};
 use crate::snapshot::RouteRefusal;
@@ -520,15 +519,12 @@ impl Grading for Evidenced<'_> {
         answer: Option<(&Statement<ProviderOperation>, &[u8])>,
         received: &Timestamp,
     ) -> bool {
-        // Judged at the time Core got the answer, which its clock gave, but no later than the question's own deadline after
-        // the question was made: an answer is the provider's up to then, and one a little later than its question is not
-        // dated too far ahead of it (`T-020-67`). A read that came to nothing leaves what the books hold of the provider as
-        // it was (a record taken earlier stays), and is tried again.
+        // Judged at the time Core got the answer, which its clock gave, already held by the segments to the platform's
+        // configured deadline after the question was made: an answer is the provider's up to then, and one a little later than
+        // its question is not dated too far ahead of it (`T-020-67`). A read that came to nothing leaves what the books hold of
+        // the provider as it was (a record taken earlier stays), and is tried again.
         let record = answer.and_then(|(question, bytes)| {
-            let asked_at = Timestamp::new(question.made_at.clone())?;
-            let asked = u64::try_from(asked_at.unix_nanos() / 1_000_000_000).ok()?;
-            let got = u64::try_from(received.unix_nanos() / 1_000_000_000).ok()?;
-            let at = Instant(got.min(asked.saturating_add(OPERATION_DEADLINE.as_secs())));
+            let at = Instant(u64::try_from(received.unix_nanos() / 1_000_000_000).ok()?);
             publishers::taken(self.catalogue, at, &question.statement, bytes).ok()
         });
         match record {

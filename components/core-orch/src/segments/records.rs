@@ -34,6 +34,16 @@ use crate::schedule::Job;
 /// of an hour, a day's worth. Counted from the log's `read_node_record` effects, so it holds across a restart.
 pub const MAX_RECORD_TRIES: u32 = 24;
 
+/// The most times the tick asks one provider for one node's record on behalf of one segment while a Core lives
+/// (`T-020-67`): its own bound, three days at the hourly retry, apart from the grading's [`MAX_RECORD_TRIES`], so that a
+/// segment that waits long is still graded with a record the publisher has by then. Not rebuilt on a restart.
+pub const MAX_TICK_TRIES: u32 = 72;
+
+/// Whether `retry` seconds have passed since `last` at `now`, a clock that went back counting as passed.
+fn now_or_back(now: u64, last: u64, retry: u64) -> bool {
+    now < last || now - last >= retry
+}
+
 /// What the log says of the reads of one segment, node and provider: how many Core put, and when the last was, in whole
 /// seconds of Core's clock.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -117,7 +127,7 @@ impl Segments {
     fn record_due(&self, key: &Key, now: u64) -> bool {
         self.record_tries.get(key).is_none_or(|tries| {
             tries.count < MAX_RECORD_TRIES
-                && (now < tries.last || now - tries.last >= self.record_retry_seconds())
+                && now_or_back(now, tries.last, self.record_retry_seconds())
         })
     }
 
@@ -183,6 +193,62 @@ impl Segments {
     /// One read: decided, recorded as an effect, asked, and its result recorded. Nothing is asked before its effect is in
     /// the log (`INV-7`), and an answer is handed back only once its result is.
     pub fn read_node_record(&mut self, parts: &mut Parts<'_>, read: &RecordRead<'_>) -> Read {
+        self.ask_node_record(parts, read, true)
+    }
+
+    /// The tick's read of a node's record (`Job::PublishersRecords`, `T-020-67`): the same decided read, but held to the
+    /// grading's due time (a read isn't put before the retry cadence has passed since the last, whoever put it), to a bound of
+    /// its own ([`MAX_TICK_TRIES`], not counted among the grading's tries, so it never starves the grading), and never put
+    /// once the key's record is taken. `None` where it isn't due.
+    pub fn read_node_record_on_tick(
+        &mut self,
+        parts: &mut Parts<'_>,
+        read: &RecordRead<'_>,
+    ) -> Option<Read> {
+        let key = (
+            read.order.as_str().to_owned(),
+            read.segment.as_str().to_owned(),
+            read.node.to_owned(),
+            read.provider.to_owned(),
+        );
+        if self.records_read.contains(&key)
+            || self.tick_tries.get(&key).copied().unwrap_or(0) >= MAX_TICK_TRIES
+        {
+            return None;
+        }
+        let at = now(parts.clock).ok()?;
+        let seconds = u64::try_from(at.unix_nanos() / 1_000_000_000).unwrap_or(0);
+        let due = self
+            .record_tries
+            .get(&key)
+            .is_none_or(|tries| now_or_back(seconds, tries.last, self.record_retry_seconds()));
+        if !due {
+            return None;
+        }
+        let read = self.ask_node_record(parts, read, false);
+        let tries = self.record_tries.entry(key.clone()).or_default();
+        tries.last = tries.last.max(seconds);
+        *self.tick_tries.entry(key).or_insert(0) += 1;
+        Some(read)
+    }
+
+    /// That the record of `node` asked of `provider` for `segment` of `order` was taken (by the tick's read, whose answer
+    /// feeds the books): it is asked for no more by the grading or the tick.
+    pub fn note_record_taken(&mut self, order: &Id, segment: &Id, node: &str, provider: &str) {
+        self.records_read.insert((
+            order.as_str().to_owned(),
+            segment.as_str().to_owned(),
+            node.to_owned(),
+            provider.to_owned(),
+        ));
+    }
+
+    fn ask_node_record(
+        &mut self,
+        parts: &mut Parts<'_>,
+        read: &RecordRead<'_>,
+        counted: bool,
+    ) -> Read {
         let (Some(node), Some(provider)) = (Id::new(read.node), Id::new(read.provider)) else {
             return Read::Failed;
         };
@@ -233,15 +299,17 @@ impl Segments {
             return Read::Failed;
         };
         // The read is the log's from here: it counts as a try, which a restart counts again from the effect.
-        self.note_record_try(
-            (
-                read.order.as_str().to_owned(),
-                read.segment.as_str().to_owned(),
-                read.node.to_owned(),
-                read.provider.to_owned(),
-            ),
-            u64::try_from(effect_at.unix_nanos() / 1_000_000_000).unwrap_or(0),
-        );
+        if counted {
+            self.note_record_try(
+                (
+                    read.order.as_str().to_owned(),
+                    read.segment.as_str().to_owned(),
+                    read.node.to_owned(),
+                    read.provider.to_owned(),
+                ),
+                u64::try_from(effect_at.unix_nanos() / 1_000_000_000).unwrap_or(0),
+            );
+        }
         let effect = Effect {
             action,
             decision: permit,
@@ -294,7 +362,20 @@ impl Segments {
         // time Core got it (`T-020-67`).
         match (question, answered, wrote, now(parts.clock)) {
             (Some(question), Answered::Bytes(bytes), Some(_), Ok(received)) => {
-                Read::Answered(Box::new(question), bytes, received)
+                // The time the answer is judged at: when Core got it, but no later than the question's time plus the
+                // platform's own configured operation deadline (`T-020-67`).
+                let latest = Timestamp::new(question.made_at.clone())
+                    .and_then(|asked| u64::try_from(asked.unix_nanos() / 1_000_000_000).ok())
+                    .and_then(|asked| {
+                        asked.checked_add(parts.modules.operation_deadline().as_secs())
+                    })
+                    .and_then(|secs| rutent_prov::catalogue::Instant(secs).rfc3339())
+                    .and_then(Timestamp::new);
+                let judged = match latest {
+                    Some(latest) if latest.unix_nanos() < received.unix_nanos() => latest,
+                    _ => received,
+                };
+                Read::Answered(Box::new(question), bytes, judged)
             }
             _ => Read::Failed,
         }

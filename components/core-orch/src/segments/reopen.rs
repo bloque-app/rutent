@@ -165,44 +165,47 @@ impl Segments {
                 });
             }
         }
-        // The reads of private nodes' records the log holds, each a try for its segment, node and provider, and when the
-        // last was put: a Core that reopens neither asks again before the retry cadence has passed nor past the cap
-        // (`T-020-67`). A read whose record the log holds is the exception: the books it fed were lost with the restart, so it
-        // is read again at once, once, as before (`T-020-58`), and counts from then.
-        for (_, entry) in history {
-            let Entry::Verified(verified) = entry else {
-                continue;
-            };
-            let What::Effect {
-                action:
-                    Action::ReadNodeRecord {
-                        order,
-                        segment,
-                        node,
-                        provider,
-                        ..
-                    },
-                ..
-            } = &verified.what
-            else {
-                continue;
-            };
-            if segments.records_held.iter().any(|held| {
-                held.order == order.as_str()
-                    && held.node == node.as_str()
-                    && held.maker == provider.as_str()
-            }) {
-                continue;
-            }
-            segments.note_record_try(
-                (
+        // The reads of private nodes' records the log holds, each a try for its segment, node and provider: a Core that
+        // reopens doesn't ask past the cap (`T-020-67`). It asks again at once, once, as before (`T-020-58`): the books the
+        // reads fed, and a record the log couldn't take, were lost with the restart, so no time is kept from the log and
+        // the cadence counts from that read. Of the reads of one segment, node and provider, the last one doesn't count
+        // where the log holds a record of the node for the order from that provider, since that read is the one that
+        // produced it; the other segment's reads still count (`rebuilt_tries`).
+        let held: Vec<(String, String, String)> = segments
+            .records_held
+            .iter()
+            .map(|h| (h.order.clone(), h.node.clone(), h.maker.clone()))
+            .collect();
+        let reads: Vec<(String, String, String, String)> = history
+            .iter()
+            .filter_map(|(_, entry)| match entry {
+                Entry::Verified(VerifiedEntry {
+                    what:
+                        What::Effect {
+                            action:
+                                Action::ReadNodeRecord {
+                                    order,
+                                    segment,
+                                    node,
+                                    provider,
+                                    ..
+                                },
+                            ..
+                        },
+                    ..
+                }) => Some((
                     order.as_str().to_owned(),
                     segment.as_str().to_owned(),
                     node.as_str().to_owned(),
                     provider.as_str().to_owned(),
-                ),
-                0,
-            );
+                )),
+                _ => None,
+            })
+            .collect();
+        for (key, count) in rebuilt_tries(&reads, &held) {
+            for _ in 0..count {
+                segments.note_record_try(key.clone(), 0);
+            }
         }
         for input in &inputs {
             if let (Observed::StuckResolved { .. }, Some(part)) =
@@ -1372,4 +1375,57 @@ fn charged_of(
         advertised: cited.price?.clone(),
         result,
     })
+}
+
+/// How many tries each read key (order, segment, node, provider) has in the log: its `read_node_record` effects, less one
+/// for the key's last where `held` (order, node, maker) holds the record that read produced. Keyed by segment, so a second
+/// segment's reads at the same node and provider count in full (`T-020-67`).
+fn rebuilt_tries(
+    reads: &[(String, String, String, String)],
+    held: &[(String, String, String)],
+) -> BTreeMap<(String, String, String, String), u32> {
+    let mut tries: BTreeMap<(String, String, String, String), u32> = BTreeMap::new();
+    for key in reads {
+        *tries.entry(key.clone()).or_default() += 1;
+    }
+    for (key, count) in &mut tries {
+        if held
+            .iter()
+            .any(|(order, node, maker)| *order == key.0 && *node == key.2 && *maker == key.3)
+        {
+            *count = count.saturating_sub(1);
+        }
+    }
+    tries.retain(|_, count| *count > 0);
+    tries
+}
+
+#[cfg(test)]
+mod rebuilt_tries_tests {
+    use super::rebuilt_tries;
+
+    fn key(segment: &str) -> (String, String, String, String) {
+        ("o".into(), segment.into(), "n".into(), "p".into())
+    }
+
+    /// A record held for the order, node and provider exempts one read of each key, not all of them: a second segment at the
+    /// same node doesn't get fresh tries on every restart (`REQ-ORD-41`, `NFR-5`, `T-020-67`).
+    // verifies: REQ-ORD-41, NFR-5
+    #[test]
+    fn restart_exemption_of_a_held_record_is_one_read_of_each_segment_and_not_all_of_a_second() {
+        let reads: Vec<_> = (0..24).map(|_| key("s2")).chain([key("s1")]).collect();
+        let held = [("o".to_owned(), "n".to_owned(), "p".to_owned())];
+        let tries = rebuilt_tries(&reads, &held);
+        assert_eq!(
+            tries.get(&key("s2")),
+            Some(&23),
+            "the second segment keeps its tries"
+        );
+        assert_eq!(
+            tries.get(&key("s1")),
+            None,
+            "the first's one read produced the record"
+        );
+        assert_eq!(rebuilt_tries(&reads, &[]).get(&key("s2")), Some(&24));
+    }
 }

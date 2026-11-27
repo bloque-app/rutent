@@ -1230,31 +1230,46 @@ impl Duties for Jobs<'_> {
                     operator: &actors.operator,
                     core: &actors.core,
                 };
-                if let crate::segments::Read::Answered(question, bytes, _) =
-                    segments.read_node_record(parts, &read)
+                // Held to the grading's due time and to its own bound, and not asked once the record is taken
+                // (`T-020-67`).
+                if let Some(crate::segments::Read::Answered(question, bytes, _)) =
+                    segments.read_node_record_on_tick(parts, &read)
                 {
-                    answers.push((order.clone(), node.clone(), question, bytes));
+                    answers.push((
+                        order.clone(),
+                        segment.clone(),
+                        node.clone(),
+                        provider.clone(),
+                        question,
+                        bytes,
+                    ));
                 }
             }
         });
         let at = self.ports.clock().now().floor();
-        answers
-            .into_iter()
-            .filter_map(|(order, node, question, bytes)| {
-                crate::closing::publishers::taken(
-                    self.ports.catalogue(),
-                    at,
-                    &question.statement,
-                    &bytes,
-                )
-                .ok()
-                .map(|record| Published {
+        let mut published = Vec::new();
+        let mut taken = Vec::new();
+        for (order, segment, node, provider, question, bytes) in answers {
+            if let Ok(record) = crate::closing::publishers::taken(
+                self.ports.catalogue(),
+                at,
+                &question.statement,
+                &bytes,
+            ) {
+                taken.push((order.clone(), segment, node.clone(), provider));
+                published.push(Published {
                     order,
                     node,
                     record,
-                })
-            })
-            .collect()
+                });
+            }
+        }
+        self.ports.with_segments(&mut |segments, _| {
+            for (order, segment, node, provider) in &taken {
+                segments.note_record_taken(order, segment, node, provider);
+            }
+        });
+        published
     }
 
     fn unknown_segments(&self) -> Vec<Unknown> {

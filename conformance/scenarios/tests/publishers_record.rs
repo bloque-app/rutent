@@ -1342,3 +1342,69 @@ fn read_not_taken_is_asked_again_at_the_operators_publishers_records_cadence_acr
         "the cadence was rebuilt from the log's setting"
     );
 }
+
+/// The tick's reads of a node's record are held to the grading's due time and to a bound of their own, and stop once the
+/// record is taken; and a segment that waits more than a day is still graded with a record the publisher has by then: the
+/// tick, with its own bound beside the grading's cap, takes it and feeds the books (`REQ-ORD-41`, `NFR-5`, `T-020-67`).
+// verifies: REQ-ORD-41, NFR-5
+#[test]
+fn segment_waiting_more_than_a_day_is_graded_with_the_record_the_publisher_has_by_then_and_the_ticks_reads_stay_bounded()
+ {
+    use rutent_conformance::sim::Behaviour;
+    use rutent_core_orch::segments::{MAX_RECORD_TRIES, MAX_TICK_TRIES};
+    use rutent_scenarios::assembly::Tamper;
+    let names = [IN, EXCHANGE, QUICK, OUT, RESERVE];
+    let (mut core, session) = core_over(&names);
+    core.tamper_with_record_of(RESERVE, Tamper::NotKnown);
+    core.world().script_for(
+        RESERVE,
+        "deposit",
+        Behaviour {
+            unrecorded: true,
+            ..Behaviour::default()
+        },
+    );
+    let (order, ran) = run(
+        &mut core,
+        within("req-day", &session, AMOUNT, RESERVE, OTHER),
+    );
+    let waiting = accounted(&ran).to_vec();
+    let segment = waiting[1].segment.clone();
+    let reads = |core: &Core| reads_by(core, &order, &segment, RESERVE);
+    // More than a day of hours, a tick and a grading each: one read an hour between them, never two.
+    for hour in 1..=30 {
+        core.advance(3600);
+        core.tick();
+        core.run(&order).expect("runs");
+        assert!(reads(&core) <= 1 + hour, "hour {hour}: {}", reads(&core));
+    }
+    assert!(reads(&core) <= 31, "bounded: {}", reads(&core));
+    assert!(
+        reads(&core) <= (MAX_RECORD_TRIES + MAX_TICK_TRIES) as usize,
+        "within both bounds"
+    );
+    // The publisher has its record by now: the tick takes it, and the grading cites it.
+    core.lift_tamper_of_record_of(RESERVE);
+    core.advance(3600);
+    core.tick();
+    put_on_the_banks_record(&mut core, &transaction(&waiting[1]));
+    core.run(&order).expect("runs");
+    assert_eq!(
+        state(&mut core, &order),
+        rutent_contracts::state_machine::OrderState::Complete
+    );
+    let found = replays(&core, &order);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(
+        found[0].2,
+        ReplayFound::ConsistentWithTheExit {},
+        "{found:?}"
+    );
+    // And nothing more is asked once it is taken.
+    let taken = reads(&core);
+    for _ in 0..5 {
+        core.advance(3600);
+        core.tick();
+    }
+    assert_eq!(reads(&core), taken, "no read after the record was taken");
+}

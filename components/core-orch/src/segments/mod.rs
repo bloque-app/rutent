@@ -149,7 +149,7 @@ pub use ports::{
     Answered, Graded, Grading, Kept, Modules, NoProxy, ProvidersWord, RaiseDesk, RecordWanted,
     Short, ToGrade, ToKeep, Uses,
 };
-pub use records::{MAX_RECORD_TRIES, Read, RecordRead};
+pub use records::{MAX_RECORD_TRIES, MAX_TICK_TRIES, Read, RecordRead};
 pub use reopen::Reopening;
 pub use repeats::{RepeatOf, Repeated};
 pub use sign::Unwritten;
@@ -715,6 +715,8 @@ pub struct Segments {
     /// How often a node-record read Core didn't take is asked again, in seconds, where the deployment sets it
     /// ([`Segments::set_record_retry_seconds`]); the schedule's own cadence for the publishers' records otherwise.
     record_retry: Option<u64>,
+    /// How often the tick asked each read, by order, segment, node and provider, while this Core lives (its own bound).
+    tick_tries: BTreeMap<(String, String, String, String), u32>,
     /// The publishers' records of private nodes the log held when Core reopened, by what they say (`T-020-58`): a record
     /// read again after a restart, signed afresh, that says the same of the same order and node is not kept a second
     /// time, and cites the receipt the log gave the first.
@@ -2611,6 +2613,18 @@ impl Segments {
                 release(parts.exposures);
             }
             return Err(failure);
+        }
+        // What it began under is read at the point a reopened Core reads it, just before its start effect is appended, not
+        // when a first try built it: a try that failed before the effect and was taken up later began under the versions
+        // then (`T-020-67`, `T-020-54`).
+        if self.flight(at)?.effect.is_none() {
+            let started = parts.clock.now().floor();
+            let current = self.flight(at)?.statement.protocol_version.clone();
+            let versions = parts.catalogue.protocol_versions().unwrap_or_else(|| {
+                rutent_contracts::provider_role::ProtocolVersions::only(&current)
+            });
+            let flight = self.flight_mut(at)?;
+            flight.began = Began::of(&flight.statement.made_at, versions, started);
         }
         // The effect's entry and its receipt, before anything takes effect (`INV-7`).
         let receipt = match self.step(parts.log, at, "effect") {
