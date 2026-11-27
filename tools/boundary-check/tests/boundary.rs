@@ -634,8 +634,8 @@ fn a_crates_dev_dependency_on_itself_is_no_boundary_crossing() {
 }
 
 /// The reader host (`DEC-28`, `T-015-04`'s crate) depends on the contracts and on the provider system, for its egress
-/// layer only, and nothing of ours depends on it, not even the scenario assembly (`T-020-59`): any other edge from it,
-/// and any edge to it, is reported. Its sources never name Core's internal contract, and name the provider system only
+/// layer only, and nothing of ours depends on it but the scenario assembly's tests, as a dev-dependency (`T-020-59`):
+/// any other edge from it, and any other edge to it, is reported. Its sources never name Core's internal contract, and name the provider system only
 /// through `rutent_prov::egress`.
 // verifies: DEC-28, DEC-2, REQ-MOD-3
 #[test]
@@ -673,8 +673,8 @@ fn reader_host_reaches_only_the_contracts_and_the_providers_egress_and_nothing_r
         ["rutent-core-orch", "rutent-evidence", "rutent-conformance"]
     );
 
-    // Nothing of ours on it: a library, Core, the conformance suites, the assembly, as a dependency or a
-    // dev-dependency.
+    // Nothing of ours on it: a library, Core or the conformance suites, as a dependency or a dev-dependency, nor the
+    // assembly as a dependency of its build.
     let on_host = format!("{READER_HOST} = {{ path = \"../reader-host\" }}");
     let leaning = fixture(&[
         &contracts,
@@ -773,4 +773,56 @@ fn reader_host_reaches_only_the_contracts_and_the_providers_egress_and_nothing_r
             .all(|deps| deps.iter().all(|d| d.name != READER_HOST)),
         "nothing of ours depends on the reader host"
     );
+}
+
+/// The scenario assembly's tests run the simulated networks' readers in the test harness (`T-024-25`), so the assembly
+/// may take the reader host as a dev-dependency, and never as a dependency of its build; the host never takes the
+/// assembly, either way (`T-020-59`'s review, L6).
+// verifies: DEC-28, DEC-2
+#[test]
+fn scenario_assembly_takes_the_reader_host_for_its_tests_only() {
+    let contracts = manifest("rutent-contracts", "", "");
+    let host_dep = format!("{READER_HOST} = {{ path = \"../../components/reader-host\" }}");
+    let host = |deps: &str, dev: &str| manifest(READER_HOST, deps, dev);
+    let allowed = "rutent-contracts = { path = \"../../contracts\" }";
+    // The assembly's tests: allowed.
+    let tests_only = fixture(&[
+        &contracts,
+        &host(allowed, ""),
+        &manifest("rutent-scenarios", allowed, &host_dep),
+    ]);
+    let all: Vec<&str> = tests_only.keys().map(String::as_str).collect();
+    assert_eq!(violations(&tests_only, &all), vec![]);
+    // The assembly's build: refused.
+    let built = fixture(&[
+        &contracts,
+        &host(allowed, ""),
+        &manifest("rutent-scenarios", &format!("{allowed}\n{host_dep}"), ""),
+    ]);
+    let all: Vec<&str> = built.keys().map(String::as_str).collect();
+    let pairs: Vec<_> = violations(&built, &all)
+        .into_iter()
+        .map(|v| (v.krate, v.dep))
+        .collect();
+    assert_eq!(
+        pairs,
+        [("rutent-scenarios".to_string(), READER_HOST.to_string())]
+    );
+    // The other way: the host on the assembly, as a dependency or a dev-dependency, is refused.
+    let on_assembly = "rutent-scenarios = { path = \"../../conformance/scenarios\" }";
+    for (deps, dev) in [
+        (format!("{allowed}\n{on_assembly}"), String::new()),
+        (allowed.to_string(), on_assembly.to_string()),
+    ] {
+        let graph = fixture(&[
+            &contracts,
+            &host(&deps, &dev),
+            &manifest("rutent-scenarios", allowed, ""),
+        ]);
+        let pairs: Vec<_> = violations(&graph, &[READER_HOST])
+            .into_iter()
+            .map(|v| v.dep)
+            .collect();
+        assert_eq!(pairs, ["rutent-scenarios"]);
+    }
 }

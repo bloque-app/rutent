@@ -361,12 +361,14 @@ pub enum CatalogueChange {
     /// Listing a public network with the reader service that reads it (`DEC-28`, ADR-0007 as amended, `T-020-59`): it
     /// names the network and its listing ([`PublicNetwork`], [`NetworkListing`]): the network's identity, the reader's
     /// endpoint, its identity (the operator's CA, the host's subject name and the reader's statement key, never the
-    /// host's leaf certificate), its version and its trust rule. Its `provider` is the deployment's operator: a reader
-    /// is the operator's own. Policy decides it under a permission of its own, held to the deployment operator's logins.
+    /// host's leaf certificate), its version and its trust rule. A reader is the operator's own, so its `provider` is the
+    /// caller's own party: the deployment operator's, or one of its desks' (policy refuses any other). Core keys the
+    /// public list by the network, never by this provider (`T-020-60`). Policy decides it under a permission of its own,
+    /// held to the deployment operator's logins.
     ListPublicNetwork,
     /// Delisting a public network (`DEC-28`, `T-020-59`): it names the network alone ([`PublicNetwork`] with no
-    /// listing). Its `provider` is the deployment's operator. Policy decides it under a permission of its own, held to the
-    /// deployment operator's logins.
+    /// listing). Its `provider` is the caller's own party, as a listing's is. Policy decides it under a permission of its
+    /// own, held to the deployment operator's logins.
     DelistPublicNetwork,
 }
 
@@ -446,23 +448,12 @@ impl CatalogueChange {
 checked_text!(
     /// The subject name a reader host's server certificate carries (its SAN, a `dNSName`), which Core holds the host's
     /// certificate to under the operator's CA (`DEC-28`): a lower-case DNS name of LDH labels, each 1 to 63 characters,
-    /// neither starting nor ending with a hyphen, at least two labels, up to 253 characters, with no wildcard and no
-    /// trailing dot, so it names one host. Schema: `urn:rutent:core-internal:common#/$defs/subject_name`.
+    /// neither starting nor ending with a hyphen, at least two labels, up to 253 characters, with no wildcard, no
+    /// trailing dot and a last label that is not all digits, so it names one host by name and is never matched as an IP
+    /// address (`crate::reader::is_host_name`). Schema: `urn:rutent:core-internal:common#/$defs/subject_name`.
     SubjectName,
-    |t| {
-        let labels: Vec<&str> = t.split('.').collect();
-        t.len() <= 253
-            && labels.len() >= 2
-            && labels.iter().all(|label| {
-                (1..=63).contains(&label.len())
-                    && label
-                        .bytes()
-                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
-                    && !label.starts_with('-')
-                    && !label.ends_with('-')
-            })
-    },
-    "a subject name is a lower-case DNS name of at least two labels, with no wildcard"
+    crate::reader::is_host_name,
+    "a subject name is a lower-case DNS host name of at least two labels, with no wildcard and no IP literal"
 );
 
 /// A public network a listing or a delisting is about (`DEC-28`, `T-020-59`): the network, as an outer node names it,
@@ -522,7 +513,8 @@ pub struct ReaderEndpoint {
 #[serde(deny_unknown_fields)]
 pub struct ReaderIdentity {
     /// The SHA-256 digest of the operator's CA certificate (DER), the trust anchor Core checks the host's chain to:
-    /// a CA's, never a leaf's, which Core's link refuses as an anchor (`T-020-60`).
+    /// a CA's, never a leaf's. The contract can't tell a leaf's digest put here from a CA's; Core's link compares it
+    /// with the CA the deployment hands it, so a leaf's digest fails closed and its network doesn't start (`T-020-60`).
     pub ca: Digest,
     /// The subject name the host's server certificate must carry.
     pub subject_name: SubjectName,

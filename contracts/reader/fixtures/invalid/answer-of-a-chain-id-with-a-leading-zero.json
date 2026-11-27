@@ -5,7 +5,7 @@
   },
   "protocol_version": "4.0.0",
   "shape": "urn:rutent:reader:answer",
-  "maker": "kreivo-reader",
+  "maker": "base-reader",
   "made_at": "2026-11-27T10:00:01Z",
   "signature": {
     "scheme": "ed25519",
@@ -14,7 +14,7 @@
   },
   "statement": {
     "request": "9f3c2a7be14d4c0e8a51d6b07e2f9c13",
-    "network": "kreivo",
+    "network": "base",
     "version": "0.1.0",
     "asked": {
       "question": "network_rules"
@@ -27,13 +27,21 @@
           "id": "08453"
         },
         "finality": {
-          "finality": "checkpoint"
+          "finality": "confirmations",
+          "count": 12
         },
         "reorg": {
-          "reorg": "until_final"
+          "reorg": "depth_bound",
+          "depth": 12
         },
         "trust": {
-          "rule": "light_client"
+          "rule": "rpc_pool",
+          "quorum": 2,
+          "endpoints": [
+            "https://rpc-a.base.example",
+            "https://rpc-b.base.example:8545",
+            "wss://rpc-c.base.example/"
+          ]
         }
       }
     }

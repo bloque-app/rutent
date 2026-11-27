@@ -39,8 +39,8 @@
           "quorum": 2,
           "endpoints": [
             "https://key@rpc-a.base.example",
-            "https://rpc-b.base.example:8545/v1",
-            "wss://rpc-c.base.example/ws"
+            "https://rpc-b.base.example:8545",
+            "wss://rpc-c.base.example/"
           ]
         }
       }

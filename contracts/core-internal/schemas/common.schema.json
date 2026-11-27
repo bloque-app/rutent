@@ -492,16 +492,19 @@
           }
         },
         "public_network": {
-          "description": "The public network a listing or a delisting is about: named exactly by list_public_network, with its listing, and by delist_public_network, without one, which the Rust types check (DEC-28, T-020-59). The change's provider is then the deployment's operator.",
+          "description": "The public network a listing or a delisting is about: named exactly by list_public_network, with its listing, and by delist_public_network, without one, which the Rust types check (DEC-28, T-020-59). The change's provider is then the caller's own party: the deployment operator's, or one of its desks'.",
           "$ref": "#/$defs/public_network"
         }
       }
     },
     "subject_name": {
-      "description": "The subject name a reader host's server certificate carries (its SAN, a dNSName), which Core holds the host's certificate to under the operator's CA (DEC-28): a lower-case DNS name of at least two labels, with no wildcard and no trailing dot, so it names one host.",
+      "description": "The subject name a reader host's server certificate carries (its SAN, a dNSName), which Core holds the host's certificate to under the operator's CA (DEC-28): a lower-case DNS name of at least two labels, with no wildcard, no trailing dot and a last label that is not all digits, so it names one host and is never an IP address's literal.",
       "type": "string",
       "maxLength": 253,
-      "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$"
+      "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$",
+      "not": {
+        "pattern": "\\.[0-9]+$"
+      }
     },
     "public_network": {
       "description": "A public network a listing or a delisting is about (DEC-28, T-020-59): the network, as an outer node names it, and, for a listing, what lists it.",
@@ -521,7 +524,7 @@
       }
     },
     "network_listing": {
-      "description": "What lists a public network (DEC-28, ADR-0007 as amended): the network's identity, how to find its reader, who the reader is, its version and its trust rule. Core checks each at start-up against the reader's own network_rules answer, and a network whose reader is unreachable or fails the check doesn't start.",
+      "description": "What lists a public network (DEC-28, ADR-0007 as amended): the network's identity, how to find its reader, who the reader is, its version and its trust rule. Its identity and trust rule are paired: a chain id is read from an RPC pool, and a genesis hash by a light client. Core checks each at start-up against the reader's own network_rules answer, and a network whose reader is unreachable or fails the check doesn't start.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -550,7 +553,69 @@
           "description": "The reader's trust rule: a light client, or a pool of RPC endpoints with a quorum of at least two.",
           "$ref": "urn:rutent:reader:common#/$defs/trust_rule"
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "identity"
+            ],
+            "properties": {
+              "identity": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "chain_id"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "trust": {
+                "properties": {
+                  "rule": {
+                    "const": "rpc_pool"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "identity"
+            ],
+            "properties": {
+              "identity": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "genesis_hash"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "trust": {
+                "properties": {
+                  "rule": {
+                    "const": "light_client"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
     },
     "reader_endpoint": {
       "description": "How Core finds a reader (item reader-registration-path): the deployment's host setting, by name, that holds its reader host's address, and the reader's name on that host, the maker of its answers.",

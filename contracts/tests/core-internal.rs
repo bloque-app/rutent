@@ -365,7 +365,22 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 141] = [
+const SCHEMA_RULES: [SchemaRule; 144] = [
+    (
+        "decision-request-to-list-a-public-network-of-a-chain-id-read-by-a-light-client",
+        &[("/action/public_network/listing/trust/rule", "const")],
+        "a chain id is read from an rpc pool, and a genesis hash by a light client",
+    ),
+    (
+        "decision-request-to-list-a-public-network-of-a-genesis-hash-read-from-an-rpc-pool",
+        &[("/action/public_network/listing/trust/rule", "const")],
+        "a chain id is read from an rpc pool, and a genesis hash by a light client",
+    ),
+    (
+        "decision-request-to-list-a-public-network-under-an-ip-literal-subject-name",
+        &[("/action/public_network/listing/reader/subject_name", "not")],
+        "a subject name is a lower-case DNS host name of at least two labels, with no wildcard and no IP literal",
+    ),
     (
         "decision-request-to-list-a-public-network-pinning-the-hosts-leaf-certificate",
         &[(
@@ -391,7 +406,7 @@ const SCHEMA_RULES: [SchemaRule; 141] = [
             "/action/public_network/listing/reader/subject_name",
             "pattern",
         )],
-        "a subject name is a lower-case DNS name of at least two labels, with no wildcard",
+        "a subject name is a lower-case DNS host name of at least two labels, with no wildcard and no IP literal",
     ),
     (
         "decision-request-to-list-a-public-network-without-its-readers-statement-key",
@@ -5471,6 +5486,10 @@ fn listing_a_public_network_names_its_identity_and_its_readers_endpoint_identity
         "decision-request-to-delist-a-public-network-naming-a-listing",
         "decision-request-to-promote-naming-a-public-network",
         "decision-request-to-list-a-public-network-from-an-rpc-pool-with-a-quorum-of-one",
+        // The identity paired with the trust rule (the review's M1): no EVM chain read by a light client, and no
+        // Substrate network read from a pool.
+        "decision-request-to-list-a-public-network-of-a-chain-id-read-by-a-light-client",
+        "decision-request-to-list-a-public-network-of-a-genesis-hash-read-from-an-rpc-pool",
     ] {
         assert_rejected(name);
     }
@@ -5507,12 +5526,33 @@ fn listing_a_public_network_names_its_identity_and_its_readers_endpoint_identity
             "an rpc pool has at least as many endpoints as its quorum"
         ))
     );
+    let mut action = action;
+    if let Action::ChangeCatalogue {
+        public_network: Some(network),
+        ..
+    } = &mut action
+        && let Some(listing) = network.listing.as_mut()
+    {
+        listing.identity = NetworkIdentity::GenesisHash {
+            hash: rutent_contracts::reader::GenesisHash::new(
+                "0xc710a5f16adc17bcd212cff0aedcbf1c1212a043cdc0fb2dcba861efe5305b01",
+            )
+            .unwrap(),
+        };
+    }
+    assert_eq!(
+        action.check(),
+        Err(Violation(
+            "a chain id is read from an rpc pool, and a genesis hash by a light client"
+        ))
+    );
 }
 
 /// The listing pins the reader's identity as the operator's CA, the host's subject name and the reader's statement key,
 /// never the host's leaf certificate, so rotating the leaf under the same CA and name needs no listing change
 /// (`DEC-28`): a listing that pins a leaf, beside the CA or in its place, is refused, and so is one whose subject name is
-/// a wildcard, which would name every host under the CA.
+/// a wildcard, which would name every host under the CA, or an IP literal, which a TLS client matches as an address and
+/// not as a name.
 // verifies: DEC-28
 #[test]
 fn listing_that_pins_a_hosts_leaf_certificate_is_refused() {
@@ -5521,6 +5561,7 @@ fn listing_that_pins_a_hosts_leaf_certificate_is_refused() {
         "decision-request-to-list-a-public-network-pinning-the-hosts-leaf-certificate",
         "decision-request-to-list-a-public-network-pinning-a-leaf-certificate-in-place-of-its-ca",
         "decision-request-to-list-a-public-network-under-a-wildcard-subject-name",
+        "decision-request-to-list-a-public-network-under-an-ip-literal-subject-name",
     ] {
         assert_rejected(name);
     }
@@ -5548,6 +5589,9 @@ fn listing_that_pins_a_hosts_leaf_certificate_is_refused() {
         "readers.rutent.internal.",
         "-readers.rutent.internal",
         "10.0.0.1:443",
+        "10.0.0.1",
+        "127.0.0.1",
+        "1.2",
     ] {
         assert_eq!(SubjectName::new(name), None, "{name}");
     }

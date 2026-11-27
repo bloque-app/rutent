@@ -121,11 +121,15 @@ checked_text!(
     "a reason is 1 to 64 of a-z 0-9 _, starting with a letter"
 );
 
-/// True when `host` is a DNS name of lower-case LDH labels, each 1 to 63 characters, neither starting nor ending in a
-/// hyphen, with no trailing dot.
-fn is_dns_name(host: &str) -> bool {
+/// True when `host` names one host by a DNS name: lower-case LDH labels, each 1 to 63 characters, neither starting nor
+/// ending with a hyphen, at least two of them, up to 253 characters, with no trailing dot and no wildcard, and a last
+/// label that is not all digits, so it is never an IP address's literal (`T-020-59`'s review, L1). The reader's RPC
+/// endpoints and core-internal's subject names are held to it.
+pub fn is_host_name(host: &str) -> bool {
+    let labels: Vec<&str> = host.split('.').collect();
     host.len() <= 253
-        && host.split('.').all(|label| {
+        && labels.len() >= 2
+        && labels.iter().all(|label| {
             (1..=63).contains(&label.len())
                 && label
                     .bytes()
@@ -133,19 +137,19 @@ fn is_dns_name(host: &str) -> bool {
                 && !label.starts_with('-')
                 && !label.ends_with('-')
         })
+        && labels
+            .last()
+            .is_some_and(|last| !last.bytes().all(|c| c.is_ascii_digit()))
 }
 
-fn is_rpc_endpoint(text: &str) -> bool {
-    let Some(rest) = text
+/// The host and the port an endpoint names: `None` where it isn't an endpoint.
+fn endpoint_parts(text: &str) -> Option<(&str, Option<&str>)> {
+    let rest = text
         .strip_prefix("https://")
-        .or_else(|| text.strip_prefix("wss://"))
-    else {
-        return false;
-    };
-    let (authority, path) = match rest.find('/') {
-        Some(at) => (&rest[..at], Some(&rest[at..])),
-        None => (rest, None),
-    };
+        .or_else(|| text.strip_prefix("wss://"))?;
+    // No path beyond `/`: a node's key can sit in a path segment, and the contract can't tell one from a route, so
+    // a provider that needs a path or a key reaches it through the egress layer's secret lookup, never the listing.
+    let authority = rest.strip_suffix('/').unwrap_or(rest);
     let (host, port) = match authority.split_once(':') {
         Some((host, port)) => (host, Some(port)),
         None => (authority, None),
@@ -157,22 +161,31 @@ fn is_rpc_endpoint(text: &str) -> bool {
             && !p.starts_with('0')
             && p.parse::<u32>().is_ok_and(|n| n <= 65_535)
     });
-    let path_ok = path.is_none_or(|p| {
-        p.bytes()
-            .all(|c| c.is_ascii_alphanumeric() || b"._~/-".contains(&c))
-    });
-    text.len() <= 256 && is_dns_name(host) && port_ok && path_ok
+    (text.len() <= 256 && is_host_name(host) && port_ok).then_some((host, port))
+}
+
+fn is_rpc_endpoint(text: &str) -> bool {
+    endpoint_parts(text).is_some()
 }
 
 checked_text!(
-    /// One endpoint of an RPC pool: an `https` or `wss` URL to a DNS name, with an optional port and path, and no
-    /// user, query or fragment, up to 256 characters. The reader host's egress reaches it by its name; a key a node
-    /// needs is resolved by name by the host and never written here (`REQ-MDL-6` applied to readers). Schema:
-    /// `urn:rutent:reader:common#/$defs/rpc_endpoint`.
+    /// One endpoint of an RPC pool: an `https` or `wss` URL to a host's DNS name (never an IP literal), with an
+    /// optional port and at most a trailing `/`: no user, query, fragment or path, so nothing that could be a key is
+    /// written in a listing (`T-020-59`'s review, L2). The reader host's egress reaches it by its name; a key or a path
+    /// a node needs is resolved by name by the host through the egress layer's secret lookup (`REQ-MDL-6` applied to
+    /// readers). Schema: `urn:rutent:reader:common#/$defs/rpc_endpoint`.
     RpcEndpoint,
     is_rpc_endpoint,
-    "an rpc endpoint is an https or wss URL to a lower-case DNS name, with an optional port and path, and no user, query or fragment"
+    "an rpc endpoint is an https or wss URL to a lower-case DNS host name, with an optional port and no user, path, query or fragment"
 );
+
+impl RpcEndpoint {
+    /// The host it names: what a pool's quorum counts, whatever the scheme, port or trailing `/` (`T-020-59`'s review,
+    /// M2).
+    pub fn host(&self) -> &str {
+        endpoint_parts(&self.0).map_or("", |(host, _)| host)
+    }
+}
 
 /// A count of blocks: at least one. Schema: `urn:rutent:reader:common#/$defs/depth`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -294,6 +307,16 @@ impl TrustRule {
             {
                 return Err(Violation("an rpc pool names each endpoint once"));
             }
+            // A quorum is of nodes, not of spellings: two endpoints on one host, by another scheme, port or trailing
+            // `/`, are one node agreeing with itself (`T-020-59`'s review, M2). Separate names that resolve to one
+            // provider are beyond the contract.
+            if endpoints
+                .iter()
+                .enumerate()
+                .any(|(i, e)| endpoints[..i].iter().any(|o| o.host() == e.host()))
+            {
+                return Err(Violation("an rpc pool names each host once"));
+            }
             if (endpoints.len() as u64) < u64::from(*quorum) {
                 return Err(Violation(
                     "an rpc pool has at least as many endpoints as its quorum",
@@ -367,6 +390,29 @@ pub struct NetworkRules {
     pub reorg: ReorgRule,
     /// The reader's trust rule.
     pub trust: TrustRule,
+}
+
+impl NetworkRules {
+    /// Checks the rules of a network's rules the schema states too: its identity and its trust rule are paired
+    /// ([`check_pairing`]), and the trust rule holds to its own rules.
+    pub fn check(&self) -> Result<(), Violation> {
+        check_pairing(&self.identity, &self.trust)?;
+        self.trust.check()
+    }
+}
+
+/// Holds a network's identity to its trust rule (item `reader-answer-trust`, `T-020-59`'s review, M1): an EVM network,
+/// by its chain id, is read from a pool of RPC endpoints with a quorum, and a Substrate network, by its genesis hash,
+/// by a light client. Anything else is refused: an EVM chain read by a "light client" would skip the quorum the owner
+/// required, and its reader's own code, which is not trusted, would hold it instead of the reader host.
+pub fn check_pairing(identity: &NetworkIdentity, trust: &TrustRule) -> Result<(), Violation> {
+    match (identity, trust) {
+        (NetworkIdentity::ChainId { .. }, TrustRule::RpcPool { .. })
+        | (NetworkIdentity::GenesisHash { .. }, TrustRule::LightClient(_)) => Ok(()),
+        _ => Err(Violation(
+            "a chain id is read from an rpc pool, and a genesis hash by a light client",
+        )),
+    }
 }
 
 /// A movement as the network records it. Schema: `urn:rutent:reader:common#/$defs/movement`.
@@ -485,7 +531,7 @@ impl ReaderAnswer {
             ));
         }
         if let Answered::NetworkRules { rules } = &self.answer {
-            rules.trust.check()?;
+            rules.check()?;
         }
         Ok(())
     }

@@ -5,10 +5,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use jsonschema::{Registry, Validator};
-use rutent_contracts::provider_role::{PublicKey, Statement};
+use rutent_contracts::provider_role::{Deployment, ProtocolVersions, PublicKey, Statement};
 use rutent_contracts::reader::{
-    ANSWER_SHAPE, Asked, LEAST_QUORUM, ReaderAnswer, ReaderMismatch, ReaderQuestion, RequestId,
-    RpcEndpoint, TrustRule, VERSION, check_reader_answer,
+    ANSWER_SHAPE, Answered, Asked, Expected, LEAST_QUORUM, NetworkIdentity, ReaderAnswer,
+    ReaderMismatch, ReaderQuestion, RequestId, RpcEndpoint, TrustRule, VERSION, check_pairing,
+    check_reader_answer, is_host_name,
 };
 use rutent_contracts::router_api::{Timestamp, Version};
 use serde::Serialize;
@@ -23,7 +24,19 @@ const REFERRED: [&str; 1] = ["provider-role"];
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is refused by both.
-const RUST_RULES: [(&str, &str); 2] = [
+const RUST_RULES: [(&str, &str); 5] = [
+    (
+        "answer-of-an-rpc-pool-naming-one-host-with-and-without-a-trailing-slash",
+        "an rpc pool names each host once",
+    ),
+    (
+        "answer-of-an-rpc-pool-naming-one-host-with-its-default-port",
+        "an rpc pool names each host once",
+    ),
+    (
+        "answer-of-an-rpc-pool-naming-one-host-by-two-schemes",
+        "an rpc pool names each host once",
+    ),
     (
         "answer-of-an-rpc-pool-with-fewer-endpoints-than-its-quorum",
         "an rpc pool has at least as many endpoints as its quorum",
@@ -240,22 +253,41 @@ fn answer(name: &str) -> Statement<ReaderAnswer> {
     serde_json::from_value(fixture("valid", name)).unwrap()
 }
 
-/// The listed statement key and version of the fixtures' reader, and Core's clock as the answer reaches it: before
-/// the question's deadline.
-fn listed() -> (PublicKey, Version, Timestamp) {
-    (
-        PublicKey::new("oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8").unwrap(),
-        Version::new("0.1.0").unwrap(),
-        Timestamp::new("2026-11-27T10:00:02Z").unwrap(),
-    )
+/// What Core expects of the fixtures' answers: their deployment, the one protocol version in force, the reader's listed
+/// statement key and version; and Core's clock as the answer reaches it, before the question's deadline.
+struct Listed {
+    deployment: Deployment,
+    versions: ProtocolVersions,
+    key: PublicKey,
+    version: Version,
+    now: Timestamp,
 }
 
-fn held(
-    question: &ReaderQuestion,
-    answer: &Statement<ReaderAnswer>,
-) -> Result<(), Vec<ReaderMismatch>> {
-    let (key, version, now) = listed();
-    check_reader_answer(question, answer, &key, &version, &now)
+impl Listed {
+    fn expected(&self) -> Expected<'_> {
+        Expected {
+            deployment: &self.deployment,
+            versions: &self.versions,
+            key: &self.key,
+            version: &self.version,
+        }
+    }
+}
+
+fn listed() -> Listed {
+    Listed {
+        deployment: serde_json::from_value(fixture("valid", "answer-of-a-final-movement")["deployment"].clone())
+            .unwrap(),
+        versions: ProtocolVersions::only("4.0.0"),
+        key: PublicKey::new("oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8").unwrap(),
+        version: Version::new("0.1.0").unwrap(),
+        now: Timestamp::new("2026-11-27T10:00:02Z").unwrap(),
+    }
+}
+
+fn held(question: &ReaderQuestion, answer: &Statement<ReaderAnswer>) -> Result<(), Vec<ReaderMismatch>> {
+    let listed = listed();
+    check_reader_answer(question, answer, &listed.expected(), &listed.now)
 }
 
 /// An answer is held to the question Core sent: the same request, the same network, the same kind of question, and
@@ -333,14 +365,19 @@ fn reader_answer_to_another_request_or_movement_than_the_one_asked_is_refused() 
 }
 
 /// An answer is held to the reader the listing names: its maker, its statement key and its version; and to the
-/// question's deadline on Core's own clock, never the host's: the answer's `made_at` is not read (`DEC-28`,
-/// `REQ-AUD-4`).
-// verifies: DEC-28, REQ-AUD-4
+/// question's deadline on Core's own clock, never the host's: the answer's `made_at` is not read; to the envelope's
+/// deployment and protocol version; and to its own rules, built in memory as read (`DEC-28`, `REQ-AUD-4`,
+/// `REQ-PRT-1`).
+// verifies: DEC-28, REQ-AUD-4, REQ-PRT-1
 #[test]
 fn reader_answer_from_another_reader_key_or_version_or_past_its_deadline_is_refused() {
     let status = question("question-for-a-movements-status");
     let good = answer("answer-of-a-final-movement");
-    let (key, version, now) = listed();
+    let listed = listed();
+    let at_time = |expected: &Expected<'_>, answer: &Statement<ReaderAnswer>, now: &str| {
+        check_reader_answer(&status, answer, expected, &Timestamp::new(now).unwrap())
+    };
+    let now = listed.now.as_str();
     let mut other = good.clone();
     other.maker = "kusama-reader".to_owned();
     assert_eq!(
@@ -349,11 +386,12 @@ fn reader_answer_from_another_reader_key_or_version_or_past_its_deadline_is_refu
     );
     let another_key = PublicKey::new("AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA").unwrap();
     assert_eq!(
-        check_reader_answer(&status, &good, &another_key, &version, &now),
+        at_time(&Expected { key: &another_key, ..listed.expected() }, &good, now),
         Err(vec![ReaderMismatch::SignedWithAnotherKey])
     );
+    let another_version = Version::new("0.2.0").unwrap();
     assert_eq!(
-        check_reader_answer(&status, &good, &key, &Version::new("0.2.0").unwrap(), &now),
+        at_time(&Expected { version: &another_version, ..listed.expected() }, &good, now),
         Err(vec![ReaderMismatch::OfAnotherVersion])
     );
     let mut shaped = good.clone();
@@ -362,29 +400,45 @@ fn reader_answer_from_another_reader_key_or_version_or_past_its_deadline_is_refu
         held(&status, &shaped),
         Err(vec![ReaderMismatch::NotAnAnswer])
     );
-    // The deadline, on Core's clock: at it the answer is taken, after it refused.
-    let at = Timestamp::new("2026-11-27T10:00:05Z").unwrap();
-    let late = Timestamp::new("2026-11-27T10:00:05.000000001Z").unwrap();
+    // The envelope's deployment and protocol version (`REQ-PRT-1`, the review's L4).
+    let mut elsewhere = good.clone();
+    elsewhere.deployment.name = "another-deployment".to_owned();
     assert_eq!(
-        check_reader_answer(&status, &good, &key, &version, &at),
-        Ok(())
+        held(&status, &elsewhere),
+        Err(vec![ReaderMismatch::OfAnotherDeployment])
     );
+    let mut later = good.clone();
+    later.protocol_version = "9.9.9".to_owned();
     assert_eq!(
-        check_reader_answer(&status, &good, &key, &version, &late),
+        held(&status, &later),
+        Err(vec![ReaderMismatch::UnderAProtocolVersionNotInForce])
+    );
+    // A value built in memory is held to the answer's own rules, as one read from the wire is: a network's rules
+    // answering a movement's question it names.
+    let mut built = good.clone();
+    built.statement.answer = answer("answer-of-a-light-client-networks-rules").statement.answer;
+    assert!(built.statement.check().is_err());
+    assert_eq!(
+        held(&status, &built),
+        Err(vec![ReaderMismatch::BreaksItsShape])
+    );
+    // The deadline, on Core's clock: at it the answer is taken, after it refused.
+    let at = "2026-11-27T10:00:05Z";
+    let late = "2026-11-27T10:00:05.000000001Z";
+    assert_eq!(at_time(&listed.expected(), &good, at), Ok(()));
+    assert_eq!(
+        at_time(&listed.expected(), &good, late),
         Err(vec![ReaderMismatch::PastItsDeadline])
     );
     // The host's clock decides nothing: an answer it says it made after the deadline, reaching Core before it, is
     // taken, and one it says it made long before, reaching Core after it, is refused.
     let mut host_late = good.clone();
     host_late.made_at = "2026-11-27T11:00:00Z".to_owned();
-    assert_eq!(
-        check_reader_answer(&status, &host_late, &key, &version, &now),
-        Ok(())
-    );
+    assert_eq!(at_time(&listed.expected(), &host_late, now), Ok(()));
     let mut host_early = good.clone();
     host_early.made_at = "2026-11-27T09:00:00Z".to_owned();
     assert_eq!(
-        check_reader_answer(&status, &host_early, &key, &version, &late),
+        at_time(&listed.expected(), &host_early, late),
         Err(vec![ReaderMismatch::PastItsDeadline])
     );
 }
@@ -495,6 +549,125 @@ fn reader_question_carries_a_request_id_drawn_at_random_and_a_deadline() {
             "{name}: the schema"
         );
         assert!(through_rust("question", &value).is_err(), "{name}: Rust");
+    }
+}
+
+/// A pool's quorum counts hosts, not spellings (the review of `T-020-59`, M2): one host named with and without a
+/// trailing `/`, with its default port, by two schemes, or by two paths, is one node agreeing with itself, and is
+/// refused; a pool of distinct hosts, on any ports, is taken.
+// verifies: DEC-28
+#[test]
+fn rpc_pool_quorum_counts_distinct_hosts_not_spellings() {
+    let pool = |endpoints: &[&str]| -> Result<TrustRule, String> {
+        let wire = serde_json::json!({"rule": "rpc_pool", "endpoints": endpoints, "quorum": 2});
+        serde_json::from_value::<TrustRule>(wire).map_err(|e| e.to_string())
+    };
+    for pair in [
+        ["https://rpc-a.base.example", "https://rpc-a.base.example/"],
+        ["https://rpc-a.base.example", "https://rpc-a.base.example:443"],
+        ["https://rpc-a.base.example", "wss://rpc-a.base.example"],
+        ["https://rpc-a.base.example", "https://rpc-a.base.example:8545"],
+        ["https://rpc-a.base.example/a", "https://rpc-a.base.example/b"],
+        ["https://rpc-a.base.example/", "https://rpc-a.base.example//"],
+    ] {
+        assert!(pool(&pair).is_err(), "{pair:?} is one host");
+    }
+    for pair in [
+        ["https://rpc-a.base.example", "https://rpc-b.base.example"],
+        ["https://rpc-a.base.example:8545", "wss://rpc-b.base.example/"],
+    ] {
+        assert!(pool(&pair).is_ok(), "{pair:?} are two hosts");
+    }
+    assert_eq!(
+        RpcEndpoint::new("wss://rpc-a.base.example:8545/").unwrap().host(),
+        "rpc-a.base.example"
+    );
+    for name in [
+        "answer-of-an-rpc-pool-naming-one-host-with-and-without-a-trailing-slash",
+        "answer-of-an-rpc-pool-naming-one-host-with-its-default-port",
+        "answer-of-an-rpc-pool-naming-one-host-by-two-schemes",
+    ] {
+        let refused = through_rust("answer", &fixture("invalid", name));
+        assert!(
+            refused.as_ref().is_err_and(|e| e.contains("an rpc pool names each host once")),
+            "{name}: {refused:?}"
+        );
+    }
+}
+
+/// A network's identity and its trust rule are paired (item `reader-answer-trust`, the review of `T-020-59`, M1): an
+/// EVM network, by its chain id, is read from an RPC pool with a quorum, and a Substrate network, by its genesis hash,
+/// by a light client; the two other pairs are refused, so no EVM chain skips its quorum.
+// verifies: DEC-28, REQ-ORD-39
+#[test]
+fn network_identity_is_paired_with_its_trust_rule() {
+    let rules = |name: &str| match answer(name).statement.answer {
+        Answered::NetworkRules { rules } => rules,
+        other => panic!("{name}: {other:?}"),
+    };
+    let light = rules("answer-of-a-light-client-networks-rules");
+    let pool = rules("answer-of-an-rpc-pool-networks-rules");
+    assert!(matches!(light.identity, NetworkIdentity::GenesisHash { .. }));
+    assert!(matches!(pool.identity, NetworkIdentity::ChainId { .. }));
+    assert_eq!(check_pairing(&light.identity, &light.trust), Ok(()));
+    assert_eq!(check_pairing(&pool.identity, &pool.trust), Ok(()));
+    assert!(check_pairing(&pool.identity, &light.trust).is_err(), "a chain id read by a light client");
+    assert!(check_pairing(&light.identity, &pool.trust).is_err(), "a genesis hash read from a pool");
+    for name in [
+        "answer-of-a-chain-id-read-by-a-light-client",
+        "answer-of-a-genesis-hash-read-from-an-rpc-pool",
+    ] {
+        let value = fixture("invalid", name);
+        assert!(!validator("answer").is_valid(&value), "{name}: the schema");
+        let refused = through_rust("answer", &value);
+        assert!(
+            refused.as_ref().is_err_and(|e| e.contains("a chain id is read from an rpc pool")),
+            "{name}: {refused:?}"
+        );
+    }
+}
+
+/// An RPC endpoint names a host by its DNS name and nothing that could be a key (the review of `T-020-59`, L1 and L2):
+/// no IP literal, no single-label host, no user, path, query or fragment; a key or a path a node needs is the reader
+/// host's to resolve by name through the egress layer's secret lookup.
+// verifies: DEC-28, REQ-MDL-6
+#[test]
+fn rpc_endpoint_names_a_host_and_nothing_that_could_be_a_key() {
+    for text in [
+        "https://rpc-a.base.example",
+        "https://rpc-a.base.example/",
+        "wss://rpc-a.base.example:8546",
+        "https://1rpc.io",
+    ] {
+        assert!(RpcEndpoint::new(text).is_some(), "{text}");
+    }
+    for text in [
+        "https://169.254.169.254",
+        "https://127.0.0.1:8545",
+        "https://1.2",
+        "https://localhost",
+        "https://key@rpc-a.base.example",
+        "https://rpc-a.base.example/v3/0123456789abcdef0123456789abcdef",
+        "https://rpc-a.base.example/a",
+        "https://rpc-a.base.example/?apikey=k",
+        "https://rpc-a.base.example/#k",
+        "https://rpc-a.base.example//",
+    ] {
+        assert_eq!(RpcEndpoint::new(text), None, "{text}");
+    }
+    assert!(is_host_name("readers.rutent.internal") && !is_host_name("10.0.0.1"));
+    for name in [
+        "answer-of-an-rpc-pool-endpoint-at-an-ip-literal",
+        "answer-of-an-rpc-pool-endpoint-at-a-single-label-host",
+        "answer-of-an-rpc-pool-endpoint-with-a-path",
+        "answer-of-an-rpc-pool-endpoint-naming-a-key-in-its-path",
+        "answer-of-an-rpc-pool-endpoint-with-a-fragment",
+        "answer-of-an-rpc-pool-endpoint-with-a-query",
+        "answer-of-an-rpc-pool-endpoint-naming-a-user",
+    ] {
+        let value = fixture("invalid", name);
+        assert!(!validator("answer").is_valid(&value), "{name}: the schema");
+        assert!(through_rust("answer", &value).is_err(), "{name}: Rust");
     }
 }
 

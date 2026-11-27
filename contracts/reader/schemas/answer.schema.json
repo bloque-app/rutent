@@ -47,7 +47,7 @@
       }
     },
     "network_rules": {
-      "description": "A network's rules: its identity, its finality definition and reorg rule, and the reader's trust rule, what Core's start-up check compares with the listing.",
+      "description": "A network's rules: its identity, its finality definition and reorg rule, and the reader's trust rule, what Core's start-up check compares with the listing. Its identity and trust rule are paired: a chain id is read from an RPC pool, and a genesis hash by a light client (item reader-answer-trust).",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -69,7 +69,69 @@
         "trust": {
           "$ref": "urn:rutent:reader:common#/$defs/trust_rule"
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "identity"
+            ],
+            "properties": {
+              "identity": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "chain_id"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "trust": {
+                "properties": {
+                  "rule": {
+                    "const": "rpc_pool"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "identity"
+            ],
+            "properties": {
+              "identity": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "genesis_hash"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "trust": {
+                "properties": {
+                  "rule": {
+                    "const": "light_client"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
     },
     "movement": {
       "description": "A movement as the network records it.",

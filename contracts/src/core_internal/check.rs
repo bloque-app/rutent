@@ -134,10 +134,16 @@ impl Action {
             {
                 broke("a public network names its listing exactly when it is listed")?;
             }
-            if let Some(listing) = public_network.as_ref().and_then(|n| n.listing.as_ref())
-                && let Err(violation) = listing.trust.check()
-            {
-                broke(violation.0)?;
+            if let Some(listing) = public_network.as_ref().and_then(|n| n.listing.as_ref()) {
+                // A chain id is read from an rpc pool and a genesis hash by a light client (`T-020-59`'s review, M1).
+                if let Err(violation) =
+                    crate::reader::check_pairing(&listing.identity, &listing.trust)
+                {
+                    broke(violation.0)?;
+                }
+                if let Err(violation) = listing.trust.check() {
+                    broke(violation.0)?;
+                }
             }
             // A provider's own cadence is the status question's alone (`T-020-49`).
             if let Some(OperatorSetting::Cadence {

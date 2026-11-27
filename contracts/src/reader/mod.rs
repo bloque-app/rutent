@@ -19,7 +19,8 @@
 //! [`ANSWER_SHAPE`]), made by the reader and signed with its statement key, which the reader host holds and never hands
 //! to the reader's process. It names the request, the network, the reader's version and what was asked, and answers it
 //! ([`Answered`]) or says it is unreadable. [`check_reader_answer`] refuses an answer to another request, question,
-//! network, movement or transaction, from another reader, under another key or version, or past its deadline.
+//! network, movement or transaction, from another reader, under another key or version, of another deployment or
+//! protocol version, breaking its own shape, or past its deadline.
 //!
 //! `network_rules` answers the network's identity ([`NetworkIdentity`]: a genesis hash or a chain id), its finality
 //! definition and reorg rule, and the reader's trust rule ([`TrustRule`]): `light_client`, or `rpc_pool` with its
@@ -35,7 +36,7 @@
 mod check;
 mod types;
 
-pub use check::{ReaderMismatch, check_reader_answer};
+pub use check::{Expected, ReaderMismatch, check_reader_answer};
 pub use types::*;
 
 /// The contract's version: the first `## ` heading of `contracts/reader/CHANGELOG.md`.

@@ -38,8 +38,10 @@ const SCENARIOS: &str = "rutent-scenarios";
 
 /// The reader host (`DEC-28`, `T-015-04`): `CMP-EVIDENCE`'s standalone part, which runs each public
 /// network's reader as a reader service outside Core. It depends on the contracts, for the reader
-/// contract, and on the provider system for its egress layer alone ([`PROV_EGRESS`]); nothing of
-/// ours depends on it, the scenario assembly included (`T-020-59`).
+/// contract, and on the provider system for its egress layer alone ([`PROV_EGRESS`]). Nothing of
+/// ours depends on it, save the scenario assembly's tests: a dev-dependency of the assembly's, so
+/// the simulated networks' readers run in the test harness (`T-024-25`), and never a dependency of
+/// its build (`T-020-59`, its review's L6).
 pub const READER_HOST: &str = "rutent-reader-host";
 
 /// The one path of the provider system the reader host may name: its egress layer
@@ -52,9 +54,9 @@ pub const PROV_EGRESS: &str = "rutent_prov::egress";
 /// the contracts. Core's three crates may also reach the four libraries, but not each other: they
 /// talk through the core-internal contract, in the contracts crate (`T-020-01`). The reader host
 /// reaches the contracts and the provider system, for its egress layer only (`T-020-59`). The
-/// scenario assembly may import every crate of ours but the reader host. Any other crate imports
-/// nothing of ours, so no crate but the assembly imports Core, none imports the assembly, and none
-/// imports the reader host.
+/// scenario assembly may import every crate of ours, the reader host only as a dev-dependency. Any
+/// other crate imports nothing of ours, so no crate but the assembly imports Core, none imports the
+/// assembly, and none but the assembly's tests imports the reader host.
 fn allowed(krate: &str) -> &'static [&'static str] {
     match krate {
         "rutent-conformance" | "rutent-router" | "rutent-stm" | "rutent-prov"
@@ -84,7 +86,7 @@ pub fn violations(graph: &Graph, krates: &[&str]) -> Vec<Violation> {
     for &krate in krates {
         for dep in graph.get(krate).map(Vec::as_slice).unwrap_or_default() {
             let permitted =
-                (krate == SCENARIOS && dep.name != SCENARIOS && dep.name != READER_HOST)
+                (krate == SCENARIOS && dep.name != SCENARIOS && (dep.name != READER_HOST || dep.dev))
                     || allowed(krate).contains(&dep.name.as_str())
                     || (dep.dev && dep.name == "rutent-conformance")
                     || (dep.dev && dep.name == krate);

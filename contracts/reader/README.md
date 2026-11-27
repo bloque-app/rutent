@@ -51,12 +51,15 @@ nothing down.
 | A network's identity is a genesis hash (`0x` and 64 lower-case hex) or a chain id (decimal, no leading zero) | `network_identity` | `NetworkIdentity`, `GenesisHash`, `ChainId` |
 | A pool's quorum is at least two | `trust_rule`'s `minimum` | `TrustRule::check` |
 | A pool names each endpoint once | `uniqueItems` | `TrustRule::check` |
+| A pool names each host once, whatever the scheme, port or trailing `/`: a quorum is of nodes, not of spellings. Separate names that resolve to one provider are beyond the contract | none | `TrustRule::check` (`RpcEndpoint::host`) |
 | A pool names at least as many endpoints as its quorum | at least two endpoints (`minItems`) | `TrustRule::check` |
-| An endpoint is an `https` or `wss` URL to a DNS name, with no user, query or fragment; a node's key is the host's to resolve by name | `rpc_endpoint` | `RpcEndpoint` |
+| An endpoint is an `https` or `wss` URL to a host's DNS name of two labels or more, never an IP literal, with an optional port and at most a trailing `/`: no user, path, query or fragment, so nothing that could be a key is in a listing. A node that needs a key or a path gets it from the reader host, through the egress layer's secret lookup | `rpc_endpoint`'s `pattern` and `not` | `RpcEndpoint`, `is_host_name` |
+| A network's identity is paired with its trust rule: a chain id is read from an RPC pool, a genesis hash by a light client | `network_rules`' `allOf` | `NetworkRules::check`, `check_pairing` |
 | An answer answers the kind of question it names, or is unreadable | none | `ReaderAnswer::check` |
 | An answer is held to the question asked: its request, network, kind, movement and transaction | none | `check_reader_answer` |
 | An answer is the listed reader's: its maker the reader asked, its key the listed statement key, its version the listed version | none | `check_reader_answer` |
 | An answer reaches Core by the question's deadline, by Core's clock; the answer's `made_at` is never read for it | none | `check_reader_answer` |
+| An answer names Core's deployment and a protocol version in force (`REQ-PRT-1`), and holds to its own rules, built in memory as read | the envelope's | `check_reader_answer` (`Expected`, `Statement::check_context`, `ReaderAnswer::check`) |
 | An answer's envelope names its shape | `const` | `Statement::check_shape`, in `check_reader_answer` |
 
 `check_reader_answer` holds what the answer's signature covers. Verifying the signature, and the host's certificate
@@ -66,6 +69,7 @@ and optional fields refuse `null`.
 ## Fixtures
 
 `fixtures/valid/<shape>-<case>.json` each validate and read back unchanged through Rust; `fixtures/invalid/` each is
-refused by the schema and by Rust, save the two the test names that only Rust refuses
+refused by the schema and by Rust, save the five the test names that only Rust refuses
 (`answer-of-an-rpc-pool-with-fewer-endpoints-than-its-quorum`,
-`answer-of-a-movements-status-to-a-network-rules-question`). No test verifies a fixture's signature.
+`answer-of-a-movements-status-to-a-network-rules-question`, and the three pools naming one host twice). No test
+verifies a fixture's signature.
