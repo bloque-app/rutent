@@ -563,6 +563,7 @@ fn every_permission(caller: &Actor) -> Vec<(Permission, DecisionRequest)> {
         CatalogueChange::SetSlippage,
         CatalogueChange::Promote,
         CatalogueChange::RollBack,
+        CatalogueChange::ConfirmReleases,
     ] {
         match change {
             CatalogueChange::Grant
@@ -575,7 +576,8 @@ fn every_permission(caller: &Actor) -> Vec<(Permission, DecisionRequest)> {
             | CatalogueChange::WithdrawRelease
             | CatalogueChange::SetSlippage
             | CatalogueChange::Promote
-            | CatalogueChange::RollBack => {}
+            | CatalogueChange::RollBack
+            | CatalogueChange::ConfirmReleases => {}
             // An operator's setting is a permission of its own for each setting, listed below (`T-021-15`).
             CatalogueChange::SetSetting => unreachable!("one permission for each setting, below"),
         }
@@ -596,6 +598,11 @@ fn every_permission(caller: &Actor) -> Vec<(Permission, DecisionRequest)> {
             statement_key: (change == CatalogueChange::AcceptModule)
                 .then(|| rutent_contracts::provider_role::PublicKey::new(ADVERTISING_KEY).unwrap()),
             setting: None,
+            versions: if change == CatalogueChange::ConfirmReleases {
+                vec![id("2.2.0")]
+            } else {
+                Vec::new()
+            },
         };
         asked.push((Permission::Change(change), request));
     }
@@ -1312,9 +1319,9 @@ fn every_call() -> Vec<Call> {
 #[test]
 fn each_permission_alone_allows_only_its_own_action() {
     let all = every_permission_held();
-    assert_eq!(all.len(), 35, "every permission of the register's");
+    assert_eq!(all.len(), 36, "every permission of the register's");
     let calls = every_call();
-    assert_eq!(calls.len(), 38, "every call a permission lets through");
+    assert_eq!(calls.len(), 39, "every call a permission lets through");
     for permission in &all {
         assert!(
             calls.iter().any(|c| &c.owner == permission),
@@ -3622,7 +3629,7 @@ fn another_partys_login_listed_in_the_operator_role_is_refused_every_setting_and
             "{permission:?}"
         );
     }
-    assert_eq!(asked, 11 + 9, "every catalogue change and every setting");
+    assert_eq!(asked, 12 + 9, "every catalogue change and every setting");
     assert_eq!(
         policy.policy.1.ruled, 0,
         "none reached the deployment's policy"

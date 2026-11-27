@@ -784,3 +784,95 @@ fn deposit_to_the_requesters_address_shows_the_outer_node_and_the_address() {
     };
     assert_eq!(moved.destination, ADDRESS);
 }
+
+/// The slippage limit the operator sets on an exchange's tuple through its command bounds the router (`REQ-QTE-9`,
+/// `T-020-49`): decided by policy, recorded as an effect and its result, and carried by the bounds of every route decided
+/// from then on, in place of the one before; a reopened Core routes under it too, rebuilt from the log.
+// verifies: REQ-QTE-9
+#[test]
+fn slippage_limit_set_by_the_operator_bounds_the_router() {
+    use rutent_contracts::core_internal::{CatalogueChange, OperatorSetting};
+    let scenario = rutent_scenarios::harness::Scenario::new(
+        "execution",
+        "AC-1",
+        given(&[IN, EXCHANGE, QUICK, OUT]),
+    );
+    let (mut core, _) = scenario.core(1, &mut rutent_scenarios::assembly::machine::Reference);
+    let session = core.open_session(&kit::customer()).expect("a session");
+    let limit_of = |record: &rutent_contracts::router_api::DecisionRecord| {
+        record
+            .bounds
+            .slippage_limits
+            .iter()
+            .find(|l| l.tuple.provider.as_str() == EXCHANGE)
+            .map(|l| serde_json::to_value(l.max_bps).unwrap().as_u64().unwrap())
+    };
+    let (_, told) = quoted(
+        &mut core,
+        across("req-before", &session, "lowest_total_cost"),
+    );
+    let before = record_of(&core, &told);
+    assert_eq!(
+        limit_of(&before),
+        Some(50),
+        "the deployment's starting limit"
+    );
+    let mut limit = before
+        .bounds
+        .slippage_limits
+        .iter()
+        .find(|l| l.tuple.provider.as_str() == EXCHANGE)
+        .cloned()
+        .expect("the exchange's limit");
+    limit.max_bps = serde_json::from_value(serde_json::json!(7)).expect("basis points");
+
+    // Asked by a login the register doesn't list for it, it is refused, and the router's bounds stay.
+    assert!(
+        core.set_setting_as(
+            &kit::customer(),
+            &OperatorSetting::SlippageLimit {
+                limit: limit.clone()
+            }
+        )
+        .is_err()
+    );
+    let (_, told) = quoted(
+        &mut core,
+        across("req-refused", &session, "lowest_total_cost"),
+    );
+    assert_eq!(limit_of(&record_of(&core, &told)), Some(50));
+
+    core.set_setting(&OperatorSetting::SlippageLimit { limit })
+        .expect("the operator's limit is set");
+    assert!(entries(&core).iter().any(|v| matches!(
+        &v.what,
+        What::Effect {
+            action: Action::ChangeCatalogue {
+                change: CatalogueChange::SetSetting,
+                ..
+            },
+            ..
+        }
+    )));
+    let (_, told) = quoted(
+        &mut core,
+        across("req-after", &session, "lowest_total_cost"),
+    );
+    assert_eq!(
+        limit_of(&record_of(&core, &told)),
+        Some(7),
+        "the router ran under it"
+    );
+
+    let mut core = scenario.reopen(core, 1, &mut rutent_scenarios::assembly::machine::Reference);
+    let session = core.open_session(&kit::customer()).expect("a session");
+    let (_, told) = quoted(
+        &mut core,
+        across("req-reopened", &session, "lowest_total_cost"),
+    );
+    assert_eq!(
+        limit_of(&record_of(&core, &told)),
+        Some(7),
+        "rebuilt from the log"
+    );
+}

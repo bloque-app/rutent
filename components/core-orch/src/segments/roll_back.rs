@@ -3,9 +3,11 @@
 //! and on nothing else (`REQ-AUZ-6`, `REQ-AUZ-1`).
 //!
 //! `CMP-CORE-AUTHZ`'s scan holds a call of `roll_back` to an [`Effect`] in hand, by name. It can't read which action
-//! the effect is, so [`carry_out_roll_back`] checks the permitted action itself: an effect whose action isn't a
+//! the effect is, so `carry_out_roll_back` checks the permitted action itself: an effect whose action isn't a
 //! `change_catalogue` of `roll_back` carries nothing out, however it was permitted, and the version it names must be the
-//! one staged right before the platform is asked, so a permit to roll one release back ends no other staging.
+//! one staged right before the platform is asked, so a permit to roll one release back ends no other staging. It is
+//! visible in this crate alone, as each sibling is (`T-020-49`, the scan's rule 4): a caller outside `core-orch`
+//! reaches it only through [`Segments::roll_back`], which asks policy first.
 //!
 //! The platform is reached through [`RollsBack`], apart from [`super::Modules`], so no implementation of that port
 //! changes with this seam.
@@ -77,7 +79,7 @@ pub enum RollBackRefused {
     /// The provider has nothing staged.
     NothingStaged,
     /// The version asked for isn't the one staged now: a permit to roll one release back ends no other staging.
-    /// Nothing was asked of policy, or nothing was carried out.
+    /// Policy permitted the caller, and nothing was carried out.
     NotTheStagedVersion {
         /// The version staged now, empty where none is.
         staged: String,
@@ -100,7 +102,7 @@ impl From<AppendFailure> for RollBackRefused {
 
 /// Ends the staging `effect` permits, by `by`: only where its action is a `change_catalogue` of `roll_back`, at the
 /// provider and version it names, and that version is the one staged now. Anything else asks nothing of the platform.
-pub fn carry_out_roll_back(
+pub(crate) fn carry_out_roll_back(
     modules: &mut dyn RollsBack,
     effect: &Effect,
     by: &Id,
@@ -129,8 +131,10 @@ pub fn carry_out_roll_back(
 impl Segments {
     /// Ends `asked.provider`'s staging of `asked.version`, as policy decides, by the decision's caller: only the
     /// version staged now, so a permit to roll one release back ends no other staging (`REQ-AUZ-6`, ADR-0014). Core
-    /// asks the decision itself, records the effect before it calls the platform, and records its result after; an
-    /// effect is marked acted on only once the platform ended the staging.
+    /// asks the decision itself, before it reads the staging, so a refused caller is told it is not permitted whether
+    /// or not anything is staged, and its attempt is recorded (`F-025`'s L6, `T-020-49`); it records the effect before
+    /// it calls the platform, and its result after; an effect is marked acted on only once the platform ended the
+    /// staging.
     pub fn roll_back(
         &mut self,
         log: &mut dyn Log,
@@ -140,12 +144,6 @@ impl Segments {
         fresh: &mut dyn Fresh,
         asked: &RollBackAsked<'_>,
     ) -> Result<String, RollBackRefused> {
-        let staged = modules
-            .staged(asked.provider)
-            .ok_or(RollBackRefused::NothingStaged)?;
-        if staged != asked.version.as_str() {
-            return Err(RollBackRefused::NotTheStagedVersion { staged });
-        }
         let action = Action::ChangeCatalogue {
             change: CatalogueChange::RollBack,
             provider: asked.provider.clone(),
@@ -155,6 +153,7 @@ impl Segments {
             advertising_keys: Vec::new(),
             statement_key: None,
             setting: None,
+            versions: Vec::new(),
         };
         let request = DecisionRequest {
             request: fresh.id(),
@@ -166,6 +165,13 @@ impl Segments {
         let Some(permit) = decision.permit() else {
             return Err(RollBackRefused::NotPermitted(decision.outcome));
         };
+        // Read only once permitted: what is staged is the permitted caller's to learn.
+        let staged = modules
+            .staged(asked.provider)
+            .ok_or(RollBackRefused::NothingStaged)?;
+        if staged != asked.version.as_str() {
+            return Err(RollBackRefused::NotTheStagedVersion { staged });
+        }
         let receipt = journal::append(
             log,
             journal::verified(
@@ -203,5 +209,131 @@ impl Segments {
             self.acted.insert(key(&effect.receipt));
         }
         rolled_back
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! `carry_out_roll_back` is the crate's alone (`T-020-49`), so its own check is tested here: an effect permitted
+    //! for another action carries nothing out.
+
+    use std::cell::Cell;
+
+    use rutent_contracts::core_internal::{Answer, Decision, Receipt};
+    use serde_json::json;
+
+    use super::*;
+    use crate::snapshot::Reading;
+
+    struct At(Cell<Reading>);
+
+    impl Clock for At {
+        fn now(&self) -> Reading {
+            self.0.get()
+        }
+    }
+
+    fn id(text: &str) -> Id {
+        Id::new(text).unwrap()
+    }
+
+    fn receipt(index: usize) -> Receipt {
+        serde_json::from_value(json!({
+            "log": "log-1",
+            "index": index,
+            "entry": { "algorithm": "sha-256", "value": format!("{index:064x}") },
+        }))
+        .unwrap()
+    }
+
+    /// A platform staging one version, recording what it ended.
+    struct Staging {
+        staged: Option<String>,
+        ended: Vec<String>,
+    }
+
+    impl RollsBack for Staging {
+        fn staged(&self, _: &Id) -> Option<String> {
+            self.staged.clone()
+        }
+
+        fn roll_back(
+            &mut self,
+            _: &Effect,
+            provider: &Id,
+            _: &Id,
+            _: Instant,
+        ) -> Result<String, LifecycleRefusal> {
+            self.ended.push(provider.to_string());
+            Ok(self.staged.take().unwrap_or_default())
+        }
+    }
+
+    fn change(kind: CatalogueChange, version: Option<&str>) -> Action {
+        Action::ChangeCatalogue {
+            change: kind,
+            provider: id("bridge-pay"),
+            version: version.map(id),
+            tuple: None,
+            class: None,
+            advertising_keys: Vec::new(),
+            statement_key: None,
+            setting: None,
+            versions: Vec::new(),
+        }
+    }
+
+    fn effect_of(action: Action) -> Effect {
+        let decision = Decision {
+            request: id("req-1"),
+            decision: id("dec-1"),
+            outcome: Answer::Permit {},
+            receipt: receipt(7),
+        };
+        Effect {
+            action,
+            decision: decision.permit().unwrap(),
+            receipt: receipt(8),
+        }
+    }
+
+    /// An effect permitted for another action, a promotion or a roll back of another version or of none, carries
+    /// nothing out, however it was permitted: the carrier checks the permitted action itself, not only that an effect is
+    /// held; the permitted roll back of the staged version is carried out.
+    // verifies: REQ-AUZ-1
+    #[test]
+    fn effect_of_another_action_rolls_nothing_back() {
+        let mut modules = Staging {
+            staged: Some("2.2.0".into()),
+            ended: Vec::new(),
+        };
+        let (by, clock) = (id("ops-lead"), At(Cell::new(Reading::at(1_794_200_000))));
+        for action in [
+            change(CatalogueChange::Promote, Some("2.2.0")),
+            change(CatalogueChange::RollBack, Some("2.1.0")),
+            change(CatalogueChange::RollBack, None),
+        ] {
+            assert!(carry_out_roll_back(&mut modules, &effect_of(action), &by, &clock).is_err());
+            assert!(modules.ended.is_empty());
+        }
+        assert_eq!(
+            carry_out_roll_back(
+                &mut modules,
+                &effect_of(change(CatalogueChange::Promote, Some("2.2.0"))),
+                &by,
+                &clock
+            ),
+            Err(RollBackRefused::NotARollBack)
+        );
+        assert_eq!(
+            carry_out_roll_back(
+                &mut modules,
+                &effect_of(change(CatalogueChange::RollBack, Some("2.2.0"))),
+                &by,
+                &clock
+            ),
+            Ok("2.2.0".to_owned())
+        );
+        assert_eq!(modules.staged, None);
     }
 }

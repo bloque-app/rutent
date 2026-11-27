@@ -8689,6 +8689,73 @@ path folded into the unreleased core-internal 1.0.0.
   | an operator module attributed by its release key | `linked_orders_reversal_…_and_completes`, at the full credit (`Unattributable`) |
   | `Segments::rebuild_returns` | not switched off: gap 4 |
 
+### T-020-57, round 3: a handed-on route recalculated from its reversed first move (the lead's authorisation)
+
+`origin/m3` (`e7418a53`, `T-020-48` and the plan follow-up) merged in; the two conflicts (core-internal's changelog
+totals, these notes) kept both sides, the totals recounted from the files. `T-020-48` removed the assembly's
+`land_settled`: the scenarios land on `tick`, and the stuck order is ticked after its run so the wallet holds its value.
+
+- **Gap 4 closed, both sides** (a `DEC-20` path, folded into the unreleased core-internal 1.0.0).
+  - *The log* (`recalculation-starts-from-evidenced-value`): beside the part's latest `segment_settled`, the
+    `reversal_completed` of a route handed on's first move (`handed_on_first_move`: the order's `route_chosen` names
+    `handed_on_from`, the segment starts at an inner node no segment of its plans delivered to, no withdrawal)
+    evidences the value back at that move's `from` (`planned_start`), and the new route starts there. The log took that
+    input only on the holding account's word (round 2's `reserve_at_from`); a reversal still owed or refused is no
+    `reversal_completed`, so it evidences nothing.
+  - *Core* (`recalc::rule::evidenced_in`, used by `Recalculations::recalculate` and its staleness check): for an order
+    handed on whose part's first segment is `ReversalComplete` (no withdrawal, from an inner node, the part open), the
+    value is evidenced at that segment's `from`, and the amount the new route moves is `Segments::returned_amount`,
+    what the confirmation said came back, capped at what the move took in; with none kept, nothing is recalculated
+    (`NoSettledEnd`, fail closed). `evidenced(part)` is unchanged for every other caller.
+  - Fixtures: admitted `recalculation-starts-from-evidenced-value--a-handed-on-routes-reversed-first-move`; refused
+    `--a-handed-on-routes-first-move-still-owed` (`missing`) and `--a-handed-on-routes-reversal-from-another-node`
+    (`node`) (script `gen_fixtures2.py`). README and changelog updated; 789 admission cases, `RELATIONS` 120.
+- **Tests.** New: `recalculation_from_a_from_node_whose_reversal_is_not_completed_is_refused` [`REQ-ORD-2`, `INV-4`].
+  Un-ignored and green: `returned_value_retired_by_a_recalculation_is_rebuilt_after_core_reopens`, through the
+  assembly: the reversal completes on the wallet's word, the value is landed again, the part is recalculated from the
+  node (the reversed move retired), Core reopens, the new route runs, and the wallet's landing is released once.
+- **Gaps** now: 2 (`F-016`'s credit visibility) and 3 (`F-020`'s quote re-routed after a reopen) stand; 1 and 4 closed.
+- **Rule-offs, round 3** (script `ruleoff3.py`):
+
+  | Rule switched off | Red |
+  |---|---|
+  | the log takes a handed-on route's `reversal_completed` as evidence (`reversed_back` false) | `recalculation_from_a_from_node_whose_reversal_is_not_completed_is_refused` (the admitted case refused), `returned_value_retired_by_a_recalculation_is_rebuilt_after_core_reopens` (the log refuses Core's recalculation) |
+  | Core evidences a handed-on route's reversed first move (`evidenced_in` falls back to `evidenced`) | `returned_value_retired_…_after_core_reopens` (`NotNow(NoSettledEnd)`) |
+  | `Segments::rebuild_returns` (round 1's missing rule-off) | `returned_value_retired_…_after_core_reopens`: after the reopen the wallet's landing is never released ("released once the value left the node") |
+
+### T-020-57, review round 1 (#331, CHANGES at `045959ae`)
+
+`origin/m3` (`f0c66ab4`, the plan follow-up) merged in with no conflict.
+
+- **L1, one confirmer for Core and the log.** `Reversals::follow` keeps each linked order's holding record from the log
+  (`holders`: the node and `holder` of its verified `holding_withdrawal`), and `handed_on_holder` names that holder,
+  never the module the catalogue registers for the node now: the one party the log takes as the reserve there
+  (`reserve_at_from`). A holder that is a module the operator publishes with no release in force in the log isn't
+  asked: `ReversalError::HolderNotInForce(holder)`, and the reversal stays owed. Tests (`assembly_real_wallet.rs`):
+  `reversal_is_asked_of_the_holder_the_log_names_after_the_node_is_registered_again` [`REQ-ORD-43`, `REQ-ORD-3`] (the
+  node registered to another module after the hand-on, `Core::register_node_holding`; the reversal completes on the
+  first wallet's word) and `holder_with_no_release_in_force_is_not_asked_and_the_reversal_stays_owed` [`REQ-ORD-3`]
+  (the wallet's release revoked after the hand-on, `Core::revoke_release`; the wallet is asked nothing). The
+  reviewer's residual stands as the log's: where Core records the failed provider as the holder, the log admits its
+  word graded a statement, as for a withdrawal's own reserve; Core records the holding account's own record only.
+- **L2, a zero or unreadable confirmed amount lands nothing.** `note_reversed` keeps the return even at zero, and
+  `returned_to_node` reads a kept zero as nothing landed, so `T-020-56`'s fallback (what the move took in) never stands
+  in for a confirmation; `rebuild_returns` keeps an unreadable confirmation or operation as zero too. Test
+  `return_confirmed_at_nothing_lands_nothing_again` [`INV-1`] (`segments/returned.rs`), driven directly, since the
+  judges refuse anything but the amount asked (`NotInFull`). The defaults' wording above now holds.
+- **L3.** `planned_end`'s and `short_of`'s doc comments moved back onto their functions.
+- **M1, routed to `T-020-60` (the reader adapter).** `Fleet::credit_wallet`, `Core::credit_wallet` and each scenario
+  call say they stand in for the network reader's confirmation, owned by `T-020-60`. **Gap 2 now reads:** the plain
+  wallet's credit record has no production source; in a deployment a reversal back into a held public node is a
+  movement on that node's network, which its reader confirms (`T-020-60`).
+- **Rule-offs, review round 1** (script `ruleoff4.py`):
+
+  | Rule switched off | Red |
+  |---|---|
+  | Core asks the holder the log names (the catalogue's current registration asked instead) | `reversal_is_asked_of_the_holder_the_log_names_after_the_node_is_registered_again` (`HolderNotInForce("operator-wallet-2")`) |
+  | a holder with no release in force isn't asked | `holder_with_no_release_in_force_is_not_asked_and_the_reversal_stays_owed` (the wallet asked, answered `NotCompleted`) |
+  | a return kept at nothing lands nothing (the fallback stands in again) | `return_confirmed_at_nothing_lands_nothing_again` |
+
 ## T-020-48: Core's own schedule, `tick` (finding 4 of the milestone review of 2026-11-24)
 
 Branch `f-020/t-020-48-core-tick`, from `28972690` (m3-next's batch holding `T-020-47`). Edits `components/core-orch/` (the
@@ -8937,69 +9004,280 @@ schema-rule and fixture counts (both sides' rows kept: 120 relations, 131 schema
 |---|---|
 | the watch doesn't read `routes_ran` (the first route always) | `recalculated_route_is_watched_after_a_restart` |
 
-### T-020-57, round 3: a handed-on route recalculated from its reversed first move (the lead's authorisation)
+## T-020-49: the operator's settings and a release's lifecycle actions, each through policy
 
-`origin/m3` (`e7418a53`, `T-020-48` and the plan follow-up) merged in; the two conflicts (core-internal's changelog
-totals, these notes) kept both sides, the totals recounted from the files. `T-020-48` removed the assembly's
-`land_settled`: the scenarios land on `tick`, and the stuck order is ticked after its run so the wallet holds its value.
+Branch `f-020/t-020-49`, from `e7418a53` (`origin/m3`, with `T-020-48`'s schedule and `tick`). Edits `components/core-orch/`
+(the new module `settings`; `segments/` for the new `lifecycle.rs`, `roll_back.rs`, `mod.rs` and `journal.rs`;
+`arrival/reopen.rs`), and the `DEC-20` paths `contracts/` (core-internal's unreleased 1.0.0, folded), `components/core-authz/`
+(`engine/entry_points.rs` rule 4, `core_sources/`, the tests' lists of changes), `components/core-audit/` (`log/keys.rs`)
+and `components/prov/src/module/platform.rs` with `record.rs` (the partial confirmation). `F-024` files: the assembly
+(`conformance/scenarios/src/assembly/mod.rs`, `releases.rs`, `schedule.rs`), `sim/fleet.rs` and the scenario tests
+(`execution_routes.rs`, `module_scenarios.rs`, `segments.rs` with `segments_support/`, `assembly_policy.rs`).
 
-- **Gap 4 closed, both sides** (a `DEC-20` path, folded into the unreleased core-internal 1.0.0).
-  - *The log* (`recalculation-starts-from-evidenced-value`): beside the part's latest `segment_settled`, the
-    `reversal_completed` of a route handed on's first move (`handed_on_first_move`: the order's `route_chosen` names
-    `handed_on_from`, the segment starts at an inner node no segment of its plans delivered to, no withdrawal)
-    evidences the value back at that move's `from` (`planned_start`), and the new route starts there. The log took that
-    input only on the holding account's word (round 2's `reserve_at_from`); a reversal still owed or refused is no
-    `reversal_completed`, so it evidences nothing.
-  - *Core* (`recalc::rule::evidenced_in`, used by `Recalculations::recalculate` and its staleness check): for an order
-    handed on whose part's first segment is `ReversalComplete` (no withdrawal, from an inner node, the part open), the
-    value is evidenced at that segment's `from`, and the amount the new route moves is `Segments::returned_amount`,
-    what the confirmation said came back, capped at what the move took in; with none kept, nothing is recalculated
-    (`NoSettledEnd`, fail closed). `evidenced(part)` is unchanged for every other caller.
-  - Fixtures: admitted `recalculation-starts-from-evidenced-value--a-handed-on-routes-reversed-first-move`; refused
-    `--a-handed-on-routes-first-move-still-owed` (`missing`) and `--a-handed-on-routes-reversal-from-another-node`
-    (`node`) (script `gen_fixtures2.py`). README and changelog updated; 789 admission cases, `RELATIONS` 120.
-- **Tests.** New: `recalculation_from_a_from_node_whose_reversal_is_not_completed_is_refused` [`REQ-ORD-2`, `INV-4`].
-  Un-ignored and green: `returned_value_retired_by_a_recalculation_is_rebuilt_after_core_reopens`, through the
-  assembly: the reversal completes on the wallet's word, the value is landed again, the part is recalculated from the
-  node (the reversed move retired), Core reopens, the new route runs, and the wallet's landing is released once.
-- **Gaps** now: 2 (`F-016`'s credit visibility) and 3 (`F-020`'s quote re-routed after a reopen) stand; 1 and 4 closed.
-- **Rule-offs, round 3** (script `ruleoff3.py`):
+- **Design.**
+  1. *Settings* (`core-orch/src/settings`). `Settings::set` is the operator's one command for every `OperatorSetting`: it asks
+     policy for core-internal's `set_setting` (held by `core-authz` to `Permission::Setting(kind)` of the deployment
+     operator's login, `T-021-15`), appends the effect, applies the setting, and appends its `done` result. The action's
+     `provider` is the setting's own (a tuple's, a provider's ceiling, a provider's status cadence) or the caller's party.
+     `Settings::reopened(history)` rebuilds every setting from the `set_setting` effects with a `done` result, in log order,
+     the later standing; an effect with no result or a `failed` one sets nothing. Readers: `Settings::bounds(base)` (the
+     deployment's own bounds overlaid with the fee, slippage limits and ceilings) is what the router runs under;
+     `Settings::apply(Targets)` puts the floors and listed public nodes in the catalogue, the cadences in the schedule's
+     `Cadences` and the deposit wait in `Arrivals`; `Arrivals::reopened` reads the deposit wait from the log itself.
+  2. *Lifecycle* (`segments/lifecycle.rs`). `Segments::change_release` carries out `accept`, `withdraw`, `revoke`,
+     `declare_exploited`, `mark_stale` and `confirm` as `promote` and `roll_back` are: policy, then (permitted) the action
+     held to what the platform holds (the waiting release's version and statement key; the held versions), the effect, the
+     platform through the `Releases` port (each carrying method takes the `Effect`), the result. `Judged { platform, judge }`
+     is the port over `Platform`, its judge the catalogue an acceptance is judged again by. A restriction the platform took
+     but couldn't record (`TakenUnrecorded`) is recorded `done` and answered `Changed::TakenUnrecorded`: it is in force, and
+     recording it `failed` would leave the log trusting a release declared exploited.
+  3. *L6.* `promote`, `roll_back` and `change_release` ask policy before they read the staging or the waiting or held
+     releases. A refused caller is told `NotPermitted(answer)` whatever is there, nothing of the platform is read, and its
+     attempt is policy's decision entry. A permitted caller learns `NothingStaged` / `NotTheStagedVersion` / `NothingToDo` /
+     `NotWhatItNames`, with no effect recorded.
+  4. *Narrowed.* `carry_out_roll_back`, `carry_promotion` and `carry_out_release_change` are `pub(crate)`; `core-authz`'s
+     scan gains rule 4: in `core-orch`, a function that carries out a platform lifecycle action is crate-visible at most or a
+     port's trait impl. Its unit test moved into `roll_back.rs`.
+  5. *Confirm.* core-internal 1.0.0 (folded): `CatalogueChange::ConfirmReleases` (`confirm_releases`, `CONFIRM_RELEASES`)
+     with `Action::ChangeCatalogue.versions` (at least one, each once, exactly for it), so a permit to confirm one set of
+     versions confirms no other; `Permission::Change(ConfirmReleases)` is held to the deployment operator by `core-authz`'s
+     generic catalogue arm, beside `T-021-15`'s. The platform answers `awaiting_confirmation(provider)`; a platform
+     dropped with its record whole while some providers still wait writes `ClosedHolding { held }`, so the next opening
+     holds those alone (review round 1's H1 replaced the first build's `Opened` marker). The assembly's operator command (`Core::change_release`) is its caller.
+  6. *Contract, also folded:* `OperatorSetting::Cadence.provider` (a provider's own status cadence, for `status_asks`
+     alone, `STATUS_ASKS_JOB`), and `Cadence.seconds` a safe integer (zero: every tick, as the defaults are).
+  7. *T-020-55 check.* core-audit's `Register::accepted` answers nothing for a provider none of whose grants stands (from
+     the revocation's effect); `core_sources`' `Statement` answers only a verified entry's maker; `OrderParties` reads the
+     order's record in the one precedence (hand-over, `order_opened`, acceptance); the named test asks all ten sources,
+     each for its value.
+  8. *The assembly.* `Core::set_setting(_as)`; `set_operator_fee`, `set_evidence_floor`, `set_provider_ceiling`,
+     `set_cadence`, `set_status_cadence` and the constructor's slippage limits all go through it; `bounds` is recomputed
+     from `Settings` and rebuilt on reopening, as are the catalogue's floors and nodes, the schedule's cadences and the
+     deposit wait. `Core::relist` leaves `set_setting` effects to `Settings::reopened`. The operator's login holds every
+     setting's permission and the six lifecycle changes.
+- **Defaults** (reversible, each failing closed).
+  1. The deposit wait's ceiling is thirty days (`DEPOSIT_WAIT_CEILING_SECONDS`); a wait above it is refused after policy
+     is asked (its decision records the attempt), no effect recorded, and never taken on reopening.
+  2. A setting of the whole deployment names the caller's party as the change's `provider` (the deployment operator's,
+     which policy holds the login to).
+  3. A setting whose result the log didn't take stays in force across a restart: the reopened Core reads every
+     `set_setting` effect without a `failed` result and appends the missing `done` (`Settings::reopen`); the command
+     answers `Append`.
+  4. A restriction the platform took unrecorded is `done` in Core's log (it is in force), answered `TakenUnrecorded`.
+  5. A permitted caller is told what isn't there (`NothingStaged`, `NothingToDo`, `NotWhatItNames`); a refused one only
+     `NotPermitted`.
+  6. A platform record that doesn't end with `Closed` or `ClosedHolding` (a crash, or a record that failed) holds every
+     provider on its opening, as before this row.
+  7. The deployment's catalogue defaults at an advertisement's join stay the kit's (`kit::join`: a statement floor on each
+     tuple, the public nodes the tuples reach listed); the operator's floors and nodes are set on top through the command
+     and reapplied after the relisting on reopening.
+  8. A cadence past 2^53 - 1 seconds is set at 2^53 - 1 (never, in practice): the setting holds a safe integer.
+- **Gaps, with owners.**
+  1. **Routed to `T-020-60`: a public node's `confirmations` reach Core and stop there.** `Settings::public_node` holds them, but no seam takes
+     them to the grading: `CMP-EVIDENCE`'s `Status` says pending or final by the network's own rules and carries no count,
+     so Core can't hold a movement to more confirmations than its reader counts. Owner: the network reader as an operator's
+     module (`DEC-28`; `T-020-59`/`T-020-60`), which can apply them, and `F-031` for each network's values. `listed` takes
+     effect (the catalogue's public list, a holding account at the node).
+  2. **Closed in this row (the lead, after the first build): `listed: false` takes the node off.**
+     `Catalogue::remove_public_node` (`nodes.rs`'s `remove_public`) takes it off the public list, its holding account kept on
+     record for the value resting there; `Settings` applies it live and on reopening, after the join's default listing.
+     The scan pins the method as one that carries out nothing. Test `public node unlisted by the operator is no longer on
+     the catalogue's public list`, written first and seen red. It is the operator's setting until `T-020-59`'s listing
+     change (`DelistPublicNetwork`, not on `m3` at this merge) replaces it.
+  3. **Closed in this row (the lead, after the first build): a restriction the platform couldn't record holds after a
+     crash.** Before a confirmation takes effect (the only way a provider's releases come back into force after the
+     platform's unclean end), `Segments::change_release` takes again each restrictive lifecycle effect Core's log holds done
+     for the provider, in log order: `revoke`, `withdraw`, `declare_exploited`, `mark_stale` and `roll_back`
+     (`retake_restriction`, `pub(crate)`; round 1 takes those with no result too, and drops the `reinstate` path). A roll back or a
+     withdrawal is taken again only where that version is staged, or waits, again. One the platform holds already
+     (`AlreadyMarked`, `NoSuchVersion`, `TakenUnrecorded`) needs nothing; any other refusal answers
+     `ReleaseRefused::Unrestored` and nothing is confirmed (fail closed). The re-taking writes no entry (the log holds each
+     effect done) and runs on the effect the log holds, by its decision's caller. The held versions are compared with the
+     permit's before the re-taking and may only narrow after it. It reads Core's log through the `Journal` it appends to
+     (round 1's L5). Test `restriction the platform could not record before a crash still holds after
+     core reopens` (core-orch `tests/lifecycle.rs`, a platform whose record breaks and which crashes), written first and
+     seen red (the confirmation ran with the version no longer exploited). It runs on the confirmation, not on Core's own
+     reopening: a platform that didn't restart holds its in-memory restrictions, and one that did holds every provider
+     until confirmed, so the confirmation is where every path back into force passes.
+  4. **Routed to `T-020-54`: the cutover date is recorded, not read.** `Settings::cutover` holds it; voiding statements
+     under an older version from it is `T-020-54`'s.
+  5. **`T-020-42`'s roll-back scenario changed with L6.** `a_permitted_roll_back_ends_the_staging_and_a_refused_one_moves_nothing`
+     counted no decision for a roll back naming a version not staged; with policy asked first there is one, so its recorded
+     list is `["decide", "decide"]`, then `["decide", "decide", "decide", "effect"]`. The same for `T-020-08`'s
+     `promotion_whose_staged_version_differs_from_its_permit_is_refused` (policy asked once) and `T-021-12`'s core-orch
+     `roll_back_without_its_effect_or_its_staged_version_ends_nothing` (two decisions, no effect). `carry_out_roll_back`'s own
+     test moved into the crate (`roll_back.rs`), as the function is now. The row's "pass unchanged" and its (3) can't both
+     hold for these lines; (3) is the reviewer's L6, so it wins, and the named tests of `T-021-12`
+     (`roll back without its permission is refused`, `staging is rolled back only on a permitted decision's effect`,
+     `each permission alone allows only its own action`) pass unchanged. **Accepted by the lead:** asking policy first
+     necessarily records one more decision for each attempt, and that recorded attempt is exactly what L6 asks for.
+  6. **The scenario's release acceptance is still the platform's test reviewer.** `Core::accept_waiting_release`
+     (`T-024-07`) accepts through the fleet, and `Core::accept_release` (the operator's wallet) writes its own decided
+     effect; Core's decided `accept` (`ReleaseChange::Accept`) is built and tested in core-orch, not yet the scenarios'
+     caller. Routed to `T-020-61`.
+  7. **`Arrivals.refilings` aren't rebuilt** (the reviewer's T-020-52 Low): not taken here; built by `T-020-62`, merged
+     beside this row's deposit wait in `arrival/reopen.rs` (`origin/m3` at `bc8651af`, no conflict).
+- **Merged** `origin/m3` at `f0c66ab4` (the plan follow-up: `T-020-63`, `Reversals.later` in `T-020-61`), PLAN only, no
+  conflict.
+- **Tests** (the row's fourteen, each written first and run red on an assertion through its rule-off below):
+  core-orch `tests/settings.rs` (`operator setting takes effect only on a permitted decision and is rebuilt from the log`,
+  `deposit wait above its ceiling is refused`, `public node setting set by the operator takes effect on its node's
+  segments`), `tests/lifecycle.rs` (`refused caller is told the same whether or not anything is staged and its attempt is
+  recorded`, `operator confirms a provider's releases only on a permitted decision`, and
+  `a_restriction_the_platform_took_unrecorded_is_recorded_done`), `tests/arrival.rs` (`deposit wait set by the operator
+  bounds a wait and survives a restart`); prov `tests/module_record.rs` (`providers confirmed before a restart are not held
+  again after it`); core-authz `engine` (`roll back and its siblings are reached only through core orch's decided path`)
+  and `core_sources` (`statement answer names only a verified entry's maker`, and `order_parties_read_the_one_precedence`);
+  core-audit `tests/reopen.rs` (`revoked provider's advertisement declares nothing`); scenarios `execution_routes.rs`
+  (`slippage limit set by the operator bounds the router`, across a reopen), `module_scenarios.rs` (`operator declares a
+  version exploited through policy and its segments stop on it`, `publisher cannot mark its own version stale`),
+  `segments.rs` (`segment on a version marked stale through policy moves to the newest`); contracts
+  `confirming_a_providers_releases_is_a_catalogue_change_of_its_own`. `T-020-55`'s named test now asks all ten sources,
+  each for its value, and `statement_answer_is_the_logs_maker_for_every_statement` holds an only-claimed statement to no
+  maker. The core-authz counts move by the one change (`T-021-12`'s way): 26 decided actions, 90 callers, 36
+  permissions, 39 calls, 12 + 9 changes and settings.
+- **Rule-off table** (each alone, its test run through the lock, the file restored from git; script `ruleoff.py` in the
+  row's scratch folder; every red an assertion, no build failure; every rule run again after review round 1).
 
   | Rule switched off | Red |
   |---|---|
-  | the log takes a handed-on route's `reversal_completed` as evidence (`reversed_back` false) | `recalculation_from_a_from_node_whose_reversal_is_not_completed_is_refused` (the admitted case refused), `returned_value_retired_by_a_recalculation_is_rebuilt_after_core_reopens` (the log refuses Core's recalculation) |
-  | Core evidences a handed-on route's reversed first move (`evidenced_in` falls back to `evidenced`) | `returned_value_retired_…_after_core_reopens` (`NotNow(NoSettledEnd)`) |
-  | `Segments::rebuild_returns` (round 1's missing rule-off) | `returned_value_retired_…_after_core_reopens`: after the reopen the wallet's landing is never released ("released once the value left the node") |
-
-### T-020-57, review round 1 (#331, CHANGES at `045959ae`)
-
-`origin/m3` (`f0c66ab4`, the plan follow-up) merged in with no conflict.
-
-- **L1, one confirmer for Core and the log.** `Reversals::follow` keeps each linked order's holding record from the log
-  (`holders`: the node and `holder` of its verified `holding_withdrawal`), and `handed_on_holder` names that holder,
-  never the module the catalogue registers for the node now: the one party the log takes as the reserve there
-  (`reserve_at_from`). A holder that is a module the operator publishes with no release in force in the log isn't
-  asked: `ReversalError::HolderNotInForce(holder)`, and the reversal stays owed. Tests (`assembly_real_wallet.rs`):
-  `reversal_is_asked_of_the_holder_the_log_names_after_the_node_is_registered_again` [`REQ-ORD-43`, `REQ-ORD-3`] (the
-  node registered to another module after the hand-on, `Core::register_node_holding`; the reversal completes on the
-  first wallet's word) and `holder_with_no_release_in_force_is_not_asked_and_the_reversal_stays_owed` [`REQ-ORD-3`]
-  (the wallet's release revoked after the hand-on, `Core::revoke_release`; the wallet is asked nothing). The
-  reviewer's residual stands as the log's: where Core records the failed provider as the holder, the log admits its
-  word graded a statement, as for a withdrawal's own reserve; Core records the holding account's own record only.
-- **L2, a zero or unreadable confirmed amount lands nothing.** `note_reversed` keeps the return even at zero, and
-  `returned_to_node` reads a kept zero as nothing landed, so `T-020-56`'s fallback (what the move took in) never stands
-  in for a confirmation; `rebuild_returns` keeps an unreadable confirmation or operation as zero too. Test
-  `return_confirmed_at_nothing_lands_nothing_again` [`INV-1`] (`segments/returned.rs`), driven directly, since the
-  judges refuse anything but the amount asked (`NotInFull`). The defaults' wording above now holds.
-- **L3.** `planned_end`'s and `short_of`'s doc comments moved back onto their functions.
-- **M1, routed to `T-020-60` (the reader adapter).** `Fleet::credit_wallet`, `Core::credit_wallet` and each scenario
-  call say they stand in for the network reader's confirmation, owned by `T-020-60`. **Gap 2 now reads:** the plain
-  wallet's credit record has no production source; in a deployment a reversal back into a held public node is a
-  movement on that node's network, which its reader confirms (`T-020-60`).
-- **Rule-offs, review round 1** (script `ruleoff4.py`):
+  | settings are rebuilt from the log's done effects | `operator_setting_takes_effect_only_on_a_permitted_decision_and_is_rebuilt_from_the_log` |
+  | the operator's slippage limit in the router's bounds | `slippage_limit_set_by_the_operator_bounds_the_router` |
+  | the platform carries out a decided `declare_exploited` | `operator_declares_a_version_exploited_through_policy_and_its_segments_stop_on_it` |
+  | a lifecycle action needs policy's permit (a refusal taken as a permit) | `publisher_cannot_mark_its_own_version_stale` |
+  | the platform carries out a decided `mark_stale` | `segment_on_a_version_marked_stale_through_policy_moves_to_the_newest` |
+  | policy is asked before the platform's releases are read | `refused_caller_is_told_the_same_whether_or_not_anything_is_staged_and_its_attempt_is_recorded` |
+  | a confirmation names the held versions | `operator_confirms_a_providers_releases_only_on_a_permitted_decision` |
+  | a whole close holds only the unconfirmed (round 1: `ClosedHolding`, in place of `Opened`) | `providers_confirmed_before_a_restart_are_not_held_again_after_it` |
+  | a listed public node reaches the catalogue | `public_node_setting_set_by_the_operator_takes_effect_on_its_nodes_segments` |
+  | scan rule 4 (a public lifecycle carrier) | `roll_back_and_its_siblings_are_reached_only_through_core_orchs_decided_path` |
+  | `Arrivals::reopened` reads the decided deposit wait | `deposit_wait_set_by_the_operator_bounds_a_wait_and_survives_a_restart` |
+  | the deposit wait's ceiling (asked after policy since round 1) | `deposit_wait_above_its_ceiling_is_refused` |
+  | a restriction taken unrecorded is `done` | `a_restriction_the_platform_took_unrecorded_is_recorded_done` |
+  | a revoked provider's advertisement is not accepted | `revoked_providers_advertisement_declares_nothing` |
+  | `Statement` answers a verified maker only | `statement_answer_names_only_a_verified_entrys_maker` |
+  | `OrderParties` reads the one precedence | `order_parties_read_the_one_precedence` |
+  | `listed: false` takes the node off the catalogue's list | `public_node_unlisted_by_the_operator_is_no_longer_on_the_catalogues_public_list` |
+  | a confirmation takes Core's restrictions again first | `restriction_the_platform_could_not_record_before_a_crash_still_holds_after_core_reopens` |
+- **Merged** `origin/m3` at `f0c66ab4` (the plan follow-up: `T-020-63`, `Reversals.later` in `T-020-61`), PLAN only, no
+  conflict.
+- **Tests** (the row's fourteen, each written first and run red on an assertion through its rule-off below):
+  core-orch `tests/settings.rs` (`operator setting takes effect only on a permitted decision and is rebuilt from the log`,
+  `deposit wait above its ceiling is refused`, `public node setting set by the operator takes effect on its node's
+  segments`), `tests/lifecycle.rs` (`refused caller is told the same whether or not anything is staged and its attempt is
+  recorded`, `operator confirms a provider's releases only on a permitted decision`, and
+  `a_restriction_the_platform_took_unrecorded_is_recorded_done`), `tests/arrival.rs` (`deposit wait set by the operator
+  bounds a wait and survives a restart`); prov `tests/module_record.rs` (`providers confirmed before a restart are not held
+  again after it`); core-authz `engine` (`roll back and its siblings are reached only through core orch's decided path`)
+  and `core_sources` (`statement answer names only a verified entry's maker`, and `order_parties_read_the_one_precedence`);
+  core-audit `tests/reopen.rs` (`revoked provider's advertisement declares nothing`); scenarios `execution_routes.rs`
+  (`slippage limit set by the operator bounds the router`, across a reopen), `module_scenarios.rs` (`operator declares a
+  version exploited through policy and its segments stop on it`, `publisher cannot mark its own version stale`),
+  `segments.rs` (`segment on a version marked stale through policy moves to the newest`); contracts
+  `confirming_a_providers_releases_is_a_catalogue_change_of_its_own`. `T-020-55`'s named test now asks all ten sources,
+  each for its value, and `statement_answer_is_the_logs_maker_for_every_statement` holds an only-claimed statement to no
+  maker. The core-authz counts move by the one change (`T-021-12`'s way): 26 decided actions, 90 callers, 36
+  permissions, 39 calls, 12 + 9 changes and settings.
+- **Rule-off table** (each alone, its test run through the lock, the file restored from git; script `ruleoff.py` in the
+  row's scratch folder; every red an assertion, no build failure).
 
   | Rule switched off | Red |
   |---|---|
-  | Core asks the holder the log names (the catalogue's current registration asked instead) | `reversal_is_asked_of_the_holder_the_log_names_after_the_node_is_registered_again` (`HolderNotInForce("operator-wallet-2")`) |
-  | a holder with no release in force isn't asked | `holder_with_no_release_in_force_is_not_asked_and_the_reversal_stays_owed` (the wallet asked, answered `NotCompleted`) |
-  | a return kept at nothing lands nothing (the fallback stands in again) | `return_confirmed_at_nothing_lands_nothing_again` |
+  | settings are rebuilt from the log's done effects | `operator_setting_takes_effect_only_on_a_permitted_decision_and_is_rebuilt_from_the_log` |
+  | the operator's slippage limit in the router's bounds | `slippage_limit_set_by_the_operator_bounds_the_router` |
+  | the platform carries out a decided `declare_exploited` | `operator_declares_a_version_exploited_through_policy_and_its_segments_stop_on_it` |
+  | a lifecycle action needs policy's permit (a refusal taken as a permit) | `publisher_cannot_mark_its_own_version_stale` |
+  | the platform carries out a decided `mark_stale` | `segment_on_a_version_marked_stale_through_policy_moves_to_the_newest` |
+  | policy is asked before the platform's releases are read | `refused_caller_is_told_the_same_whether_or_not_anything_is_staged_and_its_attempt_is_recorded` |
+  | a confirmation names the held versions | `operator_confirms_a_providers_releases_only_on_a_permitted_decision` |
+  | a provider confirmed since the last opening is not held | `providers_confirmed_before_a_restart_are_not_held_again_after_it` |
+  | a listed public node reaches the catalogue | `public_node_setting_set_by_the_operator_takes_effect_on_its_nodes_segments` |
+  | scan rule 4 (a public lifecycle carrier) | `roll_back_and_its_siblings_are_reached_only_through_core_orchs_decided_path` |
+  | `Arrivals::reopened` reads the decided deposit wait | `deposit_wait_set_by_the_operator_bounds_a_wait_and_survives_a_restart` |
+  | the deposit wait's ceiling | `deposit_wait_above_its_ceiling_is_refused` |
+  | a restriction taken unrecorded is `done` | `a_restriction_the_platform_took_unrecorded_is_recorded_done` |
+  | a revoked provider's advertisement is not accepted | `revoked_providers_advertisement_declares_nothing` |
+  | `Statement` answers a verified maker only | `statement_answer_names_only_a_verified_entrys_maker` |
+  | `OrderParties` reads the one precedence | `order_parties_read_the_one_precedence` |
+  | `listed: false` takes the node off the catalogue's list | `public_node_unlisted_by_the_operator_is_no_longer_on_the_catalogues_public_list` |
+  | a confirmation takes Core's restrictions again first | `restriction_the_platform_could_not_record_before_a_crash_still_holds_after_core_reopens` |
+- **Local checks** (through the lock, `contracts/src/lib.rs` touched first): `fmt --check`, workspace `clippy --all-targets
+  -D warnings` and the doc check clean; core-orch, contracts and core-audit 742 passed; contracts with `rule-switches`
+  (`core-internal`) 96; core-authz `--lib` 165; prov `module_record` 19; scenarios `assembly_policy` 17,
+  `execution_routes` 7, `module_scenarios` 6, `segments` 33, the setters' callers (`simulated_faults`, `routing`,
+  `private_nodes`, `gross_charged`, `reopened`, `sim_providers`, `audit_scenarios`, `assembly_real_wallet`, `charge_check`,
+  `holds`) and the lib tests all passed; `invariants` on seeds 11 to 15, 10; `plan-check --strict` 0 findings,
+  `tag-check --strict` 2476 tests, 0 findings; the contract guard against `origin/develop`: no violations.
+- **Local checks** (through the lock, `contracts/src/lib.rs` touched first, at the head after `origin/m3`'s merge):
+  `fmt --check` and workspace `clippy --all-targets -D warnings` clean; core-orch, contracts and core-audit 744 passed
+  (core-orch alone 367 after the last change); contracts with `rule-switches` 96; core-authz `--lib` 165; prov
+  `module_record` and `catalogue` 42; scenarios (the lib tests, `assembly_policy`, `execution_routes`, `module_scenarios`,
+  `segments`, `sim_providers`, `reopened`, `private_nodes`) 116, and before the gap round the setters' other callers
+  (`simulated_faults`, `routing`, `gross_charged`, `audit_scenarios`, `assembly_real_wallet`, `charge_check`, `holds`);
+  `invariants` on seeds 11 to 15, 10; `plan-check --strict` 0 findings, `tag-check --strict` 2478 tests, 0 findings; the
+  contract guard against `origin/develop`: no violations.
+- **The doc check is left to CI.** The workspace doc run grew `rustdoc` on `tools/records` to about 7 GB and the lead
+  stopped it. Run crate by crate under the pinned 1.98.0 with a 2 GB watch, `rustdoc` on core-orch reached 2.6 GB and the
+  watch stopped it, so no crate's doc was run to the end locally. The first build's workspace doc run (under `stable`, the
+  same 1.98.0) had passed with `-D warnings` before the gap round, whose changes add no doc link.
+
+### T-020-49, review round 1 (#337, CHANGES at `af306ff4`)
+
+Merged `origin/m3` at `eb66381e` (`T-020-57`) first: the conflicts were core-internal's CHANGELOG totals (both sides'
+rounds named, recounted from the files: 193 valid, 195 invalid, 789 admission, 58 attribution, 120 relations) and this
+file (both sections kept; `T-020-57`'s round 3 and review round 1 moved back under its own section). `T-020-57`'s private
+helper in `holding.rs` (`change_release`, the wallet's logged accept and revoke) took the name of this row's command, so it
+is `log_wallet_release_change` now. `DEC-20` paths: `components/prov/src/module/platform.rs` (H1), `components/core-authz/`
+(L1). `F-024` files: the assembly (`mod.rs`, `holding.rs`, `releases.rs`), `lib.rs` (`Journal` for its handle) and the
+scenario tests.
+
+- **H1, a restriction came back after a second unclean end.** The first build's `Opened` marker let an opening skip a
+  provider confirmed since, though the same run could take a restriction afterwards and fail to record it. Now a platform
+  dropped with its record whole writes `ClosedHolding { held }` (the providers still unconfirmed) or `Closed` (none); only
+  an opening on one of those skips anyone, holding exactly `held`. A crash, or a record that failed (it takes no write after
+  a failure, so no close follows one), holds every provider. `Opened` and `confirmed_since_opened` are gone. Test
+  `unrecorded_restriction_after_a_confirmation_is_held_after_a_second_unclean_end` (the reviewer's case, red at
+  `af306ff4` by the review's probe); `providers_confirmed_before_a_restart_are_not_held_again_after_it` ends on a
+  failed record now, since a whole drop holds only the unconfirmed.
+- **M1, a restriction with no result.** The re-taking takes every restrictive effect whose result isn't `failed`, one with
+  no result among them (it fails closed). Test `restriction_whose_result_the_log_did_not_take_is_taken_again_before_a_confirmation`.
+- **M2, a setting with no result.** Completed on reopening, so it reads the same before and after a restart (#143's
+  blocker (b)): `Settings::reopened` takes every `set_setting` effect without a `failed` result, and `Settings::reopen`
+  (the assembly's reopen calls it) appends the missing `done` once. Undoing it live would need each target's earlier value
+  and can't undo a crash between the effect and the result; completing it is consistent in both orders. Test
+  `setting_whose_result_the_log_did_not_take_stands_after_a_restart_and_its_result_is_completed` (result refused, then
+  reopened twice; result taken, then reopened; a `failed` result).
+- **L1.** Scan rule 4 also finds a function of core-orch visible outside it that reaches one of the crate's carriers
+  (`CARRIERS`: `carry_out_roll_back`, `carry_promotion`, `carry_out_release_change`, `retake_restriction`) and asks no
+  decision (`.decide(..)`); planted public wrappers, by plain and by module path, are found, a crate-visible one and a
+  decided path are not. In `roll_back_and_its_siblings_are_reached_only_through_core_orchs_decided_path`.
+- **L2.** `Core::advertise` (after `kit::join`) and `Core::install_wallet` re-apply the operator's catalogue settings
+  (`reapply_catalogue_settings`). Test `operators_catalogue_settings_stand_after_the_deployments_own_listing`
+  (`assembly_real_wallet.rs`).
+- **L3.** The re-taking's `reinstate` path is gone: no platform action reinstates a version, and the plan names none.
+- **L4.** `Arrivals::set_deposit_wait` is `pub(crate)` and never takes a wait above the ceiling; `with_deposit_wait` is
+  gone, and core-orch's arrival tests decide their wait through `Settings::set` (`short_waits(&mut env)`), so a reopened
+  Core reads it from the log; `Settings::set` asks policy before the cap; `Settings::reopened` refuses a wait above it.
+  In `deposit_wait_above_its_ceiling_is_refused`.
+- **L5.** `ReleaseAsked.history` is gone. `Segments::change_release` takes its log as `segments::lifecycle::Journal`, the
+  handle that appends and reads the log's history, and a confirmation reads the restrictions from it; the assembly's
+  `GeneralHandle` and the test logs implement it.
+
+| Rule switched off | Red |
+|---|---|
+| any unclean end holds every provider (it held none) | `unrecorded_restriction_after_a_confirmation_is_held_after_a_second_unclean_end` |
+| a restriction with no result is taken again (done only) | `restriction_whose_result_the_log_did_not_take_is_taken_again_before_a_confirmation` |
+| a setting with no result stands (done only) | `setting_whose_result_the_log_did_not_take_stands_after_a_restart_and_its_result_is_completed` |
+| a deposit wait above its ceiling is not rebuilt | `deposit_wait_above_its_ceiling_is_refused` |
+| scan rule 4 finds a public wrapper of a carrier | `roll_back_and_its_siblings_are_reached_only_through_core_orchs_decided_path` |
+| the wallet's install re-applies the operator's settings | `operators_catalogue_settings_stand_after_the_deployments_own_listing` |
+| a confirmation reads its history from the log (an empty one read) | `restriction_the_platform_could_not_record_before_a_crash_still_holds_after_core_reopens` |
+
+- **Local checks of round 1** (through the lock, `contracts/src/lib.rs` touched first, after `origin/m3` `eb66381e`):
+  `fmt --check` and workspace `clippy --all-targets -D warnings` clean; core-orch, contracts and core-audit 756 passed;
+  contracts with `rule-switches` 98; core-authz `--lib` 165; prov `module_record` and `catalogue` 43; scenarios (the lib
+  tests and fifteen binaries: `assembly_policy`, `execution_routes`, `module_scenarios`, `segments`,
+  `assembly_real_wallet`, `reopened`, `assembly_intake`, `sim_providers`, `private_nodes`, `simulated_faults`, `routing`,
+  `gross_charged`, `audit_scenarios`, `charge_check`, `holds`) 203; `invariants` on seeds 11 to 15, 10; `plan-check
+  --strict` 0 findings, `tag-check --strict` 2520 tests, 0 findings; the contract guard against `origin/develop`: no
+  violations. The doc check is CI's (core-orch's `rustdoc` passes 2 GB locally).

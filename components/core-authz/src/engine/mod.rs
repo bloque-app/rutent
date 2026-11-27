@@ -1205,6 +1205,7 @@ mod tests {
             CatalogueChange::SetSlippage,
             CatalogueChange::Promote,
             CatalogueChange::RollBack,
+            CatalogueChange::ConfirmReleases,
         ] {
             match change {
                 CatalogueChange::Grant
@@ -1217,7 +1218,8 @@ mod tests {
                 | CatalogueChange::WithdrawRelease
                 | CatalogueChange::SetSlippage
                 | CatalogueChange::Promote
-                | CatalogueChange::RollBack => {}
+                | CatalogueChange::RollBack
+                | CatalogueChange::ConfirmReleases => {}
                 // An operator's setting is listed below, one for each (`T-021-15`).
                 CatalogueChange::SetSetting => unreachable!("listed below"),
             }
@@ -1235,6 +1237,11 @@ mod tests {
                 statement_key: (change == CatalogueChange::AcceptModule)
                     .then(|| rutent_contracts::provider_role::PublicKey::new(A_KEY).unwrap()),
                 setting: None,
+                versions: if change == CatalogueChange::ConfirmReleases {
+                    vec![id("2.1.0")]
+                } else {
+                    Vec::new()
+                },
             });
         }
         // Each of the operator's settings (`T-020-45`, `T-021-15`): one fixture of the contract for each.
@@ -1296,6 +1303,18 @@ mod tests {
     #[test]
     fn staging_is_rolled_back_only_on_a_permitted_decisions_effect() {
         entry_points::staging_is_rolled_back_only_on_an_effect();
+    }
+
+    /// Roll back and its siblings, each of the platform's lifecycle actions on a release (the five, `promote`,
+    /// `roll_back` and `confirm`), are carried out in core-orch only from a function visible in the crate at most, or a
+    /// port's trait impl, so no caller outside core-orch reaches one but through its decided path, which asks policy
+    /// and records the effect first (`T-020-49`, `F-025`'s note on `carry_out_roll_back`); Core's own tree holds no
+    /// public carrier (the scan of every entry point, rule 4).
+    // verifies: REQ-AUZ-1
+    #[test]
+    fn roll_back_and_its_siblings_are_reached_only_through_core_orchs_decided_path() {
+        entry_points::lifecycle_actions_are_reached_only_through_the_decided_path();
+        entry_points::every_entry_point_of_core_holds();
     }
 
     /// Each lifecycle action on a release, `accept`, `withdraw`, `revoke`, `declare_exploited` and `mark_stale`, is
@@ -1517,7 +1536,7 @@ mod tests {
     fn every_value_moving_action_is_refused_when_policy_denies() {
         let denies = || Service::ruling(Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted)));
         let actions = every_decided_action();
-        assert_eq!(actions.len(), 25);
+        assert_eq!(actions.len(), 26);
         let requests: Vec<DecisionRequest> = actions.iter().cloned().map(request).collect();
         let mut policy = Engine::with_policy(
             Guarded::with_a_decision_record(),
@@ -1649,7 +1668,7 @@ mod tests {
         }
         assert_eq!(
             callers.len(),
-            3 * 25 + 2 * 3 + 3 + 3,
+            3 * 26 + 2 * 3 + 3 + 3,
             "the operator on every action, the user and Core on a move, Core on a reversal or a status asked"
         );
         let seen: Vec<Actor> = policy

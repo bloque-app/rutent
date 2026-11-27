@@ -20,6 +20,16 @@
     invalid `raise-of-a-holding-not-read-naming-a-balance`, `--for-a-reason-it-has-no-name-for`; admission
     `--its-accounts-check`, `--never-read`, `--missing`, `--account`, `--node`, `--provider`. 120 relations, with
     `T-020-52`'s merged beside it.
+  - `T-020-49` (5): `CatalogueChange::ConfirmReleases` (`confirm_releases`, `CONFIRM_RELEASES`), the platform's
+    confirmation of a provider's releases after an unclean end (`T-013-11`), a sixth lifecycle action, with
+    `Action::ChangeCatalogue.versions`, the provider's versions it puts back in force, at least one, each once, named
+    exactly by it (`CatalogueChange::confirms_releases`). And `OperatorSetting::Cadence.provider` (optional), a
+    provider's own status cadence, named only for the status question's job (`STATUS_ASKS_JOB`), the change's provider
+    then that provider; a cadence's `seconds` is a safe integer, zero running its job on every tick, as a job's
+    default cadence does. Fixtures: valid `decision-request-to-confirm-a-providers-releases`,
+    `decision-request-to-set-a-providers-status-cadence`; invalid `decision-request-to-confirm-releases-naming-no-versions`,
+    `--naming-a-version-twice`, `decision-request-to-promote-naming-versions-to-confirm`,
+    `decision-request-to-set-a-providers-cadence-of-another-job`. 120 relations, unchanged.
   - `F-025`'s L7: row `automatic-deposit-takes-a-firm-quote`, an `automatic_deposit` acceptance's quote is no `shown`
     without a firm rate or awaiting its customer.
   - R-AWAITING: `arrival.holder` (optional), and row `waiting-quote-is-for-its-arrivals-holder`, a `shown` with
@@ -117,8 +127,8 @@
 
   Valid fixtures for each new shape and setting, an invalid one per rule broken, and admission cases for each new
   row and field. With `T-020-44`'s, `T-020-50`'s, `T-020-46`'s (five rounds), `T-021-16`'s, `T-020-51`'s, `T-020-52`'s,
-  `T-020-48`'s and `T-020-57`'s rounds, merged beside it: thirty schemas, 191 valid fixtures and 191 invalid, 789
-  admission cases and 58 attribution cases (counted from the files); 120
+  `T-020-48`'s, `T-020-57`'s and `T-020-49`'s rounds, merged beside it: thirty schemas, 193 valid fixtures and 195 invalid,
+  789 admission cases and 58 attribution cases (counted from the files); 120
   relations and 5 closing ones, three stated. (DEC-4, DEC-20, REQ-QTE-10, REQ-AUZ-7, REQ-AUZ-6, REQ-AUZ-8, THR-3, GUA-1, REQ-ORD-20, T-020-45)
 - The interfaces between `CMP-CORE-ORCH`, `CMP-CORE-AUTHZ` and `CMP-CORE-AUDIT`, settled as a sixth contract before the
   three parts are built side by side (`PLAN.md` §3, §4.4). From orchestration to policy: one decision call for every

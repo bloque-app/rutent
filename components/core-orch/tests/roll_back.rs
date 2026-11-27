@@ -12,9 +12,7 @@ use rutent_contracts::core_internal::{
 use rutent_contracts::router_api::Id;
 use rutent_core_orch::rounds::Fresh;
 use rutent_core_orch::segments::Segments;
-use rutent_core_orch::segments::roll_back::{
-    RollBackAsked, RollBackRefused, RollsBack, carry_out_roll_back,
-};
+use rutent_core_orch::segments::roll_back::{RollBackAsked, RollBackRefused, RollsBack};
 use rutent_core_orch::snapshot::{Clock, Reading};
 use rutent_prov::catalogue::Instant;
 use rutent_prov::module::lifecycle::LifecycleRefusal;
@@ -164,35 +162,7 @@ fn change(kind: CatalogueChange, version: &str) -> Action {
         advertising_keys: Vec::new(),
         statement_key: None,
         setting: None,
-    }
-}
-
-/// A roll back that names no version.
-fn unversioned() -> Action {
-    Action::ChangeCatalogue {
-        change: CatalogueChange::RollBack,
-        provider: id("bridge-pay"),
-        version: None,
-        tuple: None,
-        class: None,
-        advertising_keys: Vec::new(),
-        statement_key: None,
-        setting: None,
-    }
-}
-
-/// The effect of `action`, as the log would hold it on a permit.
-fn effect_of(action: Action) -> Effect {
-    let decision = Decision {
-        request: id("req-1"),
-        decision: id("dec-1"),
-        outcome: Answer::Permit {},
-        receipt: receipt(7),
-    };
-    Effect {
-        action,
-        decision: decision.permit().unwrap(),
-        receipt: receipt(8),
+        versions: Vec::new(),
     }
 }
 
@@ -292,7 +262,8 @@ fn refused_or_unknown_roll_back_ends_nothing() {
 }
 
 /// A log that can't take the effect leaves the staging as it was; one that fails after it leaves the platform's
-/// refusal as the result. A version other than the staged one, or none staged, asks nothing of policy.
+/// refusal as the result. A version other than the staged one, or none staged, records no effect: policy is asked
+/// first, before the staging is read (`F-025`'s L6, `T-020-49`), so the attempt is its decision's entry.
 // verifies: REQ-AUZ-1
 #[test]
 fn roll_back_without_its_effect_or_its_staged_version_ends_nothing() {
@@ -349,8 +320,12 @@ fn roll_back_without_its_effect_or_its_staged_version_ends_nothing() {
         ),
         Err(RollBackRefused::NothingStaged)
     );
-    assert!(policy.asked.is_empty(), "policy isn't asked");
-    assert!(log.entries.is_empty());
+    assert_eq!(
+        policy.asked.len(),
+        2,
+        "each attempt is asked of policy first"
+    );
+    assert!(log.entries.is_empty(), "no effect is recorded");
 }
 
 /// The platform's refusal ends nothing and the effect's result is `failed`, never `done`.
@@ -379,43 +354,4 @@ fn platform_refusal_records_the_result_failed() {
         (&last.what, &last.outcome),
         (What::Result { .. }, Outcome::Failed {})
     ));
-}
-
-/// An effect permitted for another action, a promotion or a roll back of another version, carries nothing out,
-/// however it was permitted: the entry point checks the permitted action itself, not only that an effect is held.
-// verifies: REQ-AUZ-1
-#[test]
-fn effect_of_another_action_rolls_nothing_back() {
-    let mut modules = Staging::of("2.2.0");
-    let by = id("ops-lead");
-    for action in [
-        change(CatalogueChange::Promote, "2.2.0"),
-        change(CatalogueChange::RollBack, "2.1.0"),
-        unversioned(),
-    ] {
-        let carried = carry_out_roll_back(&mut modules, &effect_of(action), &by, &clock());
-        assert!(carried.is_err());
-        assert_eq!(modules.staged.as_deref(), Some("2.2.0"));
-        assert!(modules.ended.is_empty());
-    }
-    assert_eq!(
-        carry_out_roll_back(
-            &mut modules,
-            &effect_of(change(CatalogueChange::Promote, "2.2.0")),
-            &by,
-            &clock()
-        ),
-        Err(RollBackRefused::NotARollBack)
-    );
-    // The permitted roll back of the staged version is carried out.
-    assert_eq!(
-        carry_out_roll_back(
-            &mut modules,
-            &effect_of(change(CatalogueChange::RollBack, "2.2.0")),
-            &by,
-            &clock()
-        ),
-        Ok("2.2.0".to_owned())
-    );
-    assert_eq!(modules.staged, None);
 }

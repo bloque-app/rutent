@@ -253,3 +253,116 @@ fn an_unreadable_log_or_store_gives_not_known() {
         Reply::Missing
     );
 }
+
+/// The stated entry under `commitment`, attributed to `who` as verified, or only claimed by it.
+fn stated(index: u64, commitment: &Digest, who: &str, verified: bool) -> (Receipt, Entry) {
+    let maker = serde_json::json!({"party": who, "acts": format!("{who}-signer"), "role": "provider", "kind": "component"});
+    let attribution = if verified {
+        serde_json::json!({"signature": "verified", "who": maker})
+    } else {
+        serde_json::json!({"signature": "unverified", "claimed_by": maker})
+    };
+    let entry: Entry = serde_json::from_value(serde_json::json!({
+        "kind": "stated",
+        "attribution": attribution,
+        "what": {"statement": "urn:rutent:provider-role:result"},
+        "when": {"at": "2026-01-01T00:00:00Z", "source": "party_stated"},
+        "received_at": "2026-01-01T00:00:01Z",
+        "outcome": {"status": "stated"},
+        "signed_with": {"scheme": "ed25519", "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"},
+        "commitment": commitment,
+    }))
+    .expect("a stated entry");
+    let receipt: Receipt = serde_json::from_value(serde_json::json!({
+        "log": "log-1",
+        "index": index,
+        "entry": {"algorithm": "sha-256", "value": format!("{index:064x}")},
+    }))
+    .expect("a receipt");
+    (receipt, entry)
+}
+
+/// `Statement` names only a verified entry's maker, never an unverified one's claim (`T-020-49`, the milestone
+/// reviewer's check of `T-020-55`): a statement whose only entry is unverified has no maker Core vouches for, so its
+/// claimed maker is a missing input, not a yes; where a verified entry names the commitment too, its maker is the one
+/// answered, whichever came first.
+// verifies: REQ-AUD-5
+#[test]
+fn statement_answer_names_only_a_verified_entrys_maker() {
+    let ask = |entries: Vec<(Receipt, Entry)>, party: &str| {
+        let mut sources = CoreSources::new(Log(Some(entries)), Store(true), YesToAll::default());
+        sources.supply(&Need {
+            input: id(party),
+            from: Source::Statement(digest('a')),
+        })
+    };
+    let claimed = vec![stated(0, &digest('a'), "forger-co", false)];
+    assert_eq!(ask(claimed.clone(), "forger-co"), Reply::Missing);
+    let both = vec![
+        stated(0, &digest('a'), "forger-co", false),
+        stated(1, &digest('a'), "bank-co", true),
+    ];
+    assert_eq!(ask(both.clone(), "forger-co"), Reply::Given(Said::No));
+    assert_eq!(ask(both, "bank-co"), Reply::Given(Said::Yes));
+    assert_eq!(
+        ask(vec![stated(0, &digest('a'), "bank-co", true)], "bank-co"),
+        Reply::Given(Said::Yes)
+    );
+}
+
+/// Every answer about an order reads its record in one precedence (`T-020-49`, the milestone reviewer's check of
+/// `T-020-55`): the filing's hand-over, then `order_opened`, then the acceptance. Where an order's hand-over and the log's
+/// acceptance name different parties, its requester and its parties are answered from the same record, the hand-over's.
+// verifies: REQ-AUZ-5
+#[test]
+fn order_parties_read_the_one_precedence() {
+    let accepted: Entry = serde_json::from_str(include_str!(
+        "../../../../contracts/core-internal/fixtures/valid/verified-entry-of-an-acceptance-given-on-a-deposit.json"
+    ))
+    .expect("an acceptance");
+    let receipt: Receipt = serde_json::from_value(serde_json::json!({
+        "log": "log-1", "index": 0, "entry": {"algorithm": "sha-256", "value": "0".repeat(64)},
+    }))
+    .expect("a receipt");
+    let sources = CoreSources::new(
+        Log(Some(vec![(receipt, accepted)])),
+        Store(true),
+        YesToAll::default(),
+    );
+    let order = id("ord-23");
+    let mut sources = sources;
+    let ask = |sources: &mut CoreSources<Log, Store, YesToAll>, from: Source, who: &str| {
+        sources.supply(&Need {
+            input: id(who),
+            from,
+        })
+    };
+    assert_eq!(
+        ask(&mut sources, Source::OrderParties(order.clone()), "cust-4"),
+        Reply::Given(Said::Yes)
+    );
+    let handed = Parties {
+        requester: id("cust-9"),
+        beneficiary: id("cust-9"),
+        settlement_account_at: None,
+        payer: id("cust-9"),
+    };
+    sources
+        .opened_orders()
+        .opened(&order, &handed, &id("bank-co"));
+    for from in [
+        Source::Requester(order.clone()),
+        Source::OrderParties(order.clone()),
+    ] {
+        assert_eq!(
+            ask(&mut sources, from.clone(), "cust-9"),
+            Reply::Given(Said::Yes),
+            "{from:?}"
+        );
+        assert_eq!(
+            ask(&mut sources, from.clone(), "cust-4"),
+            Reply::Given(Said::No),
+            "{from:?}"
+        );
+    }
+}

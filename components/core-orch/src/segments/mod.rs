@@ -86,6 +86,7 @@ mod drain;
 pub(crate) mod journal;
 mod judge;
 mod landing;
+pub mod lifecycle;
 mod measured;
 mod pairs;
 mod ports;
@@ -553,8 +554,8 @@ pub struct Promotion<'a> {
 pub enum PromoteRefused {
     /// The provider has nothing staged.
     NothingStaged,
-    /// The version asked for isn't the one staged now: a permit to promote one release promotes no other. Nothing
-    /// was asked of policy.
+    /// The version asked for isn't the one staged now: a permit to promote one release promotes no other. Policy
+    /// permitted the caller, and no effect was recorded.
     NotTheStagedVersion {
         /// The version staged.
         staged: String,
@@ -3283,8 +3284,10 @@ impl Segments {
 
     /// Puts `promotion.provider`'s staged release in force, as policy decides, by the decision's caller: only the
     /// version staged now, so a permit to promote one release promotes no other (`REQ-AUZ-6`, `REQ-MDL-4`,
-    /// ADR-0014). Core asks the decision itself, records the effect before it calls the platform, and records its
-    /// result after; an effect is marked acted on only once the platform put the release in force.
+    /// ADR-0014). Core asks the decision itself, before it reads the staging, so a refused caller is told it is not
+    /// permitted whether or not anything is staged, and its attempt is recorded (`F-025`'s L6, `T-020-49`); it records
+    /// the effect before it calls the platform, and its result after; an effect is marked acted on only once the
+    /// platform put the release in force.
     pub fn promote(
         &mut self,
         log: &mut dyn Log,
@@ -3294,12 +3297,6 @@ impl Segments {
         fresh: &mut dyn Fresh,
         promotion: &Promotion<'_>,
     ) -> Result<String, PromoteRefused> {
-        let staged = modules
-            .staged(promotion.provider)
-            .ok_or(PromoteRefused::NothingStaged)?;
-        if staged != promotion.version.as_str() {
-            return Err(PromoteRefused::NotTheStagedVersion { staged });
-        }
         let action = Action::ChangeCatalogue {
             change: CatalogueChange::Promote,
             provider: promotion.provider.clone(),
@@ -3309,6 +3306,7 @@ impl Segments {
             advertising_keys: Vec::new(),
             statement_key: None,
             setting: None,
+            versions: Vec::new(),
         };
         let request = DecisionRequest {
             request: fresh.id(),
@@ -3320,6 +3318,13 @@ impl Segments {
         let Some(permit) = decision.permit() else {
             return Err(PromoteRefused::NotPermitted(decision.outcome));
         };
+        // Read only once permitted: what is staged is the permitted caller's to learn.
+        let staged = modules
+            .staged(promotion.provider)
+            .ok_or(PromoteRefused::NothingStaged)?;
+        if staged != promotion.version.as_str() {
+            return Err(PromoteRefused::NotTheStagedVersion { staged });
+        }
         let receipt = journal::append(
             log,
             journal::verified(
@@ -3901,7 +3906,7 @@ fn effect_of(action: Action, decision: Permit, receipt: Receipt) -> Effect {
 }
 
 /// Puts in force the staged release `effect` permits, by `by`, the permitting decision's caller.
-fn carry_promotion(
+pub(crate) fn carry_promotion(
     modules: &mut dyn Modules,
     effect: &Effect,
     by: &Id,
