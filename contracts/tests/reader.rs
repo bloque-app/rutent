@@ -276,8 +276,10 @@ impl Listed {
 
 fn listed() -> Listed {
     Listed {
-        deployment: serde_json::from_value(fixture("valid", "answer-of-a-final-movement")["deployment"].clone())
-            .unwrap(),
+        deployment: serde_json::from_value(
+            fixture("valid", "answer-of-a-final-movement")["deployment"].clone(),
+        )
+        .unwrap(),
         versions: ProtocolVersions::only("4.0.0"),
         key: PublicKey::new("oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8").unwrap(),
         version: Version::new("0.1.0").unwrap(),
@@ -285,7 +287,10 @@ fn listed() -> Listed {
     }
 }
 
-fn held(question: &ReaderQuestion, answer: &Statement<ReaderAnswer>) -> Result<(), Vec<ReaderMismatch>> {
+fn held(
+    question: &ReaderQuestion,
+    answer: &Statement<ReaderAnswer>,
+) -> Result<(), Vec<ReaderMismatch>> {
     let listed = listed();
     check_reader_answer(question, answer, &listed.expected(), &listed.now)
 }
@@ -386,12 +391,26 @@ fn reader_answer_from_another_reader_key_or_version_or_past_its_deadline_is_refu
     );
     let another_key = PublicKey::new("AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA").unwrap();
     assert_eq!(
-        at_time(&Expected { key: &another_key, ..listed.expected() }, &good, now),
+        at_time(
+            &Expected {
+                key: &another_key,
+                ..listed.expected()
+            },
+            &good,
+            now
+        ),
         Err(vec![ReaderMismatch::SignedWithAnotherKey])
     );
     let another_version = Version::new("0.2.0").unwrap();
     assert_eq!(
-        at_time(&Expected { version: &another_version, ..listed.expected() }, &good, now),
+        at_time(
+            &Expected {
+                version: &another_version,
+                ..listed.expected()
+            },
+            &good,
+            now
+        ),
         Err(vec![ReaderMismatch::OfAnotherVersion])
     );
     let mut shaped = good.clone();
@@ -416,7 +435,9 @@ fn reader_answer_from_another_reader_key_or_version_or_past_its_deadline_is_refu
     // A value built in memory is held to the answer's own rules, as one read from the wire is: a network's rules
     // answering a movement's question it names.
     let mut built = good.clone();
-    built.statement.answer = answer("answer-of-a-light-client-networks-rules").statement.answer;
+    built.statement.answer = answer("answer-of-a-light-client-networks-rules")
+        .statement
+        .answer;
     assert!(built.statement.check().is_err());
     assert_eq!(
         held(&status, &built),
@@ -564,22 +585,39 @@ fn rpc_pool_quorum_counts_distinct_hosts_not_spellings() {
     };
     for pair in [
         ["https://rpc-a.base.example", "https://rpc-a.base.example/"],
-        ["https://rpc-a.base.example", "https://rpc-a.base.example:443"],
+        [
+            "https://rpc-a.base.example",
+            "https://rpc-a.base.example:443",
+        ],
         ["https://rpc-a.base.example", "wss://rpc-a.base.example"],
-        ["https://rpc-a.base.example", "https://rpc-a.base.example:8545"],
-        ["https://rpc-a.base.example/a", "https://rpc-a.base.example/b"],
-        ["https://rpc-a.base.example/", "https://rpc-a.base.example//"],
+        [
+            "https://rpc-a.base.example",
+            "https://rpc-a.base.example:8545",
+        ],
+        [
+            "https://rpc-a.base.example/a",
+            "https://rpc-a.base.example/b",
+        ],
+        [
+            "https://rpc-a.base.example/",
+            "https://rpc-a.base.example//",
+        ],
     ] {
         assert!(pool(&pair).is_err(), "{pair:?} is one host");
     }
     for pair in [
         ["https://rpc-a.base.example", "https://rpc-b.base.example"],
-        ["https://rpc-a.base.example:8545", "wss://rpc-b.base.example/"],
+        [
+            "https://rpc-a.base.example:8545",
+            "wss://rpc-b.base.example/",
+        ],
     ] {
         assert!(pool(&pair).is_ok(), "{pair:?} are two hosts");
     }
     assert_eq!(
-        RpcEndpoint::new("wss://rpc-a.base.example:8545/").unwrap().host(),
+        RpcEndpoint::new("wss://rpc-a.base.example:8545/")
+            .unwrap()
+            .host(),
         "rpc-a.base.example"
     );
     for name in [
@@ -589,7 +627,9 @@ fn rpc_pool_quorum_counts_distinct_hosts_not_spellings() {
     ] {
         let refused = through_rust("answer", &fixture("invalid", name));
         assert!(
-            refused.as_ref().is_err_and(|e| e.contains("an rpc pool names each host once")),
+            refused
+                .as_ref()
+                .is_err_and(|e| e.contains("an rpc pool names each host once")),
             "{name}: {refused:?}"
         );
     }
@@ -607,12 +647,21 @@ fn network_identity_is_paired_with_its_trust_rule() {
     };
     let light = rules("answer-of-a-light-client-networks-rules");
     let pool = rules("answer-of-an-rpc-pool-networks-rules");
-    assert!(matches!(light.identity, NetworkIdentity::GenesisHash { .. }));
+    assert!(matches!(
+        light.identity,
+        NetworkIdentity::GenesisHash { .. }
+    ));
     assert!(matches!(pool.identity, NetworkIdentity::ChainId { .. }));
     assert_eq!(check_pairing(&light.identity, &light.trust), Ok(()));
     assert_eq!(check_pairing(&pool.identity, &pool.trust), Ok(()));
-    assert!(check_pairing(&pool.identity, &light.trust).is_err(), "a chain id read by a light client");
-    assert!(check_pairing(&light.identity, &pool.trust).is_err(), "a genesis hash read from a pool");
+    assert!(
+        check_pairing(&pool.identity, &light.trust).is_err(),
+        "a chain id read by a light client"
+    );
+    assert!(
+        check_pairing(&light.identity, &pool.trust).is_err(),
+        "a genesis hash read from a pool"
+    );
     for name in [
         "answer-of-a-chain-id-read-by-a-light-client",
         "answer-of-a-genesis-hash-read-from-an-rpc-pool",
@@ -621,7 +670,9 @@ fn network_identity_is_paired_with_its_trust_rule() {
         assert!(!validator("answer").is_valid(&value), "{name}: the schema");
         let refused = through_rust("answer", &value);
         assert!(
-            refused.as_ref().is_err_and(|e| e.contains("a chain id is read from an rpc pool")),
+            refused
+                .as_ref()
+                .is_err_and(|e| e.contains("a chain id is read from an rpc pool")),
             "{name}: {refused:?}"
         );
     }

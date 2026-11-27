@@ -85,11 +85,12 @@ pub fn violations(graph: &Graph, krates: &[&str]) -> Vec<Violation> {
     let mut found = Vec::new();
     for &krate in krates {
         for dep in graph.get(krate).map(Vec::as_slice).unwrap_or_default() {
-            let permitted =
-                (krate == SCENARIOS && dep.name != SCENARIOS && (dep.name != READER_HOST || dep.dev))
-                    || allowed(krate).contains(&dep.name.as_str())
-                    || (dep.dev && dep.name == "rutent-conformance")
-                    || (dep.dev && dep.name == krate);
+            let permitted = (krate == SCENARIOS
+                && dep.name != SCENARIOS
+                && (dep.name != READER_HOST || dep.dev))
+                || allowed(krate).contains(&dep.name.as_str())
+                || (dep.dev && dep.name == "rutent-conformance")
+                || (dep.dev && dep.name == krate);
             if !permitted {
                 found.push(Violation {
                     krate: krate.to_string(),

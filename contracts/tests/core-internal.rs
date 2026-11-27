@@ -5526,7 +5526,6 @@ fn listing_a_public_network_names_its_identity_and_its_readers_endpoint_identity
             "an rpc pool has at least as many endpoints as its quorum"
         ))
     );
-    let mut action = action;
     if let Action::ChangeCatalogue {
         public_network: Some(network),
         ..

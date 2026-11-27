@@ -9487,17 +9487,21 @@ else changed there. `T-015-04` is built from this row's commit.
    refused.
 4. An `unreadable` answer passes `check_reader_answer` when it answers the question asked; it settles nothing. Any other
    failure of the check is unreadable too, by ADR-0007's rule.
-5. RPC endpoints are `https` or `wss` only, with no user, query or fragment: a key a node needs is the host's to resolve
-   by name, never written in the listing.
+5. RPC endpoints are `https` or `wss` only, with no user, path, query or fragment (at most a trailing `/`): a key or a
+   path a node needs is the reader host's to resolve by name through the egress layer's secret lookup, never written
+   in the listing (review round 1, L2: a key in a path can't be told from a route, so no path is taken).
 6. The CA is pinned as the SHA-256 digest of the CA certificate's DER. A digest of the leaf put in its place can't be
    told apart by the contract; Core's link refuses a leaf as its trust anchor (`T-020-60`).
-7. The subject name is one DNS name with no wildcard, and not an IP address.
+7. The subject name, and every endpoint's host, is one DNS name of two labels or more, with no wildcard, and never an
+   IP literal: a last label that is all digits is refused (review round 1, L1).
 8. A listing's `provider` is the caller's own party (the deployment operator's), so a desk of the operator lists under
-   its own party. Alternative: name the deployment operator's party, checked against the register.
-9. The identity's kind and the trust rule are not paired: a genesis hash with an RPC pool, or a chain id with a light
-   client, is accepted by the contract. Alternative: tie Substrate to `light_client` and EVM to `rpc_pool`.
-10. The scenario assembly may not depend on the reader host: `T-024-25` runs it as its own process, or changes the
-    boundary rule in its own row (a `DEC-20` path).
+   its own party. Alternative: name the deployment operator's party, checked against the register. The docs say so
+   since review round 1 (L7 b).
+9. *(Replaced in review round 1, M1.)* The identity's kind and the trust rule are paired: a chain id is read from an
+   RPC pool, a genesis hash by a light client. An EVM light client would need a later round.
+10. *(Replaced in review round 1, L6.)* The scenario assembly may take the reader host as a dev-dependency, for
+    `T-024-25`'s readers in the test harness, and never as a dependency of its build; nothing else of ours depends on
+    it. This is the one exception to `DEC-28`'s "nothing of ours depends on it".
 11. A delisting names the network alone, and nothing in the contract says it must have been listed. Core's catalogue
     (`T-020-60`, with `T-020-65`'s rule that an unlist waits while anything rests at the node) decides that.
 
@@ -9549,3 +9553,53 @@ Through the lock, `contracts/src/lib.rs` touched first, at `54cf9064`: `cargo fm
 `core-internal` 100); `rutent-core-authz --lib` 166; the boundary-check's `boundary` 22 and `graph` 2 (its `docs` test
 runs `cargo doc`, so it is CI's); `plan-check --strict` 0 findings; `tag-check --strict` 2532 tests, 0 findings; the
 contract guard against `origin/develop`: no violations. `cargo doc` is CI's.
+
+### T-020-59, review round 1 (#343, CHANGES at `395333b0`)
+
+The fixes, on the same branch, then `origin/m3` (`ebf42c9c`) merged: only the notes met, T-020-64's and T-020-65's
+sections kept beside this one. T-020-58 (#340) is not on m3 yet. L3, L5 and the rest of L7 go to T-020-60's issue.
+
+- **M1.** A network's identity is paired with its trust rule: a chain id is read from an RPC pool, a genesis hash by a
+  light client (`reader::check_pairing`, in `NetworkRules::check` and in core-internal's `Action::check`; an `allOf` of
+  `if`/`then` in the reader's `network_rules` and core-internal's `network_listing`). Invalid fixtures each way in both
+  contracts.
+- **M2.** A pool names each host once, whatever the scheme, port or trailing `/` (`RpcEndpoint::host`): its quorum is
+  of distinct hosts. Separate names that resolve to one provider are beyond the contract (the reader's README).
+- **L1.** `reader::is_host_name`: two labels or more, a last label not all digits; subject names and endpoint hosts are
+  held to it, and both schemas say so (`not`).
+- **L2.** An endpoint has no path beyond a trailing `/` (with no user, query or fragment, as before): a key in a path
+  can't be told from a route, so a node that needs one gets it from the reader host through the egress layer's secret
+  lookup.
+- **L4.** `check_reader_answer(question, answer, &Expected { deployment, versions, key, version }, now)`: it also runs
+  `ReaderAnswer::check` (`BreaksItsShape`) and `Statement::check_context` (`OfAnotherDeployment`,
+  `UnderAProtocolVersionNotInForce`).
+- **L6.** The boundary admits `rutent-scenarios` → `rutent-reader-host` as a dev-dependency only; a dependency of its
+  build, and the host on the assembly either way, are refused.
+- **L7 (b).** The listing's provider is documented as the caller's own party (default 8) in `CatalogueChange`'s docs,
+  the schema, core-internal's README and changelog.
+- **Tests**, seen red together with the round's rules off (the reader's and core-internal's) and one by one below:
+  `rpc_pool_quorum_counts_distinct_hosts_not_spellings` [`DEC-28`], `network_identity_is_paired_with_its_trust_rule`
+  [`DEC-28`, `REQ-ORD-39`], `rpc_endpoint_names_a_host_and_nothing_that_could_be_a_key` [`DEC-28`, `REQ-MDL-6`],
+  `scenario_assembly_takes_the_reader_host_for_its_tests_only` [`DEC-28`, `DEC-2`]; and the named tests extended:
+  the other-reader test (deployment, protocol version, own rules), both listing tests (pairing, an IP-literal subject).
+- **Counts.** reader: 12 valid, 36 invalid, five refused by Rust alone. core-internal: 196 valid, 211 invalid, 789
+  admission, 58 attribution, 120 relations.
+
+| Rule switched off (alone) | Red |
+|---|---|
+| M1: the pairing, reader Rust; then the reader schema's `allOf` | `network_identity_is_paired_with_its_trust_rule`; the reader fixture test |
+| M1: the pairing in core-internal's `Action::check`; then its schema's `allOf` | `listing_a_public_network_names_its_identity_and_its_readers_endpoint_identity_version_and_trust_rule` |
+| M2: a pool names each host once | `rpc_pool_quorum_counts_distinct_hosts_not_spellings`; the reader fixture test |
+| L1: a last label not all digits (Rust) | `rpc_endpoint_names_a_host_and_nothing_that_could_be_a_key`; `listing_that_pins_a_hosts_leaf_certificate_is_refused`; the reader fixture test |
+| L1: two labels or more (Rust) | `rpc_endpoint_names_a_host_and_nothing_that_could_be_a_key`; the reader fixture test |
+| L1: no IP literal, the subject's schema `not` | `listing_that_pins_a_hosts_leaf_certificate_is_refused` |
+| L1: no IP literal, the endpoint's schema `not` | `rpc_endpoint_names_a_host_and_nothing_that_could_be_a_key`; the reader fixture test |
+| L2: no path beyond `/` (Rust; then the schema's pattern as before the round) | the same two |
+| L4: the answer's own rules; then the envelope's deployment and protocol version | `reader_answer_from_another_reader_key_or_version_or_past_its_deadline_is_refused` |
+| L6: the assembly's dev-dependency admitted | `scenario_assembly_takes_the_reader_host_for_its_tests_only` |
+| L6: the assembly's build never takes the host | the same, and `reader_host_reaches_only_the_contracts_and_the_providers_egress_and_nothing_reaches_it` |
+
+Local checks, through the lock, `contracts/src/lib.rs` touched first, after the merge: `fmt --check` and workspace
+`clippy --all-targets -D warnings` clean; `rutent-contracts`, every suite, all passed (`reader` 11, `core-internal`
+100); `rutent-core-authz --lib` 167; the boundary-check's `boundary` 23 and `graph` 2; `plan-check --strict` 0 findings;
+`tag-check --strict` 2554 tests, 0 findings; the contract guard against `origin/develop` below. No local `cargo doc`.
