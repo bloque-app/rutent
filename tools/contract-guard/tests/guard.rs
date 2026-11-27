@@ -1,6 +1,8 @@
 //! Behaviour of the contract guard core, on in-memory fixtures. No test here creates a commit (`T-001-05`, `DEC-4`).
 
-use rutent_contract_guard::{Files, Violation, check, parse_contracts, split_nul_names};
+use rutent_contract_guard::{
+    Files, Violation, check, is_release_base, parse_contracts, split_nul_names,
+};
 use std::collections::HashMap;
 
 const CONTRACTS: &str = "\
@@ -1284,6 +1286,88 @@ fn field_marked_ignorable_is_admitted_by_the_older_schema() {
     // A schema the head can't read, or the base can't, is not a verdict either way: the entry's own marker stands.
     assert_eq!(
         schema_change(Some("not json"), CLOSED_PLUS_B, yes),
+        Vec::new()
+    );
+}
+
+/// A heading is the version `develop` holds when it reads as the same semantic version, whatever its spelling: `4.0.00`
+/// is `4.0.0`, released, so changing it needs a bump (the review's L1).
+// verifies: DEC-4
+#[test]
+fn a_differently_spelled_heading_of_a_released_version_is_still_released() {
+    let develop = provider_log(&[("4.0.0", "Adverts. Ignorable: no."), ("3.0.0", "Holding.")]);
+    let head = format!(
+        "{}- A fold. (DEC-4, T-020-45)\n",
+        provider_log(&[("4.0.00", "Adverts. Ignorable: no.")])
+    ) + "\n## 3.0.0\n- Holding. (DEC-4, T-020-45)\n";
+    let fixture = Fixture::default()
+        .base_only(PROVIDER_LOG, &develop)
+        .head_only(PROVIDER_LOG, &head)
+        .changed_head(PROVIDER_SCHEMA, "{}")
+        .on_release_line(PROVIDER_LOG, &develop);
+    let violations = run(&[PROVIDER_LOG, PROVIDER_SCHEMA], &fixture);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.message.contains("version not bumped")),
+        "a released version by another spelling is refused: {violations:?}"
+    );
+}
+
+/// Without `develop` nothing says which versions are released, so the base is a release base, whatever `main` says (the
+/// review's L2); with it, the base is one where it is on a release line.
+// verifies: DEC-4
+#[test]
+fn a_base_with_no_develop_is_a_release_base() {
+    assert!(is_release_base(false, false));
+    assert!(is_release_base(false, true));
+    assert!(is_release_base(true, true));
+    assert!(!is_release_base(true, false));
+}
+
+/// A field named in plain words, with no backticks, is named all the same, and a closed object with no `properties`
+/// key admits nothing, so a field added to it is refused by the older schema (the review's L3).
+// verifies: REQ-PRT-2
+#[test]
+fn ignorable_field_check_reads_plain_words_and_closed_objects_with_no_properties() {
+    // Plain words.
+    let violations = schema_change(
+        Some(CLOSED),
+        CLOSED_PLUS_B,
+        "- Adds the optional field b to the declaration. Ignorable: yes. (DEC-4, T-020-54)",
+    );
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.message.contains("older schema")),
+        "{violations:?}"
+    );
+    assert_eq!(
+        schema_change(
+            Some(CLOSED),
+            CLOSED_PLUS_B,
+            "- Adds the optional field b to the declaration. Ignorable: no. (DEC-4, T-020-54)"
+        ),
+        Vec::new()
+    );
+    // A closed object with no properties key.
+    let bare = r#"{"type":"object","additionalProperties":false}"#;
+    let with_b =
+        r#"{"type":"object","additionalProperties":false,"properties":{"b":{"type":"boolean"}}}"#;
+    assert!(
+        !schema_change(
+            Some(bare),
+            with_b,
+            "- Adds `b`. Ignorable: yes. (DEC-4, T-020-54)"
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        schema_change(
+            Some(bare),
+            with_b,
+            "- Adds `b`. Ignorable: no. (DEC-4, T-020-54)"
+        ),
         Vec::new()
     );
 }

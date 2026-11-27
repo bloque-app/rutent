@@ -33,7 +33,7 @@ const SHAPES: [&str; 10] = [
 /// their first refusal (`T-020-45` (6), `T-020-54`) holds router-api's fixtures to one rule each; these are the ones
 /// not yet made to, pinned as they are so the list can only shrink: the test fails when one of them is mended or
 /// when another joins. `T-020-54`'s gap, in F-020's notes.
-const ALSO_BREAK: [(&str, &str); 17] = [
+const ALSO_BREAK: [(&str, &str); 16] = [
     (
         "decision-record-batched-payout-naming-an-operation-before-the-last",
         "a batched-payout reason names a deposit at a reserve tuple that pays out in batches",
@@ -41,10 +41,6 @@ const ALSO_BREAK: [(&str, &str); 17] = [
     (
         "candidate-with-a-gap-between-operations",
         "each operation of a part takes in what the one before it delivered",
-    ),
-    (
-        "decision-record-candidate-id-twice",
-        "a stale, void or voided statement drops its candidate only where no usable answer covers its operation",
     ),
     (
         "decision-record-operation-citing-a-missing-figure",

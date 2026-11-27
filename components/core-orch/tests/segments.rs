@@ -156,6 +156,12 @@ struct Fake {
     answer: Option<Vec<u8>>,
     /// A withdrawal is answered as succeeded, signed by its provider, as the route's record states it.
     settles_the_withdrawal: bool,
+    /// Core's clock, which the run reads: the answer's time moves it where `answers_at` says.
+    clock: std::rc::Rc<TestClock>,
+    /// Where Core's clock stands when the platform hands the answer back, in seconds, where set.
+    answers_at: Option<u64>,
+    /// The protocol version the settled answer is made under, where it isn't the current one.
+    answers_under: Option<String>,
 }
 
 impl Modules for Fake {
@@ -214,14 +220,21 @@ impl Modules for Fake {
             });
             let body =
                 json!({ "kind": "withdrawal", "transaction": transaction, "outcome": outcome });
+            let mut envelope = snapshot_support::envelope(
+                &snapshot_support::deployment(),
+                rutent_contracts::provider_role::RESULT_SHAPE,
+                "reserve-bank-co",
+                1_794_200_000,
+                body,
+            );
+            if let Some(version) = &self.answers_under {
+                envelope["protocol_version"] = version.as_str().into();
+            }
+            if let Some(at) = self.answers_at {
+                self.clock.0.set(Reading::at(at));
+            }
             return Answered::Bytes(snapshot_support::sign(
-                snapshot_support::envelope(
-                    &snapshot_support::deployment(),
-                    rutent_contracts::provider_role::RESULT_SHAPE,
-                    "reserve-bank-co",
-                    1_794_200_000,
-                    body,
-                ),
+                envelope,
                 &snapshot_support::statements_key("reserve-bank-co", 1),
             ));
         }
@@ -291,6 +304,9 @@ fn fake() -> Fake {
         moved: false,
         answer: None,
         settles_the_withdrawal: false,
+        clock: std::rc::Rc::new(TestClock(Cell::new(Reading::at(1_794_200_000)))),
+        answers_at: None,
+        answers_under: None,
     }
 }
 
@@ -485,7 +501,7 @@ fn run_over(modules: &mut Fake, catalogue: Catalogue) -> (Ran, KeptLog) {
 /// catalogue changed.
 fn run_over_each(modules: &mut Fake, catalogues: Vec<Catalogue>) -> (Vec<Ran>, KeptLog) {
     let record = record_naming_a_call();
-    let clock = TestClock(Cell::new(Reading::at(1_794_200_000)));
+    let clock = std::rc::Rc::clone(&modules.clock);
     let mut log = KeptLog::default();
     let mut store = Store::default();
     let mut policy = Permitting(0);
@@ -533,7 +549,7 @@ fn run_over_each(modules: &mut Fake, catalogues: Vec<Catalogue>) -> (Vec<Ran>, K
     let mut ran = Vec::new();
     for catalogue in &catalogues {
         let mut parts = Parts {
-            clock: &clock,
+            clock: &*clock,
             catalogue,
             log: &mut log,
             evidence: &mut store,
@@ -769,4 +785,42 @@ fn reserve_that_turns_batched_mid_route_is_refused_at_the_next_segment() {
         1,
         "only the withdrawal was handed over"
     );
+}
+
+/// How many withdrawals the log records as done: a result that counted.
+fn done_results(log: &KeptLog) -> usize {
+    log.0
+        .iter()
+        .filter(|entry| {
+            matches!(entry, Entry::Verified(v)
+                if matches!(v.what, What::Result { .. }) && v.outcome == rutent_contracts::core_internal::Outcome::Done {})
+        })
+        .count()
+}
+
+/// A segment begun before a cutover resolves the same whether its answer lands before or after the date, and one begun
+/// at or after it takes no statement under the old version (`REQ-PRT-2`, `REQ-PRT-4`, `T-020-54`): the withdrawal begins
+/// at 1 794 200 000 under 3.0.0 in force until 100 seconds later, and its answer lands at the platform's hand-back, the
+/// clock then where the case says. The result judge reads the version recorded when the segment began.
+// verifies: REQ-PRT-2, REQ-PRT-4
+#[test]
+fn result_of_a_segment_begun_before_a_cutover_counts_whenever_it_lands() {
+    let results = |cutover: u64, lands: u64| {
+        let mut modules = fake();
+        modules.settles_the_withdrawal = true;
+        modules.answers_under = Some("3.0.0".into());
+        modules.answers_at = Some(lands);
+        let mut catalogue = admitting();
+        catalogue.set_cutover("3.0.0", &Instant(cutover).rfc3339().unwrap());
+        let (_, log) = run_over(&mut modules, catalogue);
+        done_results(&log)
+    };
+    // Begun at 1 794 200 000, the date at 1 794 200 100: the answer lands before it, at it and long after.
+    for lands in [1_794_200_050, 1_794_200_100, 1_794_209_999] {
+        assert!(results(1_794_200_100, lands) > 0, "landing at {lands}");
+    }
+    // The date was already past when the segment began: the old version's answer counts for nothing, wherever it lands.
+    for lands in [1_794_200_000, 1_794_209_999] {
+        assert_eq!(results(1_794_199_000, lands), 0, "landing at {lands}");
+    }
 }

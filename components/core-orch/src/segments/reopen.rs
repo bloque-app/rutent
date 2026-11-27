@@ -514,6 +514,14 @@ impl Segments {
             transaction,
             provider: handed.provider.clone(),
             caller,
+            // What it began under, derived from the log's settings as they stood before its start effect.
+            began: Began::from_log(
+                &statement.made_at,
+                history,
+                handed.at,
+                statement.protocol_version.as_str(),
+                clock.now().floor(),
+            ),
             statement,
             effect: Some(handed.effect.clone()),
             begun: true,
@@ -1218,7 +1226,16 @@ fn settled_result(
         );
         match judge(
             catalogue,
-            (at, super::begun(&statement.made_at, at)),
+            (
+                at,
+                &Began::from_log(
+                    &statement.made_at,
+                    history,
+                    handed.at,
+                    statement.protocol_version.as_str(),
+                    at,
+                ),
+            ),
             handed.provider,
             &statement.statement,
             cited.terms,

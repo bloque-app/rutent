@@ -565,6 +565,32 @@ impl Settings {
         self.status_cadences.get(provider).copied()
     }
 
+    /// The protocol versions in force under these settings: `current`, and each older one until the cutover the operator
+    /// set (`REQ-PRT-4`). Built from the log up to a segment's start, it is what the segment began under.
+    pub fn protocol_versions(
+        &self,
+        current: &str,
+    ) -> rutent_contracts::provider_role::ProtocolVersions {
+        self.cutovers.iter().fold(
+            rutent_contracts::provider_role::ProtocolVersions::only(current),
+            |versions, (version, cutover)| versions.with_older(version.as_str(), cutover.as_str()),
+        )
+    }
+
+    /// Puts only the cutovers into `targets`' catalogue and platform, as a reopened Core must before it lists its
+    /// providers again or judges what its log holds: an advertisement or a result taken before its cutover is read by it
+    /// still (`REQ-PRT-4`, `T-020-54`).
+    pub fn apply_cutovers(&self, targets: &mut Targets<'_>) {
+        for (version, cutover) in &self.cutovers {
+            if let Some(catalogue) = targets.catalogue.as_deref_mut() {
+                catalogue.set_cutover(version, cutover.as_str());
+            }
+            if let Some(platform) = targets.platform.as_deref_mut() {
+                platform.set_cutover(version, cutover.as_str());
+            }
+        }
+    }
+
     /// The cutover date the operator set for the older protocol version `version`, if any (the catalogue holds it, `T-020-54`).
     pub fn cutover(&self, version: &str) -> Option<&Timestamp> {
         self.cutovers.get(version)

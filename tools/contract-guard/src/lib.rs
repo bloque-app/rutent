@@ -439,6 +439,12 @@ fn lock_moves(base: Option<&str>, head: Option<&str>) -> LockMoves {
     moves
 }
 
+/// Whether a base is a release base: it is where it is on a release line (`develop` or `main`), and it is where `develop`
+/// is not known at all, since without it nothing says which versions are released, so every rule applies (fail closed).
+pub fn is_release_base(develop_known: bool, on_a_release_line: bool) -> bool {
+    !develop_known || on_a_release_line
+}
+
 /// A protocol change says whether a party may ignore it (`REQ-PRT-2`): the marker `Ignorable:` followed by the whole
 /// word `yes` or `no`, exactly once, so `Ignorable: none` or `Ignorable: not sure` says neither; and `Ignorable: no`
 /// wherever it says it adds a protection, read whatever its case. `Err` is the sentence that says why not.
@@ -487,9 +493,15 @@ fn closed_additions(
     use serde_json::Value;
     match (older, newer) {
         (Value::Object(before), Value::Object(after)) => {
+            // A closed object with no `properties` key admits nothing, so every property the newer one names is added.
+            let empty = serde_json::Map::new();
+            let was = match before.get("properties") {
+                Some(Value::Object(was)) => Some(was),
+                None => Some(&empty),
+                Some(_) => None,
+            };
             if before.get("additionalProperties") == Some(&Value::Bool(false))
-                && let (Some(Value::Object(was)), Some(Value::Object(is))) =
-                    (before.get("properties"), after.get("properties"))
+                && let (Some(was), Some(Value::Object(is))) = (was, after.get("properties"))
             {
                 for name in is.keys().filter(|name| !was.contains_key(*name)) {
                     out.push(Refused {
@@ -551,7 +563,12 @@ fn check_ignorable_fields(bullet: &str, refused: &[Refused]) -> Result<(), Strin
     if !says_yes {
         return Ok(());
     }
-    for word in code_words(bullet) {
+    // Named in backticks, as `field`, `Type.field` or `Type::field`, or as a plain word of the entry: leaving off the
+    // backticks is no way past the check.
+    let plain = bullet
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|w| !w.is_empty());
+    for word in code_words(bullet).into_iter().chain(plain) {
         if let Some(found) = refused.iter().find(|r| {
             word == r.property
                 || word.ends_with(&format!(".{}", r.property))
@@ -730,9 +747,11 @@ pub fn check(
         // rewording of it needs no new entry there.
         let unreleased = !files.base_is_release()
             && !files.released(&log).is_some_and(|text| {
-                sections(&text)
-                    .iter()
-                    .any(|s| s.version == head_top.version)
+                // The same semantic version there, whatever its spelling: `4.0.00` is `4.0.0`.
+                sections(&text).iter().any(|s| {
+                    s.version == head_top.version
+                        || semver(&s.version).is_some_and(|v| Some(v) == semver(&head_top.version))
+                })
             });
         let readme = format!(
             "{}/README.md",

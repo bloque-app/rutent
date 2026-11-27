@@ -107,6 +107,54 @@ pub enum Counted {
     Refused(Refusal),
 }
 
+/// What a segment began under, recorded when it began: the instant, and the protocol versions in force then, each
+/// older one with the cutover the operator had set by then. A result is read by it whenever it lands and whatever the
+/// cutovers say since: moving a cutover earlier changes nothing for a segment already begun, live or after a reopen
+/// (`REQ-PRT-2`, `T-020-54`). Live it is taken from the catalogue as the segment starts; a reopened Core derives it
+/// from the log's settings up to the segment's start effect ([`Began::from_log`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Began {
+    /// When the segment began.
+    pub at: Instant,
+    /// The protocol versions in force then.
+    pub versions: rutent_contracts::provider_role::ProtocolVersions,
+}
+
+impl Began {
+    /// What a segment whose signed operation was made at `made_at` began under, the versions in force being `versions`.
+    /// An unreadable time begins now (`fallback`), which only voids an older version sooner.
+    pub fn of(
+        made_at: &str,
+        versions: rutent_contracts::provider_role::ProtocolVersions,
+        fallback: Instant,
+    ) -> Self {
+        Began {
+            at: begun(made_at, fallback),
+            versions,
+        }
+    }
+
+    /// What a segment began under, derived from `history` as it stood before the segment's start effect, the entry
+    /// at `start`: the cutovers the log's settings held then, over `current`.
+    pub fn from_log(
+        made_at: &str,
+        history: &[(
+            rutent_contracts::core_internal::Receipt,
+            rutent_contracts::core_internal::Entry,
+        )],
+        start: usize,
+        current: &str,
+        fallback: Instant,
+    ) -> Self {
+        Self::of(
+            made_at,
+            crate::settings::Settings::reopened(&history[..start.min(history.len())])
+                .protocol_versions(current),
+            fallback,
+        )
+    }
+}
+
 /// When a segment began, as its signed operation says: the `made_at` Core stamped on it from its clock, which the log
 /// keeps with the operation's effect. A result is read by the protocol versions in force then, whichever side of a cutover
 /// it lands on (`REQ-PRT-2`, `T-020-54`). An operation whose time can't be read begins `fallback`, Core's clock now,
@@ -118,12 +166,12 @@ pub fn begun(operation_made_at: &str, fallback: Instant) -> Instant {
 }
 
 /// Judges `received`, the bytes of a result, as an answer to `operation`, the segment's, at `provider`, against the
-/// tuple's `terms`, at Core's clock `at`; `begun` is when the segment began, by which the protocol version it names is
-/// judged ([`begun`]); `units` are the decimals its two ends count in.
+/// tuple's `terms`, at Core's clock `at`; `began` is what the segment began under, by which the protocol version it names
+/// is judged ([`Began`]); `units` are the decimals its two ends count in.
 #[allow(clippy::too_many_arguments)]
 pub fn judge(
     catalogue: &Catalogue,
-    (at, begun): (Instant, Instant),
+    (at, began): (Instant, &Began),
     provider: &Id,
     operation: &Operation,
     terms: &Terms,
@@ -132,7 +180,7 @@ pub fn judge(
     received: &[u8],
 ) -> Result<Counted, NotCounted> {
     catalogue
-        .verify_statement_begun(received, at, begun)
+        .verify_statement_under(received, at, &began.versions, began.at)
         .map_err(|_| NotCounted::Unattributable)?;
     let result: Statement<ResultBody> =
         serde_json::from_slice(received).map_err(|_| NotCounted::Unreadable)?;

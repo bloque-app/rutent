@@ -1449,10 +1449,17 @@ impl Reversals {
         if reversal.showing.as_ref().is_some_and(|s| s.pending) {
             return Err(ReversalError::DisputePending);
         }
-        parts
-            .catalogue
-            .verify_statement(bytes, parts.clock.now().floor())
-            .map_err(|_| ReversalError::Unattributable)?;
+        // Read by the versions the segment it reverses began under (`T-020-54`), where Core holds the segment.
+        let now = parts.clock.now().floor();
+        match parts.segments.began_of(&owing.transaction) {
+            Some(began) => {
+                parts
+                    .catalogue
+                    .verify_statement_under(bytes, now, &began.versions, began.at)
+            }
+            None => parts.catalogue.verify_statement(bytes, now),
+        }
+        .map_err(|_| ReversalError::Unattributable)?;
         if journal::maker_named(bytes).as_ref() != Some(&owing.provider) {
             return Err(ReversalError::NotTheProvider);
         }
@@ -2249,10 +2256,17 @@ impl Reversals {
             .entry(order.as_str().to_owned())
             .or_default();
         if !kept.iter().any(|a| a.bytes == bytes && a.event == event) {
-            parts
-                .catalogue
-                .verify_statement(bytes, parts.clock.now().floor())
-                .map_err(|_| ReversalError::Unattributable)?;
+            // Read by the versions the order's earliest segment began under (`T-020-54`), where Core holds one.
+            let now = parts.clock.now().floor();
+            match parts.segments.began_of_order(order) {
+                Some(began) => {
+                    parts
+                        .catalogue
+                        .verify_statement_under(bytes, now, &began.versions, began.at)
+                }
+                None => parts.catalogue.verify_statement(bytes, now),
+            }
+            .map_err(|_| ReversalError::Unattributable)?;
             let maker = journal::maker_named(bytes).ok_or(ReversalError::Unrecordable)?;
             if !makers.contains(&maker) {
                 return Err(refused);

@@ -95,6 +95,8 @@ struct Flight {
     provider: Id,
     transaction: Id,
     statement: Statement<ProviderOperation>,
+    /// What the move began under, recorded when it began (`T-020-54`).
+    began: crate::segments::Began,
     units: Units,
     terms: Terms,
     question: Step,
@@ -132,6 +134,8 @@ enum Kept {
 #[derive(Debug, Clone)]
 struct HandFlight {
     provider: Id,
+    /// What the hand-on's withdrawal began under, recorded when it began (`T-020-54`).
+    began: crate::segments::Began,
     linked: Id,
     amount: PositiveAmount,
     route: AcceptedRoute,
@@ -364,6 +368,20 @@ fn key(receipt: &Receipt) -> String {
     serde_json::to_string(receipt).unwrap_or_default()
 }
 
+impl Delivering<'_> {
+    /// What a move begun now begins under: the versions in force in the catalogue, at Core's clock.
+    fn began_now(&self, parts: &Parts<'_>) -> crate::segments::Began {
+        crate::segments::Began {
+            at: parts.clock.now().floor(),
+            versions: self.ports.catalogue.protocol_versions().unwrap_or_else(|| {
+                rutent_contracts::provider_role::ProtocolVersions::only(
+                    self.ports.bounds.protocol_version.as_str(),
+                )
+            }),
+        }
+    }
+}
+
 /// Core's clock, as a timestamp.
 fn now(parts: &Parts<'_>) -> Result<Timestamp, AppendFailure> {
     parts
@@ -439,10 +457,10 @@ impl Delivering<'_> {
             flight.units,
         );
         let at = parts.clock.now().floor();
-        let began = crate::segments::begun(&flight.statement.made_at, at);
+        let began = flight.began.clone();
         self.ports
             .catalogue
-            .verify_statement_begun(bytes, at, began)
+            .verify_statement_under(bytes, at, &began.versions, began.at)
             .map_err(|_| NotTaken::Unattributable)?;
         let body: serde_json::Value =
             serde_json::from_slice(bytes).map_err(|_| NotTaken::Unreadable)?;
@@ -458,7 +476,7 @@ impl Delivering<'_> {
             Some(
                 match judge(
                     self.ports.catalogue,
-                    (at, began),
+                    (at, &began),
                     &provider,
                     &operation,
                     &terms,
@@ -614,9 +632,11 @@ impl Delivering<'_> {
             Err(crate::segments::Unappended::Unrecordable) => return Ok(None),
         };
         let question = GeneralEntry::try_from(question).map_err(AppendFailure::Refused)?;
+        let began = self.began_now(parts);
         Ok(Some(Flight {
             provider: by.clone(),
             transaction: transaction.clone(),
+            began,
             statement,
             units: Units {
                 origin_decimals: tuple.decimals.origin,
@@ -883,10 +903,7 @@ impl Delivering<'_> {
         let judged_at = parts.clock.now().floor();
         let counted = judge(
             self.ports.catalogue,
-            (
-                judged_at,
-                crate::segments::begun(&flight.statement.made_at, judged_at),
-            ),
+            (judged_at, &flight.began),
             &flight.provider,
             &flight.statement.statement,
             &flight.terms,
@@ -1058,6 +1075,7 @@ impl Delivering<'_> {
             return None;
         }
         Some(HandFlight {
+            began: self.began_now(parts),
             provider: by.clone(),
             linked: linked_order.clone(),
             amount: amount.clone(),
@@ -1384,9 +1402,10 @@ impl Delivering<'_> {
             return Err(NotTaken::NoMove);
         };
         let at = parts.clock.now().floor();
+        let began = flight.began.clone();
         self.ports
             .catalogue
-            .verify_statement(bytes, at)
+            .verify_statement_under(bytes, at, &began.versions, began.at)
             .map_err(|_| NotTaken::Unattributable)?;
         let body: serde_json::Value =
             serde_json::from_slice(bytes).map_err(|_| NotTaken::Unreadable)?;

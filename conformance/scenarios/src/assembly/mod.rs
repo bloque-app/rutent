@@ -170,6 +170,10 @@ pub struct Config {
     pub providers: Vec<Spec>,
     /// How the log's inputs reach the state machine.
     pub delivery: Delivery,
+    /// A holdout fleet: the version the simulated providers still speak, and the cutover date the operator sets for it
+    /// before they are listed. The providers sign everything under that version, and take Core's operations under the
+    /// current one; Core's catalogue, log and router read the old version until the date (`REQ-PRT-4`, `T-020-54`).
+    pub holdout: Option<(String, String)>,
 }
 
 /// How long before the earliest advertisement was made its provider is granted, in seconds.
@@ -843,7 +847,16 @@ impl Core {
             ),
             None => {
                 // The platform and the simulated providers, staging set explicitly.
-                let mut fleet = Fleet::with_context(config.deadline, context.clone());
+                // A holdout fleet speaks the old version and takes the current one's operations (`SuiteContext::older_versions`).
+                let mut fleet_context = context.clone();
+                if let Some((old, _)) = &config.holdout {
+                    fleet_context.older_versions = vec![(
+                        context.protocol_version.clone(),
+                        "9999-12-31T23:59:59Z".to_owned(),
+                    )];
+                    fleet_context.protocol_version = old.clone();
+                }
+                let mut fleet = Fleet::with_context(config.deadline, fleet_context);
                 let installed: Vec<Installed> = config
                     .providers
                     .iter()
@@ -1123,6 +1136,18 @@ impl Core {
             core.grant(one)?;
         }
         core.clock.set_nanos(u128::from(kit::START) * 1_000_000_000);
+        // The holdout's version is put in force until its cutover before its providers are listed, through the
+        // operator's command as any setting is (`REQ-PRT-4`).
+        if let Some((old, cutover)) = &config.holdout {
+            let setting = OperatorSetting::Cutover {
+                version: rutent_contracts::router_api::ProtocolVersion::new(old.as_str())
+                    .ok_or_else(|| AssemblyError::Listing("a holdout version".to_owned()))?,
+                cutover: rutent_contracts::router_api::Timestamp::new(cutover.as_str())
+                    .ok_or_else(|| AssemblyError::Listing("a holdout cutover".to_owned()))?,
+            };
+            core.set_setting(&setting)
+                .map_err(|e| AssemblyError::Listing(format!("the holdout's cutover: {e:?}")))?;
+        }
         for one in &installed {
             core.advertise(one)?;
         }
@@ -1681,7 +1706,7 @@ impl Core {
             })
             .collect();
         let decider = kit::operator_login();
-        for (receipt, entry) in &entries {
+        for (place, (receipt, entry)) in entries.iter().enumerate() {
             let Entry::Verified(v) = entry else {
                 if let Entry::Stated(s) = entry
                     && s.what.statement.as_str() == ADVERTISEMENT_SHAPE
@@ -1702,6 +1727,14 @@ impl Core {
                     }
                     let at = rutent_core_authz::session::instant(&s.received_at);
                     self.grant_verifier(&one);
+                    // The advertisement is judged by the cutovers the log held when it was received, not by those it
+                    // holds now: a cutover moved earlier since doesn't void what was taken before (`REQ-PRT-4`,
+                    // `T-020-54`, #143's blocker b).
+                    rutent_core_orch::settings::Settings::reopened(&entries[..place])
+                        .apply_cutovers(&mut rutent_core_orch::settings::Targets {
+                            catalogue: Some(&mut self.catalogue),
+                            ..rutent_core_orch::settings::Targets::default()
+                        });
                     kit::join(&mut self.catalogue, &one, at);
                 }
                 continue;
@@ -1772,6 +1805,15 @@ impl Core {
             terms.tuples = vec![tuple];
             kit::grant(&mut self.catalogue, &one, terms);
         }
+        // Every cutover the log holds now stands in the catalogue and the platform, before the log's results are judged
+        // again (`REQ-PRT-4`, `T-020-54`).
+        rutent_core_orch::settings::Settings::reopened(&entries).apply_cutovers(
+            &mut rutent_core_orch::settings::Targets {
+                catalogue: Some(&mut self.catalogue),
+                platform: Some(&mut self.fleet.platform),
+                ..rutent_core_orch::settings::Targets::default()
+            },
+        );
         Ok(())
     }
 

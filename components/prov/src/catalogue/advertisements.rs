@@ -425,6 +425,22 @@ impl Catalogue {
         at: Instant,
         begun: Instant,
     ) -> Result<(), StatementRefusal> {
+        let versions = self
+            .protocol_versions()
+            .ok_or(StatementRefusal::NoContext)?;
+        self.verify_statement_under(received, at, &versions, begun)
+    }
+
+    /// [`Catalogue::verify_statement_begun`] by `versions`, the protocol versions in force as the segment's start
+    /// recorded them, not as the catalogue holds them now: a cutover moved since changes nothing for a segment already
+    /// begun (`REQ-PRT-2`, `T-020-54`).
+    pub fn verify_statement_under(
+        &self,
+        received: &[u8],
+        at: Instant,
+        versions: &rutent_contracts::provider_role::ProtocolVersions,
+        begun: Instant,
+    ) -> Result<(), StatementRefusal> {
         let unreadable = |what: &str| StatementRefusal::Unreadable(what.to_owned());
         let text = |path: &[&str]| -> Result<String, StatementRefusal> {
             let bytes = rutent_contracts::provider_role::member(received, path)
@@ -433,9 +449,6 @@ impl Catalogue {
             serde_json::from_slice::<String>(bytes).map_err(|_| unreadable(&path.join("/")))
         };
         let (deployment, _) = self.context.as_ref().ok_or(StatementRefusal::NoContext)?;
-        let versions = self
-            .protocol_versions()
-            .ok_or(StatementRefusal::NoContext)?;
         let sent_deployment: rutent_contracts::provider_role::Deployment =
             rutent_contracts::provider_role::member(received, &["deployment"])
                 .ok()

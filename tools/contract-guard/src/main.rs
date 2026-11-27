@@ -130,8 +130,11 @@ fn run() -> Result<bool, (u8, String)> {
         .into_iter()
         .flatten()
         .collect();
-    let base_is_release = lines.is_empty()
-        || lines.iter().any(|line| {
+    // Without `develop` there is nothing to say which versions are released: the base is a release base (fail closed),
+    // whatever `main` says.
+    let base_is_release = rutent_contract_guard::is_release_base(
+        release.is_some(),
+        lines.iter().any(|line| {
             git(
                 &root,
                 &[
@@ -142,10 +145,11 @@ fn run() -> Result<bool, (u8, String)> {
                 ],
             )
             .is_ok()
-        });
-    if lines.is_empty() {
+        }),
+    );
+    if release.is_none() {
         eprintln!(
-            "contract guard: no develop or main here, so every rule applies as for a release base; fetch them for a milestone base"
+            "contract guard: no develop here, so every rule applies as for a release base; fetch it for a milestone base"
         );
     }
     let files = Git {
