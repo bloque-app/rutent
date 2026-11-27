@@ -438,7 +438,19 @@ fn holding_accounts_balance_reading_is_found_only_in_the_evidence_store() {
         log.contains("holding_check") && log.contains(&format!("holding-{}", run.node)),
         "the log holds no record of the check"
     );
-    assert!(!log.contains(&run.holding.to_string()));
+    // Not the figure, but for the difference a raise states where Core's own segments rest nothing at the node, which is
+    // a figure of the raise and not a reading (`T-020-63`).
+    let without_differences = serde_json::to_string(
+        &serde_json::to_value(&run.scanned.run.log)
+            .expect("the log is JSON")
+            .as_array()
+            .expect("a list")
+            .iter()
+            .filter(|entry| !rutent_scenarios::secrets::states_a_holding_difference(entry))
+            .collect::<Vec<_>>(),
+    )
+    .expect("JSON");
+    assert!(!without_differences.contains(&run.holding.to_string()));
 }
 
 /// What a surface is, by the part of its name that says so.

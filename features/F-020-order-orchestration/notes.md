@@ -9281,3 +9281,144 @@ scenario tests.
   `gross_charged`, `audit_scenarios`, `charge_check`, `holds`) 203; `invariants` on seeds 11 to 15, 10; `plan-check
   --strict` 0 findings, `tag-check --strict` 2520 tests, 0 findings; the contract guard against `origin/develop`: no
   violations. The doc check is CI's (core-orch's `rustdoc` passes 2 GB locally).
+
+## T-020-63: Core's schedule held to Core's own records, and its state kept across a restart
+
+The milestone reviewer's check of `T-020-48` at `e7418a53` (its Mediums and Lows), and the carry-over of `T-020-58` (the
+holding balance's read). Edits `components/core-orch/` (`schedule/`, `segments/` for the read, `stuck/timing.rs`),
+`components/prov/src/catalogue/nodes.rs` (one accessor), `contracts/core-internal/` and `components/core-authz/` (both
+`DEC-20` paths, below), and the assembly (`F-024` files: `conformance/scenarios/src/assembly/`, `sim/fleet.rs`) with the tests
+beside them. Built on `m3` at `2c86d6a9`; `T-020-58` (#340) is still in review, so its `ReadNodeRecord` is not in this tree and
+this row's decided read is built beside it, in the same pattern, in its own files (`segments/balances.rs`), with
+core-internal's and core-authz's additions made apart from its. When #340 merges, the two meet at the same lines of
+`contracts/src/core_internal/types.rs` (`Action`), `relations.rs` (`action_transactions`), `core-authz`'s `parties`, `roles`
+and `engine/entry_points.rs`, and the CHANGELOG's 1.0.0 list: each takes both.
+
+### Design
+
+- **The check compares every node with what Core's segments rest there (`INV-1`'s second half, `REQ-AUD-15`).** A public
+  node's reading was built from the wallet host's own record (`got.held`); a private node's from `resting_totals`. Now both
+  are: `held_for` is `Segments::resting_totals()` at the node, each order once, none at zero. The wallet host's record is kept
+  as a second comparison of the same balance (`HoldingChecked::against_wallet`), made when its total isn't Core's: where the
+  two totals are equal the second verdict could only repeat the first (the log's check compares sums), so none is made and
+  the log holds one check, not two, an hour. `Round::holding_of` is the first.
+- **The balance is read by a decided action.** `holding_balance` went through `Ports::ask_as_operator` (private nodes) and
+  `Holdings::readings` (public ones), the platform's `handle` with no decided action and no effect. Both paths are now
+  `Segments::read_holding_balance` (`segments/balances.rs`), as `ask_status` is: a fresh transaction is drawn, policy decides
+  core-internal's `read_holding_balance` as Core (which carries the operator's standing `ReadHoldingBalance` permission
+  onward, listed beside `CarryOnward`), the effect is recorded before the platform is asked, acted on once, the operator's
+  signed question is put through `Modules::ask_for_balance` (`impl Modules for Platform` carries it through `Platform::handle`;
+  the trait's default is `NotHandled`), and the result is recorded (`done`, `unanswered` or `failed`). The answer is handed
+  back only once its result is in the log, and is taken only as a result of the transaction asked under, stating a balance. A
+  refusal by policy asks nothing and the account is raised as not read (`not_permitted`). `Ports::ask_as_operator` and
+  `Ports::holding_readings` are gone: nothing reaches the platform through a port undecided. The deployment now answers
+  `public_accounts` (the register's accounts with their decimals and the host's record of each), `bounds` and `late_kept`.
+- **The register is the definition of what is checked.** A holding account the catalogue lists (`NodeBook::holders`, new)
+  that the register names in neither list, at a node where Core's own segments rest value, is raised as not read
+  (`not_registered`), once a spell, beside the accounts the register names. A public account the register names with no
+  decimals is left out of `public_accounts`, so it reads the same way. Default 1 below says why it is conditional on value.
+- **Decimals come from the register**, as the private node's did: `Registers::holding_decimals`, set where the wallet is
+  installed and carried across a reopen with the rest of the register, replaces the assembly's constant in the readings.
+- **A clock that gives no time raises, never skips.** Every account is raised as not read (`not_timed`), nothing is asked.
+- **The floor window has its own basis.** `StuckBasis::Floor` (core-internal), for a tuple with neither a history nor an
+  advertised time; the stuck call's figures on record say `floor`, not `twice_advertised`.
+- **The schedule's state is rebuilt on reopening.** `Schedule::recorded(history)`: when each segment was last asked its
+  status, from the log's `ask_status` effects (the later of two), so the first tick after a restart keeps each provider's
+  cadence. The assembly calls it where it rebuilds Core from the log. Each job's own last run stays unrecorded, as before: a
+  reopened Core runs every job on its first tick, which is safe (a job done twice is done once).
+- **`last` and an ask are stamped after success.** A job counts as run only once it succeeded: a holding check that left
+  an account unread or unchecked, a comparison, a notice or a checkpoint that failed, a late answer not kept, a status
+  question that didn't go out, is due again on the next tick, not after its cadence. `note_asked` runs only where the question
+  went out (`asked` is `Ok`), in the tick and in the assembly's step.
+- **A late answer the log could not record is not dropped.** The platform holds a late answer until Core says it kept it
+  (`Ports::late_kept`, and `Fleet::late_kept` in the simulated platform): kept, or refused for good, it is acknowledged; one
+  that failed for want of the log (`Append(Unavailable)`) or of the segment's own answer (`NotAnswered`) is not, and the
+  platform hands it over again on the next tick, a restart included. The first build's "each once" lost it for good.
+
+### Contract and policy (`DEC-20` paths)
+
+- `contracts/core-internal`, folded into the unreleased 1.0.0, with fixtures and recounted totals: `Action::ReadHoldingBalance`
+  (`read_holding_balance`), `HoldingNotRead` `not_permitted`, `not_timed` and `not_registered`, `StuckBasis::Floor`. No
+  relation of its own, so the relation count is unmoved; the fresh transaction counts among those
+  `status-is-asked-under-a-fresh-transaction` reads (`action_transactions`).
+- `components/core-authz`: `Permission::ReadHoldingBalance` (the operator's, which Core carries onward beside `CarryOnward`),
+  its `Scope`, the engine's and roles' tests, and the entry-point scan's `CARRY_OUT` line for `handle`.
+
+### Tests
+
+The five the row names, and the rest of what the row's design needs. (Written with the code in the same sitting for the
+core-orch and contract parts, and seen red by the rule-off below, not before it; the five the row names are each red under a
+rule-off of their own. The contract fixtures' tests were written after the types.)
+
+| Test | Tags | Where |
+|---|---|---|
+| `public_nodes_balance_is_checked_against_what_cores_segments_rest_there` | `INV-1`, `REQ-AUD-15` | `conformance/scenarios/tests/assembly_real_wallet.rs` |
+| `owed_reversal_at_a_never_settling_tuple_goes_stuck_on_cores_tick` | `INV-3`, `REQ-ORD-29` | `conformance/scenarios/tests/simulated_faults.rs` |
+| `first_tick_after_a_restart_keeps_each_providers_ask_cadence` | `NFR-6` | `simulated_faults.rs` |
+| `late_answer_the_log_could_not_record_is_kept_for_the_next_tick` | `NFR-6` | `simulated_faults.rs` |
+| `account_the_clock_cannot_time_is_raised_as_not_read` | `INV-1` | `components/core-orch/src/schedule/jobs.rs` |
+| `holding_balance_is_read_on_a_decision_and_recorded_before_the_module_is_asked`, `..._policy_refuses_is_asked_of_no_module`, `..._whose_effect_the_log_cannot_take_is_asked_of_no_module`, `..._with_no_answer_or_no_record_of_its_result_hands_back_none` | `REQ-AUZ-1`, `INV-7`, `REQ-AUD-15` | `components/core-orch/tests/holding_reads.rs` |
+| `holding_balance_is_read_on_a_decision_and_refused_where_policy_refuses` | `REQ-AUZ-1`, `REQ-AUD-15` | `private_nodes.rs`, over the assembled Core |
+| `a_holding_balance_is_read_by_core_carrying_the_operators_permission_onward` | `REQ-AUZ-1`, `REQ-AUD-15` | `core-authz`'s `roles/tests.rs` |
+| `holder_the_register_does_not_name_is_raised_as_not_read`, `public_nodes_reading_is_stated_in_the_decimals_the_register_gives_its_asset` | `REQ-AUD-15`, `INV-1` | `assembly_real_wallet.rs` |
+| `a_job_that_failed_is_due_again_on_the_next_tick_not_after_its_cadence`, `a_status_question_that_did_not_go_out_is_asked_again_on_the_next_tick`, `schedule_rebuilt_from_the_log_keeps_each_segments_last_status_question` | `NFR-6`, `REQ-AUD-15`, `REQ-ORD-1` | `schedule/mod.rs` |
+| `holder_with_nothing_of_cores_resting_in_it_is_not_raised_though_the_register_does_not_name_it` | `REQ-AUD-15` | `schedule/jobs.rs` |
+| `request_to_read_a_holding_balance_names_its_node_asset_and_fresh_transaction`, `a_holding_account_not_read_names_why_among_the_reasons_core_has`, `a_stuck_call_at_the_floor_window_is_on_record_with_a_basis_of_its_own` | `REQ-AUD-15`, `REQ-AUZ-1`, `INV-1`, `INV-3`, `REQ-ORD-29` | `contracts/tests/core-internal.rs` |
+
+`T-020-48`'s own tests changed where the design moved under them, and each still says what it said:
+`every_job_of_the_schedule_is_cores_and_the_deployment_answers_only_its_ports` (the deployment here lends no parts for a
+read, so each account is raised as not read, citing nothing, and none is read as zero), `shared_holding_account_raises_on_a_difference_and_only_then`
+and `holding_account_check_runs_on_cores_schedule_and_a_difference_raises_the_operator` (the three orders the host landed alone
+are nothing of Core's: Core's comparison raises the wallet's whole balance as over what Core attributes, and the host's record,
+now the second comparison, is what each test's earlier raises are about).
+
+### Defaults, reversible, each failing closed
+
+1. **A holder the register doesn't name is raised only where Core's segments rest value at its node.** The row says "a catalogue
+   node with a holder and no register entry". The scenario kit (`kit::join`) lists a placeholder holder at every private node
+   its providers declare and the operator's wallet at every public node their tuples reach, which no scenario registers (a
+   scenario that wants a wallet installs one, and the register names it): raising each every spell would put a
+   `holding_not_read` into every ticking scenario, and a job that always finds one unread is never counted as run (default 4), so
+   the hourly check would ask every module every tick. Where Core rests nothing there is nothing for the check to check.
+   Alternative: raise every one, and register the kit's placeholders (`R10b` in the rule-off table shows what it breaks).
+2. **The wallet host's record is a second comparison only where its total isn't Core's.** Where the two totals are the same,
+   the log's check (sums) can only say what the first did. The log holds one check, not two, an hour per account. Alternative:
+   always record both.
+3. **`not_permitted`, `not_timed` and `not_registered` are three reasons of their own**, not `not_answered`: the operator reads
+   a refusal by policy, a clock past year 9999 and a register that lost a wallet as three different things. Alternative: fold
+   them into `not_answered` and lose that.
+4. **A job that failed is run again on the next tick.** `Job::HoldingCheck` is hourly by default and reads every account; one
+   account unread (a module down for a day) makes the whole check run, and ask every account's module, on every tick that day.
+   The raise is once a spell, so the operator is told once. Alternative: stamp `last` and keep a per-account retry, which the
+   check's reading by account would carry; left out as more state for the schedule.
+5. **A late answer is retried only for `NotAnswered` and a log that couldn't take it (`Unavailable`).** Any other refusal
+   (`Unrecordable`, `Unknown`, a log's rule) is final: it is acknowledged, so the platform doesn't hand it over for ever.
+6. **A public account the register names with no decimals is not read, and is raised as not read where value rests there**
+   (it reads as a holder the register doesn't name), never read in a figure of the schedule's own.
+7. **Core reads a holding balance in the operator's name, carrying its standing permission onward**, as it asks a late status
+   (policy's `CarryOnward` plus `ReadHoldingBalance`, both, in the register for Core's actor). Alternative: a permission of
+   Core's own, which `REQ-AUZ-1` doesn't ask for.
+
+### Gaps, with owners
+
+1. **A reopened Core can't ask the status of a segment left unknown, nor take its late answer** (`T-020-61`, its `Reversals.later`
+   and the run's resume). `Segments::answered` is false after a reopen for a flight whose outcome is `Unknown`:
+   `reopen.rs` takes `answered` from `resumed_answer` only where the outcome is none. So `Reversals::ask_status` and `later`
+   answer `NotAnswered` for such a segment until Core takes it up again. The first tick after a restart is due the question at
+   its provider's cadence, as this row's test shows (it is tried), and the question isn't put. With the late answer's
+   acknowledgement, such an answer is handed over again every tick until `T-020-61` closes it, each time `NotAnswered`: fails
+   closed, noisy.
+2. **The platform must hold a late answer until Core acknowledges it** (`F-030`'s production assembly and `F-013`'s platform).
+   No production platform call hands over late answers yet; `Ports::late_answers` and `late_kept` are the contract the simulated
+   fleet keeps. A platform that hands each over once loses what Core couldn't record.
+3. **A job's own last run is not rebuilt on reopening.** Each job runs on a reopened Core's first tick (safe: a job done twice
+   is done once). Only each segment's last ask is rebuilt. `T-020-49` rebuilds the cadences themselves.
+4. **The holding check's per-account retry** (default 4): a failed account makes the whole job due again.
+5. **The kit's placeholders** (default 1): a deployment with a holder at a node no register names is raised only where value
+   rests; the scenario world's placeholder holders are not registered, so the schedule says nothing of them.
+6. **`Ports::public_accounts` is answered from the register and the host's holdings**: the register names the module and
+   decimals, the host's holdings the asset and the record. In production the register would carry the asset too (`F-030`).
+7. **`T-020-58`'s merge.** Its `ReadNodeRecord` and this row's `ReadHoldingBalance` are siblings in `core-internal`, `core-authz`
+   and `core-orch`'s `Modules`; the merge takes both at each shared line (see the top of this section). `T-020-58` also
+   removes `Ports::publishers_records`; this row removes `holding_readings` and `ask_as_operator`; the `Ports` trait and
+   the assembly's `Due` take both removals.
