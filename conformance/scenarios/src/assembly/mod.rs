@@ -1101,8 +1101,9 @@ impl Core {
                 CatalogueChange::DeclareExploited,
                 CatalogueChange::MarkStale,
                 CatalogueChange::ConfirmReleases,
-                // Each simulated network listed with its reader service (`T-024-25`, `DEC-28`).
+                // Each simulated network listed with its reader service, and delisted (`T-024-25`, `DEC-28`).
                 CatalogueChange::ListPublicNetwork,
+                CatalogueChange::DelistPublicNetwork,
             ] {
                 r.permit(&kit::operator_login(), Permission::Change(change));
             }
@@ -1943,56 +1944,87 @@ impl Core {
     /// id of the network's own (`list-{network}`), never one drawn from Core's source, so the listings leave every
     /// identifier a scenario draws as it was.
     fn list_public_networks(&mut self) -> Result<(), AssemblyError> {
-        let listing = |step: &str, e: AppendFailure| {
-            AssemblyError::Listing(format!("a public network's {step}: {e:?}"))
-        };
-        let decider = kit::operator_login();
         for network in self.fleet.public_networks() {
-            let request = DecisionRequest {
-                request: kit::id(&format!("list-{}", network.network.as_str())),
-                caller: decider.clone(),
-                action: Action::ChangeCatalogue {
-                    change: CatalogueChange::ListPublicNetwork,
-                    provider: decider.party.clone(),
-                    version: None,
-                    tuple: None,
-                    class: None,
-                    advertising_keys: Vec::new(),
-                    statement_key: None,
-                    setting: None,
-                    versions: Vec::new(),
-                    public_network: Some(Box::new(network)),
-                },
-                at: self.clock.timestamp(),
-            };
-            let decision = rutent_contracts::core_internal::calls::Decisions::decide(
-                &mut self.policy,
-                &request,
-            )
-            .map_err(|e| listing("decision", e))?;
-            let permit = decision.permit().ok_or_else(|| {
-                AssemblyError::Listing(format!(
-                    "a public network's listing wasn't permitted: {:?}",
-                    decision.outcome
-                ))
-            })?;
-            let effect = self
-                .verified(
-                    What::Effect {
-                        action: request.action,
-                        decision: permit,
-                    },
-                    Outcome::ToTakeEffect {},
-                )
-                .map_err(|e| listing("effect", e))?;
-            self.verified(What::Result { effect }, Outcome::Done {})
-                .map_err(|e| listing("result", e))?;
+            let request = kit::id(&format!("list-{}", network.network.as_str()));
+            self.change_public_network(CatalogueChange::ListPublicNetwork, network, request)?;
         }
         Ok(())
     }
 
-    /// Every public network the log lists, by a decided `list_public_network` carried out, in the order listed: what
-    /// names each network's reader service (`T-024-25`, `DEC-28`).
+    /// Delists `network`, as the operator does: a `delist_public_network` the operator's login asks for and policy
+    /// decides, its effect and its result (`DEC-28`, `T-020-59`). Core's catalogue takes nothing from it until
+    /// `T-020-60`; [`Core::public_networks`] no longer names the network.
+    ///
+    /// # Errors
+    ///
+    /// If policy doesn't permit it, or the log takes no step of it.
+    pub fn delist_public_network(&mut self, network: &Id) -> Result<(), AssemblyError> {
+        let request = self.fresh.id();
+        self.change_public_network(
+            CatalogueChange::DelistPublicNetwork,
+            rutent_contracts::core_internal::PublicNetwork {
+                network: network.clone(),
+                listing: None,
+            },
+            request,
+        )
+    }
+
+    /// A listing or a delisting of a public network by the operator's login, under `request`: decided by policy, its
+    /// effect appended, then its `done` result.
+    fn change_public_network(
+        &mut self,
+        change: CatalogueChange,
+        network: rutent_contracts::core_internal::PublicNetwork,
+        request: Id,
+    ) -> Result<(), AssemblyError> {
+        let listing = |step: &str, e: AppendFailure| {
+            AssemblyError::Listing(format!("a public network's {step}: {e:?}"))
+        };
+        let decider = kit::operator_login();
+        let request = DecisionRequest {
+            request,
+            caller: decider.clone(),
+            action: Action::ChangeCatalogue {
+                change,
+                provider: decider.party.clone(),
+                version: None,
+                tuple: None,
+                class: None,
+                advertising_keys: Vec::new(),
+                statement_key: None,
+                setting: None,
+                versions: Vec::new(),
+                public_network: Some(Box::new(network)),
+            },
+            at: self.clock.timestamp(),
+        };
+        let decision =
+            rutent_contracts::core_internal::calls::Decisions::decide(&mut self.policy, &request)
+                .map_err(|e| listing("decision", e))?;
+        let permit = decision.permit().ok_or_else(|| {
+            AssemblyError::Listing(format!(
+                "a public network's {change:?} wasn't permitted: {:?}",
+                decision.outcome
+            ))
+        })?;
+        let effect = self
+            .verified(
+                What::Effect {
+                    action: request.action,
+                    decision: permit,
+                },
+                Outcome::ToTakeEffect {},
+            )
+            .map_err(|e| listing("effect", e))?;
+        self.verified(What::Result { effect }, Outcome::Done {})
+            .map_err(|e| listing("result", e))?;
+        Ok(())
+    }
+
+    /// Every public network the log lists now, in the order first listed: each decided `list_public_network` carried
+    /// out, a later one of the same network taking its place, and a later `delist_public_network` carried out taking
+    /// it off (#353's review, Low 2). What names each network's reader service (`T-024-25`, `DEC-28`).
     pub fn public_networks(&self) -> Vec<rutent_contracts::core_internal::PublicNetwork> {
         let log = self.log.borrow();
         let entries = log.entries();
@@ -2007,26 +2039,38 @@ impl Core {
                 _ => None,
             })
             .collect();
-        entries
-            .iter()
-            .filter(|(receipt, _)| done.contains(receipt))
-            .filter_map(|(_, e)| match e {
-                Entry::Verified(VerifiedEntry {
-                    what:
-                        What::Effect {
-                            action:
-                                Action::ChangeCatalogue {
-                                    change: CatalogueChange::ListPublicNetwork,
-                                    public_network: Some(network),
-                                    ..
-                                },
-                            ..
-                        },
-                    ..
-                }) => Some((**network).clone()),
-                _ => None,
-            })
-            .collect()
+        let mut listed: Vec<rutent_contracts::core_internal::PublicNetwork> = Vec::new();
+        for (receipt, entry) in entries {
+            let Entry::Verified(VerifiedEntry {
+                what:
+                    What::Effect {
+                        action:
+                            Action::ChangeCatalogue {
+                                change,
+                                public_network: Some(network),
+                                ..
+                            },
+                        ..
+                    },
+                ..
+            }) = entry
+            else {
+                continue;
+            };
+            if !done.contains(receipt) {
+                continue;
+            }
+            let at = listed.iter().position(|n| n.network == network.network);
+            match (change, at) {
+                (CatalogueChange::ListPublicNetwork, Some(at)) => listed[at] = (**network).clone(),
+                (CatalogueChange::ListPublicNetwork, None) => listed.push((**network).clone()),
+                (CatalogueChange::DelistPublicNetwork, Some(at)) => {
+                    listed.remove(at);
+                }
+                _ => {}
+            }
+        }
+        listed
     }
 
     /// Whether the planted fault ties a network's movements to segments by destination and amount

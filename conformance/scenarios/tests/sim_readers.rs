@@ -539,3 +539,33 @@ fn harness_ca_is_the_one_the_listings_name() {
         readers::CA_SHA256
     );
 }
+
+/// A network delisted by a decided `delist_public_network` is no longer among those the log lists, and stays off once
+/// Core opens again (#353's review, Low 2).
+// verifies: DEC-28
+#[test]
+fn delisted_simulated_network_is_no_longer_listed() {
+    let names = [RESERVE, EXCHANGE];
+    let (mut core, _) = core_with("AC-1", &names);
+    let listed = listed_as_routed(&core, &names);
+    let evm = listed
+        .iter()
+        .find(|n| rule_of(n.network.as_str()) == Rule::RpcPool)
+        .expect("an evm network")
+        .network
+        .clone();
+    core.delist_public_network(&evm)
+        .expect("the delisting is decided");
+    let kept: Vec<_> = listed
+        .iter()
+        .filter(|n| n.network != evm)
+        .cloned()
+        .collect();
+    assert_eq!(core.public_networks(), kept);
+    let core = rutent_scenarios::harness::Scenario::new("execution", "AC-1", given(&names)).reopen(
+        core,
+        1,
+        &mut rutent_scenarios::assembly::machine::Reference,
+    );
+    assert_eq!(core.public_networks(), kept);
+}

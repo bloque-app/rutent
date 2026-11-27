@@ -1,7 +1,7 @@
 //! Tests of the boundary check.
 
 use rutent_boundary_check::{
-    Graph, OUTER, PROV_CONFINE, PROV_KEYS, READER_HOST, SourceFinding, Why, defined_in,
+    Dep, Graph, OUTER, PROV_CONFINE, PROV_KEYS, READER_HOST, SourceFinding, Why, defined_in,
     holds_its_reexports, load, members, parse_manifest, sources_naming_core_internal, violations,
 };
 use std::path::{Path, PathBuf};
@@ -148,24 +148,98 @@ fn target_table_is_reported() {
     );
 }
 
+/// A dependency in a form a line-by-line reader could miss, read as TOML as cargo reads it: the edge it is, which the
+/// boundary then reports (#353's review, Medium 1).
+fn assert_read_as_an_edge(extra: &str, dev: bool) {
+    let (name, deps) = parse_manifest(&router_with(extra)).expect("the manifest reads");
+    assert_eq!(
+        deps,
+        vec![Dep {
+            name: "rutent-stm".to_string(),
+            dev
+        }],
+        "{extra}"
+    );
+    let graph = Graph::from([(name, deps)]);
+    assert_eq!(
+        violations(&graph, &["rutent-router"])
+            .into_iter()
+            .map(|v| v.dep)
+            .collect::<Vec<_>>(),
+        ["rutent-stm"],
+        "{extra}"
+    );
+}
+
 // verifies: REQ-MOD-1, REQ-MOD-3
 #[test]
 fn dependency_sub_table_is_reported() {
-    assert_reported("[dependencies.rutent-stm]\npath = \"../stm\"");
-    assert_reported("[dev-dependencies.rutent-stm]\npath = \"../stm\"");
+    assert_read_as_an_edge("[dependencies.rutent-stm]\npath = \"../stm\"", false);
+    assert_read_as_an_edge("[dev-dependencies.rutent-stm]\npath = \"../stm\"", true);
 }
 
 // verifies: REQ-MOD-1, REQ-MOD-3
 #[test]
 fn quoted_dependency_key_is_reported() {
-    assert_reported("[dependencies]\n\"rutent-stm\" = { path = \"../stm\" }");
-    assert_reported("[dependencies]\n'rutent-stm' = { path = \"../stm\" }");
+    assert_read_as_an_edge(
+        "[dependencies]\n\"rutent-stm\" = { path = \"../stm\" }",
+        false,
+    );
+    assert_read_as_an_edge(
+        "[dependencies]\n'rutent-stm' = { path = \"../stm\" }",
+        false,
+    );
+    assert_read_as_an_edge(
+        "[dependencies]\n\"rutent-\\u0073tm\" = { path = \"../stm\" }",
+        false,
+    );
 }
 
 // verifies: REQ-MOD-1, REQ-MOD-3
 #[test]
 fn multi_line_dependency_value_is_reported() {
-    assert_reported("[dependencies]\nrutent-stm = {\n    path = \"../stm\",\n}");
+    assert_read_as_an_edge(
+        "[dependencies]\nrutent-stm = {\n    path = \"../stm\",\n}",
+        false,
+    );
+    assert_read_as_an_edge("[dependencies]\nrutent-stm.path = \"../stm\"", false);
+}
+
+/// A multi-line string can't hide a table header: the dependency after it is read in the table it is in, as cargo reads
+/// it (#353's review, Medium 1). The reviewer's manifest makes a normal dependency on the reader host read as dev-only
+/// to a line-by-line reader; read as TOML, it is the build's edge, and refused.
+// verifies: DEC-28, DEC-2
+#[test]
+fn a_table_header_inside_a_string_hides_no_dependency() {
+    let assembly = "[package]\nname = \"rutent-scenarios\"\n\n[dependencies]\n\
+        rutent-contracts.path = \"../../contracts\"\n\
+        rutent-contracts.note = \"\"\"\n[dev-dependencies]\n\"\"\"\n\
+        rutent-reader-host = { path = \"../../components/reader-host\" }\n";
+    let (name, deps) = parse_manifest(assembly).expect("the manifest reads");
+    assert!(
+        deps.contains(&Dep {
+            name: READER_HOST.to_string(),
+            dev: false
+        }),
+        "{deps:?}"
+    );
+    let graph = Graph::from([(name, deps)]);
+    assert_eq!(
+        violations(&graph, &["rutent-scenarios"]),
+        vec![rutent_boundary_check::Violation {
+            krate: "rutent-scenarios".to_string(),
+            dep: READER_HOST.to_string()
+        }]
+    );
+    // A dependencies table spelled otherwise, and one inherited from the workspace, fail closed.
+    assert!(parse_manifest(&router_with("[dev_dependencies]\nrutent-stm = \"1\"")).is_err());
+    assert!(
+        parse_manifest(&router_with(
+            "[dependencies]\nrutent-stm = { workspace = true }"
+        ))
+        .is_err()
+    );
+    assert!(parse_manifest("not = [toml").is_err());
 }
 
 // verifies: REQ-MOD-1, REQ-MOD-3
@@ -1122,13 +1196,39 @@ fn providers_admitted_paths_resolve_by_layout_to_the_items_their_files_define() 
             format!("{head}\nbuild = false\n[{rest}"),
         ),
         (
-            "a dotted build key",
-            format!("package.build = \"gen.rs\"\n{prov_manifest}"),
+            "an inline package table's build key",
+            format!("package = {{ name = \"rutent-prov\", build = \"gen.rs\" }}\n[{rest}"),
+        ),
+        // #353's review, Medium 1: an escape in a header or a key, and a header inside a multi-line string.
+        (
+            "an escaped lib table",
+            format!("{prov_manifest}\n[\"l\\u0069b\"]\npath = \"src/other.rs\"\n"),
+        ),
+        (
+            "an escaped build key",
+            format!("{head}\n\"bui\\u006cd\" = \"gen.rs\"\n[{rest}"),
+        ),
+        (
+            "a build key after a header inside a string",
+            format!(
+                "{head}\ndescription = \"\"\"\n[dependencies]\n\"\"\"\nbuild = \"gen.rs\"\n[{rest}"
+            ),
+        ),
+        (
+            "the library switched off",
+            format!("{head}\nautolib = false\n[{rest}"),
+        ),
+        (
+            "the package table's old name",
+            format!("[project]\nbuild = \"gen.rs\"\n{prov_manifest}"),
         ),
     ] {
         sources.write("prov/Cargo.toml", &manifest);
         refused(what, "prov/Cargo.toml");
     }
+    // A manifest that isn't TOML fails the check outright, never reads as clean.
+    sources.write("prov/Cargo.toml", &format!("{prov_manifest}\n[lib\n"));
+    assert!(sources_naming_core_internal(&sources.0).is_err());
     sources.write("prov/Cargo.toml", &prov_manifest);
     // A build script cargo runs unasked, at the package's root.
     sources.write("prov/build.rs", "fn main() {}\n");

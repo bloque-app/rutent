@@ -137,23 +137,64 @@ impl TestCa {
     }
 }
 
-/// The simulated reader's program, `examples/sim_reader.rs`, which `cargo test` builds beside the tests:
-/// `RUTENT_SIM_READER` if set, else the `examples` directory next to the directory this test runs from, or above it.
+/// The simulated reader's program, `examples/sim_reader.rs`, as this tree builds it (#353's review, Low 1):
+/// `RUTENT_SIM_READER` if set, else built here, once per test process, by `cargo build --example sim_reader` on this
+/// package's own manifest into the target directory this test runs from, and found by the path cargo reports for that
+/// build. A run of one test binary alone builds it too, and never runs a reader another tree built into a shared target
+/// directory. Panics, naming the command, if it can't be built.
 pub fn sim_reader() -> PathBuf {
-    if let Some(path) = std::env::var_os("RUTENT_SIM_READER") {
-        return PathBuf::from(path);
-    }
-    let exe = std::env::current_exe().expect("the test's own path");
-    for dir in exe.ancestors().skip(1) {
-        let candidate = dir.join("examples").join("sim_reader");
-        if candidate.is_file() {
-            return candidate;
-        }
-    }
-    panic!(
-        "no simulated reader beside {}: build it with `cargo build -p rutent-scenarios --examples`",
-        exe.display()
-    );
+    static BUILT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            if let Some(path) = std::env::var_os("RUTENT_SIM_READER") {
+                return PathBuf::from(path);
+            }
+            let exe = std::env::current_exe().expect("the test's own path");
+            // `<target>/<profile>/deps/<test>`: the reader goes into the same target directory and profile.
+            let profile_dir = exe
+                .parent()
+                .and_then(std::path::Path::parent)
+                .expect("the test runs from a profile's directory");
+            let target = profile_dir
+                .parent()
+                .expect("the profile's directory is in a target directory");
+            let release = profile_dir.file_name().is_some_and(|p| p == "release");
+            let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+            let mut build = std::process::Command::new(
+                std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()),
+            );
+            build
+                .args(["build", "--quiet", "--example", "sim_reader"])
+                .args(["--message-format", "json"])
+                .arg("--manifest-path")
+                .arg(&manifest)
+                .arg("--target-dir")
+                .arg(target);
+            if release {
+                build.arg("--release");
+            }
+            let out = build.output().expect("cargo runs");
+            let built = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter(|m| {
+                    m["reason"] == "compiler-artifact"
+                        && m["target"]["name"] == "sim_reader"
+                        && m["target"]["kind"]
+                            .as_array()
+                            .is_some_and(|k| k.iter().any(|k| k == "example"))
+                })
+                .find_map(|m| m["executable"].as_str().map(PathBuf::from));
+            match built {
+                Some(path) if out.status.success() && path.is_file() => path,
+                _ => panic!(
+                    "the simulated reader wasn't built: `cargo build --example sim_reader --manifest-path {}`: {}",
+                    manifest.display(),
+                    String::from_utf8_lossy(&out.stderr)
+                ),
+            }
+        })
+        .clone()
 }
 
 /// The harness's key store, as `T-014-01`'s resolver: each reader's statement key, by the reader and the public key's

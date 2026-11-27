@@ -2320,8 +2320,9 @@ The code came first, so the rule-offs stand in for seeing each test red first.
 
 ### #348's L9 and L10, and #350's round-3 Lows
 
-- **L9** (`tools/boundary-check/src/lib.rs`, `moves_the_library`). Prov's manifest is read with its spaces and quotes
-  taken out, so every spelling meets one rule: a lib table (`[lib]`, `[ lib ]`, `["lib"]`, `[lib.x]`), a top-level key
+- **L9** (`tools/boundary-check/src/lib.rs`, `moves_the_library`). As first written, prov's manifest was read line by
+  line with its spaces and quotes taken out; the review of #353 (Medium 1) fooled that, and it is now read as TOML
+  (below). The rule: a lib table (`[lib]`, `[ lib ]`, `["lib"]`, `[lib.x]`), a top-level key
   naming it (`lib = { .. }`, `lib . path`, `"lib".path`), and a build script by `build` in the package table
   (`[package] build = ..`, `build = false`, `package.build = ..`) are each refused, and so is a `build.rs` at prov's root,
   outright (cargo runs one unasked; prov has none). Cases added to `providers admitted paths resolve by layout to the
@@ -2358,3 +2359,47 @@ author's, not kept). Every one went red on an assertion.
 | A build-dependency is no dev edge (build-dependencies read as dev) | `scenario assembly takes the reader host for its tests only` | `left: []`, the assembly's build script on the host passed |
 
 **Run id.** Pending: CI's run on this row's pull request goes here.
+
+### The review of #353 at `b2cfdb4d`
+
+CHANGES, on one High and one Medium, with three Lows; each fixed in this row but Low 3, which the coordinator routed to
+`T-020-60` (the harness's Core side reads a fixed `now` and a 2099 deadline, and the CA digest is checked by the harness,
+not by Core's side: that adapter's items (1) and (2)).
+
+- **High 1. CI's documentation check was red.** The public doc of `sources_naming_core_internal` linked to the private
+  `moves_the_library`; it names it as plain text now. The steps CI skipped after it (the guest and wallet doc checks,
+  the store's lint, doc and test) run on the next push.
+- **Medium 1. The boundary check read TOML by hand.** Every manifest the check reads is now parsed by a real TOML
+  parser: `toml_edit` 0.25.19, the parse feature alone, already in the root lock (for `proc-macro-crate`), so no package
+  is new to the lock or to `licences/RECORD` (`tools/boundary-check/Cargo.toml` gains the line; the lock, the boundary
+  check's dependency). `parse_manifest` reads each dependency table by what its keys decode to, a quoted key, a
+  sub-table, a dotted key or an inline table over lines; it fails closed on a `target` table, a dependencies table
+  spelled otherwise (`dev_dependencies`), a `package =` rename, a dependency inherited from the workspace
+  (`workspace = true`, whose package the root names) and a manifest that isn't TOML. `members` reads the root's
+  `workspace.members` the same way. `moves_the_library` refuses a top-level `lib` and a `project` table, and
+  `package.build` and `package.autolib`, however spelled. And prov is held to `cargo metadata` too
+  (`tests/graph.rs`, `providers library is its own root and it has no build script as cargo reads it`): one library
+  target, at `components/prov/src/lib.rs`, and no `custom-build` target; and `only the assemblys tests reach the reader
+  host as cargo resolves it` holds the one edge to `rutent-scenarios`, as a dev-dependency, from the graph cargo
+  resolves. The reviewer's three manifests (an escaped `["l\u0069b"]`, an escaped `"bui\u006cd"`, and a `build` key
+  after a `[dependencies]` line inside a `"""` string) are refused cases, beside `autolib = false`, `[project]`, an
+  inline package table's `build` and a manifest that isn't TOML; the reviewer's faked dev edge is
+  `a table header inside a string hides no dependency` [`DEC-28`, `DEC-2`]. The three older tests that held a quoted
+  key, a sub-table and a multi-line value to an error now hold each to the edge it is, reported by the boundary.
+- **Low 1. A targeted run found no reader, or another tree's.** `readers_support::sim_reader` builds the example itself,
+  once per test process (`cargo build --example sim_reader` on this package's manifest, into the target directory and
+  profile the test runs from), and runs the executable cargo reports for that build; it panics, naming the command,
+  where it can't. `cargo test -p rutent-scenarios --test sim_readers` alone now passes. `RUTENT_SIM_READER` still
+  overrides it.
+- **Low 2. A delisting was ignored.** `Core::public_networks` folds the log's carried-out changes in order: a listing
+  takes its network's place, a delisting takes it off. `Core::delist_public_network` decides one (the register permits
+  the login `DelistPublicNetwork`). Test `delisted simulated network is no longer listed` [`DEC-28`], across a reopen.
+
+Rule-offs, each alone and reverted:
+
+| Rule switched off | Test | Red |
+|---|---|---|
+| `package.build` refused (read as TOML) | `providers admitted paths resolve by layout to the items their files define` | the escaped `build` key passed |
+| A dependency inherited from the workspace refused | `a table header inside a string hides no dependency` | `workspace = true` read as an edge |
+| A delisting takes its network off | `delisted simulated network is no longer listed` | `polygon` still listed after its delisting |
+| Prov has no build script, by `cargo metadata` (prov's manifest given `build = "gen.rs"` and the file) | `providers library is its own root and it has no build script as cargo reads it` | a `custom-build` target |
