@@ -9493,7 +9493,8 @@ else changed there. `T-015-04` is built from this row's commit.
 6. The CA is pinned as the SHA-256 digest of the CA certificate's DER. A digest of the leaf put in its place can't be
    told apart by the contract; Core's link refuses a leaf as its trust anchor (`T-020-60`).
 7. The subject name, and every endpoint's host, is one DNS name of two labels or more, with no wildcard, and never an
-   IP literal: a last label that is all digits is refused (review round 1, L1).
+   IP literal, decimal or hexadecimal: the last label starts with a letter (review round 1, L1; round 2, L8). Names a
+   resolver answers locally, such as `.local` ones, are the operator's responsibility.
 8. A listing's `provider` is the caller's own party (the deployment operator's), so a desk of the operator lists under
    its own party. Alternative: name the deployment operator's party, checked against the register. The docs say so
    since review round 1 (L7 b).
@@ -9603,3 +9604,32 @@ Local checks, through the lock, `contracts/src/lib.rs` touched first, after the 
 `clippy --all-targets -D warnings` clean; `rutent-contracts`, every suite, all passed (`reader` 11, `core-internal`
 100); `rutent-core-authz --lib` 167; the boundary-check's `boundary` 23 and `graph` 2; `plan-check --strict` 0 findings;
 `tag-check --strict` 2554 tests, 0 findings; the contract guard against `origin/develop` below. No local `cargo doc`.
+
+### T-020-59, review round 2 (#343: CI's `ci` job red)
+
+- **H1.** `components/core-audit/tests/checkpoints.rs`'s validator registers the reader contract's schemas, which
+  core-internal's now name; three of its tests had panicked with `Unretrievable { uri: "urn:rutent:reader:common" }`.
+  A grep of the tree finds no other hand-built registry of core-internal's schemas outside `contracts/` (prov's and
+  core-orch's snapshot tests register provider-role and router-api alone, which name neither). `cargo test -p
+  rutent-core-audit` now runs in this row's local checks.
+- **L8.** `is_host_name`: the last label starts with a letter, so `0x8.0x8.0x8.0x8`, `0x7f.0x1` and `readers.0xff` are no
+  host names; both schemas' `not` say the same. Fixtures: reader `answer-of-an-rpc-pool-endpoint-at-a-hexadecimal-ip-literal`,
+  core-internal `decision-request-to-list-a-public-network-under-a-hexadecimal-ip-subject-name`. The reader's README
+  says `.local` names are the operator's responsibility.
+- **L9.** The reader changelog's first bullet counts the fixtures as they are now: 12 valid, 37 invalid. core-internal:
+  196 valid, 212 invalid, 789 admission, 58 attribution, 120 relations.
+- `origin/m3` (`f8bddbb4`) merged: PLAN only, no conflict.
+
+| Rule switched off (alone) | Red |
+|---|---|
+| L8: the last label starts with a letter (Rust; back to "not all digits") | `rpc_endpoint_names_a_host_and_nothing_that_could_be_a_key`; `listing_that_pins_a_hosts_leaf_certificate_is_refused`; the reader fixture test |
+| L8: the subject's schema `not` (back to round 1's) | `listing_that_pins_a_hosts_leaf_certificate_is_refused` |
+| L8: the endpoint's schema `not` (back to round 1's) | `rpc_endpoint_names_a_host_and_nothing_that_could_be_a_key`; the reader fixture test |
+
+Local checks, through the lock, `contracts/src/lib.rs` touched first, after the merge: `fmt --check` and workspace
+`clippy --all-targets -D warnings` clean; `rutent-contracts`, every suite, passed; `rutent-core-authz --lib` 167; the
+boundary-check's `boundary` 23 and `graph` 2; `rutent-core-audit`, every suite, passed (147); `plan-check --strict` 0
+findings; `tag-check --strict` 2554 tests, 0 findings; the contract guard against `origin/develop`: no violations. No
+local `cargo doc`: the new doc comments carry no new intra-doc links but `[`ReaderAnswer::check`]`,
+`[`Statement::check_context`]` and `[`check_pairing`]`, each in scope where it is written.
+
