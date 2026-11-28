@@ -56,7 +56,7 @@ pub enum JoinRefusal {
     Publisher(super::PublisherError),
     /// A declaration rule refused it.
     Declaration(super::DeclarationError),
-    /// It declares a private node the operator lists as public (`REQ-CAT-22`).
+    /// It declares a private node the operator lists as public, or a public network a listing names (`REQ-CAT-22`).
     PrivateNodeIsPublic(String),
     /// The catalogue was never told which deployment and protocol version it serves ([`Catalogue::set_context`]).
     NoContext,
@@ -286,7 +286,14 @@ impl Catalogue {
             return Err(JoinRefusal::NotNewer);
         }
         self.check_key_history(&statement)?;
-        if let Some(node) = ad.private_nodes.iter().find(|n| self.nodes.is_public(n)) {
+        // A node declared private is on neither public list: the operator's public nodes, nor the public networks a
+        // listing names (`REQ-CAT-22`; `T-020-60`, the review of #356's round 2, Low 3), so a private rail is never a
+        // listed network read through its reader.
+        if let Some(node) = ad
+            .private_nodes
+            .iter()
+            .find(|n| self.nodes.is_public(n) || self.nodes.is_listed_network(n))
+        {
             return Err(JoinRefusal::PrivateNodeIsPublic(node.clone()));
         }
         let backup = (self.publishers.clone(), self.declarations.clone());

@@ -432,7 +432,76 @@ impl Segments {
         segments.measure_what_the_log_lacks(history);
         segments.park_unpaired_on_reopening(history);
         segments.hold_in_flight(exposures, &inputs, &holds);
+        segments.unwritten_carry_ons(clock, history);
+        // Each move policy was asked to decide, permitted or not, as the log holds the decision.
+        for (_, entry) in history {
+            if let Entry::Verified(VerifiedEntry {
+                what: What::Decide { request, .. },
+                ..
+            }) = entry
+                && let rutent_contracts::core_internal::Action::MoveValue { order, segment, .. } =
+                    &request.action
+            {
+                segments
+                    .moves_decided
+                    .insert((order.as_str().to_owned(), segment.as_str().to_owned()));
+            }
+        }
         segments
+    }
+
+    /// Each carry-on effect the log holds no result of (a decided status question, repeat or read of the platform's
+    /// record, its result refused or never written before Core stopped), kept to be written first on the segment's next
+    /// carry-on, never a second effect after it (the review of #356's round 2, its Low 4). What came back was lost with
+    /// Core's process, so the result rebuilt is `unanswered`, at the reopening's time, and the segment is left as a
+    /// carry-on that got no answer: the stuck check times it.
+    fn unwritten_carry_ons(&mut self, clock: &dyn Clock, history: &[(Receipt, Entry)]) {
+        let resulted: Vec<&Receipt> = history
+            .iter()
+            .filter_map(|(_, e)| match e {
+                Entry::Verified(VerifiedEntry {
+                    what: What::Result { effect },
+                    ..
+                }) => Some(effect),
+                _ => None,
+            })
+            .collect();
+        let Ok(at) = now(clock) else {
+            return;
+        };
+        for (receipt, entry) in history {
+            let Entry::Verified(VerifiedEntry {
+                what: What::Effect { action, .. },
+                ..
+            }) = entry
+            else {
+                continue;
+            };
+            let (rutent_contracts::core_internal::Action::AskStatus { order, segment, .. }
+            | rutent_contracts::core_internal::Action::RepeatOperation {
+                order, segment, ..
+            }
+            | rutent_contracts::core_internal::Action::ReadRecordedAnswer {
+                order,
+                segment,
+                ..
+            }) = action
+            else {
+                continue;
+            };
+            if resulted.contains(&receipt) {
+                continue;
+            }
+            self.carry_unwritten.insert(
+                (order.as_str().to_owned(), segment.as_str().to_owned()),
+                (
+                    receipt.clone(),
+                    Outcome::Unanswered {},
+                    at.clone(),
+                    Answered::Refused(PlatformRefusal::OutcomeUnknown),
+                ),
+            );
+        }
     }
 
     /// The values reversals brought back to the held nodes linked orders' first moves left, rebuilt from the log

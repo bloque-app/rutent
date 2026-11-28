@@ -180,6 +180,17 @@ fn recorded_carrier(core: &Core, segment: &Id) -> Option<Recorded> {
     })
 }
 
+/// What Core's own tick found timing `order`'s part, where it was more than running: Core's stuck watch as its
+/// schedule runs it, over every order on one `tick`, never asked per order (`T-020-60` item (8)). `None` where the tick
+/// found it running, or stuck already.
+fn watched_on_tick(core: &mut Core, order: &Id) -> Option<rutent_core_orch::stuck::Watch> {
+    core.tick()
+        .watched
+        .into_iter()
+        .find(|w| &w.order == order)
+        .map(|w| w.found.expect("the tick timed the part"))
+}
+
 // verifies: REQ-ORD-11
 #[test]
 fn failed_segments_provider_carries_the_reversal_unless_it_shows_the_fault_was_the_customers_or_the_operators()
@@ -421,7 +432,7 @@ fn refused_unknown_and_short_reversals_each_leave_the_order_stuck_with_nothing_m
             "{name}: no route starts from value in motion, nor from a reversal owed"
         );
         core.clock.advance(7 * 86_400);
-        let _ = core.watch(order);
+        core.tick();
         assert_eq!(
             state(core, order),
             OrderState::Stuck,
@@ -473,17 +484,20 @@ fn owed_reversal_refused_short_or_unknown_past_its_window_makes_its_order_stuck(
         core.world().script_for(QUICK, "reversal", behaviour);
         let asked = core.asked_on_tick(order, ramp).expect("asked");
         assert!(asked.completed.is_none(), "{name}: {asked:?}");
-        // Inside its window nothing is declared.
-        let early = core.watch(order).expect("watched");
-        assert!(matches!(early, Watch::Running), "{name}: {early:?}");
+        // The operator asks a reversal again only after the window here, so each tick reads the watch alone: Core's run on
+        // the same tick asks nothing again of the refused one meanwhile.
+        core.set_reversal_retry_cadence(30 * 86_400);
+        // Inside its window nothing is declared: Core's own tick times it, over every order.
+        let early = watched_on_tick(core, order);
+        assert!(early.is_none(), "{name}: {early:?}");
         assert_eq!(
             state(core, order),
             OrderState::FirstSegmentSettled,
             "{name}"
         );
         core.clock.advance(7 * 86_400);
-        let late = core.watch(order).expect("watched");
-        assert!(!matches!(late, Watch::Running), "{name}: {late:?}");
+        let late = watched_on_tick(core, order);
+        assert!(matches!(late, Some(Watch::Stuck(_))), "{name}: {late:?}");
         assert_eq!(state(core, order), OrderState::Stuck, "{name}");
         assert_eq!(
             segment_state(core, order, ramp),
@@ -1295,8 +1309,8 @@ fn late_answer_the_platform_receives_moves_nothing_twice() {
     // Past its time the order is stuck.
     core.clock.advance(2 * kit::DECLARED + 5);
     assert!(matches!(
-        core.watch(&order).expect("watched"),
-        rutent_core_orch::stuck::Watch::Stuck(_)
+        watched_on_tick(&mut core, &order),
+        Some(rutent_core_orch::stuck::Watch::Stuck(_))
     ));
     let held = core.stuck_values();
     // The part's being declared stuck is an input of its own: what follows is held to it.

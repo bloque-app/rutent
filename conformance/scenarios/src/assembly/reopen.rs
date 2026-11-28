@@ -165,9 +165,13 @@ impl Core {
     /// As Core refuses to reopen.
     pub(super) fn reopen_core(&mut self) -> Result<(), AssemblyError> {
         use rutent_core_orch::schedule::reopen::{Deployment, Kept, Platform, Relist, reopen};
-        struct Store<'a>(&'a mut LogsRead);
+        struct Store<'a>(&'a mut LogsRead, &'a Disk);
         impl Kept for Store<'_> {
             fn bytes(&mut self, commitment: &Digest) -> Option<Vec<u8>> {
+                // A statement the scenario planted as unreadable to a reopened Core is answered as nothing.
+                if self.1.is_unreadable(commitment) {
+                    return None;
+                }
                 let kept = KeptStatements::kept(self.0, commitment).ok()??;
                 rutent_core_audit::receipts::store::bearing_out(&kept)
             }
@@ -295,7 +299,7 @@ impl Core {
                 clock: &self.clock,
                 core: &core_actor,
                 log: &mut self.general,
-                kept: &mut Store(&mut self.kept),
+                kept: &mut Store(&mut self.kept, &self.disk),
                 in_force: &mut in_force,
                 catalogue: &mut self.catalogue,
                 listed: &mut listed,

@@ -101,6 +101,52 @@ fn node_cannot_be_both_public_and_declared_private() {
     );
 }
 
+/// The private rails and the listed public networks never overlap (`REQ-CAT-22`; `T-020-60`, the review of #356's
+/// round 2, Low 3): an advertisement declaring a listed public network its private node is refused, and a listing of a
+/// network a provider declares private is refused, so a private rail is never a listed network routed unread.
+// verifies: REQ-CAT-22, DEC-28
+#[test]
+fn private_node_and_listed_public_network_never_share_a_name() {
+    let ad = ramp_advertisement();
+    let mut catalogue = Catalogue::new();
+    catalogue
+        .list_public_network("acme-ledger", true, true)
+        .expect("listed");
+    catalogue
+        .grant(grant("g-1", &ad.provider, tuples_of(&ad), 100_000))
+        .unwrap();
+    assert_eq!(
+        join(&mut catalogue, &ad, JOINED_AT),
+        Err(JoinRefusal::PrivateNodeIsPublic("acme-ledger".into())),
+        "a private node named after a listed network"
+    );
+    // Held off every route, it is listed all the same.
+    let mut catalogue = Catalogue::new();
+    catalogue
+        .list_public_network("acme-ledger", true, false)
+        .expect("listed, not started");
+    catalogue
+        .grant(grant("g-1", &ad.provider, tuples_of(&ad), 100_000))
+        .unwrap();
+    assert_eq!(
+        join(&mut catalogue, &ad, JOINED_AT),
+        Err(JoinRefusal::PrivateNodeIsPublic("acme-ledger".into()))
+    );
+
+    let mut catalogue = Catalogue::new();
+    catalogue
+        .grant(grant("g-1", &ad.provider, tuples_of(&ad), 100_000))
+        .unwrap();
+    join(&mut catalogue, &ad, JOINED_AT).expect("the private node declared");
+    assert_eq!(
+        catalogue.list_public_network("acme-ledger", true, true),
+        Err(NodeError::DeclaredPrivate("acme-ledger".into())),
+        "a listing of a network declared private"
+    );
+    assert!(!catalogue.nodes().is_listed_network("acme-ledger"));
+    assert!(!catalogue.nodes().is_started_network("acme-ledger"));
+}
+
 // verifies: REQ-ORD-39
 #[test]
 fn provider_below_the_tuples_evidence_floor_is_left_out_of_the_snapshot() {

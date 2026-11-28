@@ -93,9 +93,7 @@ use rutent_core_orch::intake::{
 use rutent_core_orch::rounds::{Fresh, Issued, OperatorKey, Parts as Rounds, Providers};
 use rutent_core_orch::segments::{Modules, NoProxy, Segments, SegmentsError, Status, StatusError};
 use rutent_core_orch::snapshot::{Exposures, Price, Releases};
-use rutent_core_orch::stuck::{
-    Mover, NoRouteLeft, Parts as StuckParts, ResolveError, Stuck, StuckError,
-};
+use rutent_core_orch::stuck::{Mover, ResolveError, Stuck, StuckError};
 use rutent_prov::catalogue::Catalogue;
 use rutent_prov::module::lifecycle::Staging;
 use rutent_prov::module::platform::Platform;
@@ -2165,6 +2163,25 @@ impl Core {
         )
     }
 
+    /// Lists `network` again, as the operator does: a `list_public_network` the operator's login asks for and policy
+    /// decides, carried out by Core after its reader's check, under `request`, an id the test names (`T-020-60`, the
+    /// review of #356's round 2, Low 2).
+    ///
+    /// # Errors
+    ///
+    /// If policy doesn't permit it, the catalogue refuses it, or the log takes no step of it.
+    pub fn list_public_network(
+        &mut self,
+        network: rutent_contracts::core_internal::PublicNetwork,
+        request: &str,
+    ) -> Result<(), AssemblyError> {
+        self.change_public_network(
+            CatalogueChange::ListPublicNetwork,
+            network,
+            kit::id(request),
+        )
+    }
+
     /// A listing or a delisting of a public network by the operator's login, under `request`, through Core's own
     /// command (`rutent_core_orch::closing::readers::listing::change_public_network`, the review of `T-020-60`'s round
     /// 1, M1): decided by policy, its effect appended, carried out in Core's adapter and the catalogue's public list
@@ -2652,13 +2669,16 @@ impl Core {
         Ok(told)
     }
 
-    /// Declares the part of `order` stuck for want of a route (`REQ-ORD-28`): its recalculations at their bound, the
-    /// value left resting where the last segment that settled put it. Core's record of the order's ends is taken
-    /// from the log's own entries, as the assembly follows an order (`T-020-11`, `T-020-16`).
+    /// Has Core's own run leave the part of `order` with no route (`REQ-ORD-28`; `T-020-60` item (8), the check of
+    /// `T-020-61`'s Low): every installed provider refuses its dry runs while Core's ticks recalculate the part from
+    /// where its value is evidenced, so the recalculation finds no route and Core's run declares the part stuck, the
+    /// value resting where the last segment that settled put it, or, at a failed final deposit, has it wait for its
+    /// customer (`REQ-ORD-43`). The assembly declares nothing itself; the refusals end once the part is left so. The
+    /// part's route must have failed, and not been recalculated yet, as Core's run recalculates only such a part.
     ///
     /// # Errors
     ///
-    /// If the order hasn't started, or the part can't be declared.
+    /// If the order hasn't started, or Core's run didn't leave the part with no route.
     pub fn leave_no_route(&mut self, order: &Id) -> Result<(), StepError> {
         let started = self
             .intake
@@ -2673,36 +2693,37 @@ impl Core {
                 .part_id
                 .as_str(),
         );
-        let core = kit::core();
-        let outcome = rutent_core_orch::recalc::Recalculation::NoRouteLeft { recalculated: 0 };
-        let last = started.record.record_id().clone();
-        let mut parts = StuckParts {
-            clock: &self.clock,
-            log: &mut self.general,
-            fresh: &mut self.fresh,
-            issued: &self.issued,
-            segments: &mut self.segments,
-            exposures: &mut self.exposures,
-        };
-        self.stuck.no_route(
-            &mut parts,
-            NoRouteLeft {
-                order,
-                part: &part,
-                outcome: &outcome,
-                last_record: &last,
-                core: &core,
-            },
-        )?;
-        self.feed()?;
-        let entries: Vec<Entry> = self
-            .log
-            .borrow()
-            .entries()
+        let providers: Vec<String> = self
+            .installed
             .iter()
-            .map(|(_, e)| e.clone())
+            .map(|one| one.spec.provider.clone())
             .collect();
-        self.stuck.follow(&self.segments, &entries, order)?;
+        for provider in &providers {
+            self.world().refuse_dry_runs(provider, true);
+        }
+        // Left with no route: stuck, or, at a failed final deposit, waiting for its customer (`REQ-ORD-43`).
+        let left = |core: &Self| {
+            core.is_stuck(order, &part)
+                || core.segments.order(order).is_some_and(|o| {
+                    o.parts.iter().any(|p| {
+                        p.part_id.as_str() == part.as_str()
+                            && p.state
+                                == rutent_contracts::state_machine::OrderState::WaitingForCustomer
+                    })
+                })
+        };
+        for _ in 0..4 {
+            if left(self) {
+                break;
+            }
+            self.tick();
+        }
+        for provider in &providers {
+            self.world().refuse_dry_runs(provider, false);
+        }
+        if !left(self) {
+            return Err(StepError::NotNow("Core's run left the part with no route"));
+        }
         Ok(())
     }
 

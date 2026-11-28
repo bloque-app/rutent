@@ -274,6 +274,10 @@ struct Followed {
     /// The parts whose last routing offered no route, or one Core refused: no route left until `T-020-11` resolves
     /// them, so they are routed no more (`REQ-ORD-4`).
     no_route: BTreeMap<String, ()>,
+    /// The segments of the route each part was last recalculated onto, by part: a route these recalculations recorded,
+    /// or the log's last `route_recalculated` of the part ([`Recalculations::follow_recorded`]). It is not recalculated
+    /// again before it runs (`T-020-60` item (8)).
+    recalculated_to: BTreeMap<String, Vec<String>>,
 }
 
 /// Core's record of the orders it may recalculate, kept across orders by the assembly, which the production assembly
@@ -305,6 +309,7 @@ impl Recalculations {
                 pending: BTreeMap::new(),
                 waiting: BTreeMap::new(),
                 no_route: BTreeMap::new(),
+                recalculated_to: BTreeMap::new(),
             });
     }
 
@@ -330,6 +335,21 @@ impl Recalculations {
             .count();
         if let Some(followed) = self.orders.get_mut(order.as_str()) {
             followed.recalculated = followed.recalculated.max(recorded);
+            // The route each part was last recalculated onto, as the log holds it.
+            for input in inputs {
+                if let (Observed::RouteRecalculated { segments, .. }, Some(part)) =
+                    (&input.observed, &input.subject.part)
+                    && input.subject.order.as_str() == order.as_str()
+                {
+                    followed.recalculated_to.insert(
+                        part.as_str().to_owned(),
+                        segments
+                            .iter()
+                            .map(|s| s.segment_id.as_str().to_owned())
+                            .collect(),
+                    );
+                }
+            }
         }
     }
 
@@ -415,6 +435,23 @@ impl Recalculations {
         if let Some(why) = handed_over(parts.segments, order_id, part) {
             return Ok(Recalculation::NotNow(why));
         }
+        // A route these recalculations recalculated the part onto, whose next segment Core never tried, is still the
+        // part's route to run: it is not recalculated again before it runs, here as in Core's run (`REQ-ORD-4`, `INV-4`;
+        // `T-020-60` item (8), from `T-020-61`'s gap 2). A segment tried and ended unsettled, retired, or a part its
+        // guard refused before the segment's first hand-over, is no route still to run; nor is a route chosen by other
+        // means (a floor wait built on the first route, the customer's choice).
+        if let Some(segment) =
+            untried(parts.segments, order_id, &ask.part, part, settled).filter(|segment| {
+                followed
+                    .recalculated_to
+                    .get(ask.part.as_str())
+                    .is_some_and(|route| route.iter().any(|s| s == segment.as_str()))
+            })
+        {
+            return Ok(Recalculation::NotNow(NotRecalculable::NotTriedYet {
+                segment,
+            }));
+        }
         let settled_id =
             Id::new(settled.segment_id.as_str()).ok_or(RecalcError::Id("a segment id"))?;
         // What the settled segment gave out there, or, the route handed on's first move reversed, what the
@@ -425,6 +462,15 @@ impl Recalculations {
             parts.segments.handed_on(order_id, &settled_id)
         };
         let Some(amount) = evidenced_amount.and_then(|a| PositiveAmount::new(a.as_str())) else {
+            // A completed reversal whose confirmation says nothing came back (rebuilt as zero where it can't be read
+            // back) evidences no value to route: the part is left to the operator, with no route, so the stuck check
+            // names it rather than leaving it untimed (`INV-3`; `T-020-60` item (8), from `T-020-61`'s gap 1).
+            if settled.state == stm::SegmentState::ReversalComplete {
+                followed.no_route.insert(ask.part.as_str().to_owned(), ());
+                return Ok(Recalculation::NoRouteLeft {
+                    recalculated: followed.recalculated,
+                });
+            }
             return Ok(Recalculation::NotNow(NotRecalculable::NoSettledEnd));
         };
         // Bounded in count (`REQ-ORD-4`).
@@ -781,6 +827,14 @@ impl Recalculations {
                 .release(&recalculated.record_order(), segment);
         }
         followed.recalculated += 1;
+        followed.recalculated_to.insert(
+            part.as_str().to_owned(),
+            recalculated
+                .segments
+                .iter()
+                .map(|s| s.as_str().to_owned())
+                .collect(),
+        );
         recalculated.recalculated = followed.recalculated;
         followed.follows = recalculated.record.request.request_id.clone();
         followed.tried.extend(pending.tried);
@@ -793,6 +847,35 @@ impl Recalculated {
     fn record_order(&self) -> Id {
         Id::new(self.input.subject.order.as_str()).expect("an order id is an id")
     }
+}
+
+/// The next segment of `part` after `settled`, where Core never tried it: no flight of it ended unsettled, it isn't
+/// retired, policy wasn't asked to decide its move, and the part's guard didn't refuse it before its first hand-over. Its route is the part's still to run
+/// (`REQ-ORD-4`). `None` where the value is back at the start of a reversed first move: that move is the one tried.
+fn untried(
+    segments: &Segments,
+    order: &Id,
+    part_id: &Id,
+    part: &stm::Part,
+    settled: &stm::Segment,
+) -> Option<stm::Id> {
+    if settled.state == stm::SegmentState::ReversalComplete
+        || segments.guard_refused(order, part_id)
+    {
+        return None;
+    }
+    let next = part
+        .segments
+        .iter()
+        .find(|s| s.state != stm::SegmentState::Settled)?;
+    if next.state != stm::SegmentState::Pending {
+        return None;
+    }
+    let id = Id::new(next.segment_id.as_str())?;
+    (!segments.ended_unsettled(order, &id)
+        && !segments.retired(order, &id)
+        && !segments.move_decided(order, &id))
+    .then(|| next.segment_id.clone())
 }
 
 /// The first segment of `part` that hasn't settled and that `segments` handed over with no final outcome, as why

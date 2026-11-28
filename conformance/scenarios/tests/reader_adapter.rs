@@ -190,6 +190,78 @@ fn network_whose_reader_is_unreachable_does_not_start_and_cannot_be_listed() {
     let _ = listed;
 }
 
+/// A decided listing whose reader fails its start-up check at listing time (the host unreachable then) is carried out,
+/// its result `done`, but the network isn't marked started: it is held off the catalogue's public list, and the
+/// operator is told why by a raise in the log (`T-020-60` (2), the review of #356's round 2, Low 2; `REQ-CAT-22`).
+// verifies: REQ-CAT-22, DEC-28
+#[test]
+fn listing_whose_reader_fails_its_check_is_done_but_its_network_is_held_off_and_raised() {
+    use rutent_contracts::core_internal::{Action, CatalogueChange, Entry, Outcome, What};
+    let (mut core, _, listed) = bank_only();
+    let bank = bank();
+    core.delist_public_network(&id(&bank))
+        .expect("delisted: no order uses it");
+    assert!(!core.catalogue().nodes().is_started_network(&bank));
+    let nowhere = TcpListener::bind("127.0.0.1:0")
+        .and_then(|l| l.local_addr())
+        .expect("a port");
+    core.move_reader_host(nowhere);
+    let raised_before = core.reader_raises().len();
+    core.list_public_network(listed[0].clone(), "list-bank-again")
+        .expect("the listing is carried out");
+    let entries = core.log().entries().to_vec();
+    let effect = entries
+        .iter()
+        .rev()
+        .find_map(|(r, e)| match e {
+            Entry::Verified(v) => match &v.what {
+                What::Effect {
+                    action:
+                        Action::ChangeCatalogue {
+                            change: CatalogueChange::ListPublicNetwork,
+                            public_network: Some(n),
+                            ..
+                        },
+                    ..
+                } if n.network.as_str() == bank => Some(r.clone()),
+                _ => None,
+            },
+            Entry::Stated(_) => None,
+        })
+        .expect("the listing's effect");
+    let result = entries.iter().find_map(|(_, e)| match e {
+        Entry::Verified(v) => match &v.what {
+            What::Result { effect: of } if *of == effect => Some(v.outcome.clone()),
+            _ => None,
+        },
+        Entry::Stated(_) => None,
+    });
+    assert_eq!(
+        result,
+        Some(Outcome::Done {}),
+        "the listing's result is done"
+    );
+    assert_eq!(
+        core.readers().standing(&bank),
+        Standing::NotStarted(NotStarted::Unread(Unreadable::Unreachable)),
+        "its reader didn't pass the check"
+    );
+    assert!(
+        !core.catalogue().nodes().is_started_network(&bank),
+        "not marked started"
+    );
+    assert!(
+        core.catalogue().nodes().is_withheld_network(&bank),
+        "held off the public list's routes"
+    );
+    let raises = core.reader_raises();
+    assert_eq!(raises.len(), raised_before + 1, "raised: {raises:?}");
+    assert!(
+        matches!(raises.last(), Some((n, ReaderNotStarted::Unreachable, _)) if *n == bank),
+        "the operator is told why: {raises:?}"
+    );
+}
+
 // verifies: DEC-28
 #[test]
 fn reader_hosts_rotated_certificate_under_the_operators_ca_and_listed_name_is_accepted_without_a_listing_change()

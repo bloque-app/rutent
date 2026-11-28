@@ -301,12 +301,14 @@ fn a_measure_that_cannot_be_written_leaves_the_segments_outcome_unchanged() {
     };
     let (with_order, a) = ran(&mut with, &session, "same", script);
     let (without_order, b) = ran(&mut without, &other, "same", script);
-    // Left with no route, so neither Core's run recalculates it on the ticks below.
-    with.leave_no_route(&with_order)
-        .expect("left with no route");
-    without
-        .leave_no_route(&without_order)
-        .expect("left with no route");
+    // Left with no route by Core's own run, so neither recalculates it on the ticks below; the operator holds the
+    // measures back while Core's ticks leave it so, so the tick below is the one that writes them (`T-020-60` item (8)).
+    use rutent_core_orch::schedule::Job;
+    for (core, order) in [(&mut with, &with_order), (&mut without, &without_order)] {
+        core.set_cadence(Job::WriteMeasures, u64::MAX);
+        core.leave_no_route(order).expect("left with no route");
+        core.set_cadence(Job::WriteMeasures, 0);
+    }
     assert_eq!(
         format!("{a:?}"),
         format!("{b:?}"),

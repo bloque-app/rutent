@@ -45,6 +45,9 @@ pub struct Disk {
     seen: Rc<RefCell<Vec<(String, usize)>>>,
     /// Records of a call the store can't take now: its name and how many more appends it turns away.
     refusing: Rc<Cell<Option<(&'static str, usize)>>>,
+    /// The statements kept that a Core reopened on this disk can't read back: the shelf keeps them, and the store
+    /// answers nothing under them to Core's reopening.
+    unreadable: Rc<RefCell<Vec<Digest>>>,
 }
 
 impl std::fmt::Debug for Disk {
@@ -64,6 +67,17 @@ impl Disk {
     /// Plants `crash`: the process stops there, once.
     pub fn plant(&self, crash: Crash) {
         self.crash.set(Some(crash));
+    }
+
+    /// A fault the scenarios plant: the statement kept under `commitment` can't be read back by a Core reopened on
+    /// this disk, as `Core::intake_reopened_without` plants it for intake alone. The shelf keeps it, so the log opens.
+    pub fn unreadable_on_reopen(&self, commitment: &Digest) {
+        self.unreadable.borrow_mut().push(commitment.clone());
+    }
+
+    /// Whether the statement kept under `commitment` is one a reopened Core can't read back.
+    pub(crate) fn is_unreadable(&self, commitment: &Digest) -> bool {
+        self.unreadable.borrow().contains(commitment)
     }
 
     /// Takes back a planted crash that hasn't fallen, if one is planted: the process stops nowhere from now on

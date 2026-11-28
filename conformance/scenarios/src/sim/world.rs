@@ -91,6 +91,9 @@ pub struct SimWorld {
     secrets_delivered: Vec<(String, String)>,
     clock: Option<Instant>,
     keys_down: Vec<String>,
+    /// The providers that refuse every dry run while the switch is on, ahead of anything queued for them
+    /// ([`SimWorld::refuse_dry_runs`]).
+    refusing_dry_runs: std::collections::BTreeSet<String>,
     /// The endpoints the world serves each network's reader, and the networks themselves, which they answer from as
     /// they stand (`T-024-25`, `T-020-60`).
     readers: super::readers::Endpoints,
@@ -328,7 +331,20 @@ impl SimWorld {
         self.keys_down.retain(|p| p != provider);
     }
 
+    /// Has `provider` refuse every dry run from now on, ahead of what is queued for it, while `on`; off, it answers as
+    /// its script says again, nothing queued taken meanwhile (`T-020-60` item (8)).
+    pub fn refuse_dry_runs(&mut self, provider: &str, on: bool) {
+        if on {
+            self.refusing_dry_runs.insert(provider.to_owned());
+        } else {
+            self.refusing_dry_runs.remove(provider);
+        }
+    }
+
     fn next_behaviour(&mut self, provider: &str, kind: &str, dry_run: bool) -> Option<Behaviour> {
+        if dry_run && self.refusing_dry_runs.contains(provider) {
+            return Some(Behaviour::act(rutent_conformance::sim::Act::Refuse));
+        }
         let script = self.scripts.get_mut(provider)?;
         let at = script
             .queue

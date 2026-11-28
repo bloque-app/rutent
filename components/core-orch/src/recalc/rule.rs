@@ -42,6 +42,12 @@ pub enum NotRecalculable {
     /// The value sits at a node no settled segment of the part ends at, so nothing evidences it there
     /// (`recalculation-starts-from-evidenced-value`).
     NoSettledEnd,
+    /// The part's next segment was never tried: its route, a recalculated one among them, is still to run, and is not
+    /// recalculated again before it runs (`REQ-ORD-4`, `INV-4`).
+    NotTriedYet {
+        /// The segment.
+        segment: stm::Id,
+    },
 }
 
 /// Where `part`'s value is evidenced: the endpoint the state machine's `value_at` places it at, and the settled

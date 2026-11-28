@@ -289,8 +289,9 @@ impl<'p> Jobs<'p> {
     /// The stuck watch's body for `order` alone, as [`Job::Watch`](super::Job::Watch) runs it on each order, with every
     /// guard it has: its part timed on the route Core's own record names now, and one Core can't name declared stuck on
     /// the last route the log names (`T-020-60` item (8), from the check of `T-020-61` at `7557cd9e`: no deployment keeps
-    /// a copy of it). `None` for an order that didn't start, or has no part.
-    pub fn watch_order(&mut self, order: &Id) -> Option<Result<Watch, String>> {
+    /// a copy of it, and none asks it per order: only `tick` runs it, over every order). `None` for an order that didn't
+    /// start, or has no part.
+    fn watch_order(&mut self, order: &Id) -> Option<Result<Watch, String>> {
         let core = self.ports.actors().core;
         let order = order.clone();
         {

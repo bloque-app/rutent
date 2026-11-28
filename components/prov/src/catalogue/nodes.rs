@@ -149,6 +149,11 @@ impl NodeBook {
             .collect()
     }
 
+    /// Whether `network` is on the public list of networks from a listing, started or held off (`T-020-60`).
+    pub fn is_listed_network(&self, network: &str) -> bool {
+        self.networks.contains_key(network)
+    }
+
     pub(super) fn take_network(&mut self, network: &str, started: bool) {
         self.networks.insert(network.to_owned(), started);
     }

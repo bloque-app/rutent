@@ -722,6 +722,10 @@ pub struct Segments {
         ),
     >,
     acted: BTreeSet<String>,
+    /// The segments, by order and segment, whose move policy was asked to decide, permitted or not: tried, whatever
+    /// came of it, so a recalculation may start from a route whose move policy refused with no flight kept
+    /// (`T-020-60` item (8)). A reopened Core rebuilds it from the log's decisions.
+    moves_decided: BTreeSet<(String, String)>,
     /// The records of private nodes already asked for while a segment was graded, by order, segment, node and provider:
     /// a segment graded again while it waits asks nothing and appends nothing more (`T-020-58`). A Core that reopens
     /// asks again, once.
@@ -1740,6 +1744,12 @@ impl Segments {
         })
     }
 
+    /// Whether policy was asked to decide the move of `segment` of `order`, permitted or not: a segment Core tried.
+    pub fn move_decided(&self, order: &Id, segment: &Id) -> bool {
+        self.moves_decided
+            .contains(&(order.as_str().to_owned(), segment.as_str().to_owned()))
+    }
+
     /// Whether `segment` of `order` was handed over and has no final outcome: from its permit on, its effect may be
     /// in the log and its value about to move, whatever the state machine says of it yet (`INV-4`, `T-020-10`).
     pub fn handed_over(&self, order: &Id, segment: &Id) -> bool {
@@ -2577,6 +2587,8 @@ impl Segments {
             at: now(parts.clock)?,
         };
         let decision = parts.decisions.decide(&request)?;
+        self.moves_decided
+            .insert((live.order.as_str().to_owned(), segment.as_str().to_owned()));
         let Some(permit) = decision.permit() else {
             return Ok(Accounted {
                 segment: segment.clone(),

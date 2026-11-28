@@ -113,7 +113,14 @@ fn stuck_before_the_schedule_runs() -> Stuck {
     let part = core.first_part(&order).expect("a started order");
     core.faults.refuse_begin = Some(2);
     core.ran_on_tick(&order).expect("the order runs");
+    // Core's run leaves the part with no route on its own ticks; while it does, the operator holds the landing and the
+    // measures back, so the schedule has still landed and written nothing when the test reads it (`T-020-60` item (8)).
+    use rutent_core_orch::schedule::Job;
+    core.set_cadence(Job::LandSettled, u64::MAX);
+    core.set_cadence(Job::WriteMeasures, u64::MAX);
     core.leave_no_route(&order).expect("the part is stuck");
+    core.set_cadence(Job::LandSettled, 0);
+    core.set_cadence(Job::WriteMeasures, 0);
     assert!(core.is_stuck(&order, &part));
     Stuck {
         core,
@@ -1860,9 +1867,20 @@ fn stuck_before_the_second_ramp() -> Stuck {
     let part = core.first_part(&order).expect("a started order");
     core.faults.refuse_begin = Some(2);
     core.ran_on_tick(&order).expect("the order runs");
-    assert_eq!(core.tick().landed, 1, "the schedule lands the value");
+    // Core's run leaves the part with no route on its own ticks, and the schedule lands the value on the first.
     core.leave_no_route(&order).expect("the part is stuck");
     assert!(core.is_stuck(&order, &part));
+    assert_eq!(
+        core.holdings().attributions(),
+        [(
+            NODE.to_owned(),
+            vec![rutent_prov::holding::HeldForOrder {
+                order: order.as_str().to_owned(),
+                amount: AMOUNT.parse().unwrap(),
+            }]
+        )],
+        "the schedule landed the value in the wallet"
+    );
     Stuck {
         core,
         order,
@@ -2244,6 +2262,196 @@ fn movement_into_another_account_or_short_doesnt_confirm_a_reversal_into_a_held_
             "{destination} {amount}: the reversal stays owed"
         );
     }
+}
+
+/// The linked order's first move fails and its value comes back into the node's holding account, confirmed and
+/// completed on the network's movement back. The part is recalculated from the node, and the new route's first move
+/// fails too, owing a second reversal. Core reopens, so every movement the log's evidence names is relied on again. The
+/// node's reader now ties the second movement back by destination and amount, so it answers with the first one: the
+/// movement the first reversal's completion relies on. A movement another segment relied on is not the value back, so
+/// the wallet is asked nothing and the second reversal stays owed; read as the network ties it, it completes
+/// (`T-020-60` (6), the review of round 1, L3; `REQ-ORD-38`, `INV-3`).
+// verifies: REQ-ORD-38, INV-3
+#[test]
+fn movement_back_another_segment_relied_on_confirms_no_reversal_into_a_held_node() {
+    use rutent_core_orch::recalc::Recalculation;
+    use rutent_core_orch::reversal::{Confirmation, NotCounted};
+    use rutent_scenarios::sim::readers::Plan;
+    let (mut stuck, _, linked, first) = linked_first_move_failed();
+    let wallet = stuck.wallet.clone();
+    let owing = stuck
+        .core
+        .owed_reversal(&linked.order, &first)
+        .expect("the first reversal is owed");
+    stuck.core.return_on_network(
+        NODE,
+        owing.transaction.as_str(),
+        &wallet.provider,
+        "USDC",
+        AMOUNT,
+    );
+    let answer = stuck
+        .core
+        .confirmed_on_tick(&linked.order, &first)
+        .expect("the wallet is asked");
+    assert!(matches!(answer, Confirmation::Completed(_)), "{answer:?}");
+    stuck.core.tick();
+    // Recalculated from the node; the new route's first move fails as well, owing its own reversal.
+    match stuck
+        .core
+        .recalculated_on_tick(&linked.order)
+        .expect("the part is recalculated")
+    {
+        Recalculation::Recalculated(_) => {}
+        other => panic!("recalculated: {other:?}"),
+    }
+    stuck.core.world().script_for(
+        RAMP_C,
+        "transfer",
+        rutent_conformance::sim::Behaviour::act(rutent_conformance::sim::Act::Fail),
+    );
+    let ran = stuck
+        .core
+        .ran_once_on_tick(&linked.order)
+        .expect("the recalculated route runs");
+    let Ran::Segments(done) = ran else {
+        panic!("ran: {ran:?}")
+    };
+    assert!(
+        matches!(done[0].outcome, SegmentOutcome::Failed),
+        "{done:?}"
+    );
+    let second = done[0].segment.clone();
+    // Core stops and is opened again on its disk.
+    let names = [CHAIN_IN, RAMP_B, RAMP_C, OUT_C];
+    stuck.core =
+        Scenario::new("execution", "AC-6", given(&names)).reopen(stuck.core, 1, &mut Reference);
+    let owing = stuck
+        .core
+        .owed_reversal(&linked.order, &second)
+        .expect("the second reversal is owed");
+    stuck.core.return_on_network(
+        NODE,
+        owing.transaction.as_str(),
+        &wallet.provider,
+        "USDC",
+        AMOUNT,
+    );
+    stuck.core.plant_readers(&Plan {
+        ties: true,
+        ..Plan::default()
+    });
+    let asked_before = stuck.core.confirmations_asked(&linked.order, &second);
+    let answer = stuck
+        .core
+        .confirmed_on_tick(&linked.order, &second)
+        .expect("the reversal is judged");
+    assert!(
+        matches!(
+            answer,
+            Confirmation::NotCompleted {
+                statement: None,
+                why: NotCounted::NotReturned,
+            }
+        ),
+        "the movement the first reversal relies on is no value back: {answer:?}"
+    );
+    assert_eq!(
+        stuck.core.confirmations_asked(&linked.order, &second),
+        asked_before,
+        "the holding account isn't asked"
+    );
+    assert!(
+        stuck.core.owed_reversal(&linked.order, &second).is_ok(),
+        "the second reversal stays owed"
+    );
+    // Read as the network ties it, the movement back is the second reversal's own, and it completes.
+    stuck.core.plant_readers(&Plan::default());
+    let answer = stuck
+        .core
+        .confirmed_on_tick(&linked.order, &second)
+        .expect("the wallet is asked");
+    assert!(matches!(answer, Confirmation::Completed(_)), "{answer:?}");
+}
+
+/// The linked order's first move fails and its reversal completes on the wallet's word, and then the wallet's
+/// confirmation can't be read back from the evidence store. Reopened, Core rebuilds what came back as nothing
+/// confirmed (zero, failing closed), so there is no value it can route from: the part is recalculated by no one, and
+/// Core's run leaves it to the operator, stuck with no route left, never a part no check times (`INV-3`;
+/// `T-020-60` item (8), from `T-020-61`'s gap 1).
+// verifies: INV-3, REQ-ORD-28
+#[test]
+fn confirmation_rebuilt_as_zero_leaves_a_part_the_stuck_check_names() {
+    use rutent_core_orch::reversal::Confirmation;
+    let (mut stuck, _, linked, segment) = linked_first_move_failed();
+    let wallet = stuck.wallet.clone();
+    let owing = stuck
+        .core
+        .owed_reversal(&linked.order, &segment)
+        .expect("the reversal is owed");
+    stuck.core.return_on_network(
+        NODE,
+        owing.transaction.as_str(),
+        &wallet.provider,
+        "USDC",
+        AMOUNT,
+    );
+    let answer = stuck
+        .core
+        .confirmed_on_tick(&linked.order, &segment)
+        .expect("the wallet is asked");
+    assert!(matches!(answer, Confirmation::Completed(_)), "{answer:?}");
+    // The confirmation the completion rests on, as the log names it.
+    let entries = stuck.core.log().entries().to_vec();
+    let rests_on = entries
+        .iter()
+        .find_map(|(_, e)| match e {
+            rutent_contracts::core_internal::Entry::Verified(v) => match &v.what {
+                What::Evidence {
+                    order,
+                    segment: s,
+                    rests_on,
+                    ..
+                } if *order == linked.order && *s == segment => rests_on.first().cloned(),
+                _ => None,
+            },
+            rutent_contracts::core_internal::Entry::Stated(_) => None,
+        })
+        .expect("the completion's evidence rests on the wallet's confirmation");
+    let commitment = entries
+        .iter()
+        .find_map(|(r, e)| match e {
+            rutent_contracts::core_internal::Entry::Stated(s) if *r == rests_on => {
+                Some(s.commitment.clone())
+            }
+            _ => None,
+        })
+        .expect("the confirmation's stated entry");
+    stuck.core.unreadable_on_reopen(&commitment);
+
+    // Core stops before the part is recalculated, and is opened again on its disk.
+    let names = [CHAIN_IN, RAMP_B, RAMP_C, OUT_C];
+    stuck.core =
+        Scenario::new("execution", "AC-6", given(&names)).reopen(stuck.core, 1, &mut Reference);
+    let part = stuck.core.part_of(&linked.order).expect("a part");
+    for _ in 0..3 {
+        stuck.core.tick();
+    }
+    assert!(
+        stuck.core.is_stuck(&linked.order, &part),
+        "nothing evidenced to route from: the part is the operator's"
+    );
+    assert!(
+        stuck.core.verified_whats().iter().any(|w| matches!(w,
+            What::Input { input } if input.subject.order.as_str() == linked.order.as_str()
+                && matches!(input.observed, rutent_contracts::state_machine::Observed::NoRoute { .. }))),
+        "the log records the part with no route left, for the operator"
+    );
+    assert_eq!(
+        stuck.core.followed(&linked.order).expect("followed").parts[0].state,
+        rutent_contracts::state_machine::OrderState::Stuck,
+        "and Core's record of the order names it stuck"
+    );
 }
 
 /// The linked order's first move fails and its reversal completes on the wallet's word: the value is landed again in

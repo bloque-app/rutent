@@ -489,6 +489,40 @@ fn failed_provider_pays_only_the_return_to_its_origin() {
     );
 }
 
+/// A part recalculated and not yet run is not recalculated again by Core's recalculations themselves, whoever asks
+/// (`REQ-ORD-4`; `T-020-60` item (8), from `T-020-61`'s gap 2): the new route's first segment was never tried, so it is
+/// the part's route still to run. Nothing is asked of any provider and nothing is recorded. Once it runs, the part
+/// moves on.
+// verifies: REQ-ORD-4, INV-4
+#[test]
+fn recalculated_route_not_yet_run_is_not_recalculated_again() {
+    use rutent_core_orch::recalc::NotRecalculable;
+    let (mut world, mut core, mut recalc) = deposit_failed(None);
+    let done = recalculated(recalc.recalculate(&mut core, &mut world));
+    assert!(recalc.asked > 0, "the first recalculation asked the rounds");
+    let entries = core.log.borrow().entries.len();
+    let again = recalc.recalculate(&mut core, &mut world);
+    assert!(
+        matches!(&again, Recalculation::NotNow(NotRecalculable::NotTriedYet { segment })
+            if segment.as_str() == done.segments[0].as_str()),
+        "{again:?}"
+    );
+    assert_eq!(recalc.asked, 0, "the second asked the rounds nothing");
+    assert_eq!(
+        core.log.borrow().entries.len(),
+        entries,
+        "nothing is recorded"
+    );
+    let ran = recalc.run(&mut core, &mut world, &done);
+    assert!(
+        matches!(segments(&ran)[0].outcome, SegmentOutcome::Settled { .. }),
+        "the recalculated route runs: {ran:?}"
+    );
+    assert_eq!(part(&core).state, OrderState::Complete);
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
 /// Once the route is recalculated, the failed deposit is retired: running the old route again hands nothing over,
 /// a late report about it moves nothing, and the value is moved once from the ledger, by the new route.
 // verifies: INV-4

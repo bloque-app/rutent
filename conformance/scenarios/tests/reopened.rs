@@ -792,6 +792,96 @@ fn segment_answered_before_core_reopens_goes_on_from_its_logged_answer() {
     }
 }
 
+/// The carry-on effects of the order's segments the log holds, each with whether the log holds its result.
+fn carry_ons(run: &Run) -> Vec<bool> {
+    let resulted: Vec<&rutent_contracts::core_internal::Receipt> = run
+        .log
+        .iter()
+        .filter_map(|e| match e {
+            Entry::Verified(v) => match &v.what {
+                What::Result { effect } => Some(effect),
+                _ => None,
+            },
+            Entry::Stated(_) => None,
+        })
+        .collect();
+    run.log
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| {
+            matches!(e, Entry::Verified(v) if matches!(&v.what, What::Effect {
+                action: Action::AskStatus { .. }
+                    | Action::RepeatOperation { .. }
+                    | Action::ReadRecordedAnswer { .. },
+                ..
+            }))
+        })
+        .map(|(at, _)| resulted.iter().any(|r| u64::from(r.index) == at as u64))
+        .collect()
+}
+
+/// A Core stopped after the platform carried out the order's deposit is restarted and carries the segment on, but the
+/// log can't take the carry-on's result now (`T-020-60` item (8)). The carry-on is never followed by a second effect
+/// without its result: on the next tick its result is written first, and the segment takes the reserve's answer, so the
+/// order completes, moved once. And where Core stops again before that tick, the reopened Core rebuilds the unwritten
+/// result from the log (an effect with no result) and writes it, `unanswered`, before anything else of the segment:
+/// the effect gets its result after a restart, still with no second effect.
+// verifies: NFR-6, INV-7
+#[test]
+fn carry_on_whose_result_the_log_refused_gets_its_result_first_and_no_second_effect() {
+    for seed in SEEDS {
+        let refused = scenario("a carry-on whose result the log refused")
+            .when(order(1))
+            .when(Step::Plant(Fault::CrashAfterEffect(1)))
+            .when(Step::Run)
+            .when(Step::Restart)
+            .when(Step::Plant(Fault::RefuseAppends {
+                call: "result",
+                times: 1,
+            }))
+            .when(Step::Rerun)
+            .when(Step::Rerun)
+            .when(Step::Rerun)
+            .play(seed, &mut Reference, reference());
+        assert_eq!(
+            carry_ons(&refused),
+            vec![true],
+            "seed {seed}: one carry-on, its result written"
+        );
+        assert!(
+            refused
+                .state_names()
+                .values()
+                .all(|s| s.as_deref() == Some("complete")),
+            "seed {seed}: {:?}",
+            refused.state_names()
+        );
+        let moved = refused.movements();
+        assert!(moved.values().all(|n| *n == 1), "seed {seed}: {moved:?}");
+
+        let restarted = scenario("a carry-on whose result the log refused, Core restarted")
+            .when(order(1))
+            .when(Step::Plant(Fault::CrashAfterEffect(1)))
+            .when(Step::Run)
+            .when(Step::Restart)
+            .when(Step::Plant(Fault::RefuseAppends {
+                call: "result",
+                times: 1,
+            }))
+            .when(Step::Rerun)
+            .when(Step::Restart)
+            .when(Step::Rerun)
+            .play(seed, &mut Reference, reference());
+        assert_eq!(
+            carry_ons(&restarted),
+            vec![true],
+            "seed {seed}: the carry-on got its result after the restart, and no second carry-on followed"
+        );
+        let moved = restarted.movements();
+        assert!(moved.values().all(|n| *n == 1), "seed {seed}: {moved:?}");
+    }
+}
+
 /// A Core stopped right after the platform carried out the order's deposit, the reserve having moved and answered, and
 /// before Core took the answer, and Core and its platform restarted: the restarted Core carries the segment on (`T-020-61`,
 /// item 8) on its own ticks: the reserve, which answers status queries, is asked where it stands, a decided effect, and

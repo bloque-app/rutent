@@ -649,7 +649,14 @@ fn drive(driving: &mut Driving<'_>, orders: &mut Vec<Id>) -> Result<(), Stopped>
         driving.core().clock.advance(2 * 86_400 + 60);
         for order in driving.caught.clone() {
             let order = rutent_contracts::router_api::Id::new(&order).expect("an order id");
-            if let Ok(Some(watched)) = driving.guarded(|core| core.watch(&order)) {
+            // Core's own tick times every order, as its schedule runs the stuck watch.
+            if let Ok(Some(watched)) = driving.guarded(|core| {
+                core.tick()
+                    .watched
+                    .into_iter()
+                    .find(|w| w.order == order)
+                    .map(|w| w.found)
+            }) {
                 driving.notes.push(format!(
                     "watch after the restart: {}",
                     format!("{watched:?}").chars().take(40).collect::<String>()
@@ -685,13 +692,18 @@ fn drive(driving: &mut Driving<'_>, orders: &mut Vec<Id>) -> Result<(), Stopped>
             }
             Kind::SilentAtTheEnd | Kind::RestartWhileStuck => {
                 driving.core().clock.advance(2 * 86_400 + 60);
-                match driving.core().watch(&order) {
-                    Ok(w) => driving.notes.push(format!(
-                        "watch: {}",
-                        format!("{w:?}").chars().take(40).collect::<String>()
-                    )),
-                    Err(e) => driving.notes.push(format!("watch: {e:?}")),
-                }
+                // Core's own tick times every order, as its schedule runs the stuck watch.
+                let watched = driving
+                    .core()
+                    .tick()
+                    .watched
+                    .into_iter()
+                    .find(|w| w.order == order)
+                    .map(|w| w.found);
+                driving.notes.push(format!(
+                    "watch: {}",
+                    format!("{watched:?}").chars().take(40).collect::<String>()
+                ));
                 // Declared stuck, Core and its platform crash and are restarted: the stuck order is followed on from
                 // the log (`T-024-21`).
                 if plan.kind == Kind::RestartWhileStuck && driving.core().restarts() == 0 {

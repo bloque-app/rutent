@@ -334,7 +334,7 @@ impl Catalogue {
     ///
     /// # Errors
     ///
-    /// If the change names no listing, or the network is blank.
+    /// If the change names no listing, the network is blank, or a provider declares it as its private node.
     pub fn list_public_network(
         &mut self,
         network: &str,
@@ -346,6 +346,12 @@ impl Catalogue {
         }
         if !listed {
             return Err(NodeError::NoListing(network.to_owned()));
+        }
+        // A network a provider declares as its private node is never also a listed public one (`REQ-CAT-22`;
+        // `T-020-60`, the review of #356's round 2, Low 3): the private rails Core routes over unread and the networks it
+        // reads through their readers don't overlap.
+        if self.publishers.publisher_of_node(network).is_some() {
+            return Err(NodeError::DeclaredPrivate(network.to_owned()));
         }
         self.nodes.take_network(network, started);
         Ok(())

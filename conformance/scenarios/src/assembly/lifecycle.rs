@@ -18,7 +18,6 @@ use rutent_core_orch::notice::{About, Channel, Notice, NoticeError, Receiver};
 use rutent_core_orch::recalc::Recalculations;
 use rutent_core_orch::reversal::{self, Afterward, Asked, Confirmation, Owing, Reversals};
 use rutent_core_orch::segments::StatusError;
-use rutent_core_orch::stuck::Watch;
 use serde_json::Value;
 
 use super::{Core, StepError};
@@ -50,6 +49,12 @@ impl Lifecycle {
 }
 
 impl Core {
+    /// A fault the scenarios plant (`T-020-60` item (8)): the statement kept under `commitment` can't be read back by a
+    /// Core reopened on this disk from now on; the evidence store keeps it, so the log opens.
+    pub fn unreadable_on_reopen(&self, commitment: &rutent_contracts::module_interface::Digest) {
+        self.disk.unreadable_on_reopen(commitment);
+    }
+
     /// From now on Core holds no decision record `id` of a recalculated route: a fault a scenario plants (#316's round-3 L7),
     /// as a Core whose evidence store no longer gives the record back would hold it.
     pub fn forget_decision_record(&mut self, id: &Id) {
@@ -109,22 +114,6 @@ impl Core {
     }
 
     // Stuck orders -----------------------------------------------------------------------------------------------
-
-    /// Times `order`'s part: raises a material change of a p99 to the operator, and declares the part stuck once
-    /// funds it handed over are held past twice their p99 or advertised time.
-    ///
-    /// # Errors
-    ///
-    /// As `Stuck::watch`.
-    pub fn watch(&mut self, order: &Id) -> Result<Watch, StepError> {
-        // Core's own body of its stuck watch, for this order alone, with every guard `Job::Watch` has: the assembly keeps
-        // no copy of it (`T-020-60` item (8)).
-        let found = rutent_core_orch::schedule::Jobs::new(&mut super::schedule::Due(self))
-            .watch_order(order)
-            .ok_or(StepError::NotNow("the order started"))?;
-        self.feed()?;
-        found.map_err(|_| StepError::NotNow("Core's stuck watch timed the part"))
-    }
 
     /// Has Core's stuck record follow `order`, from the log's own record of its authorisation.
     ///

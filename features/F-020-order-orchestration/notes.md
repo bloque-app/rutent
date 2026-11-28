@@ -11818,3 +11818,94 @@ binary (419) and `rutent-core-authz --lib` (173); `rutent-reader-host` (31); `ru
 `rutent-scenarios` binary (628, `--no-fail-fast`), `sim_readers` alone (7), `invariants` and `assembly` on seeds 11..15
 and 113..119; the licence check as `licences.yml` runs it; plan-check and tag-check `--strict` (0 findings, 2784 tests).
 Contracts weren't touched in this round, so `rutent-contracts`, `rutent-core-audit` and the contract guard weren't rerun.
+
+### Round 3 (the review of #356 at `df75e9d0`, CHANGES)
+
+A new author from `df75e9d0`; `origin/m3` still at `52c5b859`. Where a line above is replaced, this section says so.
+
+- **M1, Core puts the operator's catalogue settings back.** `settings::listing`'s join, which a live `advertise` and the
+  reopening's `relist` share, applies the operator's catalogue settings the log held when the advertisement was
+  received (each evidence floor, each public node listed or taken off, each cutover) right after the deployment's
+  `joined`. The assembly's `reapply_catalogue_settings` is gone; its wallet install, a deployment's own catalogue edit,
+  keeps the node it lists to Core's setting of that node. Test:
+  `advertisement_joined_after_a_floor_is_set_stays_at_the_operators_floor`.
+  - `sync_record_retry` is Core's settings' too: `settings::Targets::segments` is now `&mut Segments`, and a
+    `publishers_records` cadence set (or applied on reopening) sets the segments' node-record retry. The assembly's
+    `sync_record_retry` is gone. Round 2's gap "`reapply_catalogue_settings` and `sync_record_retry`" is closed.
+- **M2, finality is Core's.** `reversal::read_return` takes a movement back that its reader reads as pending as not
+  back yet (`NotCounted::NotFinal`): Core keeps no reading and asks the holding account nothing, and the reversal stays
+  owed until a pass reads it final. Round 2's L2 line above ("the wallet's final check is the one that holds") is
+  replaced: the reading still records its standing (always `final` now), and the plain wallet's own check is a second
+  one. Test: `reversal_back_into_a_held_public_node_is_confirmed_from_the_networks_reader`'s pending step holds the
+  reason, that `confirmations_asked` didn't move, and that the reversal is still owed.
+- **M3, item (8)'s four parts:**
+  - *Through `tick`.* The assembly's per-order `watch` is gone and `Jobs::watch_order` is private: only `tick` runs the
+    stuck watch, over every order. Every scenario that timed a part now ticks and reads `Round::watched`
+    (`failure.rs`'s `watched_on_tick`, `simulated_faults.rs`, `invariants_support`). The REQ-ORD-29 boundary and the
+    REQ-ORD-6 visibility of the assembled Core are held by
+    `provider_silent_past_twice_its_p99_makes_the_order_stuck_and_a_late_delivery_moves_nothing_twice` (now tagged
+    `REQ-ORD-29`, `REQ-ORD-6`), whose twice-the-p99 boundary and stuck call are read from the tick. The tick's order run
+    runs too; the test world's late provider gives the status questions nothing to settle the deposit with, so the test
+    still reads one thing. `stuck.rs`'s kit tests stay what they are: tests of `Stuck::watch` itself, the body `tick`
+    calls.
+  - *A second recalculation refused in `Recalculations`.* `recalculate` refuses a part whose route it recalculated
+    the part onto, and whose next segment Core never tried (`NotRecalculable::NotTriedYet`). The route is the one these
+    recalculations recorded, or the log's last `route_recalculated` of the part (`follow_recorded`, which Core's run
+    calls before each recalculation). A segment tried and ended unsettled, one retired, a part its guard refused before
+    a first hand-over, and a reversed first move count as tried. A route chosen by other means is not held to it (a
+    floor wait built on the first route, the customer's choice recorded by hand), so the unit paths of `T-020-61`'s
+    gap 2 keep recalculating. One from an owed reversal stays refused by the
+    rule (`InFlight`) and by Core's run. Test: `recalculated_route_not_yet_run_is_not_recalculated_again`.
+  - *A confirmation rebuilt as zero.* A completed reversal whose confirmation says nothing came back evidences no value
+    to route: `recalculate` answers `NoRouteLeft` and keeps the part as no route left, so Core's run declares it stuck
+    for the operator. Test: `confirmation_rebuilt_as_zero_leaves_a_part_the_stuck_check_names`. The wallet's
+    confirmation is made unreadable to the reopened Core (`Core::unreadable_on_reopen`, a disk fault beside
+    `intake_reopened_without`). Losing the bytes outright is refused by the log at open, which keeps every stated
+    entry's statement, so the zero can only come from an unreadable confirmation.
+  - *`leave_no_route`.* It no longer calls `Stuck::no_route`: every installed provider refuses its dry runs
+    (`SimWorld::refuse_dry_runs`) while Core's ticks recalculate the failed part, so Core's run finds no route and
+    declares the part stuck; the refusals end once it is. Every caller (`measures_called`, `bulk_measures`,
+    `assembly_real_wallet`, `reopened`) starts from a part Core's run made stuck. `stuck_before_the_schedule_runs`
+    holds the landing and the measures back by the operator's cadences while it ticks, then sets them back, so the
+    tests that read "the schedule has landed nothing yet" still read that. Round 2's L6 note on `leave_no_route` above
+    is replaced.
+  - *R43 and R47 reached.* `movement_back_another_segment_relied_on_confirms_no_reversal_into_a_held_node`: the node's
+    reader ties the movement back by destination and amount, which answers with the movement that brought the stuck
+    order's value in, one its settled segment relies on. `carry_on_whose_result_the_log_refused_gets_its_result_first_and_no_second_effect`:
+    the log turns away the carry-on's result (`Fault::RefuseAppends`), and the next tick writes it before anything
+    else, with no second effect.
+- **Lows:**
+  - `reader-test-hooks` is pinned in `tools/boundary-check`: `TEST_ONLY_FEATURES`, `test_only_features_enabled` and
+    `test_only_features_outside_tests`. The feature is turned on only from a `[dev-dependencies]` entry (Core's own
+    tests through its self dev-dependency among them), never from `[dependencies]`, `[build-dependencies]`, another
+    feature's list, or Core's `default`. Test: `reader_test_hooks_are_enabled_only_from_dev_dependencies`.
+  - The start-up check on the listing path: `listing_whose_reader_fails_its_check_is_done_but_its_network_is_held_off_and_raised`
+    (the network delisted, the host moved off, listed again: result `done`, not started, withheld, raised).
+    `Core::list_public_network` lists through Core's command under a test's request id.
+  - The private rails and the listed public networks don't overlap. The catalogue refuses an advertisement declaring a
+    listed network (started or held off) as its private node (`JoinRefusal::PrivateNodeIsPublic`), and refuses a
+    listing of a network a provider declares private (`NodeError::DeclaredPrivate`). `Nodes::is_listed_network` is new.
+    Test: `private_node_and_listed_public_network_never_share_a_name`.
+  - An unwritten carry-on result is rebuilt on reopening (`Segments::unwritten_carry_ons`): each carry-on effect with
+    no result is kept to be written first, `unanswered` at the reopening's time, since what came back went with Core's
+    process. The segment is then a carry-on that got no answer, for the stuck check. The same test's restarted run
+    holds it.
+
+#### Defaults (reversible, each failing closed)
+
+- A carry-on result rebuilt on reopening is `unanswered`: Core doesn't know what came back, and the segment waits for
+  the stuck check rather than taking an answer it never kept.
+- Only a route Core recalculated the part onto is held to "not recalculated again before it runs": the floor-wait and
+  customer's-choice unit paths recalculate a route chosen by other means, as before.
+- A completed reversal confirmed at zero leaves the part with no route, for the operator, rather than waiting untimed.
+- The wallet install, a deployment's own catalogue edit, keeps the node to Core's setting of it; nothing else of the
+  deployment's re-applies settings.
+
+#### Gaps, with owners
+
+- Round 2's gaps "Through a whole `tick`", "`reapply_catalogue_settings` and `sync_record_retry`", "A second
+  recalculation … and a zero-rebuilt confirmation", "The tests that start from `leave_no_route`" and "A test for a
+  carry-on's result refused, and for a movement back another segment relied on" are closed by this round.
+- Still open, unchanged: the holding account's address on its network (F-016 with `F-031`), a node's `confirmations`
+  (`F-031`), the VOS runner's `RUTENT_SIM_READER` (F-024 with the VOS session), and Core deriving an advertisement's
+  private nodes (F-016).
