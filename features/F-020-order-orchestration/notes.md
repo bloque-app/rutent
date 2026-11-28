@@ -10858,6 +10858,10 @@ log and the evidence store the log already reads. **Every caller of v0 behaviour
 | R18 `INV-4`'s relaxed contradiction rule, the test's: a second result statement is a violation only where its body was kept before | the strict count turns `silence_and_late_delivery_never_move_one_value_from_two_places` red on the pinned seed 105 (two result statements, the contradiction); Core's own same-body rule (`Reversals`, a re-signed answer of a kept body is that entry) switched off stays green: no run delivers a re-signed answer of the same body |
 | R19 `Landing::restore` answers `NotNow` where the account's module runs no process | stays green with `Unconfirmed` in its place: its one caller, `reconcile`, treats the two alike and reconciles again on the next confirmation or reopening, so `NotNow` has no effect of its own there; the test holds what it stands for (no transaction, nothing asked, landed once the wallet runs) |
 | R20 Core's run declares a part with no route left stuck (L6) | `stuck_command_is_a_core_entry_point` and `stuck_order_of_the_assembled_core_is_resolved_through_the_mover_and_the_real_engine` red (the part never stuck) |
+| R21 Core's rebuild grants each `done` grant again | `reopened_core_rebuilds_its_catalogue_from_its_log_alone` red (the advertisement's join refuses with no grant) |
+| R22 only the register's accepted advertisement is joined | `old_advertisement_replayed_after_a_newer_accepted_one_changes_nothing` red (the older one listed) |
+| R23 an advertisement judged by the cutovers held when it was received | `old_version_provider_survives_its_cutover_and_a_reopen_by_the_version_its_segment_began_under` red |
+| R24 an installed advertisement the log didn't commit to refuses the reopening | `reopened_core_joins_only_the_advertisement_its_log_committed_to` red |
 
 ### Local checks
 
@@ -11057,21 +11061,36 @@ Merged `origin/m3` at `3a53de34` (T-015-05, #354, the reader host) as its own co
 `grant`'s decided body, `log_wallet_release_change`, `accept_waiting_release`. What is left that writes to Core's log or
 catalogue, and why it stays:
 
-1. `relist` and `advertise`/`kit::join` (Core's catalogue rebuilt from the log's grants and advertisements on reopening,
-   and an advertisement joined as it is received). This is v0 behaviour, the catalogue's side of `NFR-6`, with the
-   assembly as its only caller. It is not moved here: it replays the advertisements the log's key register accepted,
-   judged by the cutovers held when each was received, into a catalogue core-orch doesn't yet rebuild at all. Named for
-   the coordinator to rule on as its own row (a core-orch catalogue reopen beside `Settings::reopened`); until then the
-   assembly's rebuild refuses any catalogue change it doesn't replay, failing closed.
+1. `relist` and `advertise`/`kit::join` as they rebuild: **moved, by the coordinator's ruling** (below).
 2. `change_public_network` (a public network listed or delisted with its reader service, `T-024-25`): decided and
    recorded, but nothing carries it out, since Core's catalogue takes nothing from a listing until `T-020-60` puts Core on
-   its reader. Owner: `T-020-60`.
+   its reader. Owner: `T-020-60` (the coordinator's ruling; started).
 3. The fleet's acceptance of each simulated provider's first release at build (`Fleet::install`, the platform's test
-   reviewer): the deployment's starting set, admitted before Core is assembled; each provider's catalogue grant is then
-   Core's decided grant. A provider released later is accepted through Core (`module_scenarios`).
+   reviewer) is **test provisioning**, accepted as such by the coordinator for the reviewer to judge: the starting set,
+   admitted before Core is assembled. **In a deployment every release, the first included, is accepted through Core's
+   decided accept (`ReleaseChange::Accept`)**; nothing else accepts one. The assembled worlds hold to that wherever the
+   fleet hasn't pre-accepted a release: `widened_release_needs_fresh_acceptance_before_it_serves_an_order` (`module_scenarios`) (the release
+   waits, the version in force stays and no process of the waiting one runs; Core's decided accept puts it in force, its
+   effect and result in the log), and every wallet the assembly installs (the fleet asserts its release waits, and the
+   platform runs it only once Core accepted it; `release_of_an_operator_published_wallet_is_accepted_in_the_log_and_its_answers_are_verified`).
 4. Test hooks and planted faults, no v0 behaviour: `effect_without_its_result`, `append_advertisement`, `state_by`,
    `plant_unpriced_route`, `leave_no_route` (above).
 5. Deployment wiring: the registers, sessions, installs, the ports Core is lent, `tick` on a timer.
+
+**The catalogue rebuilt by Core on reopening (the coordinator's ruling on item 1).** `settings::listing::relist` rebuilds
+Core's catalogue from the log alone, as `Closing::recorded` and `Holds::recorded` rebuild theirs, into the empty catalogue
+a reopened Core starts with: each `done` grant (a tuple's, or a verifier's class) granted again at its effect's time, by
+the decision's caller, under the key the effect names and the id Core's grant gave it, the tuple taken from the
+advertisement the log's key register accepted; each advertisement joined at the time the log received it, only the
+stated entry whose commitment is the register's accepted one, read back from the evidence store, and judged by the
+listings and cutovers the log held when it was received; any other `done` catalogue change refuses the reopening; every
+cutover put in force at the end in the catalogue and the platform. `T-024-21`'s guarantees hold: an installed
+advertisement no stated entry commits to refuses the reopening. The assembly hands Core only what the log doesn't hold:
+the installed advertisements (for that check), its grant terms, the log's names of tuples, what it sets on a joined
+advertisement (`kit::joined`: the module's version, the tuples' floors, the private nodes' holdings, the operator's public
+nodes) and the platform. Tests: `reopened_core_rebuilds_its_catalogue_from_its_log_alone` (a reopen from an empty
+catalogue lists every grant and advertisement as before) and `old_advertisement_replayed_after_a_newer_accepted_one_changes_nothing`
+(now across a reopen: the register's accepted advertisement is the one listed again).
 
 **Defaults taken in this pass** (reversible, each failing closed):
 
@@ -11088,8 +11107,8 @@ catalogue, and why it stays:
 
 - A reserve's judgement (its proof that its users may enact, `REQ-CPL-8`) is carried by no operation's figure, so Core
   can't find it from the record: `Segments::rests_on` stays core-orch's API for it, with only tests calling it
-  (`reliance.rs`, `stuck_mover.rs`). Owner: the row that puts a reserve's judgement into the record (`F-012`'s figures).
-- The catalogue's rebuild on reopening (item 1 above): for the coordinator.
+  (`reliance.rs`, `stuck_mover.rs`). Owner (the coordinator's ruling): `T-025-05` pass 3, which rules on whether v0
+  needs it, with `T-024-10`'s evidence table showing the row's status. Not built here.
 
 **Local checks of this pass** (after the merge of `3a53de34`, the stand-ins and the plain wallet built from this tree
 in a private directory and deleted after): fmt; clippy `--workspace --all-targets -D warnings`; `rutent-core-orch` (lib

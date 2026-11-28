@@ -509,10 +509,24 @@ pub fn grant(catalogue: &mut Catalogue, installed: &Installed, terms: GrantTerms
 ///
 /// If the catalogue refuses the advertisement.
 pub fn join(catalogue: &mut Catalogue, installed: &Installed, at: Instant) {
-    let ad = &installed.advertisement.statement().statement;
     catalogue
         .join(installed.advertisement.bytes(), at)
         .expect("joined");
+    joined(
+        catalogue,
+        &installed.advertisement.statement().statement,
+        &installed.spec,
+    );
+}
+
+/// What the deployment sets on Core's catalogue once the advertisement `ad` of the provider installed as `spec` is
+/// joined: its module's version, a statement's evidence floor on each tuple, each private node it declares registered
+/// as its publisher's holding, and the public nodes its tuples reach on the operator's list.
+pub fn joined(
+    catalogue: &mut Catalogue,
+    ad: &rutent_contracts::provider_role::Advertisement,
+    spec: &rutent_conformance::sim::Spec,
+) {
     catalogue.set_module_version(
         &ad.provider,
         rutent_contracts::router_api::Version::new("1.0.0").expect("a version"),
@@ -528,7 +542,7 @@ pub fn join(catalogue: &mut Catalogue, installed: &Installed, at: Instant) {
     }
     // The public nodes its tuples reach, on the operator's list, their holding account a wallet the operator
     // publishes (`REQ-CAT-23`).
-    for node in installed.spec.public_nodes() {
+    for node in spec.public_nodes() {
         let _ = catalogue.publish_operator_module(OPERATOR_WALLET);
         let _ = catalogue.add_public_node(&node);
         let _ = catalogue.register_public_holding(&node, OPERATOR_WALLET);

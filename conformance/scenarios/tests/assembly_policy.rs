@@ -1167,6 +1167,21 @@ fn old_advertisement_replayed_after_a_newer_accepted_one_changes_nothing() {
         accepted,
         "the replayed older one changes nothing"
     );
+
+    // Core reopened rebuilds its catalogue from the advertisement the log's key register accepted, the newer one, and
+    // not from the older one the log holds after it, nor from the installed bytes (`T-020-61`).
+    let core = Scenario::new("one order", "AC-28", Given::one_reserve(Staged::AtOnce)).reopen(
+        core,
+        1,
+        &mut Reference,
+    );
+    assert_eq!(
+        core.catalogue()
+            .accepted_advertisement(origin.as_str())
+            .map(|a| a.made_at.clone()),
+        newer["made_at"].as_str().map(str::to_owned),
+        "the register's accepted advertisement is the one listed again"
+    );
 }
 
 /// Core's `SegmentOrder` against the log, segment by segment (`T-020-55`, the review of `8f7ddefd`: no scenario asked
