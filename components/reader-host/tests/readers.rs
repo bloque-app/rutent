@@ -588,3 +588,121 @@ fn restarted_reader_host_answers_nothing_until_each_readers_checks_pass_again() 
     drop(host);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+// verifies: DEC-28
+#[test]
+fn question_past_its_deadline_is_dropped_by_the_reader_host() {
+    // A pool whose movement answers take 400 ms from each endpoint, so a question waits behind another.
+    let connector = Arc::new(StubConnector::default());
+    for endpoint in pool() {
+        let honest = evm_node(false);
+        connector.set(
+            endpoint.trim_start_matches("https://"),
+            Box::new(move |body: &str| {
+                if body.contains("rutent_movementStatus") {
+                    std::thread::sleep(Duration::from_millis(400));
+                }
+                honest(body)
+            }),
+        );
+    }
+    let reader = rpc_reader("base", &["inspect"]);
+    let rig = Rig::start(vec![reader.clone()], connector, &[]);
+    assert!(rig.host.wait_ready(&reader.name, READY));
+    let asked = |question: &rutent_contracts::reader::ReaderQuestion| {
+        rig.host
+            .answer(&serde_json::to_vec(question).expect("a question"))
+    };
+    let seen = |question: &rutent_contracts::reader::ReaderQuestion| {
+        rig.host
+            .log(&reader.name)
+            .iter()
+            .any(|line| line.starts_with("frame ") && line.contains(question.request.as_str()))
+    };
+
+    // Already past on arrival: dropped, answered with nothing, and never handed to the reader.
+    let mut dead = question("base", "base", status_of("0xmove"));
+    dead.deadline = timestamp_after(Duration::ZERO);
+    std::thread::sleep(Duration::from_millis(5));
+    assert_eq!(
+        asked(&dead),
+        None,
+        "a dead question is answered with nothing"
+    );
+
+    // Alive on arrival, but past its deadline by the time its turn comes: dropped when its turn comes.
+    let first = question("base", "base", status_of("0xmove"));
+    let mut late = question("base", "base", status_of("0xmove"));
+    late.deadline = timestamp_after(Duration::from_millis(400));
+    let mut dead_while_busy = question("base", "base", status_of("0xmove"));
+    dead_while_busy.deadline = timestamp_after(Duration::ZERO);
+    let (first_answer, late_answer, dead_answer, dead_took) = std::thread::scope(|scope| {
+        let first_answer = scope.spawn(|| asked(&first));
+        std::thread::sleep(Duration::from_millis(100));
+        let late_answer = scope.spawn(|| asked(&late));
+        std::thread::sleep(Duration::from_millis(50));
+        // Dead on arrival while the reader is busy: not queued behind the first, so answered with nothing at once.
+        let started = Instant::now();
+        let dead_answer = asked(&dead_while_busy);
+        let dead_took = started.elapsed();
+        (
+            first_answer.join().unwrap(),
+            late_answer.join().unwrap(),
+            dead_answer,
+            dead_took,
+        )
+    });
+    assert_eq!(dead_answer, None);
+    assert!(
+        dead_took < Duration::from_millis(300),
+        "a dead question is dropped on arrival, not queued: {dead_took:?}"
+    );
+    let first_answer = as_core_reads(
+        &first_answer.expect("the first is answered"),
+        &first,
+        &reader,
+    );
+    assert!(
+        is_final_to(&first_answer.statement, "dest-1"),
+        "{first_answer:?}"
+    );
+    assert_eq!(
+        late_answer, None,
+        "a question that waited past its deadline is dropped"
+    );
+
+    assert!(seen(&first), "the reader was handed the first question");
+    assert!(!seen(&dead), "the dead question never reached the reader");
+    assert!(!seen(&late), "the late question never reached the reader");
+    assert!(
+        !seen(&dead_while_busy),
+        "the question dead on arrival never reached the reader"
+    );
+    // And the reader answers on.
+    assert!(is_final_to(
+        &ask(&rig.host, &reader, status_of("0xmove")),
+        "dest-1"
+    ));
+}
+
+// verifies: REQ-MDL-11
+#[test]
+fn reader_host_refuses_a_restart_delay_of_zero() {
+    let mut reader = rpc_reader("base", &[]);
+    assert!(host_config(vec![reader.clone()]).check().is_ok());
+    reader.limits.restart_after_ms = 0;
+    let refused = host_config(vec![reader]).check().unwrap_err();
+    assert!(refused.0.contains("every bound is above zero"), "{refused}");
+}
+
+// verifies: REQ-MDL-11
+#[test]
+fn reader_host_refuses_more_questions_waiting_than_its_cap() {
+    use rutent_reader_host::config::MAX_PENDING;
+    let mut reader = rpc_reader("base", &[]);
+    reader.limits.pending = MAX_PENDING;
+    assert!(host_config(vec![reader.clone()]).check().is_ok());
+    reader.limits.pending = MAX_PENDING + 1;
+    let refused = host_config(vec![reader]).check().unwrap_err();
+    assert!(refused.0.contains("MAX_PENDING"), "{refused}");
+}

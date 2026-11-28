@@ -15,8 +15,8 @@ use crate::config::{ConfigError, HostConfig, ReaderConfig};
 use crate::egress::{Network, ReaderEgress};
 use crate::keys::{Envelope, resolve_key, sign_answer};
 use crate::records::CallRecords;
-use crate::time::now_rfc3339;
-use crate::worker::{Event, Reply, Shared, Worker};
+use crate::time::{now_rfc3339, past};
+use crate::worker::{Event, PAST_DEADLINE, Reply, Shared, Worker};
 use rutent_prov::keys::Resolver;
 
 /// Where a reader stands, as the host reports it.
@@ -126,15 +126,24 @@ impl Host {
     ///
     /// The answer names the question's request and what it asked, and the reader's configured version, whatever the
     /// reader said: the host signs the reader's own answer only if it names them and holds to its shape, and an
-    /// unreadable one otherwise. The question's deadline is Core's, and the host doesn't read it.
+    /// unreadable one otherwise. The question's deadline is Core's, which Core holds the answer to on its own clock;
+    /// the host reads it only to drop a question already past it on the host's clock, on arrival or when its turn
+    /// comes, and answers that one with nothing (`T-015-05`), so its queue never fills with questions no answer can
+    /// meet.
     pub fn answer(&self, question: &[u8]) -> Option<Vec<u8>> {
         let question: ReaderQuestion = serde_json::from_slice(question).ok()?;
         let reader = self.readers.get(question.reader.as_str())?;
+        if past(&question.deadline) {
+            return None;
+        }
         let reply = if question.network != reader.config.network {
             Err("question_about_another_network")
         } else {
             self.ask(reader, &question)
         };
+        if matches!(reply, Err(why) if why == PAST_DEADLINE) {
+            return None;
+        }
         let body = reply.unwrap_or_else(|why| ReaderAnswer {
             request: question.request.clone(),
             network: question.network.clone(),

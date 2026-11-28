@@ -2,7 +2,8 @@ name: Jail probes
 
 # T-025-02 (DEC-27, THR-85, GUA-5): each layer of the provider's jail probed alone on Linux, and the release build of the
 # provider binary scanned for a way to turn a layer off. T-015-04 (REQ-MDL-7): the reader host's jailed reader probed
-# for a network route of its own. EXP-2's G-05 assertions (RLIMIT_AS) run here too, which
+# for a network route of its own. T-015-05 (REQ-MDL-11): a reader that skips its own memory limit, bounded by the
+# host's launcher and refused by the host's check without it. EXP-2's G-05 assertions (RLIMIT_AS) run here too, which
 # T-013-02's notes left to CI. The probes are `components/prov/tests/jail_layers.rs`. The run id, which F-025's notes
 # cite, is the run's own (`github.run_id`), printed on every probe's line and in the step summary.
 on:
@@ -60,11 +61,12 @@ jobs:
           cargo test --locked -p rutent-prov --features jail-layers --test jail_layers -- --test-threads=1 --nocapture 2>&1 \
             | tee "$RUNNER_TEMP/jail-probes.txt"
       # T-015-04: the reader host's probe, beside the provider jail's: a reader's process has no network route but the
-      # reader host (`components/reader-host/tests/jail.rs`). Its stand-in readers are the package's examples, which
-      # `cargo test --test` doesn't build, so they are built first. The probe must report `ok`: a test skipped, ignored
-      # or filtered out fails the step, so it can't pass by not running. `--show-output` prints its run id line after
-      # the results instead of inside the result line.
-      - name: The reader host's probe (T-015-04)
+      # reader host (`components/reader-host/tests/jail.rs`). T-015-05: in the same binary, a reader that skips its own
+      # memory limit is bounded by the host's launcher, and refused by the host's check without it. Its stand-in readers
+      # are the package's examples, which `cargo test --test` doesn't build, so they are built first. Each probe must
+      # report `ok`: a test skipped, ignored or filtered out fails the step, so it can't pass by not running.
+      # `--show-output` prints the run id lines after the results instead of inside the result lines.
+      - name: The reader host's probes (T-015-04, T-015-05)
         shell: bash
         run: |
           set -o pipefail
@@ -72,6 +74,7 @@ jobs:
           cargo test --locked -p rutent-reader-host --test jail -- --test-threads=1 --show-output 2>&1 \
             | tee "$RUNNER_TEMP/reader-host-jail.txt"
           grep -qx 'test reader_process_has_no_network_route_but_the_reader_host ... ok' "$RUNNER_TEMP/reader-host-jail.txt"
+          grep -qx 'test reader_that_skips_its_own_memory_limit_is_refused_by_the_hosts_check ... ok' "$RUNNER_TEMP/reader-host-jail.txt"
       - name: The probes' results, with the run id
         if: always()
         shell: bash

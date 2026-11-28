@@ -50,6 +50,8 @@ pub(crate) mod resolver;
 pub(crate) mod settings;
 mod shared;
 mod signing;
+// The reader host's facade over a role's statement keys alone (`T-015-05`), which `crate::keys` re-exports.
+pub(crate) mod statement_keys;
 pub(crate) mod transport;
 mod world;
 
