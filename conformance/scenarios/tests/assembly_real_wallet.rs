@@ -273,10 +273,9 @@ fn balance_asked(
     .expect("the wallet is asked and its answer recorded")
 }
 
-/// The wallet is a module the operator publishes, whose release the log accepts by a decided catalogue change: until
-/// then none of its answers is verified (the log knows no key that signs for it), and once it is, the same answer is
-/// verified to the wallet, for the operator's party, by the key the release names; a key the release doesn't name
-/// verifies nothing.
+/// The wallet is a module the operator publishes, whose release Core accepts by its decided accept: the platform runs
+/// none of it before, and once it is accepted its answer is verified to the wallet, for the operator's party, by the
+/// key the release names.
 // verifies: REQ-CAT-23, REQ-AUD-2
 #[test]
 fn release_of_an_operator_published_wallet_is_accepted_in_the_log_and_its_answers_are_verified() {
@@ -284,24 +283,33 @@ fn release_of_an_operator_published_wallet_is_accepted_in_the_log_and_its_answer
     let (wallet, order) = (stuck.wallet.clone(), stuck.order.clone());
     let core = &mut stuck.core;
 
-    // Before the release is accepted the log holds no key for the wallet: the answer is recorded, attributed to no one.
-    let (_, before, _) = balance_asked(core, &wallet, "tx-before", order.as_str());
-    assert!(
-        !is_verified(&attribution_at(core, &before)),
-        "no accepted release, no verified statement"
-    );
-
-    // The release is accepted through the log's own catalogue change: decided, its effect and its done result.
-    let effect = core
-        .accept_release(&wallet)
-        .expect("the release is accepted");
+    // The platform runs no wallet whose release Core hasn't accepted, so there is no answer from before it: the release
+    // was accepted at its install through Core's decided accept (`T-020-61`), decided, its effect naming the release's
+    // statements key and its done result.
     let whats = core.verified_whats();
-    assert!(
-        whats.iter().any(|w| matches!(w,
-            What::Effect { action: Action::ChangeCatalogue { provider, statement_key: Some(key), .. }, .. }
-                if provider.as_str() == wallet.provider && *key == wallet.statement_key())),
-        "the effect names the release's statements key"
-    );
+    let effect = core
+        .log()
+        .entries()
+        .iter()
+        .find_map(|(receipt, e)| match e {
+            Entry::Verified(v) => match &v.what {
+                What::Effect {
+                    action:
+                        Action::ChangeCatalogue {
+                            change: rutent_contracts::core_internal::CatalogueChange::AcceptModule,
+                            provider,
+                            statement_key: Some(key),
+                            ..
+                        },
+                    ..
+                } if provider.as_str() == wallet.provider && *key == wallet.statement_key() => {
+                    Some(receipt.clone())
+                }
+                _ => None,
+            },
+            Entry::Stated(_) => None,
+        })
+        .expect("the effect names the release's statements key");
     assert!(
         whats
             .iter()
@@ -392,11 +400,6 @@ fn operator_decides(
 #[test]
 fn linked_order_is_accepted_through_the_assembled_core_and_starts_at_an_inner_node() {
     let mut stuck = stuck_at_the_public_node();
-    let wallet = stuck.wallet.clone();
-    stuck
-        .core
-        .accept_release(&wallet)
-        .expect("the release is accepted");
     let linked = stuck
         .core
         .accept_linked(&linked_order(&stuck))
@@ -506,10 +509,6 @@ fn linked_order_is_accepted_through_the_assembled_core_and_starts_at_an_inner_no
 fn hand_on_through_a_public_nodes_wallet_names_the_wallet_and_refuses_any_other_holder() {
     let mut stuck = stuck_at_the_public_node();
     let wallet = stuck.wallet.clone();
-    stuck
-        .core
-        .accept_release(&wallet)
-        .expect("the release is accepted");
     let linked = stuck
         .core
         .accept_linked(&linked_order(&stuck))
@@ -898,10 +897,6 @@ fn one_unreadable_account_does_not_make_the_check_read_every_account_every_tick(
 fn stuck_order_of_the_assembled_core_is_handed_on_through_the_real_plain_wallet() {
     let mut stuck = stuck_at_the_public_node();
     let wallet = stuck.wallet.clone();
-    stuck
-        .core
-        .accept_release(&wallet)
-        .expect("the release is accepted");
     let linked = stuck
         .core
         .accept_linked(&linked_order(&stuck))
@@ -1088,10 +1083,6 @@ fn holding_account_whose_module_restarted_is_re_landed_from_the_log_before_a_rel
     let mut stuck = stuck_at_the_public_node();
     let wallet = stuck.wallet.clone();
     let order = stuck.order.as_str().to_owned();
-    stuck
-        .core
-        .accept_release(&wallet)
-        .expect("the release is accepted");
     let held = stuck.core.holdings().attributions();
     assert!(stuck.core.restart_module(&wallet.provider));
     assert!(
@@ -1146,10 +1137,6 @@ fn stuck_order_is_handed_on_after_the_holding_accounts_module_restarts() {
     let mut stuck = stuck_at_the_public_node();
     let wallet = stuck.wallet.clone();
     let order = stuck.order.as_str().to_owned();
-    stuck
-        .core
-        .accept_release(&wallet)
-        .expect("the release is accepted");
     let linked = stuck
         .core
         .accept_linked(&linked_order(&stuck))
@@ -1185,10 +1172,6 @@ fn stuck_order_is_handed_on_after_the_holding_account_restarts_mid_run() {
     let mut stuck = stuck_at_the_public_node();
     let wallet = stuck.wallet.clone();
     let order = stuck.order.as_str().to_owned();
-    stuck
-        .core
-        .accept_release(&wallet)
-        .expect("the release is accepted");
     let linked = stuck
         .core
         .accept_linked(&linked_order(&stuck))
@@ -1266,10 +1249,6 @@ fn module_restarted_under_the_same_process_id_is_seen_as_restarted() {
     let mut stuck = stuck_at_the_public_node();
     let wallet = stuck.wallet.clone();
     let order = stuck.order.as_str().to_owned();
-    stuck
-        .core
-        .accept_release(&wallet)
-        .expect("the release is accepted");
     let held = stuck.core.holdings().attributions();
     let pid = stuck
         .core
@@ -1353,10 +1332,6 @@ fn pending_hand_on_is_rebuilt_from_the_log_through_the_assembly() {
     let names = [CHAIN_IN, RAMP_B, OUT_B];
     let mut stuck = stuck_at_the_public_node();
     let wallet = stuck.wallet.clone();
-    stuck
-        .core
-        .accept_release(&wallet)
-        .expect("the release is accepted");
     let linked = stuck
         .core
         .accept_linked(&linked_order(&stuck))
@@ -1466,10 +1441,6 @@ fn holdings_and_accepted_routes_of_a_reopened_order_are_rebuilt_from_the_log() {
     let scenario = || Scenario::new("execution", "AC-6", given(&names));
     let mut stuck = stuck_at_the_public_node();
     let wallet = stuck.wallet.clone();
-    stuck
-        .core
-        .accept_release(&wallet)
-        .expect("the release is accepted");
     let linked = stuck
         .core
         .accept_linked(&linked_order(&stuck))
@@ -1524,10 +1495,6 @@ fn holdings_and_accepted_routes_of_a_reopened_order_are_rebuilt_from_the_log() {
 fn real_plain_wallets_re_serialised_answer_verifies_under_its_published_key() {
     let mut stuck = stuck_at_the_public_node();
     let wallet = stuck.wallet.clone();
-    stuck
-        .core
-        .accept_release(&wallet)
-        .expect("the release is accepted");
     let linked = stuck
         .core
         .accept_linked(&linked_order(&stuck))
@@ -1603,10 +1570,6 @@ fn hand_on_after_a_module_restart_restores_the_orders_whole_value_at_the_node() 
     let mut stuck = stuck_at_the_public_node();
     let wallet = stuck.wallet.clone();
     let order = stuck.order.as_str().to_owned();
-    stuck
-        .core
-        .accept_release(&wallet)
-        .expect("the release is accepted");
     let linked = stuck
         .core
         .accept_linked(&linked_order(&stuck))
@@ -1660,10 +1623,6 @@ fn handed_on_value_is_not_landed_again_after_core_reopens() {
     let mut stuck = stuck_at_the_public_node();
     let wallet = stuck.wallet.clone();
     let order = stuck.order.as_str().to_owned();
-    stuck
-        .core
-        .accept_release(&wallet)
-        .expect("the release is accepted");
     let linked = stuck
         .core
         .accept_linked(&linked_order(&stuck))
@@ -1698,10 +1657,6 @@ fn value_withdrawn_for_a_hand_on_is_not_landed_again_when_core_reopens_before_th
     let mut stuck = stuck_at_the_public_node();
     let wallet = stuck.wallet.clone();
     let order = stuck.order.as_str().to_owned();
-    stuck
-        .core
-        .accept_release(&wallet)
-        .expect("the release is accepted");
     let linked = stuck
         .core
         .accept_linked(&linked_order(&stuck))
@@ -1796,10 +1751,6 @@ fn holding_account_answer_reads_the_deployments_register_not_holdings_carried_ac
     );
 
     // The hand-on the register no longer backs is refused.
-    stuck
-        .core
-        .accept_release(&stuck.wallet.clone())
-        .expect("the release is accepted");
     let linked = stuck
         .core
         .accept_linked(&linked_order(&stuck))
@@ -1828,8 +1779,6 @@ fn stuck_before_the_second_ramp() -> Stuck {
     let wallet = core
         .install_wallet(NODE, "USDC")
         .expect("the wallet is installed");
-    core.accept_release(&wallet)
-        .expect("the release is accepted");
     let asked = request(
         "req-stuck",
         &session,
@@ -2293,10 +2242,6 @@ fn public_node_cannot_be_unlisted_while_a_segment_or_holding_rests_there() {
 fn linked_order_and_its_hand_on_run_on_cores_ticks() {
     let mut stuck = stuck_at_the_public_node();
     let wallet = stuck.wallet.clone();
-    stuck
-        .core
-        .accept_release(&wallet)
-        .expect("the release is accepted");
     let linked = stuck
         .core
         .accept_linked(&linked_order(&stuck))
@@ -2380,11 +2325,6 @@ fn linked_order_is_accepted_by_core_with_the_customers_inputs_logged() {
     use rutent_contracts::router_api::PositiveAmount as Floor;
     use rutent_core_orch::schedule::Ports as _;
     let mut stuck = stuck_at_the_public_node();
-    let wallet = stuck.wallet.clone();
-    stuck
-        .core
-        .accept_release(&wallet)
-        .expect("the release is accepted");
     let mut asked = linked_order(&stuck);
     let floor = Floor::new("900000".to_owned()).expect("a floor");
     asked.floor = Some(floor.clone());

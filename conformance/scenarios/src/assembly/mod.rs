@@ -2328,14 +2328,11 @@ impl Core {
             if *change == CatalogueChange::Grant && tuple.is_none() && class.is_some() {
                 continue;
             }
-            // A holding account's release the operator accepted: its wallet is one of the host's accounts, which go on
-            // beside the platform and are listed again first (`Core::relist_holdings`, `T-020-46`).
-            if *change == CatalogueChange::AcceptModule
-                && self
-                    .catalogue
-                    .publishers()
-                    .published_by_operator(provider.as_str())
-            {
+            // A release Core's decided accept took (`T-020-61`): the platform holds it in force in its own record, which
+            // goes on beside Core, and Core's catalogue lists nothing for it. A holding account's wallet is one of the
+            // host's accounts, listed again first (`Core::relist_holdings`, `T-020-46`); a private node's publisher
+            // account is listed again from the deployment's register (`relist_publisher_accounts`).
+            if *change == CatalogueChange::AcceptModule {
                 continue;
             }
             let (CatalogueChange::Grant, Some(tuple_id)) = (change, tuple) else {
