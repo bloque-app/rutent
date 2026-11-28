@@ -355,23 +355,7 @@ impl Reversals {
             if !parts.segments.act_on(&effect_receipt) {
                 return Err(ReversalError::AlreadyActed(effect_receipt));
             }
-            let answered = match &state.way {
-                Way::Status(asking) => {
-                    moving
-                        .modules
-                        .status(&effect, &provider, asking, &sent.statement)
-                }
-                Way::Repeat => {
-                    moving
-                        .modules
-                        .repeat_operation(&effect, &provider, &sent.transaction)
-                }
-                Way::Recorded => {
-                    moving
-                        .modules
-                        .recorded_answer(&effect, &provider, &sent.transaction)
-                }
-            };
+            let answered = put(moving, &effect, &state.way, &provider, &sent);
             match answered {
                 crate::segments::Answered::Bytes(bytes) => state.answer = Some(bytes),
                 crate::segments::Answered::Refused(refusal) => {
@@ -642,6 +626,28 @@ pub(super) fn carried_by(
         rutent_contracts::core_internal::Carrier::Provider => Carrier::Provider(provider.clone()),
         rutent_contracts::core_internal::Carrier::Customer => Carrier::Customer,
         rutent_contracts::core_internal::Carrier::Operator => Carrier::Operator,
+    }
+}
+
+/// Puts `way` to the platform as the recorded `effect` lets it, about the ask `sent` of `provider`: the reversal's status,
+/// its own operation carried out again under its own transaction, or the answer the platform recorded for it read back.
+fn put(
+    moving: &mut Moving<'_>,
+    effect: &Effect,
+    way: &Way,
+    provider: &Id,
+    sent: &Sent,
+) -> crate::segments::Answered {
+    match way {
+        Way::Status(asking) => moving
+            .modules
+            .status(effect, provider, asking, &sent.statement),
+        Way::Repeat => moving
+            .modules
+            .repeat_operation(effect, provider, &sent.transaction),
+        Way::Recorded => moving
+            .modules
+            .recorded_answer(effect, provider, &sent.transaction),
     }
 }
 
