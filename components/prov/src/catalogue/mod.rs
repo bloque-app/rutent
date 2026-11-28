@@ -327,6 +327,34 @@ impl Catalogue {
         self.nodes.remove_public(node)
     }
 
+    /// Takes `network` onto the public list of networks from a permitted listing naming its reader service (`DEC-28`,
+    /// `REQ-CAT-22`, `T-020-60`): on it where its reader passed Core's start-up check (`started`), and held off every
+    /// route otherwise, so the snapshot routes nothing to it.
+    ///
+    /// # Errors
+    ///
+    /// If `network` names no listing, or a blank network.
+    pub fn list_public_network(
+        &mut self,
+        network: &rutent_contracts::core_internal::PublicNetwork,
+        started: bool,
+    ) -> Result<(), NodeError> {
+        let name = network.network.as_str();
+        if name.trim().is_empty() {
+            return Err(NodeError::Blank);
+        }
+        if network.listing.is_none() {
+            return Err(NodeError::NoListing(name.to_owned()));
+        }
+        self.nodes.take_network(name, started);
+        Ok(())
+    }
+
+    /// Takes `network` off the public list of networks, as a decided delisting does; whether it was on it.
+    pub fn drop_public_network(&mut self, network: &str) -> bool {
+        self.nodes.drop_network(network)
+    }
+
     /// Registers a public node's holding account, by default a plain wallet, as a module outside the core
     /// (`REQ-CAT-23`). `reference` must be a module the operator publishes ([`Self::publish_operator_module`]):
     /// a provider's module is never a node's holding account (`T-016-04`).

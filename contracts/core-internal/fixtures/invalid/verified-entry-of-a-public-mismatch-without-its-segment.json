@@ -14,7 +14,11 @@
     },
     "movement": {
       "network": "polygon",
-      "id": "0xmove-17"
+      "id": "0xmove-17",
+      "read_by": {
+        "reader": "polygon-reader",
+        "version": "0.1.0"
+      }
     },
     "found": "wrong_amount",
     "moved": {

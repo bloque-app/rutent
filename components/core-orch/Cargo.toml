@@ -20,6 +20,10 @@ rutent-prov = { path = "../prov" }
 rutent-evidence = { path = "../evidence" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+# Core's adapter for each public network's reader service (`T-020-60`, `DEC-28`): its mTLS client, on rustls over
+# ring's primitives, the lines the reader host and the provider system lock; no aws-lc, no OpenSSL, no built-in root
+# store (the operator's CA is the one anchor).
+rustls = { version = "0.23.37", default-features = false, features = ["ring", "std", "tls12"] }
 
 [dev-dependencies]
 ed25519-dalek = "2.2.0"

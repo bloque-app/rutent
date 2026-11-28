@@ -1528,6 +1528,7 @@ dependencies = [
  "ed25519-dalek",
  "jsonschema",
  "proptest",
+ "rustls",
  "rutent-contracts",
  "rutent-evidence",
  "rutent-prov",

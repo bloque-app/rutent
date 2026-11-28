@@ -416,6 +416,11 @@ pub enum Short {
     /// `CMP-EVIDENCE` refused the outcome's evidence: a claim above the provider's declared grade, or one movement or
     /// receipt backing two pieces.
     Refused(EvidenceRefusal),
+    /// The network's reader service is unreadable now (`T-020-60`, ADR-0007 as amended): Core reads nothing it can
+    /// settle on, so the segment doesn't settle yet. It appends no `evidence` entry, isn't graded down to its
+    /// provider's word, and its movement isn't counted as not found; the next pass asks again, and the stuck watch
+    /// times a segment that stays unreadable (`INV-3`, `REQ-ORD-29`).
+    ReaderUnreadable(crate::closing::Unreadable),
 }
 
 /// What grading answers.

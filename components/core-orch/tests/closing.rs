@@ -19,7 +19,7 @@ use rutent_contracts::provider_role::{
 };
 use rutent_contracts::router_api::{Amount, FeeFormula, Id, Operation, Timestamp};
 use rutent_core_orch::closing::{
-    Books, Closing, Evidenced, Moved, PublicRecords, Recorded, Unadmitted, admits,
+    Books, Closing, Evidenced, Moved, PublicRecords, Recorded, Unadmitted, Unreadable, admits,
 };
 use rutent_core_orch::rounds::Fresh;
 use rutent_core_orch::segments::{Graded, Grading, ProvidersWord, RaiseDesk, Short, ToGrade};
@@ -157,6 +157,8 @@ fn instant() -> NetworkRules {
 struct Networks {
     nets: BTreeMap<String, SimulatedNetwork>,
     moved: BTreeMap<(String, String), Moved>,
+    /// The networks whose reader is unreadable now (`T-020-60`).
+    unreadable: std::collections::BTreeSet<String>,
 }
 
 impl Networks {
@@ -188,6 +190,7 @@ impl Networks {
             Moved {
                 id: movement_id,
                 destination: to.into(),
+                read_by: read_by(network),
             },
         );
     }
@@ -205,21 +208,44 @@ impl Networks {
     }
 }
 
+/// The reader each test network is read by, as its listing would name it.
+fn read_by(network: &str) -> rutent_contracts::core_internal::MovementReader {
+    rutent_contracts::core_internal::MovementReader {
+        reader: id(&format!("{network}-reader")),
+        version: rutent_contracts::router_api::Version::new("0.1.0").unwrap(),
+    }
+}
+
+impl Networks {
+    fn readable(&self, network: &str) -> Result<(), Unreadable> {
+        if self.unreadable.contains(network) {
+            Err(Unreadable::NotStarted)
+        } else {
+            Ok(())
+        }
+    }
+}
+
 impl PublicRecords for Networks {
-    fn rules(&self, network: &str) -> Option<NetworkRules> {
-        self.nets.get(network).map(PublicNetwork::rules)
+    fn rules(&self, network: &str) -> Result<Option<NetworkRules>, Unreadable> {
+        self.readable(network)?;
+        Ok(self.nets.get(network).map(PublicNetwork::rules))
     }
 
-    fn status(&self, network: &str, id: &MovementId) -> Status {
-        self.nets
+    fn status(&self, network: &str, id: &MovementId) -> Result<Status, Unreadable> {
+        self.readable(network)?;
+        Ok(self
+            .nets
             .get(network)
-            .map_or(Status::Unknown, |net| net.status(id))
+            .map_or(Status::Unknown, |net| net.status(id)))
     }
 
-    fn movement(&self, network: &str, transaction: &Id) -> Option<Moved> {
-        self.moved
+    fn movement(&self, network: &str, transaction: &Id) -> Result<Option<Moved>, Unreadable> {
+        self.readable(network)?;
+        Ok(self
+            .moved
             .get(&(network.to_owned(), transaction.as_str().to_owned()))
-            .cloned()
+            .cloned())
     }
 }
 
@@ -873,6 +899,7 @@ fn moved(network: &str, movement: &str, node: Option<&str>) -> Option<PublicMove
         network: id(network),
         id: id(movement),
         node: node.map(id),
+        read_by: read_by(network),
     })
 }
 
@@ -2879,6 +2906,7 @@ fn non_final_segment_whose_public_record_matches_records_no_mismatch() {
             Moved {
                 id: MovementId::new("ach-unknown").unwrap(),
                 destination: "ledger-in-holding".into(),
+                read_by: read_by("co-ach"),
             },
         );
         (c, n, b)

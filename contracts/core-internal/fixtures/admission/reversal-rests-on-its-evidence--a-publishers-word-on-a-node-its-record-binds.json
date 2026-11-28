@@ -2160,7 +2160,11 @@
           "movement": {
             "network": "bank-co",
             "id": "mv-into-ledger-in",
-            "node": "ledger-in"
+            "node": "ledger-in",
+            "read_by": {
+              "reader": "bank-co-reader",
+              "version": "0.1.0"
+            }
           }
         },
         "when": {

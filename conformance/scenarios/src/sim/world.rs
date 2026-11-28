@@ -10,7 +10,7 @@ use rutent_conformance::sim::{
 };
 use rutent_contracts::module_interface::Identifier;
 use rutent_contracts::module_interface::{SecretRefusalReason, SecretValue, Time};
-use rutent_evidence::{MovementId, NetworkRules, SimulatedNetwork};
+use rutent_evidence::{NetworkRules, SimulatedNetwork};
 use rutent_prov::catalogue::Instant;
 use rutent_prov::module::platform::{ClockError, World};
 use rutent_prov::module::types::Endpoint;
@@ -67,7 +67,6 @@ pub struct Delivered {
 pub struct SimWorld {
     scripts: BTreeMap<String, Script>,
     journals: BTreeMap<String, Vec<Entry>>,
-    networks: BTreeMap<String, SimulatedNetwork>,
     addresses: BTreeMap<String, IpAddr>,
     rails: BTreeMap<String, String>,
     chains: BTreeMap<String, String>,
@@ -84,8 +83,8 @@ pub struct SimWorld {
     secrets_delivered: Vec<(String, String)>,
     clock: Option<Instant>,
     keys_down: Vec<String>,
-    /// The endpoints the world serves each network's reader, and the networks as it last published them to them
-    /// (`T-024-25`).
+    /// The endpoints the world serves each network's reader, and the networks themselves, which they answer from as
+    /// they stand (`T-024-25`, `T-020-60`).
     readers: super::readers::Endpoints,
     /// The flag of the fleet's operation clock: raised when a script holds a behaviour that waits out a real
     /// deadline (silent, late), which is real time's to judge (`T-013-08`).
@@ -131,9 +130,7 @@ impl SimWorld {
         let host = chain_host(network);
         self.serve(&host);
         self.chains.insert(host, network.to_owned());
-        self.networks
-            .insert(network.to_owned(), SimulatedNetwork::new(network, rules));
-        self.readers.serve(network);
+        self.readers.serve(network, rules);
     }
 
     /// The endpoints the world serves the networks' readers (`T-024-25`): a handle on them, shared, which the reader
@@ -142,25 +139,15 @@ impl SimWorld {
         self.readers.clone()
     }
 
-    /// Publishes every network as it stands now, and the movements delivered to them, to the endpoints the readers
-    /// read (`T-024-25`): what they answer from until the next publication.
-    pub fn publish_to_readers(&self) {
-        let delivered: Vec<Movement> = self
-            .delivered
-            .iter()
-            .filter_map(|d| serde_json::from_str(&d.body).ok())
-            .collect();
-        self.readers.publish(&self.networks, &delivered);
+    /// A simulated public network as it stands now, a copy.
+    pub fn network(&self, network: &str) -> Option<SimulatedNetwork> {
+        self.readers.network(network)
     }
 
-    /// A simulated public network.
-    pub fn network(&self, network: &str) -> Option<&SimulatedNetwork> {
-        self.networks.get(network)
-    }
-
-    /// A simulated public network, to drive: blocks, reorgs and checkpoints are the scenario's to cause.
-    pub fn network_mut(&mut self, network: &str) -> Option<&mut SimulatedNetwork> {
-        self.networks.get_mut(network)
+    /// A simulated public network, to drive: blocks, reorgs and checkpoints are the scenario's to cause. Its readers
+    /// read what the scenario did as soon as the hold is let go.
+    pub fn network_mut(&mut self, network: &str) -> Option<super::readers::NetworkMut<'_>> {
+        self.readers.network_mut(network)
     }
 
     /// Queues `behaviour` for `provider`'s next operation that isn't a dry run and names a transaction, of whatever
@@ -374,19 +361,7 @@ impl World for SimWorld {
         } else if let Some(network) = self.chains.get(&endpoint.host)
             && let Ok(movement) = serde_json::from_str::<Movement>(&body)
         {
-            let recorded = MovementId::new(movement.id.clone()).map(|id| {
-                self.networks.get_mut(network).map(|net| {
-                    net.record(
-                        id,
-                        rutent_evidence::Movement {
-                            destination: movement.destination.clone(),
-                            asset: movement.asset.clone(),
-                            amount: movement.amount.clone(),
-                        },
-                    )
-                })
-            });
-            if let Some(Some(Err(why))) = recorded {
+            if let Some(why) = self.readers.record(network, &movement) {
                 self.refused_movements.push((movement, format!("{why:?}")));
             }
         }

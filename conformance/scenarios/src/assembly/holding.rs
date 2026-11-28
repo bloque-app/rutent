@@ -418,8 +418,7 @@ impl Core {
         if let Some(total) = rutent_contracts::router_api::Amount::new(resting) {
             held.insert((node, order.to_owned()), total);
         }
-        let readings = self.readings.clone();
-        readings.refresh(&self.fleet.platform.world);
+        let booked = self.booked.clone();
         let running = RefCell::new(super::Running {
             platform: &mut self.fleet.platform,
             clock: &self.clock,
@@ -427,7 +426,7 @@ impl Core {
             feed: &mut self.feed,
             log: &self.log,
             swap_to: self.swap_to.as_deref_mut(),
-            readings: &readings,
+            booked: &booked,
         });
         let mut wallets = HeldWallets {
             holdings: &mut self.holdings,

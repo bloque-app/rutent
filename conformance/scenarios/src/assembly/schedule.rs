@@ -474,8 +474,7 @@ impl Ports for Due<'_> {
         let operator = kit::operator();
         let mut policy = core.policy.clone();
         let resting = core.segments.resting_totals();
-        let readings = core.readings.clone();
-        readings.refresh(&core.fleet.platform.world);
+        let booked = core.booked.clone();
         let running = std::cell::RefCell::new(Running {
             platform: &mut core.fleet.platform,
             clock: &core.clock,
@@ -483,7 +482,7 @@ impl Ports for Due<'_> {
             feed: &mut core.feed,
             log: &core.log,
             swap_to: core.swap_to.as_deref_mut(),
-            readings: &readings,
+            booked: &booked,
         });
         let mut parts = StuckParts {
             clock: &core.clock,
@@ -611,8 +610,7 @@ impl Ports for Due<'_> {
 
     fn with_segments(&mut self, with: &mut dyn FnMut(&mut Segments, &mut SegmentParts<'_>)) {
         let core = &mut *self.0;
-        let readings = core.readings.clone();
-        readings.refresh(&core.fleet.platform.world);
+        let booked = core.booked.clone();
         let mut running = Running {
             platform: &mut core.fleet.platform,
             clock: &core.clock,
@@ -620,12 +618,15 @@ impl Ports for Due<'_> {
             feed: &mut core.feed,
             log: &core.log,
             swap_to: core.swap_to.as_deref_mut(),
-            readings: &readings,
+            booked: &booked,
         };
+        // One pass over Core's adapter, at Core's clock: each question its readers are asked once in it, its answers
+        // dropped with it (`T-020-60` (3)).
+        let pass = core.readers.pass(&core.clock);
         let mut grading = rutent_core_orch::closing::Evidenced {
             catalogue: &core.catalogue,
-            records: &readings,
-            books: &readings,
+            records: &pass,
+            books: &booked,
             closing: &mut core.closing,
         };
         let mut decisions = core.policy.clone();
@@ -658,8 +659,7 @@ impl Ports for Due<'_> {
     ) {
         let core = &mut *self.0;
         let (core_actor, operator) = (kit::core(), kit::operator());
-        let readings = core.readings.clone();
-        readings.refresh(&core.fleet.platform.world);
+        let booked = core.booked.clone();
         let mut running = Running {
             platform: &mut core.fleet.platform,
             clock: &core.clock,
@@ -667,7 +667,7 @@ impl Ports for Due<'_> {
             feed: &mut core.feed,
             log: &core.log,
             swap_to: core.swap_to.as_deref_mut(),
-            readings: &readings,
+            booked: &booked,
         };
         let mut decisions = core.policy.clone();
         let mut moving = Moving {
@@ -692,8 +692,7 @@ impl Ports for Due<'_> {
     fn with_reversal_desk(&mut self, with: &mut rutent_core_orch::schedule::ReversalsLent<'_>) {
         let core = &mut *self.0;
         let (core_actor, operator) = (kit::core(), kit::operator());
-        let readings = core.readings.clone();
-        readings.refresh(&core.fleet.platform.world);
+        let booked = core.booked.clone();
         let mut running = Running {
             platform: &mut core.fleet.platform,
             clock: &core.clock,
@@ -701,7 +700,7 @@ impl Ports for Due<'_> {
             feed: &mut core.feed,
             log: &core.log,
             swap_to: core.swap_to.as_deref_mut(),
-            readings: &readings,
+            booked: &booked,
         };
         let mut decisions = core.policy.clone();
         let mut actors = super::Acting(std::rc::Rc::clone(&core.deployed.registers));

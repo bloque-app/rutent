@@ -1,6 +1,16 @@
 # core-internal changelog
 
 ## 1.0.0
+- `T-020-60` (`DEC-28`, `REQ-AUD-4`; ADR-0007 as amended): `PublicMovement` gains `read_by` (`MovementReader {reader,
+  version}`), required: the reader service that read the movement, by its name on its host, and the version that
+  answered, which Core holds to the network's listing. Every `evidence`, `replay` and `public_mismatch` entry that names a
+  movement names its reader, and a movement that names none doesn't read as one, so the log refuses it. Folded into this
+  unreleased version: no log was kept under the old shape, so `read_by` has no default. Every fixture naming a movement
+  names its reader; invalid `verified-entry-of-graded-evidence-whose-movement-names-no-reader` (one schema rule more). No
+  relation of its own, so the relation count is unmoved. Ignorable: no. (DEC-4, DEC-20, T-020-60)
+- `T-020-67`, a note (the milestone reviewer's check of `T-020-67` at `605a6c92`, routed to `T-020-60`): `ReadNodeRecord`'s
+  `by` has no default because no log was kept under the shape before it, which is why it is required rather than defaulting
+  to `grading`. (DEC-4, T-020-67)
 - `T-020-61` (item 10, the coordinator's ruling on #355's round 1; `REQ-ORD-12`, `REQ-ORD-11`, `REQ-AUZ-1`):
   `Action::EndOrder {order}` (`end_order`) and `Action::DisputeFault {order, segment}` (`dispute_fault`), the customer's
   request to end an order without completing and the named party's dispute of a provider's showing of fault, each a

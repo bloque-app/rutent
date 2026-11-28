@@ -2653,6 +2653,13 @@ impl Grading for Recorded {
             network: id(&network),
             id: settled.transaction.clone(),
             node: None,
+            read_by: rutent_contracts::core_internal::MovementReader {
+                reader: id(&rutent_scenarios::sim::readers::reader_name(&network)),
+                version: rutent_contracts::router_api::Version::new(
+                    rutent_scenarios::sim::readers::READER_VERSION,
+                )
+                .expect("a version"),
+            },
         };
         Graded::Settles {
             cites: settled.evidence.clone(),

@@ -56,13 +56,15 @@ use std::collections::BTreeMap;
 mod price;
 mod public_end;
 pub mod publishers;
+pub mod readers;
 
 pub use price::{PriceDesk, Reported, RouteRun, Unreported, report_logged_price, report_price};
+pub use readers::{Pass, Readers, Unreadable};
 
 use rutent_contracts::core_internal::calls::AppendFailure;
 use rutent_contracts::core_internal::{
-    About, Actor, Entry, FeeTo, MismatchKind, Outcome, PublicMovement, Receipt, ReplayFound,
-    ReplayMismatch, TimeSource, VerifiedEntry, VerifiedKind, What, When,
+    About, Actor, Entry, FeeTo, MismatchKind, MovementReader, Outcome, PublicMovement, Receipt,
+    ReplayFound, ReplayMismatch, TimeSource, VerifiedEntry, VerifiedKind, What, When,
 };
 use rutent_contracts::provider_role::{
     ConversionOutcome, Denomination, EvidenceGrade, EvidencePiece, InnerSegments, NodeRef,
@@ -90,6 +92,9 @@ pub struct Moved {
     pub id: MovementId,
     /// Where it went, as the network records it.
     pub destination: String,
+    /// The reader that read it, and its version, as the network's listing names them (`REQ-AUD-4`, `T-020-60`): what
+    /// every entry naming the movement names.
+    pub read_by: MovementReader,
 }
 
 /// The public networks Core reads, and how each ties a movement to a segment: each network's finality, reorg rule and
@@ -100,26 +105,45 @@ pub struct Moved {
 /// movement's id as given here, so an implementation gives one label per chain, whatever node names it, and one
 /// canonical spelling of each movement's id (a transaction hash in one case, with or without its prefix, never both):
 /// two spellings of one movement would be two movements to the log (`movement-evidences-one-segment`).
+///
+/// It stays Core's seam (`REQ-MOD-3`, `DEC-28`), and Core implements it itself: its adapter for each listed network's
+/// reader service, read one pass at a time ([`readers::Pass`]). Each call answers the reader's answer or
+/// [`Unreadable`], which settles nothing and grades nothing down.
 pub trait PublicRecords {
-    /// The finality and reorg rules of the public network named `network`; `None` for one Core reads no record of.
-    fn rules(&self, network: &str) -> Option<NetworkRules>;
+    /// The finality and reorg rules of the public network named `network`; `None` for one Core reads no record of
+    /// (no listing names it).
+    ///
+    /// # Errors
+    ///
+    /// Where its reader is unreadable now.
+    fn rules(&self, network: &str) -> Result<Option<NetworkRules>, Unreadable>;
 
     /// What `network` knows of the movement `id` now. Read-only.
-    fn status(&self, network: &str, id: &MovementId) -> Status;
+    ///
+    /// # Errors
+    ///
+    /// Where its reader is unreadable now.
+    fn status(&self, network: &str, id: &MovementId) -> Result<Status, Unreadable>;
 
     /// The movement on `network` that the segment run under `transaction` made, by the network's own matching;
     /// `None` where it ties none to it.
-    fn movement(&self, network: &str, transaction: &Id) -> Option<Moved>;
+    ///
+    /// # Errors
+    ///
+    /// Where its reader is unreadable now.
+    fn movement(&self, network: &str, transaction: &Id) -> Result<Option<Moved>, Unreadable>;
 }
 
-/// One public network, as `CMP-EVIDENCE` reads it, through [`PublicRecords`].
-struct Network<'r> {
-    records: &'r dyn PublicRecords,
+/// One public network, as `CMP-EVIDENCE` reads it, through [`PublicRecords`]: its rules, and where each movement the
+/// grading checks stands, each read before the check, so an unreadable reader stops the grading before anything is
+/// checked.
+struct Network {
     name: String,
     rules: NetworkRules,
+    statuses: BTreeMap<MovementId, Status>,
 }
 
-impl PublicNetwork for Network<'_> {
+impl PublicNetwork for Network {
     fn network(&self) -> &str {
         &self.name
     }
@@ -129,16 +153,29 @@ impl PublicNetwork for Network<'_> {
     }
 
     fn status(&self, id: &MovementId) -> Status {
-        self.records.status(&self.name, id)
+        self.statuses.get(id).cloned().unwrap_or(Status::Unknown)
     }
 }
 
-fn network_of<'r>(records: &'r dyn PublicRecords, name: &str) -> Option<Network<'r>> {
-    Some(Network {
-        records,
+/// `name`, as its records stand for the movements `ids`: `None` for a network Core reads no record of.
+fn network_of(
+    records: &dyn PublicRecords,
+    name: &str,
+    ids: &[&MovementId],
+) -> Result<Option<Network>, Short> {
+    let Some(rules) = records.rules(name).map_err(Short::ReaderUnreadable)? else {
+        return Ok(None);
+    };
+    let mut statuses = BTreeMap::new();
+    for id in ids {
+        let status = records.status(name, id).map_err(Short::ReaderUnreadable)?;
+        statuses.insert((*id).clone(), status);
+    }
+    Ok(Some(Network {
         name: name.to_owned(),
-        rules: records.rules(name)?,
-    })
+        rules,
+        statuses,
+    }))
 }
 
 /// What a private node's publisher recorded of the segments inside it, as the assembly reads it from the publishers.
@@ -182,8 +219,9 @@ pub trait Books {
 struct Seen {
     transaction: Id,
     result: Receipt,
-    /// Its own public movement, where a final public record of it evidences it: the network and the movement.
-    movement: Option<(String, MovementId)>,
+    /// Its own public movement, where a final public record of it evidences it: the network, the movement and the
+    /// reader that read it.
+    movement: Option<(String, MovementId, MovementReader)>,
 }
 
 /// A segment that took a public movement: its order and segment, and whether it took it as a private node's
@@ -272,6 +310,7 @@ impl Closing {
                             Some((
                                 m.network.as_str().to_owned(),
                                 MovementId::new(m.id.as_str())?,
+                                m.read_by,
                             ))
                         }),
                     },
@@ -552,7 +591,9 @@ impl Grading for Evidenced<'_> {
         match &deposit.to.node {
             // A private rail closes on the public movement into it, which only a deposit from a public node makes.
             NodeRef::Outer(_) if self.private(&deposit.to.node) => self.public(&deposit.from.node),
-            NodeRef::Outer(outer) => self.records.rules(&outer.network).is_some(),
+            // A network whose reader is unreadable, or that no listing names, has no public record Core reads now
+            // (`REQ-ORD-33`, `T-020-60`).
+            NodeRef::Outer(outer) => matches!(self.records.rules(&outer.network), Ok(Some(_))),
             NodeRef::Inner(_) => false,
         }
     }
@@ -649,16 +690,19 @@ fn public_movement(
     network: &str,
     movement: &MovementId,
     node: Option<&str>,
+    read_by: &MovementReader,
 ) -> Result<PublicMovement, Short> {
     Ok(PublicMovement {
         network: id(network)?,
         id: id(movement.as_str())?,
         node: node.map(id).transpose()?,
+        read_by: read_by.clone(),
     })
 }
 
-/// The segment's own public movement, checked: its network, its id, and the check `CMP-EVIDENCE` made.
-type Checked = (String, MovementId, Check);
+/// The segment's own public movement, checked: its network, its id, the check `CMP-EVIDENCE` made, and the reader that
+/// read it.
+type Checked = (String, MovementId, Check, MovementReader);
 
 /// A non-final segment's public record that contradicts what its provider said, as far as it could be read: what is
 /// recorded of it, each part `None` where it can't be written as the log's shape.
@@ -668,6 +712,8 @@ struct Contradicted {
     node: Option<rutent_contracts::provider_role::OuterNode>,
     network: String,
     movement: MovementId,
+    /// The reader that read it.
+    read_by: MovementReader,
     /// What the network moved.
     moved: Option<rutent_contracts::core_internal::PublicFigures>,
     /// What the provider said it moved.
@@ -723,8 +769,12 @@ impl Evidenced<'_> {
         let mut contradicted: Option<Contradicted> = None;
         if let Some(side) = side {
             let network = node_name(&side.node).to_owned();
-            let moved = self.records.movement(&network, settled.transaction);
-            match (network_of(self.records, &network), moved) {
+            let moved = self
+                .records
+                .movement(&network, settled.transaction)
+                .map_err(Short::ReaderUnreadable)?;
+            let ids: Vec<&MovementId> = moved.iter().map(|m| &m.id).collect();
+            match (network_of(self.records, &network, &ids)?, moved) {
                 (Some(net), Some(moved)) => {
                     let expected = Expected {
                         network: network.clone(),
@@ -759,13 +809,14 @@ impl Evidenced<'_> {
                             node: public_end::planned_end(operation, &network),
                             network: network.clone(),
                             movement: moved.id.clone(),
+                            read_by: moved.read_by.clone(),
                             moved: public_end::network_figures(&record),
                             stated: public_end::stated_figures(&expected),
                         });
                     }
                     let check = public_record_check(&net, &moved.id, &expected);
                     if check.movement().is_some() {
-                        movement = Some((network, moved.id, check));
+                        movement = Some((network, moved.id, check, moved.read_by));
                     }
                 }
                 (None, _) => why = Some(Unmatched::WrongNetwork),
@@ -773,7 +824,7 @@ impl Evidenced<'_> {
             }
         }
         // One movement evidences one segment: one another segment took backs nothing here.
-        let shared = movement.as_ref().is_some_and(|(network, id, _)| {
+        let shared = movement.as_ref().is_some_and(|(network, id, _, _)| {
             !self
                 .closing
                 .free_for(network, id.as_str(), &key, into_private_rail)
@@ -786,7 +837,7 @@ impl Evidenced<'_> {
         // that names it.
         let mut backing = movement
             .as_ref()
-            .map(|(_, id, check)| (id.clone(), check.clone()));
+            .map(|(_, id, check, _)| (id.clone(), check.clone()));
         let claims: Vec<Claim> = settlement
             .pieces
             .iter()
@@ -878,12 +929,12 @@ impl Evidenced<'_> {
                     .as_ref()
                     .filter(|_| self.public(&operation.from.node))
                     .ok_or(Short::NoPublicRecord(why))?;
-                public_movement(&own.0, &own.1, Some(node_name(&operation.to.node)))?
+                public_movement(&own.0, &own.1, Some(node_name(&operation.to.node)), &own.3)?
             } else if shared {
                 return Err(Short::MovementShared);
             } else {
-                let (network, id_, _) = movement.as_ref().ok_or(Short::NoPublicRecord(why))?;
-                public_movement(network, id_, None)?
+                let (network, id_, _, by) = movement.as_ref().ok_or(Short::NoPublicRecord(why))?;
+                public_movement(network, id_, None, by)?
             };
             entries.push(evidence(
                 cites.clone(),
@@ -917,15 +968,15 @@ impl Evidenced<'_> {
             // record is the network's, anything else its provider's.
             let named = movement
                 .as_ref()
-                .map(|(network, id_, _)| public_movement(network, id_, None))
+                .map(|(network, id_, _, by)| public_movement(network, id_, None, by))
                 .transpose()?;
             let whose = match (&movement, relies) {
-                (Some((network, _, _)), true) => id(network)?,
+                (Some((network, _, _, _)), true) => id(network)?,
                 _ => settled.provider.clone(),
             };
             // Labelled, the movement into the node comes first, naming it: the log's binding of the node the label
             // relies on. The segment takes it now as the node's movement in, which its exit doesn't record again.
-            if let (Some(_), Some((network, moved))) = (&label, &moved_in) {
+            if let (Some(_), Some((network, moved, by))) = (&label, &moved_in) {
                 entries.push(evidence(
                     id(&format!("{}.in.{}", cites.as_str(), settled.place))?,
                     settled.segment,
@@ -936,6 +987,7 @@ impl Evidenced<'_> {
                         network,
                         moved,
                         Some(node_name(&operation.from.node)),
+                        by,
                     )?),
                     None,
                 ));
@@ -966,7 +1018,7 @@ impl Evidenced<'_> {
         // movement, the node stays unbound.
         if !last && self.public(&operation.from.node) && self.private(&operation.to.node) {
             let node = node_name(&operation.to.node);
-            if let (Some((network, moved, _)), Some(record)) = (
+            if let (Some((network, moved, _, by)), Some(record)) = (
                 movement.as_ref(),
                 self.kept(settled, &format!("enter:{node}")),
             ) {
@@ -979,7 +1031,7 @@ impl Evidenced<'_> {
                         grade: EvidenceGrade::PublicRecord,
                         whose: id(network)?,
                         rests_on: vec![settled.result.clone(), record.clone()],
-                        movement: Some(public_movement(network, moved, Some(node))?),
+                        movement: Some(public_movement(network, moved, Some(node), by)?),
                         publisher: None,
                     },
                     settled,
@@ -997,7 +1049,7 @@ impl Evidenced<'_> {
         if exits {
             let (replay, consistent) = self.replayed(settled, operations, movement.as_ref())?;
             entries.extend(replay);
-            if let (true, Some((out, out_id, _)), Some((into, into_id))) = (
+            if let (true, Some((out, out_id, _, out_by)), Some((into, into_id, into_by))) = (
                 consistent,
                 movement.as_ref(),
                 self.movement_into(settled, operations),
@@ -1022,7 +1074,10 @@ impl Evidenced<'_> {
                         settled.order.as_str().to_owned(),
                         segment.as_str().to_owned(),
                     );
-                    for (end, network, moved) in [("in", &into, &into_id), ("out", out, out_id)] {
+                    for (end, network, moved, by) in [
+                        ("in", &into, &into_id, &into_by),
+                        ("out", out, out_id, out_by),
+                    ] {
                         // Recorded once: a segment whose label it bound took the movement in when it settled.
                         if end == "in" && self.closing.took_in_node(network, moved.as_str(), &inner)
                         {
@@ -1039,7 +1094,7 @@ impl Evidenced<'_> {
                             EvidenceGrade::PublicRecord,
                             id(network)?,
                             result.clone(),
-                            Some(public_movement(network, moved, Some(node))?),
+                            Some(public_movement(network, moved, Some(node), by)?),
                             None,
                         ));
                     }
@@ -1061,7 +1116,7 @@ impl Evidenced<'_> {
                         order: settled.order.clone(),
                         segment: settled.segment.clone(),
                         node,
-                        movement: public_movement(&c.network, &c.movement, None)?,
+                        movement: public_movement(&c.network, &c.movement, None, &c.read_by)?,
                         found: c.found,
                         moved: moved.clone(),
                         stated: stated.clone(),
@@ -1075,7 +1130,7 @@ impl Evidenced<'_> {
         };
 
         // What it took, kept only now that it settles: every movement its records name, as the log takes them.
-        if let Some((network, movement, _)) = &movement {
+        if let Some((network, movement, _, _)) = &movement {
             self.closing
                 .take(network, movement.as_str(), &key, into_private_rail);
         }
@@ -1094,7 +1149,7 @@ impl Evidenced<'_> {
             Seen {
                 transaction: settled.transaction.clone(),
                 result: settled.result.clone(),
-                movement: movement.map(|(n, id, _)| (n, id)),
+                movement: movement.map(|(n, id, _, by)| (n, id, by)),
             },
         );
         Ok(Graded::Settles { cites, entries })
@@ -1123,7 +1178,7 @@ impl Evidenced<'_> {
         &self,
         settled: &ToGrade<'_>,
         operations: &[Operation],
-    ) -> Option<(String, MovementId)> {
+    ) -> Option<(String, MovementId, MovementReader)> {
         let start = self.run_start(operations, settled.place);
         let entering = &operations[start];
         if start == settled.place
@@ -1326,19 +1381,28 @@ impl Evidenced<'_> {
                 _ => silent.push(id(node)?),
             }
         }
-        let moved = self.records.movement(&network, settled.transaction);
+        let moved = self
+            .records
+            .movement(&network, settled.transaction)
+            .map_err(Short::ReaderUnreadable)?;
         let exit_movement = match (movement, &moved) {
-            (Some((n, id_, _)), _) => Some(public_movement(n, id_, None)?),
-            (None, Some(moved)) => Some(public_movement(&network, &moved.id, None)?),
+            (Some((n, id_, _, by)), _) => Some(public_movement(n, id_, None, by)?),
+            (None, Some(moved)) => {
+                Some(public_movement(&network, &moved.id, None, &moved.read_by)?)
+            }
             (None, None) => None,
         };
         let found = if !silent.is_empty() {
             Some(ReplayFound::NothingRecorded { nodes: silent })
         } else {
-            match (network_of(self.records, &network), moved) {
+            let exit_id = movement
+                .map(|(_, id, _, _)| id)
+                .or(moved.as_ref().map(|m| &m.id));
+            let ids: Vec<&MovementId> = exit_id.into_iter().collect();
+            match (network_of(self.records, &network, &ids)?, moved) {
                 (Some(net), Some(moved)) => {
                     let exit = PublicExit {
-                        movement: movement.map_or(moved.id, |(_, id, _)| id.clone()),
+                        movement: movement.map_or(moved.id, |(_, id, _, _)| id.clone()),
                         network: network.clone(),
                         destination: if is_final_deposit(settled) {
                             settled.end.destination.account.as_str().to_owned()

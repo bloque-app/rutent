@@ -2564,6 +2564,23 @@ pub struct PublicMovement {
         skip_serializing_if = "Option::is_none"
     )]
     pub node: Option<Id>,
+    /// The reader that read it, and its version, as the network's listing names them (`REQ-AUD-4`, `DEC-28`,
+    /// `T-020-60`): Core holds every answer it relied on to the listing's reader and version, so the log says which
+    /// reader service, at which version, stood behind each public record. Required: a public movement that names no
+    /// reader doesn't read as one.
+    pub read_by: MovementReader,
+}
+
+/// The reader service that read a public movement, as its network's listing names it: the reader, by its name on its
+/// host, and the version that answered (`REQ-AUD-4`, `DEC-28`). Schema:
+/// `urn:rutent:core-internal:verified-entry#/$defs/movement_reader`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MovementReader {
+    /// The reader, by its name on its host: its answers' maker.
+    pub reader: Id,
+    /// The reader's version that answered, which Core held to the listing's.
+    pub version: crate::router_api::Version,
 }
 
 /// One way a replayed record disagrees, and the node it is against.

@@ -92,7 +92,7 @@ impl Core {
     ///
     /// If nothing is staged, the version isn't the one staged, policy doesn't permit it, or the platform won't.
     pub fn promote(&mut self, provider: &str, version: &str) -> Result<String, PromoteRefused> {
-        let readings = self.readings.clone();
+        let booked = self.booked.clone();
         let mut running = Running {
             platform: &mut self.fleet.platform,
             clock: &self.clock,
@@ -100,7 +100,7 @@ impl Core {
             feed: &mut self.feed,
             log: &self.log,
             swap_to: self.swap_to.as_deref_mut(),
-            readings: &readings,
+            booked: &booked,
         };
         let mut decisions = self.policy.clone();
         let (provider, version) = (crate::kit::id(provider), crate::kit::id(version));
