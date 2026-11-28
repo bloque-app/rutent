@@ -115,6 +115,10 @@ pub enum Scope {
     RefileArrival,
     /// The customer accepting a showing of its fault (`decide`, `accept_fault`).
     AcceptFault,
+    /// Ending an order without completing (`decide`, `end_order`, `T-020-61`).
+    EndOrder,
+    /// Disputing a provider's showing of fault (`decide`, `dispute_fault`, `T-020-61`).
+    DisputeFault,
     /// Giving an authorisation to move funds, a new destination included (`authorise`).
     Authorise,
     /// A stuck order's decide step (`decide_stuck`).
@@ -165,6 +169,8 @@ impl Scope {
                 }
                 Action::RefileArrival { .. } => Scope::RefileArrival,
                 Action::AcceptFault { .. } => Scope::AcceptFault,
+                Action::EndOrder { .. } => Scope::EndOrder,
+                Action::DisputeFault { .. } => Scope::DisputeFault,
                 Action::ResolveStuck { .. } => Scope::MoveStuck,
             },
             Asked::Authorise(_) => Scope::Authorise,

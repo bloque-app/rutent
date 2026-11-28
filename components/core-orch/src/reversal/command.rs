@@ -62,22 +62,49 @@ fn lent<T>(
     done
 }
 
-/// Ends `order` without completing, on `by`'s request: the order's customer, as the log's acceptance names it, or the
-/// deployment's operator, bound by the register of actors (see [`super::Reversals::end`]).
+/// Asks policy to decide `action`, asked by `by`: policy appends its decision to the log, and only its permit goes on.
 ///
 /// # Errors
 ///
-/// [`ReversalError::NotTheParty`] for anyone else, before anything of the order; otherwise as
-/// [`super::Reversals::end`].
+/// [`ReversalError::NotAnAcceptance`] where policy couldn't decide; [`ReversalError::NotPermitted`] where it refused.
+fn decided(ports: &mut dyn Ports, by: &Actor, action: Action) -> Result<(), ReversalError> {
+    let request = DecisionRequest {
+        request: ports.fresh(),
+        caller: by.clone(),
+        action,
+        at: super::journal::now(ports.clock()).map_err(ReversalError::Append)?,
+    };
+    let mut decided = Err(ReversalError::Unknown);
+    ports.with_reversal_desk(&mut |_, _, desk| {
+        decided = desk
+            .decisions
+            .decide(&request)
+            .map_err(|_| ReversalError::NotAnAcceptance);
+    });
+    ports.fed();
+    let decided = decided?;
+    if decided.permit().is_none() {
+        return Err(ReversalError::NotPermitted(decided.outcome));
+    }
+    Ok(())
+}
+
+/// Ends `order` without completing, on `by`'s request, as policy decides its `end_order` (`Action::EndOrder`): the
+/// order's requester in the customer's role, or an operator's login holding the permission (see
+/// [`super::Reversals::end`]).
+///
+/// # Errors
+///
+/// Where policy doesn't permit it, before anything of the order; otherwise as [`super::Reversals::end`].
 pub fn end(ports: &mut dyn Ports, order: &Id, by: &Actor) -> Result<Receipt, ReversalError> {
-    let operator = ports.actors().operator;
-    lent(ports, order, &mut |reversals, parts, desk| {
-        let customer = reversals.requester(order) == Some(&by.party) && by.role == Role::Customer;
-        let operator = by.party == operator.party
-            && desk.actors.acts_for(&by.acts, &by.party, by.kind, by.role);
-        if !customer && !operator {
-            return Err(ReversalError::NotTheParty);
-        }
+    decided(
+        ports,
+        by,
+        Action::EndOrder {
+            order: order.clone(),
+        },
+    )?;
+    lent(ports, order, &mut |reversals, parts, _| {
         reversals.end(parts, order)
     })
 }
@@ -148,40 +175,21 @@ pub fn accept_fault(
             .as_ref()
             .and_then(|a| a.transaction.clone())
             .ok_or(ReversalError::NoShowing)?;
-        Some(DecisionRequest {
-            request: ports.fresh(),
-            caller: by.clone(),
-            action: Action::AcceptFault {
-                order: order.clone(),
-                segment: segment.clone(),
-                showing: ShowingNamed {
-                    transaction,
-                    commitment: showing.commitment,
-                },
-                session: session.clone(),
+        Some(Action::AcceptFault {
+            order: order.clone(),
+            segment: segment.clone(),
+            showing: ShowingNamed {
+                transaction,
+                commitment: showing.commitment,
             },
-            at: super::journal::now(ports.clock()).map_err(ReversalError::Append)?,
+            session: session.clone(),
         })
     } else {
         None
     };
     // Policy appends its decision to the log, where the reversals find it: asked first, then the log read again.
-    if let Some(request) = &decision {
-        let mut decided = Err(ReversalError::Unknown);
-        ports.with_reversal_desk(&mut |_, _, desk| {
-            decided = desk
-                .decisions
-                .decide(request)
-                .map_err(|_| ReversalError::NotAnAcceptance);
-        });
-        ports.fed();
-        let decided = decided?;
-        if !matches!(
-            decided.outcome,
-            rutent_contracts::core_internal::Answer::Permit { .. }
-        ) {
-            return Err(ReversalError::NotPermitted(decided.outcome));
-        }
+    if let Some(action) = decision {
+        decided(ports, by, action)?;
     }
     lent(ports, order, &mut |reversals, parts, desk| {
         reversals.accept_fault(
@@ -201,12 +209,13 @@ pub fn accept_fault(
     })
 }
 
-/// The party the showing of `segment` names, `by`, disputing it: the part is declared stuck, in a dispute, through the
-/// stuck orders (see [`super::Reversals::dispute`]).
+/// The party the showing of `segment` names, `by`, disputing it, as policy decides its `dispute_fault`
+/// (`Action::DisputeFault`): the part is declared stuck, in a dispute, through the stuck orders (see
+/// [`super::Reversals::dispute`]), which holds `by` to the party the showing names.
 ///
 /// # Errors
 ///
-/// As [`super::Reversals::dispute`].
+/// Where policy doesn't permit it; otherwise as [`super::Reversals::dispute`].
 pub fn dispute(
     ports: &mut dyn Ports,
     order: &Id,
@@ -214,6 +223,14 @@ pub fn dispute(
     by: &Actor,
 ) -> Result<Receipt, ReversalError> {
     let part = part_of(ports, order, segment)?;
+    decided(
+        ports,
+        by,
+        Action::DisputeFault {
+            order: order.clone(),
+            segment: segment.clone(),
+        },
+    )?;
     lent(ports, order, &mut |reversals, parts, desk| {
         reversals.dispute(
             parts,

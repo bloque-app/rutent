@@ -1,6 +1,15 @@
 # core-internal changelog
 
 ## 1.0.0
+- `T-020-61` (item 10, the coordinator's ruling on #355's round 1; `REQ-ORD-12`, `REQ-ORD-11`, `REQ-AUZ-1`):
+  `Action::EndOrder {order}` (`end_order`) and `Action::DisputeFault {order, segment}` (`dispute_fault`), the customer's
+  request to end an order without completing and the named party's dispute of a provider's showing of fault, each a
+  decision of policy's asked by the order's requester in the customer's role or by an operator's login holding the
+  permission. Neither takes an effect (`Effect::check` refuses one): Core records `end_requested`, or declares the part
+  stuck in a dispute, on the permit. No relation of their own, so the relation count is unmoved. Folded into this
+  unreleased version. Fixtures: valid `decision-request-to-end-an-order`, `decision-request-to-dispute-a-fault`; invalid
+  `…-to-end-an-order-without-its-order`, `…-to-dispute-a-fault-without-its-segment` (two schema rules more). Ignorable: no.
+  (DEC-4, DEC-20, T-020-61)
 - `T-020-61` (item 10, the review of #355, M2; `INV-8`, `NFR-6`): `Action::ReadRecordedAnswer {order, segment, provider,
   transaction}` (`read_recorded_answer`), Core reading back the answer the platform recorded for a segment's own operation,
   where Core recorded the move's effect and lost its answer in a stop, at a provider that declares neither a status query nor

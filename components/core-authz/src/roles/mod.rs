@@ -175,6 +175,12 @@ pub enum Permission {
     /// An operator's login asking a segment's provider to carry out the segment's own operation again (`REQ-ORD-1`,
     /// `T-020-63`), or one of Core's own actors carrying that standing permission onward beside [`Permission::CarryOnward`].
     RepeatOperation,
+    /// An operator's login ending an order without completing (`REQ-ORD-12`, `T-020-61`); the order's requester ends its own
+    /// with no permission of the operator's.
+    EndOrder,
+    /// An operator's login disputing a provider's showing that a failure was the operator's (`REQ-ORD-11`, `T-020-61`); the
+    /// order's requester disputes one that names the customer with no permission of the operator's.
+    DisputeFault,
     /// An operator's login filing an arrival anew against the order it differed from (`REQ-ORD-23`, `T-020-52`),
     /// a permission of its own: the deployment operator's, by the register. A reserve files its own arrival by being
     /// the order's origin reserve, with no permission of the operator's.
@@ -400,6 +406,28 @@ fn needs_of(asked: Asked<'_>) -> Option<Needs> {
                 // received no later than the acceptance is decided. That its session is open the register holds
                 // (`Register::refuses_acceptance`). It is decided and never an effect
                 // (`reversal-carrier-rests-on-its-acceptance`).
+                // Ending an order, and disputing a showing of fault (`REQ-ORD-12`, `REQ-ORD-11`, `T-020-61`): the order's
+                // requester, or its agent, in the customer's role; or an operator's login holding the permission. Which
+                // party a showing names is the reversals' to hold (`Reversals::dispute`). Decided, and never an effect.
+                Action::EndOrder { order } | Action::DisputeFault { order, .. } => {
+                    match caller.role {
+                        Role::Customer => Some(vec![requester(caller, order)].into()),
+                        Role::Operator => operator_holds(
+                            caller,
+                            if matches!(request.action, Action::EndOrder { .. }) {
+                                Permission::EndOrder
+                            } else {
+                                Permission::DisputeFault
+                            },
+                        )
+                        .map(Needs::from),
+                        Role::Core
+                        | Role::Provider
+                        | Role::Verifier
+                        | Role::Regulator
+                        | Role::Checker => None,
+                    }
+                }
                 Action::AcceptFault {
                     order,
                     segment,

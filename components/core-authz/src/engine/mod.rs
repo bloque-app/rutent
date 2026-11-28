@@ -1324,6 +1324,10 @@ mod tests {
                 // Decided and never carried out, so no effect follows to test here: its own tests are `roles`' and
                 // `parties`' (`reversal-carrier-rests-on-its-acceptance`).
                 Action::AcceptFault { .. } => unreachable!("tested apart: it has no effect"),
+                // Decided and never carried out (`T-020-61`): their own tests are `roles'`.
+                Action::EndOrder { .. } | Action::DisputeFault { .. } => {
+                    unreachable!("tested apart: it has no effect")
+                }
                 Action::ResolveStuck { .. } => unreachable!("travels only as a stuck move"),
             }
         }

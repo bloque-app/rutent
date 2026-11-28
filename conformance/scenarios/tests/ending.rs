@@ -66,6 +66,18 @@ fn order_ends_without_completing_before_its_first_segment_settles_and_not_after(
         &mut core,
         within("req-ends", &session, AMOUNT, RESERVE, OTHER),
     );
+    // Ending is policy's decision of `end_order` (`T-020-61`): another customer's request is refused, and ends nothing.
+    let mut stranger = kit::customer();
+    stranger.party = id("someone-else");
+    stranger.acts = id("someone-else");
+    assert!(
+        matches!(
+            core.end(&order, &stranger),
+            Err(StepError::Reversal(ReversalError::NotPermitted(_)))
+        ),
+        "only the order's requester, or the operator holding the permission, ends it"
+    );
+    assert_eq!(end_requests(&core, &order), 0);
     core.end(&order, &kit::customer())
         .expect("an order ends before its first segment settles");
     assert_eq!(state(&mut core, &order), OrderState::EndedWithoutCompleting);

@@ -229,7 +229,9 @@
             "read_node_record",
             "read_holding_balance",
             "repeat_operation",
-            "read_recorded_answer"
+            "read_recorded_answer",
+            "end_order",
+            "dispute_fault"
           ]
         }
       },
@@ -427,6 +429,36 @@
           },
           "then": {
             "$ref": "#/$defs/action_read_recorded_answer"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "end_order"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/action_end_order"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "dispute_fault"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/action_dispute_fault"
           }
         }
       ]
@@ -839,6 +871,45 @@
         },
         "transaction": {
           "description": "The segment's own transaction, which the repeat is of.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "action_end_order": {
+      "description": "Ending an order without completing (REQ-ORD-12, T-020-61): a decision of policy's, asked by the order's requester in the customer's role or by an operator's login holding the permission. It takes no effect: Core records the order's end_requested input on its permit.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "order"
+      ],
+      "properties": {
+        "kind": {
+          "const": "end_order"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "action_dispute_fault": {
+      "description": "Disputing a provider's showing that a failed segment's failure was the customer's or the operator's (REQ-ORD-11, T-020-61): a decision of policy's, asked by the order's requester in the customer's role or by an operator's login holding the permission. It takes no effect: Core declares the part stuck, in a dispute.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "order",
+        "segment"
+      ],
+      "properties": {
+        "kind": {
+          "const": "dispute_fault"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "description": "The failed segment whose showing is disputed.",
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         }
       }

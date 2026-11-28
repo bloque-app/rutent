@@ -872,6 +872,24 @@ pub enum Action {
         /// The segment's own transaction, which the recorded answer is to.
         transaction: Id,
     },
+    /// Ending an order without completing (`REQ-ORD-12`, `T-020-61` item 10): a decision of policy's, asked by the order's
+    /// requester, or its agent, in the customer's role, or by an operator's login holding the permission. It takes no
+    /// effect: Core records the order's `end_requested` input on its permit, only while no segment of a part that would
+    /// end moves value.
+    EndOrder {
+        /// The order.
+        order: Id,
+    },
+    /// Disputing a provider's showing that a failed segment's failure was the customer's or the operator's
+    /// (`REQ-ORD-11`, `T-020-61` item 10): a decision of policy's, asked by the order's requester in the customer's role,
+    /// or by an operator's login holding the permission, for the party the showing names. It takes no effect: Core then
+    /// declares the part stuck, in a dispute, and the provider carries the reversal meanwhile.
+    DisputeFault {
+        /// The order.
+        order: Id,
+        /// The failed segment whose showing is disputed.
+        segment: Id,
+    },
     /// The customer accepting a provider's showing that a failed segment's failure was its fault (`REQ-ORD-11`): a
     /// decision of policy's on the policy handle, as an order's authorisation is, asked by the order's requester in its
     /// open session and naming the showing it accepts, so it can't be read as accepting another. It takes no effect:

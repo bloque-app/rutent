@@ -365,7 +365,7 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 156] = [
+const SCHEMA_RULES: [SchemaRule; 158] = [
     (
         "decision-request-to-list-a-public-network-under-a-hexadecimal-ip-subject-name",
         &[("/action/public_network/listing/reader/subject_name", "not")],
@@ -552,6 +552,16 @@ const SCHEMA_RULES: [SchemaRule; 156] = [
         "decision-request-to-read-a-recorded-answer-without-its-transaction",
         &[("/action", "required")],
         "missing field `transaction`",
+    ),
+    (
+        "decision-request-to-end-an-order-without-its-order",
+        &[("/action", "required")],
+        "missing field `order`",
+    ),
+    (
+        "decision-request-to-dispute-a-fault-without-its-segment",
+        &[("/action", "required")],
+        "missing field `segment`",
     ),
     (
         "stated-entry-naming-a-node-for-a-result",
@@ -3507,6 +3517,15 @@ fn request_to_repeat_an_operation_names_its_segment_and_transaction() {
     assert_accepted_by_both("decision-request-to-repeat-an-operation");
     assert_rejected("decision-request-to-repeat-an-operation-without-its-segment");
     assert_rejected("decision-request-to-repeat-an-operation-without-its-transaction");
+}
+
+// verifies: REQ-ORD-12, REQ-ORD-11, REQ-AUZ-1
+#[test]
+fn requests_to_end_an_order_and_to_dispute_a_fault_are_decisions_naming_what_they_are_about() {
+    assert_accepted_by_both("decision-request-to-end-an-order");
+    assert_rejected("decision-request-to-end-an-order-without-its-order");
+    assert_accepted_by_both("decision-request-to-dispute-a-fault");
+    assert_rejected("decision-request-to-dispute-a-fault-without-its-segment");
 }
 
 // verifies: INV-8, NFR-6

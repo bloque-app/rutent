@@ -1146,6 +1146,11 @@ impl Core {
             r.permit(&kit::core(), Permission::ReadHoldingBalance);
             // And carries a segment's own operation out again where policy decides it (`REQ-ORD-1`, `T-020-63`).
             r.permit(&kit::core(), Permission::RepeatOperation);
+            // The operator ends an order, and disputes a showing that names its fault, where policy decides it (`T-020-61`).
+            for login in [kit::operator(), kit::operator_login()] {
+                r.permit(&login, Permission::EndOrder);
+                r.permit(&login, Permission::DisputeFault);
+            }
             for change in [
                 CatalogueChange::Grant,
                 CatalogueChange::Promote,
