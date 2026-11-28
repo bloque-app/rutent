@@ -261,8 +261,13 @@ fn nested_dependencies<'a>(
 /// The features of our crates that only tests may turn on (`T-020-60`, the review of #356's round 2, Low 1): each
 /// crate's feature, which is enabled only from a `[dev-dependencies]` entry (the crate's own tests through its self
 /// dev-dependency among them), and never from a `[dependencies]` or `[build-dependencies]` entry, another feature's
-/// list (`[features]`, which a normal dependency could turn on), or the crate's own `default`.
-pub const TEST_ONLY_FEATURES: [(&str, &str); 1] = [("rutent-core-orch", "reader-test-hooks")];
+/// list (`[features]`, which a normal dependency could turn on), or the crate's own `default`. Core's reader test hooks,
+/// and the contracts' rule switches (`without_rule`), which switch a shape rule's refusal off on a thread, the log's
+/// checks of an entry among them (`T-025-05`'s third pass, L11).
+pub const TEST_ONLY_FEATURES: [(&str, &str); 2] = [
+    ("rutent-core-orch", "reader-test-hooks"),
+    ("rutent-contracts", "rule-switches"),
+];
 
 /// Where `text`, a member's manifest, turns on a test-only feature ([`TEST_ONLY_FEATURES`]) outside a dev-dependency:
 /// each as `table.key`, such as `dependencies.rutent-core-orch` or `features.default`.

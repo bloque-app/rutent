@@ -1555,3 +1555,52 @@ fn reader_test_hooks_are_enabled_only_from_dev_dependencies() {
         "nor Core's own default"
     );
 }
+
+/// The contracts' rule switches (`rule-switches`, `without_rule`), which switch a shape rule's refusal off on a thread,
+/// the log's checks of an entry among them, are turned on only by tests: the contracts crate's own self
+/// dev-dependency, never a normal or build dependency of a shipped crate, another feature's list, or the contracts'
+/// own default (`T-025-05`'s third pass, L11). With them on in Core's build, orchestration could append through
+/// `without_rule` and take an entry past a shape rule the log holds it to. The real workspace holds to it.
+// verifies: DEC-20, REQ-MOD-3
+#[test]
+fn contracts_rule_switches_are_enabled_only_from_dev_dependencies() {
+    let root: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    assert_eq!(
+        test_only_features_outside_tests(&root).expect("the manifests read"),
+        Vec::<(String, String)>::new(),
+        "the workspace turns the switches on only from dev-dependencies"
+    );
+    let switches = r#"rutent-contracts = { path = "../contracts", features = ["rule-switches"] }"#;
+    let found = |text: &str| test_only_features_enabled(text).expect("a manifest");
+    assert_eq!(
+        found(&manifest("rutent-contracts", "", switches)),
+        Vec::<String>::new(),
+        "the contracts' own self dev-dependency may"
+    );
+    assert_eq!(
+        found(&manifest("rutent-core-orch", switches, "")),
+        vec!["dependencies.rutent-contracts".to_owned()],
+        "a shipped crate's normal dependency may not"
+    );
+    assert_eq!(
+        found(&format!(
+            "[package]\nname = \"rutent-core-audit\"\n\n[build-dependencies]\n{switches}\n"
+        )),
+        vec!["build-dependencies.rutent-contracts".to_owned()],
+        "nor a build dependency"
+    );
+    assert_eq!(
+        found(
+            "[package]\nname = \"rutent-x\"\n\n[features]\nloose = [\"rutent-contracts/rule-switches\"]\n\n[dependencies]\nrutent-contracts = { path = \"../contracts\" }\n"
+        ),
+        vec!["features.loose".to_owned()],
+        "nor another feature's list"
+    );
+    assert_eq!(
+        found(
+            "[package]\nname = \"rutent-contracts\"\n\n[features]\ndefault = [\"std\", \"rule-switches\"]\nrule-switches = [\"std\"]\n"
+        ),
+        vec!["features.default".to_owned()],
+        "nor the contracts' own default"
+    );
+}
