@@ -2809,21 +2809,6 @@ impl Core {
         Ok(())
     }
 
-    /// Declares that `order`'s input `input` rests on `judgement`, before the segment that carries it is handed over,
-    /// so Core writes the `reliance` entry before it sends (`T-020-23`).
-    ///
-    /// # Errors
-    ///
-    /// As [`Segments::rests_on`](rutent_core_orch::segments::Segments::rests_on).
-    pub fn rests_on(
-        &mut self,
-        order: &Id,
-        input: &str,
-        judgement: rutent_core_orch::reliance::Judgement,
-    ) -> Result<(), rutent_core_orch::reliance::Rests> {
-        self.segments.rests_on(order, input, judgement)
-    }
-
     /// The judgement the log holds of `verifier`: the receipt of its stated entry of the judgement's shape, which
     /// the routing doesn't hand back (`T-020-23`, gap 1), and its maker. The latest, if it made several.
     pub fn judgement_of(&self, verifier: &str) -> Option<rutent_core_orch::reliance::Judgement> {
