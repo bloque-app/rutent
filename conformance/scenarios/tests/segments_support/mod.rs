@@ -675,6 +675,17 @@ impl authz::Policy for Deployment_ {
     }
 }
 
+thread_local! {
+    /// Whether this test's register lists Core's actor for reading private nodes' records ([`list_node_record_reads`]).
+    static NODE_RECORD_READS: Cell<bool> = const { Cell::new(false) };
+}
+
+/// This test's register lists Core's actor for reading private nodes' records (`T-020-58`): its gradings' reads are then
+/// permitted and taken as effects. Off by default, so a test that doesn't ask finds them refused, as the kit always did.
+pub fn list_node_record_reads() {
+    NODE_RECORD_READS.with(|r| r.set(true));
+}
+
 /// The deployment's registers, as the policy engine asks them: which actor acts for which party
 /// (`Source::ActsFor`), which actor holds which permission (`Source::Permissions`: Core's actor carries the user's
 /// authorisation onward, the operator's login promotes a staged release and reads an order's state and age), whose
@@ -712,9 +723,12 @@ impl authz::Sources for Register {
                 yes(account.as_str() == "acct-1" && need.input == customer().party)
             }
             authz::Source::Permissions { permission, .. } => yes(match permission {
+                Permission::CarryOnward => need.input == core().acts,
                 // Core's actor carries the operator's standing permission to read a private node's record onward
-                // (`T-020-58`), as the deployment's register lists it.
-                Permission::CarryOnward | Permission::ReadNodeRecord => need.input == core().acts,
+                // (`T-020-58`) only in a test that lists it ([`list_node_record_reads`]).
+                Permission::ReadNodeRecord => {
+                    NODE_RECORD_READS.with(Cell::get) && need.input == core().acts
+                }
                 Permission::Change(CatalogueChange::Promote | CatalogueChange::MarkStale)
                 | Permission::ReadOrderState => need.input == operator().acts,
                 _ => false,

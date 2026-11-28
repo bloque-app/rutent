@@ -378,14 +378,21 @@ fn handed_over_by(catalogue: &Catalogue, bytes: &[u8]) -> Option<Actor> {
 }
 
 /// Whether the log holds a spell of `account` not read: a raise of it since its last check, so it is not raised again
-/// until it is read (rebuilt from the log, so a restart raises no spell twice). And the account's last check.
-fn spell_of(history: &[(Receipt, Entry)], account: &Id) -> (bool, Option<Receipt>) {
+/// until it is read (rebuilt from the log, so a restart raises no spell twice). And the account's last check by
+/// `provider`, the module that holds it now: a check another module gave before the account moved to this one is not
+/// its check, and a raise citing it would be refused (`raise-of-a-holding-not-read-cites-its-accounts-check`), so the
+/// spell would never be recorded and the account raised at every try (`T-020-60`).
+fn spell_of(history: &[(Receipt, Entry)], account: &Id, provider: &Id) -> (bool, Option<Receipt>) {
     let mut in_spell = false;
     let mut last = None;
     for (receipt, entry) in history {
         let Entry::Verified(v) = entry else { continue };
         match &v.what {
-            What::HoldingCheck { account: a, .. } if a == account => {
+            What::HoldingCheck {
+                account: a,
+                provider: p,
+                ..
+            } if a == account && p == provider => {
                 in_spell = false;
                 last = Some(receipt.clone());
             }
@@ -1090,7 +1097,7 @@ impl Duties for Jobs<'_> {
                         id(&one.provider),
                     ) {
                         (Some(account), Some(node), Some(provider)) => {
-                            let (in_spell, last) = spell_of(&history, &account);
+                            let (in_spell, last) = spell_of(&history, &account, &provider);
                             if in_spell {
                                 Err("raised already in this spell".to_owned())
                             } else {

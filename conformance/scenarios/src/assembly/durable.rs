@@ -153,8 +153,13 @@ impl Disk {
         {
             return;
         }
-        // A read of a private node's record is an effect too (`T-020-58`), but no move: the plans count the moves.
-        if value["what"]["action"]["kind"].as_str() == Some("read_node_record") {
+        // A read of a private node's record is an effect too (`T-020-58`), and so is a read of a holding account's balance
+        // (`T-020-63`, which the test worlds' stand-in holder now answers for every node, `T-020-60`), but neither is a
+        // move: the plans count the moves.
+        if matches!(
+            value["what"]["action"]["kind"].as_str(),
+            Some("read_node_record" | "read_holding_balance")
+        ) {
             return;
         }
         let mut seen = self.seen.borrow_mut();

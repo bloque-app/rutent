@@ -11367,13 +11367,27 @@ carry-overs touch.
 1a. No sequencer: the adapter's docs; `reader_request_ids_are_drawn_…` and the source scan.
 2. Start-up check and listing: `network_whose_reader_is_unreachable_does_not_start_and_cannot_be_listed`,
    `reader_whose_rules_differ_from_its_listing_does_not_start` (identity and trust rule held to the listing, not to the host's
-   configuration); the operator is told why through `Core::not_started` (see the gaps: not yet a raise entry).
+   configuration); the operator is told why by a raise in the log: core-internal 1.0.0's `Difference::ReaderNotStarted
+   {network, why}` (folded in, with its relation `raise-of-a-reader-not-started-cites-its-listing`), raised by
+   `closing::readers::Raised` once in a spell, citing the listing the reader was held to. The assembly's
+   `Core::not_started` is gone. Tests: `raise_of_a_network_whose_reader_did_not_start_cites_its_listing` (contracts),
+   `network_whose_reader_does_not_start_is_raised_once_in_its_spell_citing_its_listing` (scenarios).
 3. One answer per pass: `one_grading_reads_each_movement_once_from_its_reader`.
 4. Unreadable: `unreadable_reader_settles_nothing_and_grades_nothing_down` (scenario) and
    `unreadable_network_waits_settles_nothing_and_closes_no_part` (`core-orch`); `final_deposit_to_a_network_whose_reader_is_unreadable_is_not_routed_to`.
 5. `read_by`: core-internal `PublicMovement.read_by` (`MovementReader`), required, folded into 1.0.0 with every fixture and a
    changelog line; `Closing::recorded` rebuilds it into `Seen`. `evidence_entry_names_the_reader_and_the_version_…`.
-6. Reversal back into a held public node: **not built** (see the gaps).
+6. Reversal back into a held public node (`reversal/`): before Core asks the holding account of a route handed on at a
+   public node whether a reversed move's value came back, it reads the node's network through its reader (`read_return`):
+   the movement the network ties to the reversed segment's transaction, into the `holder` the order's `holding_withdrawal`
+   names, final, of the segment's asset and amount in full. With none, nothing is asked (`NotCounted::NotReturned`); an
+   unreadable reader asks nothing and settles nothing (`ReaderUnreadable`). With it, Core hands the deployment its reading
+   (`Providers::keep_reading`, under `reading/{segment}`), the deployment keeps it in the account's own state, and the plain
+   wallet confirms only on such a reading (`wallet::Reading`: final, that segment, into itself, on its node, in full). The
+   completion's `evidence` names the movement and the reader and version that read it. `Fleet::credit_wallet` is gone; the
+   scenarios drive the network (`Fleet::return_on_network`). Tests: `reversal_back_into_a_held_public_node_is_confirmed_from_the_networks_reader`
+   (the row's), `movement_into_another_account_or_short_doesnt_confirm_a_reversal_into_a_held_node`, and the wallet's
+   `wallet_confirms_a_reversed_segments_credit_only_in_full_from_its_statement`. F-016's notes carry the wallet's half.
 7. Restarts: `listed_reader_is_checked_again_after_core_reopens_and_its_evidence_still_reads`.
 - #343 L3 (leaf as anchor): `TlsRefusal::NotACa`, and `OtherCa` for a listing naming another digest. L5: the scan. L7: a
   delisting of a network never listed is refused (`may_delist`, `DelistRefused::NeverListed`).
@@ -11392,6 +11406,26 @@ carry-overs touch.
 - T-020-67's Lows 1, 3, 4: the tick's reads rebuilt from `by: tick` (`rebuilt_tick_reads`), a failed read before its effect
   counts no try (the tick's try is counted at its effect), a tick-taken record forgives no grading try.
   `tick_reads_are_rebuilt_from_the_log_and_a_tick_taken_record_forgives_no_grading_try`. The CHANGELOG says `by` has no default.
+- T-020-61's round 2, the stand-in holding module for the test worlds: `kit::LEDGER_HOLDER`. The deployment's register
+  names it as the account of each simulated provider's private node (in the asset its tuples hold there) and of each kit
+  public node whose catalogued holder is the kit's operator wallet with no wallet installed; the assembly's `Modules` port
+  answers its `holding_balance` from the world, stating what Core's orders rest there now. An installed wallet or publisher
+  account takes its place. `gross_charged`, `charge_check`, `quoting` and `report_pairs` read every raise again and assert
+  none but their own; `private_nodes` counts its own node's checks; the assembled core's planted crash counts moves only,
+  past a balance read's effect as past a record read's (`durable.rs`). A real Core fix it surfaced: an account whose
+  module changed (the stand-in, then an installed publisher account) cited the earlier module's check in its not-read
+  raise, which the log refused, so the spell was never recorded and it was raised at every try; `spell_of` now takes the
+  account's last check by its own provider (`one_unreadable_account_does_not_make_the_check_read_every_account_every_tick`).
+- `components/core-orch/tests/reversal.rs`'s two graded-evidence fixtures named no `read_by` (item 5's required field):
+  the earlier local runs took core-orch's `--lib` and `--test closing` only; every core-orch binary runs now.
+- T-020-67's Low 2 and its notes: `segment_capped_on_its_node_record_reads_is_named_by_the_stuck_check` (`stuck.rs`; the
+  harness lists Core's actor for `ReadNodeRecord` in that test alone, `list_node_record_reads`); the T-020-67 notes and `MAX_TICK_TRIES`'s docs made exact.
+- #351's round 3 Lows: `resting_totals_by_asset_key_each_value_by_node_order_and_asset`; the tick's done set keeps the
+  transactions the record it took was about (`segments::records::covers`), so a later segment's transaction at the node gets
+  the record asked again (`tick_asks_again_for_a_record_that_lacks_a_later_segments_transaction`), rebuilt from the last
+  tick read's `about` on reopen; R12 (the tick's own due time) has a reason, not a red: see the rule-off table.
+- T-024-25's Low 3, the timeout path: `sim_reader`'s `hang` act and
+  `reader_that_hangs_is_unreadable_once_its_host_gives_it_up_and_its_segment_waits`.
 - The check of `T-015-05` at `3a53de34`: the comment in `prov/src/proxy/statement_keys.rs` now says the token's policy is the
   bound; F-015's notes record the reserved handshake slot; the past-deadline test's answers take 1 000 ms an endpoint, leaving
   margins of 300 ms and 2 s.
@@ -11402,26 +11436,26 @@ carry-overs touch.
 - A network no listing names reads as no record (`Ok(None)`), as before this row: listing every network a route can touch is
   the deployment's to do; the scenarios list every one.
 - The rules a pass reads are asked each pass (not kept from the start-up check): Core keeps no copy of a network.
-- The operator is told why a network didn't start through `Core::not_started` and the catalogue's withheld mark.
+- The operator is told why a network didn't start by a raise in the log, and the catalogue's withheld mark. The raise's
+  spell is Core's process's own (`Raised`): a reopened Core raises each network still not started once more. Its id is
+  `reader-not-started-{network}-{n}`, drawn from nothing seeded.
+- A held public node's holding account is named on its network by its holder's id, as the simulated networks name it:
+  the catalogue registers no address per holding account yet. A deployment that keeps no reading for a holding account
+  (`Providers::keep_reading`'s default) is never asked, and the reversal stays owed.
+- The test worlds' stand-in holder states what Core's orders rest at a node, so the holding check finds no difference
+  there: a difference is the business of the scenarios that install a real account.
 
 ### Gaps, with owners
 
-- **(6) A reversal into a held public node confirmed from the network's reader, and `Fleet::credit_wallet` going**: not built.
-  It needs the plain wallet to confirm on a reading Core hands it (the guest's `wallet.credit` outside part, the
-  `reversal_confirmation` question) and Core's reversal path (`reversal/`) to read the movement into the holding account named by
-  `holding_withdrawal` through its reader: outside this row's edit list. Owner: a follow-up row under F-020 with F-016's wallet;
-  `credit_wallet` keeps its note that it stands in for the reader.
-- **The not-started raise**: a `Difference` of its own (`reader_not_started`) is a core-internal shape not yet in the contract;
-  until then the operator reads `Core::not_started`. Owner: the contract round of `T-020-45`'s kind.
-- **The stand-in holding module for the test worlds** (from `T-020-61`'s round 2): not built here; the scenarios still count
-  around the private ledgers' `not answered` raises. Owner: `T-020-61`'s follow-up, or F-024.
+- **A holding account's address on its network**: the catalogue names none, so a held public node's account is named by its
+  holder's id (see the defaults). Owner: F-016, with `F-031`'s first real readers.
 - **A public node's `confirmations`** (#326's first comment) still stop at `Settings`: a reader's `movement_status` says final by
   its own rule, and no answer carries a depth Core could hold to the operator's count. Owner: `F-031` with the readers.
 - **The VOS scenarios** (`rutent-scenarios-vos`) build this library, whose assembly now starts the reader host's process: their
   runner must build `examples/sim_reader` and set `RUTENT_SIM_READER`. Owner: F-024 with the VOS session (`stm-vos.yml` is a
   `DEC-20` path this row doesn't edit).
-- T-024-25 Low 4 (a nested dependencies header no longer refused by boundary-check) and T-020-67's capped-segment stuck-check
-  test and its notes' exactness: not done here. Owner: the next round of this row.
+- The edit list names `components/prov/module-guests/` for the plain wallet; the wallet's guest is
+  `components/prov/guests/plain-wallet/`, which item (6) edits (its own workspace, formatted and linted as `ci.yml` does).
 
 ### A scenario's Core clock and the host's wall clock
 
@@ -11431,6 +11465,36 @@ the host dead. The scenario deployment gives Core's adapter a window of ten year
 still waits at most `ANSWER_WINDOW` on the operating system's clock, and Core's own deadline check on arrival is unchanged
 (`reader_answer_past_its_deadline_by_cores_clock_is_unreadable` drives it with a clock that jumps). A production deployment
 keeps the host's clock synchronised with Core's, as `T-015-05`'s notes say, and keeps the 30 s window.
+
+### The scenario answer window, judged again
+
+The brief asked to prefer giving the scenario's reader host the scenario's clock, a test-only clock setting for the host
+binary, so the real 30 s window applies in scenarios. Kept the window instead, for three reasons:
+
+1. **It would put a settable clock into a `DEC-20` binary.** The reader host is a `DEC-20` path; a clock that a feature or
+   setting moves is a surface the security review of those paths would have to clear in a production build too, for a
+   check (the host drops a question already dead) that only saves the host work: whether an answer is in time is Core's,
+   on Core's clock, which this row holds and tests (`reader_answer_past_its_deadline_by_cores_clock_is_unreadable`).
+2. **The scenario's clock lives in the test's process, behind an `Rc`.** The host runs as a process of its own; following
+   Core's clock there needs Core's readings shipped to it before each pass (the world's loopback), at every place the
+   assembly builds a pass, and a clock that is behind is harmless while one ahead drops live questions: the window is the
+   simpler bound with the same effect.
+3. **Nothing waits longer for it.** Core's socket still waits at most `ANSWER_WINDOW` on the operating system's clock, and the
+   host's own hang bound gives up a silent reader well before that
+   (`reader_that_hangs_is_unreadable_once_its_host_gives_it_up_and_its_segment_waits`), so the long window hides no hang.
+
+A production deployment keeps the 30 s window and the host's clock synchronised with Core's (`T-015-05`'s notes).
+
+### Departures, kept
+
+- **Unlisted networks read as "no record"** (`Ok(None)`): a network no listing names is read as before this row, not as
+  unreadable; listing every network a route can touch is the deployment's. Kept; **for the reviewer**: it is the one place
+  a network is read without a reader, and failing it closed would refuse every route over a network the operator forgot
+  to list.
+- **The public list takes plain flags** (`Catalogue::list_public_network(network, listed, started)`): the catalogue can't
+  name core-internal's types, so the assembly hands it what the listing and the start-up check said.
+- **Named gaps**: the VOS runner (`RUTENT_SIM_READER`, owner F-024 with the VOS session) and `F-031`'s confirmations (a
+  node's `confirmations` setting).
 
 ### Rule-off (each rule switched off alone, its test run, the file restored; script `ruleoff.py` in the row's scratch folder)
 
@@ -11456,14 +11520,37 @@ keeps the host's clock synchronised with Core's, as `T-015-05`'s notes say, and 
 | R17 boundary-check refuses a nested dependencies table | `a_table_header_inside_a_string_hides_no_dependency` red |
 | R18 `read_by` required by the schema | `every_valid_fixture_validates_and_every_invalid_one_is_rejected` red |
 
+| R19 a held public node's reversal asked only on Core's reading (`held_public` forced false) | `reversal_back_into_a_held_public_node_is_confirmed_from_the_networks_reader` red (the planted credit record and reading confirmed it) |
+| R20 the movement back held to the holder (`read_return`'s destination) | `movement_into_another_account_or_short_doesnt_confirm_a_reversal_into_a_held_node` red (the wallet refused, but was asked) |
+| R21 the movement back held to the amount in full | the same, red |
+| R22 an unreadable reader reads as unreadable, not as no movement | `reversal_back_into_a_held_public_node_is_confirmed_from_the_networks_reader` red |
+| R23 the completion's `evidence` names the movement and its reader | the same, red |
+| R24 the wallet holds the reading's destination to itself | `wallet_confirms_a_reversed_segments_credit_only_in_full_from_its_statement` red |
+| R25 the wallet confirms only a `final` reading | the same, red |
+| R26 `raise-of-a-reader-not-started-cites-its-listing`'s network field | `raise_of_a_network_whose_reader_did_not_start_cites_its_listing` red |
+| R27 a network raised once in its spell | `network_whose_reader_does_not_start_is_raised_once_in_its_spell_citing_its_listing` red |
+| R28 the spell ends when the reader passes | the same, red |
+| R29 the raise appended | `network_whose_reader_is_unreachable_does_not_start_and_cannot_be_listed` red |
+| R30 the test worlds' stand-in holder answers | `report_pairs` red (three tests: the holding check raises again) |
+| R31 the grading's cap on node-record reads, against the new test | `segment_capped_on_its_node_record_reads_is_named_by_the_stuck_check` red |
+| R32 the tick's done set covers only what its record was about (`covers`) | `tick_asks_again_for_a_record_that_lacks_a_later_segments_transaction` red |
+| R33 a not-read spell's last check is the account's own provider's (`spell_of`) | `one_unreadable_account_does_not_make_the_check_read_every_account_every_tick` red |
+
+**R12 (the tick's own due time), a reason in place of a red.** Switched off (`due` forced true), `publishers_record` stays
+green: the tick's due time and the `PublishersRecords` job's cadence are one setting (`publishers_records`, which
+`set_record_retry_seconds` follows), so the job's schedule gates every tick read before the due time can, and no history
+reaches it. It stays as defence in depth for a job the schedule runs early (a reopened Core's first tick runs every job).
+
 Not switched off on its own: the tick's try counted at its effect rather than at the ask (T-020-67's Low 3), which no test
-reaches yet (a read failing before its effect on the tick); noted as a gap with the capped-segment test.
+reaches (a read failing before its effect on the tick).
 
 ### Local checks
 
-fmt (root) and clippy `--workspace --all-targets -D warnings`, clean; `rutent-core-orch --lib` (72) and `--test closing` (29);
-`rutent-core-authz --lib` (173, the entry-point scan with the two new catalogue methods listed); `rutent-contracts` and
-`rutent-core-audit`, and the contract guard against `origin/develop` and `origin/m3` (no violations); `rutent-boundary-check`;
-`rutent-reader-host` (its readers' tests with the stand-in readers built); the prov catalogue tests; the whole
-`rutent-scenarios` suite, every binary, then `invariants` and `assembly` on `RUTENT_SCENARIO_SEEDS=11..15,113..119`;
-`sim_readers` on its own; plan-check and tag-check `--strict` (0 findings, 2761 tests); `cargo tree -i aws-lc-rs` finds none.
+At the round's tip, with the plain wallet and the stand-ins built from this tree into a private folder
+(`RUTENT_PLAIN_WALLET`, `RUTENT_WASM_STANDINS`): fmt (root, module guests, plain wallet) and clippy `-D warnings` (root
+`--workspace --all-targets`, the module guests and the plain wallet as `ci.yml` lints them), clean; every `rutent-core-orch`
+binary (418) and `rutent-core-authz --lib` (173); `rutent-contracts` and `rutent-core-audit` (407), and the contract guard
+against `origin/develop` and `origin/m3` (no violations); `rutent-prov`'s `holding_wallet`, `holding_wallet_record`,
+`catalogue`, `catalogue_snapshot` and `role_suite`; `rutent-reader-host`; `rutent-conformance`; every `rutent-scenarios`
+binary (620, `--no-fail-fast`), then `invariants` and `assembly` on seeds 11..15 and 113..119; `sim_readers` on its own;
+plan-check and tag-check `--strict` (0 findings, 2771 tests).

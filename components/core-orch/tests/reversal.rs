@@ -618,7 +618,7 @@ impl Grading for PublicDeposit {
                 "what": { "call": "evidence", "evidence": settled.evidence, "order": settled.order,
                     "segment": settled.segment, "grade": 1, "whose": "co-ach", "rests_on": [settled.result],
                     "movement": { "network": "co-ach", "id": format!("mv-{}", settled.transaction.as_str()),
-                        "node": "ledger-in" } },
+                        "node": "ledger-in", "read_by": { "reader": "co-ach-reader", "version": "0.1.0" } } },
                 "when": { "at": settled.at, "source": "core_clock" },
                 "outcome": { "status": "observed" },
             }))
@@ -636,7 +636,8 @@ impl Grading for PublicDeposit {
             "who": settled.core,
             "what": { "call": "evidence", "evidence": settled.evidence, "order": settled.order,
                 "segment": settled.segment, "grade": 1, "whose": "polygon", "rests_on": [settled.result],
-                "movement": { "network": "polygon", "id": format!("mv-{}", settled.transaction.as_str()) } },
+                "movement": { "network": "polygon", "id": format!("mv-{}", settled.transaction.as_str()),
+                    "read_by": { "reader": "polygon-reader", "version": "0.1.0" } } },
             "when": { "at": settled.at, "source": "core_clock" },
             "outcome": { "status": "observed" },
         }))

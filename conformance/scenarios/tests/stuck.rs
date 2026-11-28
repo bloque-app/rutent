@@ -584,6 +584,7 @@ impl Grading for NeverTakes {
 // verifies: REQ-ORD-29, INV-3
 #[test]
 fn segment_capped_on_its_node_record_reads_is_named_by_the_stuck_check() {
+    segments_support::list_node_record_reads();
     let (mut world, mut core) = settled_history(&[30; HISTORY]);
     core.take_up(Named::another(21));
     let session = world.context().session;

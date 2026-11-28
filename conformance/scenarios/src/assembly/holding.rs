@@ -469,6 +469,12 @@ impl Core {
             .map_err(|e| AssemblyError::Listing(format!("the wallet's registration: {e:?}")))?;
         // The deployment's register of holding accounts names the wallet as the node's holder (`T-020-55`): policy reads
         // it there, never from the host's holdings.
+        // A wallet installed takes the place of the test world's stand-in holder there for good (`kit::LEDGER_HOLDER`).
+        self.deployed
+            .registers
+            .borrow_mut()
+            .stand_in_public
+            .remove(node);
         self.deployed
             .registers
             .borrow_mut()

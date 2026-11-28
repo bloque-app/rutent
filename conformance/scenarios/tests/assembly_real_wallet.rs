@@ -774,6 +774,9 @@ fn holder_the_register_does_not_name_is_raised_where_no_value_rests_too() {
     use rutent_core_orch::schedule::Job;
     let (mut core, _) = core_with("AC-6", &[CHAIN_IN, RAMP_B, OUT_B]);
     core.set_cadence(Job::HoldingCheck, 0);
+    // The node's holder is the kit's operator wallet, no wallet installed: the deployment's register names the test
+    // world's stand-in for it (`kit::LEDGER_HOLDER`), which this world's register is to lack.
+    core.registers().stand_in_public.remove(NODE);
     let listed: Vec<String> = core
         .catalogue()
         .nodes()
