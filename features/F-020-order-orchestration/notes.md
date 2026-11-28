@@ -10977,8 +10977,20 @@ Merged `origin/m3` at `64309ac3` (T-024-25, #353) as its own commit; the only co
 - **L3, done.** The yes a rebuilt quote cites is the reserve's verified result about the order answering a question Core
   stated under that transaction, never its last statement about the order. Recording the yes on the `shown` entry itself would
   be a core-internal change; the shape-and-transaction selection is exact without it.
-- **Not built in this round, each owned by this row:** M3 (the open orders at a reserve, the reliance declarations, release
-  acceptance through Core's decided path); M4's split-order test (no assembled world plants a split order: the split worlds
+- **The coordinator's rulings on this pass.** `show_fault`, `returned`, `late_approval` and `report_late` stay undecided:
+  they are signed statements Core keeps as their maker's, and policy must not be able to refuse to keep evidence.
+  `confirm_undone` is a named gap, for `T-025-05`'s security pass to rule on. The operator's `accept_fault` stays a command
+  needing no policy decision, as core-internal says. L3 stands without a contract change. The stand-in holding module that
+  would let the test worlds register their ledger nodes goes to `T-020-60`; the scenarios' counting around the raises stays.
+- **M3, first of three, done: the orders open at a reserve are Core's** (`arrival/open.rs`, `OpenAt`): derived from what
+  intake started and the segments the log took settled, each part whose first segment hasn't settled, its payer as holder,
+  its session, the part's amount on a split route. The deployment answers only which account a session speaks for, which
+  only its register of sessions holds (`REQ-CAT-3`). The assembly's derivation and its `requests` lookup go.
+- **Not built in this round, each owned by this row:** M3's other two (the reliance declarations made by Core: Core would
+  declare, as a segment carrying inputs is handed over, that each input its operation carries rests on the verifier's
+  judgement the operation's eligibility figure cites, the judgement's stated entry found in the log, in place of the
+  assembly's `rests_on`; and release acceptance through Core's decided accept, with the fleet and scenarios calling it in
+  place of the assembly's `grant` and `accept_release` writing effects); M4's split-order test (no assembled world plants a split order: the split worlds
   are core-orch's test `Core::split`, which has no `Ports`); L1 (item 9's four Lows); L6 (the stuck tests reached through
   Core's run); and the holding-check registration of the sim reserves' ledger nodes (item 8 of the message): every
   `kit::join` registers a private node's holding as `holding`, a module the platform doesn't run, so registering it would
