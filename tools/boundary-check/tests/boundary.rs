@@ -1,8 +1,9 @@
 //! Tests of the boundary check.
 
 use rutent_boundary_check::{
-    Dep, Graph, OUTER, PROV_CONFINE, PROV_KEYS, READER_HOST, SourceFinding, Why, defined_in,
-    holds_its_reexports, load, members, parse_manifest, sources_naming_core_internal, violations,
+    Dep, Graph, OUTER, PROV_CONFINE, PROV_KEYS, PROV_KEYS_FACADE, PROV_KEYS_WITHHELD, READER_HOST,
+    SourceFinding, Why, defined_in, holds_its_reexports, load, members, parse_manifest,
+    public_items_naming_any, sources_naming_core_internal, violations,
 };
 use std::path::{Path, PathBuf};
 
@@ -418,15 +419,31 @@ fn only_the_scenario_assembly_may_import_core_crates() {
 const PROV_CONFINE_FILE: &str = "//! The jail.\n\
     pub use crate::module::sandbox::{Limits, PROVIDER_ADDRESS_SPACE, Role, confine, isolated};\n";
 const PROV_KEYS_FILE: &str = "//! The keys.\n\
-    pub use crate::proxy::https::HttpsTransport;\n\
-    pub use crate::proxy::kv::{InvalidConfig, KvConfig, KvResolver, Server, Token};\n\
+    pub use crate::proxy::kv::Server;\n\
     pub use crate::proxy::resolver::{ResolveError, Resolver};\n\
-    pub use crate::proxy::settings::{\n    Bucket, InvalidSettings, RoleSettings, StoreAddress, StoreScheme, kv_bucket,\n};\n\
-    pub use crate::proxy::transport::TransportError;\n";
+    pub use crate::proxy::settings::{InvalidSettings, StoreAddress, StoreScheme};\n\
+    pub use crate::proxy::statement_keys::{KeyStoreSettings, StatementKeys};\n";
+/// The facade over a role's statement keys, as the real crate writes it: what it wraps is named in its private
+/// imports and bodies alone.
+const PROV_FACADE_FILE: &str = "//! The facade.\n\
+    use super::kv::{KvConfig, KvResolver, Token};\n\
+    use super::resolver::Resolver;\n\
+    use super::settings::{InvalidSettings, StoreAddress};\n\
+    pub struct KeyStoreSettings {\n    pub store: StoreAddress,\n    pub mount: String,\n    pub keys: String,\n}\n\
+    pub struct StatementKeys {\n    keys: Box<dyn Resolver + Send + Sync>,\n}\n\
+    impl StatementKeys {\n\
+    \x20   pub fn new(settings: &KeyStoreSettings, token: String) -> Result<Self, InvalidSettings> {\n\
+    \x20       let _ = (KvConfig::new(Token::new(token)), KvResolver::vault());\n\
+    \x20       todo!()\n\
+    \x20   }\n\
+    }\n\
+    impl Resolver for StatementKeys {\n\
+    \x20   fn resolve(&self) -> u8 {\n        let _: &KvResolver = todo!();\n    }\n\
+    }\n";
 const PROV_ROOT: &str =
     "//! A library.\npub mod confine;\npub mod keys;\npub mod module;\npub mod proxy;\n";
 /// The modules the admitted paths re-export from, each defining its items, as the real crate lays them out.
-const PROV_MODULES: [(&str, &str); 8] = [
+const PROV_MODULES: [(&str, &str); 9] = [
     (
         "prov/src/module/mod.rs",
         "//! The runtime.\npub mod sandbox;\n",
@@ -440,7 +457,8 @@ const PROV_MODULES: [(&str, &str); 8] = [
     (
         "prov/src/proxy/mod.rs",
         "//! The proxy.\nmod calls;\npub(crate) mod https;\npub(crate) mod kv;\npub(crate) mod resolver;\n\
-         pub(crate) mod settings;\npub(crate) mod transport;\npub use calls::CredentialProxy;\n",
+         pub(crate) mod settings;\npub(crate) mod statement_keys;\npub(crate) mod transport;\n\
+         pub use calls::CredentialProxy;\n",
     ),
     ("prov/src/proxy/https.rs", "pub struct HttpsTransport {}\n"),
     (
@@ -461,6 +479,7 @@ const PROV_MODULES: [(&str, &str); 8] = [
         "prov/src/proxy/transport.rs",
         "pub struct TransportError {}\n",
     ),
+    ("prov/src/proxy/statement_keys.rs", PROV_FACADE_FILE),
 ];
 
 struct Sources(PathBuf);
@@ -943,7 +962,7 @@ fn reader_host_reaches_the_providers_jail_and_key_resolver_through_their_admitte
     sources.write(
         "components/reader-host/src/lib.rs",
         "use rutent_prov::confine::{Limits, Role, confine, isolated};\n\
-         use rutent_prov::keys::{Resolver, kv_bucket};\n\
+         use rutent_prov::keys::{Resolver, StatementKeys};\n\
          use rutent_prov::egress::Egress;\n\
          fn f(_: &dyn rutent_prov::keys::Resolver) -> rutent_prov::confine::Role { todo!() }\n",
     );
@@ -1127,7 +1146,7 @@ fn providers_admitted_paths_resolve_by_layout_to_the_items_their_files_define() 
     }
     sources.write(
         "prov/src/proxy/settings.rs",
-        &format!("{}pub mod kv_bucket {{}}\n", PROV_MODULES[6].1),
+        &format!("{}pub mod StoreAddress {{}}\n", PROV_MODULES[6].1),
     );
     refused("a module beside a function", "prov/src/proxy/settings.rs");
     sources.write("prov/src/proxy/settings.rs", PROV_MODULES[6].1);
@@ -1256,6 +1275,149 @@ fn providers_admitted_paths_resolve_by_layout_to_the_items_their_files_define() 
             );
         }
     }
+}
+
+/// `rutent_prov::keys` is a facade over a process role's statement keys alone (`T-015-05`, the reviewer's Low on
+/// `T-015-04`): it re-exports the resolver interface, the facade and the settings it is built from, and not the bucket,
+/// the vault resolver, the store's token or its transport; and the facade's own public items name none of them, so a
+/// field, a getter, a re-export or a `Deref` can't hand one back to the reader host.
+// verifies: DEC-28, DEC-2, REQ-MDL-6
+#[test]
+fn providers_keys_path_is_a_facade_over_statement_keys_that_gives_back_nothing_it_keeps_inside() {
+    let host = manifest(
+        READER_HOST,
+        "rutent-contracts = { path = \"../../contracts\" }\nrutent-prov = { path = \"../prov\" }",
+        "",
+    );
+    let sources = Sources::new("reader-host-facade");
+    sources.write(
+        "Cargo.toml",
+        &format!(
+            "{}\n",
+            std::fs::read_to_string(sources.0.join("Cargo.toml"))
+                .unwrap()
+                .replace("members = [", "members = [\"components/reader-host\", ")
+        ),
+    );
+    sources.write("components/reader-host/Cargo.toml", &host);
+    sources.write(
+        "components/reader-host/src/lib.rs",
+        "use rutent_prov::keys::{KeyStoreSettings, Resolver, StatementKeys};\n",
+    );
+    assert_eq!(sources.findings(), vec![]);
+
+    // What T-015-04's `keys` re-exported beside the resolver: each, put back, widens the path.
+    for widened in [
+        "pub use crate::proxy::settings::Bucket;\n",
+        "pub use crate::proxy::settings::kv_bucket;\n",
+        "pub use crate::proxy::kv::{KvConfig, KvResolver};\n",
+        "pub use crate::proxy::kv::Token;\n",
+        "pub use crate::proxy::https::HttpsTransport;\n",
+        "pub use crate::proxy::transport::TransportError;\n",
+    ] {
+        let keys = format!("{PROV_KEYS_FILE}{widened}");
+        sources.write("prov/src/keys.rs", &keys);
+        expect(
+            sources.findings(),
+            &[("prov/src/keys.rs", 1, Why::WidensAnAdmittedPath)],
+        );
+    }
+    // A process role's settings, or the proxy's that hold them, beside the others from their file: a role's settings
+    // carry its `secrets` path, which the keys' resolver could be pointed at (the bypass of the first facade, #354's
+    // review, L1).
+    for role in ["RoleSettings", "ProxySettings"] {
+        sources.write(
+            "prov/src/keys.rs",
+            &PROV_KEYS_FILE.replace(
+                "{InvalidSettings, StoreAddress",
+                &format!("{{InvalidSettings, {role}, StoreAddress"),
+            ),
+        );
+        expect(
+            sources.findings(),
+            &[("prov/src/keys.rs", 1, Why::WidensAnAdmittedPath)],
+        );
+    }
+    sources.write("prov/src/keys.rs", PROV_KEYS_FILE);
+    assert_eq!(sources.findings(), vec![]);
+
+    // The facade hands back what it keeps inside: a public field, a getter, a re-export, a `Deref`, the bucket's
+    // secrets. Each is refused at its line.
+    let facade = "prov/src/proxy/statement_keys.rs";
+    let lines = PROV_FACADE_FILE.lines().count();
+    for (widening, line) in [
+        (
+            "pub struct Exposed {\n    pub keys: KvResolver<HttpsTransport>,\n}\n",
+            2,
+        ),
+        (
+            "impl StatementKeys {\n    pub fn transport(&self) -> &HttpsTransport { todo!() }\n}\n",
+            2,
+        ),
+        ("pub use super::kv::Token;\n", 1),
+        (
+            "impl core::ops::Deref for StatementKeys {\n    type Target = KvResolver;\n    \
+             fn deref(&self) -> &u8 { todo!() }\n}\n",
+            2,
+        ),
+        (
+            "impl StatementKeys {\n    pub fn secrets(&self) -> Box<dyn Resolver> { todo!() }\n}\n",
+            2,
+        ),
+        ("pub type Store = Bucket<u8>;\n", 1),
+        // The facade built from a process role's settings again, or its settings given a `secrets` path: L1's bypass.
+        (
+            "impl StatementKeys {\n    pub fn for_role(role: &RoleSettings) -> u8 { todo!() }\n}\n",
+            2,
+        ),
+        ("pub struct Settings {\n    pub secrets: String,\n}\n", 2),
+        (
+            "pub fn bucket() -> u8 {\n    kv_bucket()\n}\npub const T: Token = todo!();\n",
+            4,
+        ),
+    ] {
+        sources.write(facade, &format!("{PROV_FACADE_FILE}{widening}"));
+        expect(
+            sources.findings(),
+            &[(facade, lines + line, Why::WidensAnAdmittedPath)],
+        );
+    }
+    // Named in a private item or a body, it stays inside.
+    sources.write(
+        facade,
+        &format!(
+            "{PROV_FACADE_FILE}fn inner() -> KvResolver {{ todo!() }}\n\
+             pub(crate) fn transport() -> HttpsTransport {{ todo!() }}\n"
+        ),
+    );
+    assert_eq!(sources.findings(), vec![]);
+    // And a facade that isn't there fails closed.
+    std::fs::remove_file(sources.0.join(facade)).unwrap();
+    assert!(
+        sources
+            .findings()
+            .iter()
+            .any(|(file, _, why)| file == facade && *why == Why::WidensAnAdmittedPath)
+    );
+
+    // The real crate: `keys` re-exports the facade, and the facade's public items name nothing it keeps inside.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../components/prov/src");
+    assert!(
+        PROV_KEYS
+            .iter()
+            .any(|(module, items)| *module == PROV_KEYS_FACADE && items.contains(&"StatementKeys"))
+    );
+    let real = std::fs::read_to_string(root.join("proxy/statement_keys.rs")).unwrap();
+    assert_eq!(
+        public_items_naming_any(&real, PROV_KEYS_WITHHELD),
+        Vec::<usize>::new()
+    );
+    assert!(
+        PROV_KEYS
+            .iter()
+            .flat_map(|(_, items)| items.iter())
+            .all(|item| !PROV_KEYS_WITHHELD.contains(item))
+    );
 }
 
 /// The scenario assembly's tests run the simulated networks' readers in the test harness (`T-024-25`), so the assembly

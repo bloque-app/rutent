@@ -66,27 +66,43 @@ pub const PROV_CONFINE: &[(&str, &[&str])] = &[(
 )];
 
 /// What `rutent_prov::keys` (`components/prov/src/keys.rs`) re-exports, and nothing more: the
-/// resolver interface, its vault implementation and what builds it from a process role's settings,
-/// each from the module that defines it.
+/// resolver interface, the facade over a key store's statement keys and its settings
+/// ([`PROV_KEYS_FACADE`]), and what those settings are made of, each from the module that defines
+/// it (`T-015-05`). A process role's settings, which name its declared secrets' path, the bucket,
+/// its resolvers, its token and its transport ([`PROV_KEYS_WITHHELD`]) are not among them.
 pub const PROV_KEYS: &[(&str, &[&str])] = &[
-    ("proxy::https", &["HttpsTransport"]),
-    (
-        "proxy::kv",
-        &["InvalidConfig", "KvConfig", "KvResolver", "Server", "Token"],
-    ),
+    ("proxy::kv", &["Server"]),
     ("proxy::resolver", &["ResolveError", "Resolver"]),
     (
         "proxy::settings",
-        &[
-            "Bucket",
-            "InvalidSettings",
-            "RoleSettings",
-            "StoreAddress",
-            "StoreScheme",
-            "kv_bucket",
-        ],
+        &["InvalidSettings", "StoreAddress", "StoreScheme"],
     ),
-    ("proxy::transport", &["TransportError"]),
+    (PROV_KEYS_FACADE, &["KeyStoreSettings", "StatementKeys"]),
+];
+
+/// The module of the facade `rutent_prov::keys` re-exports (`T-015-05`): a key store's statement
+/// keys and the settings that name their path alone, and nothing else of a bucket.
+pub const PROV_KEYS_FACADE: &str = "proxy::statement_keys";
+
+/// What the facade keeps inside (`T-015-05`): a process role's settings (and the proxy's, which
+/// hold them), whose `secrets` path the host could point the keys' resolver at; the bucket and its
+/// declared secrets; the vault resolver and its configuration; the store's token and the transport
+/// to the store. No public
+/// item of the facade's file names one of them, in a signature, a public type's fields or variants,
+/// a trait impl (an associated type included), or a `pub use`, `pub type`, `pub const` or
+/// `pub static` ([`public_items_naming_any`]): so a field, a getter or a `Deref` can't hand one
+/// back. The facade holds what it wraps in a private field whose type names none of them.
+pub const PROV_KEYS_WITHHELD: &[&str] = &[
+    "Bucket",
+    "HttpsTransport",
+    "KvConfig",
+    "KvResolver",
+    "ProxySettings",
+    "RoleSettings",
+    "Token",
+    "Transport",
+    "kv_bucket",
+    "secrets",
 ];
 
 /// The crates of ours that `krate` may depend on (DEC-2).
@@ -302,7 +318,8 @@ pub enum Why {
     /// An admitted path of the provider system re-exports more, or other, than it is admitted
     /// with ([`PROV_CONFINE`], [`PROV_KEYS`]), holds anything but those re-exports, re-exports a
     /// name its source file doesn't define, or is reached other than by plain declarations and
-    /// file layout.
+    /// file layout; or the facade `keys` re-exports names in a public item what it keeps inside
+    /// ([`PROV_KEYS_WITHHELD`]).
     WidensAnAdmittedPath,
 }
 
@@ -582,6 +599,16 @@ fn declares(header: &str, word: &str) -> bool {
 /// `pub static`. Function bodies and private items aren't public, and comments and literals are
 /// skipped.
 fn public_items_naming(text: &str) -> Vec<usize> {
+    public_items_naming_any(text, &[CORE_INTERNAL])
+}
+
+/// The 1-based lines where a public item of `text` names any of `names`: its signature, a public
+/// item's body that is its interface (an enum's variants, a trait's items, a struct's fields, a
+/// trait impl, an associated type, an exported macro), or a `pub use`, `pub type`, `pub const` or
+/// `pub static`. Function bodies and private items aren't public, and comments and literals are
+/// skipped. Fails closed: a public struct's fields are all its interface, private ones too, and a
+/// name is found inside a longer one.
+pub fn public_items_naming_any(text: &str, names: &[&str]) -> Vec<usize> {
     #[derive(Clone, Copy, PartialEq)]
     enum Block {
         /// Items, each public or not by its own header.
@@ -597,7 +624,7 @@ fn public_items_naming(text: &str) -> Vec<usize> {
     let mut stack = vec![Block::Items];
     let (mut start, mut depth) = (0, 0i32);
     let flag = |from: usize, to: usize, found: &mut Vec<usize>| {
-        if let Some(at) = code[from..to].find(CORE_INTERNAL) {
+        if let Some(at) = names.iter().filter_map(|n| code[from..to].find(n)).min() {
             found.push(line_of(text, from + at));
         }
     };
@@ -1009,6 +1036,16 @@ fn admitted_path_findings(prov: &Path) -> std::io::Result<Vec<(PathBuf, usize)>>
             }
         }
     }
+    // The facade `keys` re-exports gives back nothing it keeps inside (`T-015-05`).
+    match module_file(&src, PROV_KEYS_FACADE) {
+        Ok(facade) => {
+            let text = std::fs::read_to_string(&facade).unwrap_or_default();
+            for line in public_items_naming_any(&text, PROV_KEYS_WITHHELD) {
+                found.push((facade.clone(), line));
+            }
+        }
+        Err(at) => found.push(at),
+    }
     found.sort();
     found.dedup();
     Ok(found)
@@ -1036,7 +1073,8 @@ fn admitted_path_findings(prov: &Path) -> std::io::Result<Vec<(PathBuf, usize)>>
 ///   module on the way declared other than plainly or found other than by file layout, an admitted
 ///   file that holds more or other than its re-exports, or a name they re-export that its source
 ///   file doesn't itself define ([`PROV_CONFINE`], [`PROV_KEYS`], [`holds_its_reexports`],
-///   [`declared_plainly`], [`defined_in`]).
+///   [`declared_plainly`], [`defined_in`]), or a public item of the facade `keys` re-exports that
+///   names what the facade keeps inside ([`PROV_KEYS_FACADE`], [`PROV_KEYS_WITHHELD`]).
 ///
 /// Fails closed: it matches the plain text, comments included, so a mention in a library's
 /// documentation fails too. A package [`OUTER`] names that isn't a member, and a symbolic link in

@@ -1,5 +1,5 @@
 //! Signing outside the reader (`T-015-04` part 3, `REQ-MDL-6` applied to readers). The host resolves each reader's key
-//! as the platform resolves a provider's, through `T-014-01`'s resolver over a vault bucket's keys (`KvResolver`, here
+//! as the platform resolves a provider's, through `T-014-01`'s resolver over a vault bucket's keys (`StatementKeys`, here
 //! over a stand-in store on loopback). Alone in its test binary: it sets the host's environment, where the binary reads
 //! its store's token, before any thread starts.
 
@@ -11,9 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use common::*;
-use rutent_prov::keys::{
-    HttpsTransport, RoleSettings, Server, StoreAddress, StoreScheme, Token, kv_bucket,
-};
+use rutent_prov::keys::{KeyStoreSettings, Server, StatementKeys, StoreAddress, StoreScheme};
 use rutent_reader_host::egress::Network;
 use rutent_reader_host::records::MemoryRecords;
 use rutent_reader_host::{Host, Services};
@@ -89,7 +87,7 @@ fn reader_never_holds_its_statement_key() {
         reader.statement_key.as_str()
     );
     let store = Store::serve(path.clone(), secret.as_str().to_owned());
-    let role = RoleSettings {
+    let store_settings = KeyStoreSettings {
         server: Server::Vault,
         store: StoreAddress {
             scheme: StoreScheme::Http,
@@ -98,14 +96,11 @@ fn reader_never_holds_its_statement_key() {
         },
         ca_file: None,
         mount: "secret".to_owned(),
-        secrets: "rutent/readers/secrets".to_owned(),
         keys: "rutent/readers/keys".to_owned(),
         namespace: None,
     };
-    let transport = HttpsTransport::for_role(&role).unwrap();
-    let keys = kv_bucket(&role, Token::new(token).unwrap(), transport)
-        .unwrap()
-        .keys;
+    // The facade over the store's statement keys alone (`T-015-05`): its settings name no secrets path.
+    let keys = StatementKeys::new(&store_settings, token.to_owned()).unwrap();
 
     let host = Host::start(
         host_config(vec![reader.clone()]),
