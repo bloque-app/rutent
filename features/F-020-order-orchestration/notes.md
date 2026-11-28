@@ -11230,6 +11230,12 @@ A new author, from `d671c898`. `origin/m3` (`3a53de34`) was already merged and d
   named for no provider; no shape change, one valid fixture, the README and CHANGELOG. Core takes it as it takes every
   setting (`Targets::reversals`, `Settings::reversal_retry_seconds`), and again as it reopens; until set, 30 s, capped
   at 24: `reversal_retry_cadence_is_the_operators_setting_and_holds_across_a_restart`; R38, R39.
+- **Local checks after the ruling** (through the lock, the stand-ins and plain wallet built privately and deleted after):
+  fmt; clippy `--workspace --all-targets -D warnings`; `rutent-core-orch` (lib and tests), `rutent-core-authz --lib`
+  (172), `rutent-contracts`, `rutent-core-audit`; the guard against `origin/develop` and `origin/m3` (no violations);
+  `rutent-scenarios` `--lib`, `reversing`, `simulated_faults`, `assembly_policy`, `protocol_cutover`, `ending`,
+  `invariants` (19) and `reopened` (11) with `RUTENT_SCENARIO_SEEDS=11..15,113..119`; plan-check and tag-check
+  `--strict` (0 findings).
 
 **Local checks of this round** (through the lock; the stand-ins and the plain wallet built from this tree in a private
 directory and deleted after): fmt; clippy `--workspace --all-targets -D warnings`; `rutent-core-orch` (lib and tests) and
