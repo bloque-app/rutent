@@ -684,6 +684,8 @@ impl Reversals {
         // Each reversal's asks, their outcomes and answers, its carrying-on, its confirmations and its carrier
         // (`asks`, the review of #355's round 2, H1).
         reversals.rebuild_asks(history, kept);
+        // Each failed segment's showing of fault, kept before the restart (the coordinator's ruling on round 3).
+        reversals.rebuild_showings(history, kept);
         reversals
     }
 

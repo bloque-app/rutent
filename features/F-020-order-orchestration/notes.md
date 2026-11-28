@@ -10874,6 +10874,9 @@ log and the evidence store the log already reads. **Every caller of v0 behaviour
 | R34 the repeat row's `read_recorded_answer` arm (round 2's M1) | `read_of_a_recorded_answer_is_held_to_the_segments_unsettled_move_at_its_provider` red |
 | R35 `reversal-is-asked-again-only-after-a-refusal` (core-internal) | `reversal_asked_again_after_an_ask_that_may_have_moved_is_refused_by_the_log` red |
 | R36 the repeat row's arm for a reversal whose ask has no final outcome | `reversal_asked_again_after_an_ask_that_may_have_moved_is_refused_by_the_log` red |
+| R37 a showing of fault kept before a restart rebuilt on reopen (`Reversals::rebuild_showings`) | `fault_shown_before_a_restart_is_accepted_after_it_without_a_new_showing` red |
+| R38 the operator's `reversal_retries` cadence taken as it is set | `reversal_retry_cadence_is_the_operators_setting_and_holds_across_a_restart` red |
+| R39 the same cadence put back as Core reopens (`Settings::apply`) | `reversal_retry_cadence_is_the_operators_setting_and_holds_across_a_restart` red |
 
 ### Local checks
 
@@ -11195,7 +11198,7 @@ A new author, from `d671c898`. `origin/m3` (`3a53de34`) was already merged and d
     an ask that may have moved: `unanswered`, no result, or `done`.
 14. **The retry cadence is 30 s and the cap 24** (`DEFAULT_REVERSAL_RETRY_SECONDS`, `MAX_REVERSAL_TRIES`), for the
     confirmations and the asks after a refusal alike, so the stuck window of a provider that advertises settling in a
-    minute holds a few asks. `Reversals::set_retry_seconds` sets another; no operator setting carries it yet (a gap).
+    minute holds a few asks, until the operator sets another (`reversal_retries`, below). The cap is not a setting.
 15. **A carrying-on of a reversal policy refused is not tried again**: the reversal waits on its confirmations and the
     stuck check.
 16. **An advertisement is not a decided action** (M2's "through policy"): what policy decided of it is the operator's
@@ -11205,14 +11208,28 @@ A new author, from `d671c898`. `origin/m3` (`3a53de34`) was already merged and d
     and the listing judges each advertisement by the settings the log held when it was received.
 18. **The operator's confirmation of releases a restarted platform holds follows Core's reopen**: the landings owed are
     asked again once the wallets run, as before.
+19. **A rebuilt showing counts as disputed** where the log holds any `dispute` stuck declaration of its order after it.
 
 **Gaps of this round, with owners.**
 
 - `change_public_network` records `done` with nothing carried out: `T-020-60` (stacked on this branch, in progress).
-- No operator setting carries the reversal retry cadence (core-internal names no job for it): F-020's follow-up row.
-- A provider's showing of fault kept before a restart isn't rebuilt (`Reversals` holds it in memory), so `accept_fault`
-  answers `NoShowing` after a reopen until the provider shows it again (fails closed): F-020's follow-up row. The
-  reversal's own run (its asks, confirmations and carrier) is rebuilt.
+- (Both closed in this row by the coordinator's ruling, below: the reversal cadence's operator setting, and a showing of
+  fault kept before a restart.)
+
+**The coordinator's ruling on round 3** (no follow-up row owns them, so this row does):
+
+- **A showing of fault kept before a restart is rebuilt** (`Reversals::rebuild_showings`, called by `Reversals::reopened`,
+  so by Core's reopen), as item (6) rebuilds `Reversals.later`: the last stated result of a failed segment's own
+  transaction by the provider its move went to, taken after the move's first result, whose kept bytes name a fault,
+  with its receipt; disputed where the log holds a `dispute` stuck declaration of the order after it (default 19: a
+  dispute of another part of the same order also settles it, failing closed). The party it names accepts it after a
+  restart with no new showing, the carrier resting on the showing the log took before:
+  `fault_shown_before_a_restart_is_accepted_after_it_without_a_new_showing`; R37.
+- **The reversal retry cadence is an operator setting**: core-internal 1.0.0 (folded, `DEC-20`) names
+  `REVERSAL_RETRIES_JOB` (`reversal_retries`), the `cadence` setting's job for how often Core asks a reversal again,
+  named for no provider; no shape change, one valid fixture, the README and CHANGELOG. Core takes it as it takes every
+  setting (`Targets::reversals`, `Settings::reversal_retry_seconds`), and again as it reopens; until set, 30 s, capped
+  at 24: `reversal_retry_cadence_is_the_operators_setting_and_holds_across_a_restart`; R38, R39.
 
 **Local checks of this round** (through the lock; the stand-ins and the plain wallet built from this tree in a private
 directory and deleted after): fmt; clippy `--workspace --all-targets -D warnings`; `rutent-core-orch` (lib and tests) and

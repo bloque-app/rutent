@@ -1659,6 +1659,7 @@ impl Core {
                 arrivals: Some(&mut self.arrivals),
                 platform: Some(&mut self.fleet.platform),
                 segments: Some(&self.segments),
+                reversals: Some(&mut self.life.reversals),
             },
             &rutent_core_orch::settings::SettingAsked {
                 setting,

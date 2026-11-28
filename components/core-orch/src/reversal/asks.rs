@@ -20,6 +20,8 @@
 //! Everything here is the log's: a Core that reopens rebuilds the asks, their outcomes and answers, whether the last was
 //! carried on, the confirmations asked and who carries the reversal from its entries ([`Reversals::rebuild_asks`]).
 
+use std::collections::BTreeMap;
+
 use rutent_contracts::core_internal::{
     About, Action, DecisionRequest, Effect, Entry, Outcome, Permit, Receipt, What,
 };
@@ -613,6 +615,130 @@ impl Reversals {
                     }
                 }
             }
+        }
+    }
+}
+
+impl Reversals {
+    /// Rebuilds, from `history`, each failed segment's showing of fault its provider gave Core before a restart (the
+    /// coordinator's ruling on round 3 of #355; `REQ-ORD-11`, `NFR-6`), as item (6) rebuilds the late statements: the
+    /// last stated result of the segment's own transaction, by the provider its move went to, that the log took after
+    /// the move's first result and whose kept bytes, read back through `kept`, name a fault, with the receipt the log
+    /// gave it; disputed where the log holds a `dispute` stuck declaration of the order after it. So the party it names
+    /// accepts it after a restart as before one, with no new showing; one accepted already is settled by its carrier.
+    pub(super) fn rebuild_showings(
+        &mut self,
+        history: &[(Receipt, Entry)],
+        kept: &mut dyn FnMut(&Digest) -> Option<Vec<u8>>,
+    ) {
+        use rutent_contracts::state_machine::{Observed, StuckReason};
+        // Each move: its provider, and where its first result is.
+        let mut moves: BTreeMap<(String, String), (Receipt, Id, Option<usize>)> = BTreeMap::new();
+        let mut transactions: BTreeMap<(String, String), Id> = BTreeMap::new();
+        for (place, (receipt, entry)) in history.iter().enumerate() {
+            match entry {
+                Entry::Verified(v) => match &v.what {
+                    What::Effect {
+                        action:
+                            Action::MoveValue {
+                                order,
+                                segment,
+                                provider,
+                                ..
+                            },
+                        ..
+                    } => {
+                        moves
+                            .entry(key(order, segment))
+                            .or_insert_with(|| (receipt.clone(), provider.clone(), None));
+                    }
+                    What::Result { effect } => {
+                        for (effect_at, _, first) in moves.values_mut() {
+                            if effect_at == effect && first.is_none() {
+                                *first = Some(place);
+                            }
+                        }
+                    }
+                    _ => {}
+                },
+                Entry::Stated(s) if s.what.statement.as_str() == OPERATION_SHAPE => {
+                    if let Some(about) = &s.about
+                        && let (Some(order), Some(segment), Some(transaction)) =
+                            (&about.order, &about.segment, &about.transaction)
+                    {
+                        transactions
+                            .entry(key(order, segment))
+                            .or_insert_with(|| transaction.clone());
+                    }
+                }
+                Entry::Stated(_) => {}
+            }
+        }
+        for (place, (receipt, entry)) in history.iter().enumerate() {
+            let Entry::Stated(stated) = entry else {
+                continue;
+            };
+            if stated.what.statement.as_str() != RESULT_SHAPE {
+                continue;
+            }
+            let Some(about) = &stated.about else { continue };
+            let (Some(order), Some(segment), Some(transaction)) =
+                (&about.order, &about.segment, &about.transaction)
+            else {
+                continue;
+            };
+            let at_key = key(order, segment);
+            let Some((_, provider, Some(first))) = moves.get(&at_key) else {
+                continue;
+            };
+            if place < *first
+                || transactions.get(&at_key) != Some(transaction)
+                || &stated.attribution.maker().acts != provider
+            {
+                continue;
+            }
+            let Some(bytes) = kept(&stated.commitment) else {
+                continue;
+            };
+            let Some(fault) = super::fault_shown(&bytes, transaction) else {
+                continue;
+            };
+            let mut appended = stated.clone();
+            appended.attribution = rutent_contracts::core_internal::Attribution::Unverified {
+                claimed_by: appended.attribution.maker().clone(),
+            };
+            let Ok(general) = rutent_contracts::core_internal::calls::GeneralEntry::try_from(
+                Entry::Stated(appended),
+            ) else {
+                continue;
+            };
+            let disputed = history[place..].iter().any(|(_, e)| match e {
+                Entry::Verified(v) => matches!(
+                    &v.what,
+                    What::Input { input } if input.subject.order.as_str() == order.as_str()
+                        && matches!(input.observed, Observed::StuckDeclared { reason: StuckReason::Dispute, .. })
+                ),
+                Entry::Stated(_) => false,
+            });
+            let provider = provider.clone();
+            let reversal = self.reversal_of(order, segment, &provider);
+            if !reversal.showings.iter().any(|(b, _)| *b == bytes) {
+                reversal.showings.push((
+                    bytes,
+                    Step {
+                        entry: general,
+                        receipt: Some(receipt.clone()),
+                    },
+                ));
+            }
+            reversal.showing = Some(super::Showing {
+                fault,
+                receipt: receipt.clone(),
+                commitment: stated.commitment.clone(),
+                transaction: transaction.clone(),
+                disputed,
+                pending: false,
+            });
         }
     }
 }

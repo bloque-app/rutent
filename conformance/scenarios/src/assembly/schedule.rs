@@ -114,6 +114,21 @@ impl Core {
             .expect("the job's cadence is set");
     }
 
+    /// Sets how often Core asks a failed segment's reversal again, its confirmation or an ask its provider refused,
+    /// through the operator's command, as [`Core::set_cadence`] does (`reversal_retries`, `T-020-61`).
+    ///
+    /// # Panics
+    ///
+    /// If policy doesn't permit the setting.
+    pub fn set_reversal_retry_cadence(&mut self, seconds: u64) {
+        self.set_setting(&cadence(
+            rutent_contracts::core_internal::REVERSAL_RETRIES_JOB,
+            seconds,
+            None,
+        ))
+        .expect("the reversals' retry cadence is set");
+    }
+
     /// Sets how often a segment unknown at `provider` is asked its status again, through the operator's command, as
     /// [`Core::set_cadence`] does: the status question's cadence for that provider.
     ///

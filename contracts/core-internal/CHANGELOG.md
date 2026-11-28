@@ -1,6 +1,13 @@
 # core-internal changelog
 
 ## 1.0.0
+- `T-020-61` (the coordinator's ruling on round 3 of #355; `REQ-ORD-3`, `NFR-6`): `REVERSAL_RETRIES_JOB`
+  (`reversal_retries`), the name a `cadence` setting gives how often Core asks a failed segment's reversal again (its
+  confirmation of the origin reserve, and an ask its provider refused), named for no provider; the `job` field's
+  description says so. Core holds it as it holds every setting, and again on reopening; until it is set, Core's own
+  default. No shape changes and no relation of its own, so the relation count is unmoved. Folded into this unreleased
+  version. Fixture: valid `decision-request-to-set-the-reversal-retry-cadence`. Ignorable: yes, a reader that ignores
+  it keeps Core's default cadence. (DEC-4, DEC-20, T-020-61)
 - `T-020-61` (the review of #355's round 2, H1; `REQ-ORD-3`, `INV-8`): the row `reversal-is-asked-again-only-after-a-refusal`
   (none other): an `ask_reversal` effect is refused where an earlier `ask_reversal` effect of the same order and segment
   has a result other than `failed`, or none. Each ask goes under a transaction of its own, so a provider can't tell a second

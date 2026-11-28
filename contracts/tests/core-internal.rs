@@ -5418,6 +5418,22 @@ fn confirming_a_providers_releases_is_a_catalogue_change_of_its_own() {
     ] {
         assert_rejected(name);
     }
+    // How often Core asks a reversal again is a cadence of its own, named for no provider (`T-020-61`).
+    let name = "decision-request-to-set-the-reversal-retry-cadence";
+    assert_accepted_by_both(name);
+    let request: DecisionRequest = serde_json::from_value(fixture("valid", name)).unwrap();
+    let Action::ChangeCatalogue {
+        setting: Some(setting),
+        ..
+    } = &request.action
+    else {
+        panic!("a setting");
+    };
+    assert!(matches!(
+        setting.as_ref(),
+        OperatorSetting::Cadence { job, provider: None, .. }
+            if job.as_str() == rutent_contracts::core_internal::REVERSAL_RETRIES_JOB
+    ));
     let name = "decision-request-to-set-a-providers-status-cadence";
     assert_accepted_by_both(name);
     let request: DecisionRequest = serde_json::from_value(fixture("valid", name)).unwrap();

@@ -277,6 +277,45 @@ fn failed_segments_provider_carries_the_reversal_unless_it_shows_the_fault_was_t
     admitted(core);
 }
 
+/// A provider's showing of fault, kept before Core restarts, is rebuilt from the log as Core reopens (the coordinator's
+/// ruling on round 3 of #355, under #143's second blocker): the party it names accepts it after the restart with no new
+/// showing, and carries the reversal from then, recorded with the showing the log took before the restart.
+// verifies: REQ-ORD-11, NFR-6
+#[test]
+fn fault_shown_before_a_restart_is_accepted_after_it_without_a_new_showing() {
+    let mut failed = ramp_failing("AC-4", Behaviour::failing_by(Fault::Customer));
+    let Failed {
+        core,
+        session,
+        order,
+        ramp,
+    } = &mut failed;
+    core.owed_reversal(order, ramp).expect("owed");
+    let shown = showing(core, order, ramp);
+    let showing_receipt = core.show_fault(order, ramp, &shown).expect("shown");
+    let (order, ramp, session) = (order.clone(), ramp.clone(), session.clone());
+    let Failed { core, .. } = failed;
+    let given = execution_support::given(&[IN, EXCHANGE, QUICK, OUT]);
+    let mut core = Scenario::new("execution", "AC-4", given).reopen(core, 1, &mut Reference);
+    assert_eq!(
+        core.accept_fault(&order, &ramp, &kit::customer(), &session)
+            .expect("the customer accepts the showing kept before the restart"),
+        Carrier::Customer
+    );
+    assert_eq!(
+        core.reversal_carrier(&order, &ramp),
+        Some(Carrier::Customer)
+    );
+    assert!(
+        entries(&core).iter().any(|v| matches!(
+            &v.what,
+            What::ReversalCarrier { carrier: Recorded::Customer, showing: Some(s), .. } if *s == showing_receipt
+        )),
+        "the carrier rests on the showing the log took before the restart"
+    );
+    admitted(&core);
+}
+
 // verifies: REQ-ORD-11
 #[test]
 fn dispute_over_a_fault_makes_the_order_stuck() {
