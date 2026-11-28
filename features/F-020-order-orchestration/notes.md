@@ -11650,8 +11650,8 @@ reaches (a read failing before its effect on the tick).
 At the round's tip, with the plain wallet and the stand-ins built from this tree into a private folder
 (`RUTENT_PLAIN_WALLET`, `RUTENT_WASM_STANDINS`): fmt (root, module guests, plain wallet) and clippy `-D warnings` (root
 `--workspace --all-targets`, the module guests and the plain wallet as `ci.yml` lints them), clean; every `rutent-core-orch`
-binary (418) and `rutent-core-authz --lib` (173); `rutent-contracts` and `rutent-core-audit` (407), and the contract guard
+binary (418) and `rutent-core-authz --lib` (173); `rutent-contracts` and `rutent-core-audit` (409), and the contract guard
 against `origin/develop` and `origin/m3` (no violations); `rutent-prov`'s `holding_wallet`, `holding_wallet_record`,
 `catalogue`, `catalogue_snapshot` and `role_suite`; `rutent-reader-host`; `rutent-conformance`; every `rutent-scenarios`
-binary (620, `--no-fail-fast`), then `invariants` and `assembly` on seeds 11..15 and 113..119; `sim_readers` on its own;
-plan-check and tag-check `--strict` (0 findings, 2771 tests).
+binary (623, `--no-fail-fast`), then `invariants` and `assembly` on seeds 11..15 and 113..119; `sim_readers` on its own;
+plan-check and tag-check `--strict` (0 findings, 2776 tests). Rerun after merging `origin/f-020/t-020-61` at `7ddcef65`.

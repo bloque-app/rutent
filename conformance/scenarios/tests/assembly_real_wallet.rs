@@ -1961,6 +1961,21 @@ fn linked_orders_reversal_back_into_a_held_node_is_confirmed_by_the_nodes_wallet
         ),
         "nothing landed again"
     );
+    // That tick judged the reversal again, and found nothing back either.
+    let again = stuck
+        .core
+        .confirmed_on_tick(&linked.order, &segment)
+        .expect("the reversal is judged");
+    assert!(
+        matches!(
+            again,
+            Confirmation::NotCompleted {
+                statement: None,
+                why: NotCounted::NotReturned,
+            }
+        ),
+        "{again:?}"
+    );
 
     // The account took the credit back, in full, on the node's network: Core reads it through the node's reader, the
     // wallet confirms on that reading, and the reversal completes on its word (`T-020-60` (6)).
