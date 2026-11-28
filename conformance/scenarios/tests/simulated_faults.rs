@@ -395,12 +395,17 @@ fn refused_unknown_and_short_reversals_each_leave_the_order_stuck_with_nothing_m
         assert_eq!(core.world().journal(IN).len(), 1, "{name}");
         assert_eq!(core.world().journal(EXCHANGE).len(), 1, "{name}");
         assert_eq!(core.world().journal(OUT).len(), 0, "{name}");
-        // Asked again, an unknown or short reversal is not completed by a second undo.
+        // An unknown or short reversal may have moved value: it is never asked again under a fresh transaction (the
+        // review of #355's round 2, H1), however long it waits.
         if name != "refused" {
-            let again = core.asked_on_tick(order, ramp).expect("asked again");
-            assert!(again.completed.is_none(), "{name}: {again:?}");
+            core.clock
+                .advance(rutent_core_orch::reversal::DEFAULT_REVERSAL_RETRY_SECONDS);
+            assert!(
+                matches!(core.asked_on_tick(order, ramp), Err(StepError::NotNow(_))),
+                "{name}: never asked again"
+            );
         } else {
-            // A refusal moved nothing, so the same undo asked again is the one that happens, once.
+            // A refusal moved nothing, so the same undo asked again, past the cadence, is the one that happens, once.
             let again = core.asked_on_tick(order, ramp).expect("asked again");
             assert!(again.completed.is_some(), "{name}: {again:?}");
         }
@@ -1160,6 +1165,9 @@ fn value_undone_at_its_providers_cost_is_shown_back_by_another_party() {
             ..Behaviour::short_by(100)
         },
     );
+    // Asked again on the retry cadence, never on every tick (the review of #355's round 2, H1).
+    core.clock
+        .advance(rutent_core_orch::reversal::DEFAULT_REVERSAL_RETRY_SECONDS);
     let done = core.confirmed_on_tick(&order, &exchange).expect("asked");
     assert!(
         matches!(
@@ -1179,6 +1187,8 @@ fn value_undone_at_its_providers_cost_is_shown_back_by_another_party() {
     // back at the node, as its word.
     core.world()
         .script(DUO_IN, Behaviour::crediting_a_reversal());
+    core.clock
+        .advance(rutent_core_orch::reversal::DEFAULT_REVERSAL_RETRY_SECONDS);
     let Confirmation::Completed(completed) =
         core.confirmed_on_tick(&order, &exchange).expect("asked")
     else {
