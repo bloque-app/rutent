@@ -11237,8 +11237,9 @@ carry-overs touch.
 1. Checked before read: as above. Tests `reader_hosts_rotated_certificate_…`, `reader_answer_past_its_deadline_…`,
    `reader_answer_not_signed_…`; the CA check in `only_a_certificate_whose_basic_constraints_name_it_a_ca_is_one`.
 1a. No sequencer: the adapter's docs; `reader_request_ids_are_drawn_…` and the source scan.
-2. Start-up check and listing: `network_whose_reader_is_unreachable_does_not_start_and_cannot_be_listed`; the operator is told
-   why through `Core::not_started` (see the gaps: not yet a raise entry).
+2. Start-up check and listing: `network_whose_reader_is_unreachable_does_not_start_and_cannot_be_listed`,
+   `reader_whose_rules_differ_from_its_listing_does_not_start` (identity and trust rule held to the listing, not to the host's
+   configuration); the operator is told why through `Core::not_started` (see the gaps: not yet a raise entry).
 3. One answer per pass: `one_grading_reads_each_movement_once_from_its_reader`.
 4. Unreadable: `unreadable_reader_settles_nothing_and_grades_nothing_down` (scenario) and
    `unreadable_network_waits_settles_nothing_and_closes_no_part` (`core-orch`); `final_deposit_to_a_network_whose_reader_is_unreadable_is_not_routed_to`.
@@ -11293,3 +11294,48 @@ carry-overs touch.
   `DEC-20` path this row doesn't edit).
 - T-024-25 Low 4 (a nested dependencies header no longer refused by boundary-check) and T-020-67's capped-segment stuck-check
   test and its notes' exactness: not done here. Owner: the next round of this row.
+
+### A scenario's Core clock and the host's wall clock
+
+`T-015-05` has the reader host drop a question whose deadline its own wall clock has passed. A scenario's Core clock is
+simulated (days before the operating system's time, moved by the scenario), so with a 30 s window every question reached
+the host dead. The scenario deployment gives Core's adapter a window of ten years (`SIMULATED_ANSWER_WINDOW`), Core's socket
+still waits at most `ANSWER_WINDOW` on the operating system's clock, and Core's own deadline check on arrival is unchanged
+(`reader_answer_past_its_deadline_by_cores_clock_is_unreadable` drives it with a clock that jumps). A production deployment
+keeps the host's clock synchronised with Core's, as `T-015-05`'s notes say, and keeps the 30 s window.
+
+### Rule-off (each rule switched off alone, its test run, the file restored; script `ruleoff.py` in the row's scratch folder)
+
+| Rule switched off | Result |
+|---|---|
+| R1 the CA handed Core held to be a CA (`tls::is_ca`) | `leaf_handed_as_the_ca_or_listed_by_its_digest_fails_closed` red |
+| R2 the listing's `ca` held to the CA's digest (`OtherCa`) | `leaf_handed_as_the_ca_or_listed_by_its_digest_fails_closed` red |
+| R3 the answer's signature verified under the listed key | `reader_answer_not_signed_by_the_catalogued_reader_is_refused` red |
+| R4 the deadline held at Core's clock on arrival | `reader_answer_past_its_deadline_by_cores_clock_is_unreadable` red |
+| R5 each request id drawn from Core's random source | `reader_request_ids_are_drawn_from_cores_random_source_and_never_repeat` red |
+| R6 one answer per question per pass | `one_grading_reads_each_movement_once_from_its_reader` red |
+| R7 unreadable waits, never grades down (first switched off at `rules` alone: green, since `movement` still waited; then at both) | `unreadable_network_waits_settles_nothing_and_closes_no_part` red |
+| R8 `can_close` refuses an unreadable network | `unreadable_network_waits_settles_nothing_and_closes_no_part` red |
+| R9 the start-up check holds the identity to the listing (first run against `sim_readers`' start-up liar: green, the host refuses it first, `rules_not_as_configured`; a listing that differs from the host's configuration added) | `reader_whose_rules_differ_from_its_listing_does_not_start` red |
+| R9b the start-up check holds the trust rule to the listing | `reader_whose_rules_differ_from_its_listing_does_not_start` red |
+| R10 the snapshot leaves out a listed network that didn't start | `final_deposit_to_a_network_whose_reader_is_unreadable_is_not_routed_to` red |
+| R11 the public list takes a network only from a listing | `network_whose_reader_is_unreachable_does_not_start_and_cannot_be_listed` red |
+| R12 a delisting of a network never listed is refused | `delisted_simulated_network_is_no_longer_listed` red |
+| R13 a delisting of a network in use is refused | `hostile_reader_leaves_its_segment_unsettled_and_core_running` red |
+| R14 a delisting asked under `delist-{network}` | `delisted_simulated_network_is_no_longer_listed` red |
+| R15 the tick's reads rebuilt from `by: tick` | `tick_reads_are_rebuilt_from_the_log_and_a_tick_taken_record_forgives_no_grading_try` red |
+| R16 a tick-taken record forgives no grading try | the same, red |
+| R17 boundary-check refuses a nested dependencies table | `a_table_header_inside_a_string_hides_no_dependency` red |
+| R18 `read_by` required by the schema | `every_valid_fixture_validates_and_every_invalid_one_is_rejected` red |
+
+Not switched off on its own: the tick's try counted at its effect rather than at the ask (T-020-67's Low 3), which no test
+reaches yet (a read failing before its effect on the tick); noted as a gap with the capped-segment test.
+
+### Local checks
+
+fmt (root) and clippy `--workspace --all-targets -D warnings`, clean; `rutent-core-orch --lib` (72) and `--test closing` (29);
+`rutent-core-authz --lib` (173, the entry-point scan with the two new catalogue methods listed); `rutent-contracts` and
+`rutent-core-audit`, and the contract guard against `origin/develop` and `origin/m3` (no violations); `rutent-boundary-check`;
+`rutent-reader-host` (its readers' tests with the stand-in readers built); the prov catalogue tests; the whole
+`rutent-scenarios` suite, every binary, then `invariants` and `assembly` on `RUTENT_SCENARIO_SEEDS=11..15,113..119`;
+`sim_readers` on its own; plan-check and tag-check `--strict` (0 findings, 2761 tests); `cargo tree -i aws-lc-rs` finds none.

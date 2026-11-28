@@ -555,3 +555,55 @@ fn leaf_handed_as_the_ca_or_listed_by_its_digest_fails_closed() {
         Standing::NotStarted(NotStarted::Unread(Unreadable::OtherCa))
     );
 }
+
+/// Core's start-up check holds the reader's own `network_rules` to the listing, not to the reader host's configuration:
+/// a host configured for the network as it is, under a listing that names another identity or another trust rule (an
+/// operator's listing that doesn't match the host it names), doesn't start, and the operator is told which.
+// verifies: DEC-28, REQ-CAT-22
+#[test]
+fn reader_whose_rules_differ_from_its_listing_does_not_start() {
+    let (core, _, listed) = bank_only();
+    let bank = bank();
+    let readers = Readers::start(&listed, core.world_endpoints(), &Plan::default());
+    let mut adapter = readers.core_adapter();
+    assert_eq!(adapter.check(&bank, &SystemClock), Standing::Started);
+    let other_identity = {
+        let mut network = listed[0].clone();
+        if let Some(l) = network.listing.as_mut() {
+            l.identity = rutent_scenarios::sim::readers::identity_of("another-substrate-network");
+        }
+        network
+    };
+    adapter.list(&other_identity);
+    assert_eq!(
+        adapter.check(&bank, &SystemClock),
+        Standing::NotStarted(NotStarted::OtherIdentity)
+    );
+    // An EVM network's listing naming its chain id with another pool than the host's: its identity holds, its trust
+    // rule doesn't.
+    let (evm_core, _) = core_with("AC-1", &[RESERVE, "sim-exchange"]);
+    let evm: Vec<PublicNetwork> = evm_core
+        .public_networks()
+        .into_iter()
+        .filter(|n| n.network.as_str() == "polygon")
+        .collect();
+    let evm_readers = Readers::start(&evm, evm_core.world_endpoints(), &Plan::default());
+    let mut evm_adapter = evm_readers.core_adapter();
+    assert_eq!(
+        evm_adapter.check("polygon", &SystemClock),
+        Standing::Started
+    );
+    let mut other_trust = evm[0].clone();
+    if let Some(l) = other_trust.listing.as_mut()
+        && let rutent_contracts::reader::TrustRule::RpcPool { quorum, .. } = &mut l.trust
+    {
+        *quorum = 3;
+    }
+    evm_adapter.list(&other_trust);
+    assert_eq!(
+        evm_adapter.check("polygon", &SystemClock),
+        Standing::NotStarted(NotStarted::OtherTrust)
+    );
+    adapter.list(&listed[0]);
+    assert_eq!(adapter.check(&bank, &SystemClock), Standing::Started);
+}
