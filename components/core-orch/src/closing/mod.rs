@@ -64,7 +64,7 @@ pub use readers::{Pass, Readers, Unreadable};
 /// The public records Core's grading and reversals read (the review of `T-020-60`'s round 1, M1): Core's own pass over
 /// its adapter for each listed network's reader ([`Public::of`]), built by Core from the [`Readers`] it holds, so no
 /// deployment hands Core a `PublicRecords` of its own. With the `reader-test-hooks` feature alone, which only the
-/// tests enable, a stand-in's records are read in its place ([`Public::stand_in`]).
+/// tests enable, a stand-in's records are read in its place (`Public::stand_in`).
 pub struct Public<'a>(PublicIs<'a>);
 
 enum PublicIs<'a> {

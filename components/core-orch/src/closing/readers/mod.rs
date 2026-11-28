@@ -24,7 +24,7 @@
 //!    source ([`RandomSource`], the system's secure random through `ring` by default, [`SystemRandom`]), never a counter
 //!    and never Core's seeded identifiers: [`RequestId::from_random`] is the one way this crate makes a request id, which a
 //!    scan of its source holds. The deadline is Core's.
-//! 3. **The start-up check** ([`Readers::check`]). When Core opens or reopens, and when a `list_public_network` is
+//! 3. **The start-up check** ([`Readers::start`]). When Core opens or reopens, and when a `list_public_network` is
 //!    decided, Core asks each listed reader `network_rules` and holds the answer to the listing: the network's identity,
 //!    its rules, the reader's version (held by [`check_reader_answer`]) and its trust rule. A network whose reader is
 //!    unreachable or fails the check does not start ([`Standing::NotStarted`]): it is not on the catalogue's public list,

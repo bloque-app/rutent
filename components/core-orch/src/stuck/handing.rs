@@ -49,7 +49,7 @@ pub trait LinkedRoutes {
 
 /// The routes the linked orders were accepted on: Core's own register (`T-020-60` item (8), from the check of
 /// `T-020-61` at `7557cd9e`), which the mover holds a hand-on's route to before the holding account is asked anything.
-/// A linked order Core accepts is taken in ([`Linked::accept`]); a reopened Core rebuilds every one from its log
+/// A linked order Core accepts is taken in ([`Linked::keep_route`]); a reopened Core rebuilds every one from its log
 /// ([`Linked::reopened`], which `schedule::reopen` runs): each acceptance of an order intake never opened, read with the
 /// decision record its route was chosen by, held to the log's digest.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -64,7 +64,7 @@ impl Linked {
     }
 
     /// Takes in the route a linked order was accepted on, in place of any earlier one of that order.
-    pub fn accept(&mut self, route: AcceptedRoute) {
+    pub fn keep_route(&mut self, route: AcceptedRoute) {
         self.routes.insert(route.order.as_str().to_owned(), route);
     }
 
@@ -100,7 +100,7 @@ impl Linked {
                 continue;
             }
             if let Some(route) = crate::hand_on::accepted_in_the_log(history, kept, order) {
-                linked.accept(route);
+                linked.keep_route(route);
             }
         }
         linked

@@ -425,7 +425,7 @@ impl Core {
     /// Records the route a linked order was accepted on, which the mover holds a hand-on's route to before the
     /// holding account is asked anything (`T-020-17`). The acceptance and the decision record it names are the log's.
     pub fn accepted_linked(&mut self, route: AcceptedRoute) {
-        self.linked.accept(route);
+        self.linked.keep_route(route);
     }
 
     /// Installs the operator's plain wallet as the holding account of the public node `node`, holding `asset`
