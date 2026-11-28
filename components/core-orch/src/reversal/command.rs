@@ -329,6 +329,7 @@ pub fn confirm_undone(
             bounds: &bounds,
             key: &mut *desk.key,
             providers: desk.platform.providers(),
+            records: desk.records,
         };
         reversals.confirm_reversal(
             parts,

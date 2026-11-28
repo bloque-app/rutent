@@ -77,6 +77,10 @@ pub struct SimWorld {
     /// The state keys the platform asked this world for, in order.
     pub state_asked: Vec<String>,
     seeded: HashMap<(String, String), String>,
+    /// What the deployment keeps among a holding account's statement for its module, by provider and key: Core's
+    /// readings of movements into a held public node's account, read through the node's reader (`T-020-60` (6)).
+    /// Never a scenario's: only Core's [`rutent_core_orch::rounds::Providers::keep_reading`] writes it.
+    kept: BTreeMap<(String, String), String>,
     /// Each provider's secrets, by name (`T-024-07`), which only that provider's own declared lookup is answered from.
     secrets: BTreeMap<(String, String), String>,
     /// Every secret value the world handed a provider, by provider (`T-024-07`).
@@ -212,6 +216,23 @@ impl SimWorld {
             .insert((provider.to_owned(), key.to_owned()), value.to_owned());
     }
 
+    /// Keeps `text` under `provider`'s own state `key`, as the deployment keeps Core's reading of a movement into a held
+    /// public node's holding account for the account's module (`T-020-60` (6)): the assembly's answer to Core's
+    /// [`rutent_core_orch::rounds::Providers::keep_reading`], and nothing else's.
+    pub fn keep_reading(&mut self, provider: &str, key: &str, text: &str) {
+        self.kept
+            .insert((provider.to_owned(), key.to_owned()), text.to_owned());
+    }
+
+    /// Records `movement` on its network, as the network itself records a movement no provider's module made through
+    /// the platform: what a scenario drives, as it drives blocks and reorgs. Why the network refused it, where it did.
+    pub fn record_movement(
+        &mut self,
+        movement: &Movement,
+    ) -> Option<rutent_evidence::RecordRefused> {
+        self.readers.record(&movement.network, movement)
+    }
+
     /// Seeds `provider`'s own secret `name`, which only a lookup of that provider's, for a secret its release
     /// declares, is answered with (`T-024-07`, `AC-20`).
     pub fn seed_secret(&mut self, provider: &str, name: &str, value: &str) {
@@ -332,8 +353,10 @@ impl World for SimWorld {
             let behaviour = self.next_behaviour(provider, kind, mode == "dry")?;
             return Some(serde_json::to_string(&behaviour).expect("a behaviour"));
         }
-        self.seeded
-            .get(&(provider.to_owned(), key.to_owned()))
+        let key = (provider.to_owned(), key.to_owned());
+        self.kept
+            .get(&key)
+            .or_else(|| self.seeded.get(&key))
             .cloned()
     }
 

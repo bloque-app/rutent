@@ -295,6 +295,14 @@ impl Providers for Asking<'_> {
     fn ask(&mut self, provider: &Id, question: &[u8]) -> Option<Vec<u8>> {
         ask_platform(&mut self.fleet.platform, self.clock, provider, question)
     }
+
+    fn keep_reading(&mut self, provider: &Id, key: &str, text: &str) -> bool {
+        self.fleet
+            .platform
+            .world
+            .keep_reading(provider.as_str(), key, text);
+        true
+    }
 }
 
 /// The platform as Core's reversals reach it: the modules a decided reversal is carried out through, and the providers'
@@ -312,6 +320,15 @@ impl rutent_core_orch::schedule::ReversalPlatform for Running<'_> {
 impl Providers for Running<'_> {
     fn ask(&mut self, provider: &Id, question: &[u8]) -> Option<Vec<u8>> {
         ask_platform(self.platform, self.clock, provider, question)
+    }
+
+    /// The deployment keeps Core's reading of a movement into a held public node's holding account among the
+    /// account's statement, which the platform serves the account's module from its own state (`T-020-60` (6)).
+    fn keep_reading(&mut self, provider: &Id, key: &str, text: &str) -> bool {
+        self.platform
+            .world
+            .keep_reading(provider.as_str(), key, text);
+        true
     }
 }
 

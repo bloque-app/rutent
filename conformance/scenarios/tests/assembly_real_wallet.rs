@@ -1914,8 +1914,9 @@ fn linked_first_move_failed() -> (Stuck, LinkedOrder, AcceptedLinked, Id) {
 
 /// A hand-on's linked order's first move out of the public node fails, owing its reversal. A route handed on has no
 /// withdrawal: it starts from the node's holding account, which counts as its origin reserve, so Core asks the wallet
-/// whether the credit came back. Until the account's statement holds it, the wallet doesn't confirm it and nothing is
-/// landed; once the account took the credit back, in full, the wallet's own signed confirmation completes the reversal,
+/// whether the credit came back. Until the node's network records the value back in the account, the wallet isn't asked
+/// and nothing is landed; once it does, in full, Core reads it through the node's reader and hands the wallet its
+/// reading (`T-020-60` (6)), and the wallet's own signed confirmation on that reading completes the reversal,
 /// the log takes its evidence as the wallet's, and the value is landed again in the wallet for the linked order, whose
 /// value it is now, as the wallet itself says (`REQ-ORD-43`, `INV-1`, `T-020-57`).
 // verifies: REQ-ORD-43, INV-1
@@ -1930,46 +1931,43 @@ fn linked_orders_reversal_back_into_a_held_node_is_confirmed_by_the_nodes_wallet
         .expect("the reversal is owed");
     assert_eq!(owing.provider.as_str(), RAMP_C, "owed by the failed ramp");
 
-    // Nothing came back yet, then less than the move took in: neither is confirmed, and nothing is landed again.
-    for credit in [None, Some("999999")] {
-        if let Some(amount) = credit {
-            // The world's credit back into the account: it stands in for the network reader's confirmation (`T-020-60`).
-            stuck
-                .core
-                .credit_wallet(&wallet.provider, owing.transaction.as_str(), "USDC", amount);
-        }
-        let answer = stuck
-            .core
-            .confirmed_on_tick(&linked.order, &segment)
-            .expect("the wallet is asked");
-        assert!(
-            matches!(
-                answer,
-                Confirmation::NotCompleted {
-                    why: NotCounted::NotConfirmed,
-                    ..
-                }
-            ),
-            "{credit:?}: {answer:?}"
-        );
-        stuck.core.tick();
-        assert!(
-            !wallet_holds_at_least(
-                &mut stuck.core,
-                &wallet,
-                linked.order.as_str(),
-                "ask-short",
-                "1"
-            ),
-            "{credit:?}: nothing landed again"
-        );
-    }
-
-    // The account took the credit back, in full: the wallet confirms it, and the reversal completes on its word.
-    // The world's credit back into the account: it stands in for the network reader's confirmation (`T-020-60`).
-    stuck
+    // Nothing came back yet: the node's network records no movement back into the account, so the wallet isn't asked,
+    // and nothing is landed again (`T-020-60` (6)).
+    let answer = stuck
         .core
-        .credit_wallet(&wallet.provider, owing.transaction.as_str(), "USDC", AMOUNT);
+        .confirmed_on_tick(&linked.order, &segment)
+        .expect("the reversal is judged");
+    assert!(
+        matches!(
+            answer,
+            Confirmation::NotCompleted {
+                statement: None,
+                why: NotCounted::NotReturned,
+            }
+        ),
+        "{answer:?}"
+    );
+    stuck.core.tick();
+    assert!(
+        !wallet_holds_at_least(
+            &mut stuck.core,
+            &wallet,
+            linked.order.as_str(),
+            "ask-short",
+            "1"
+        ),
+        "nothing landed again"
+    );
+
+    // The account took the credit back, in full, on the node's network: Core reads it through the node's reader, the
+    // wallet confirms on that reading, and the reversal completes on its word (`T-020-60` (6)).
+    stuck.core.return_on_network(
+        NODE,
+        owing.transaction.as_str(),
+        &wallet.provider,
+        "USDC",
+        AMOUNT,
+    );
     let answer = stuck
         .core
         .confirmed_on_tick(&linked.order, &segment)
@@ -2007,6 +2005,182 @@ fn linked_orders_reversal_back_into_a_held_node_is_confirmed_by_the_nodes_wallet
     );
 }
 
+/// A hand-on's linked order's first move out of the held public node fails, owing its reversal, and its value comes
+/// back into the node's holding account on the node's network (`T-020-60` (6), `REQ-ORD-3`, `INV-3`). Core confirms it
+/// from the network's reader: never from a credit record in the wallet's own state, which a test alone could write, so
+/// such a record (and a reading planted beside it) gets the wallet asked nothing. While the node's reader can't be read,
+/// nothing is asked or settled, and the reversal waits. Once it reads the movement the network ties to the reversed
+/// segment, final, into the holding account the order's `holding_withdrawal` names, in full, Core hands the wallet its
+/// reading, the wallet confirms on it, and the completion's evidence names the movement and the reader and version
+/// that read it (`REQ-AUD-4`).
+// verifies: REQ-ORD-3, INV-3
+#[test]
+fn reversal_back_into_a_held_public_node_is_confirmed_from_the_networks_reader() {
+    use rutent_core_orch::reversal::{Confirmation, NotCounted};
+    use rutent_scenarios::sim::readers::{Plan, READER_VERSION, reader_name};
+    let (mut stuck, _, linked, segment) = linked_first_move_failed();
+    let wallet = stuck.wallet.clone();
+    let owing = stuck
+        .core
+        .owed_reversal(&linked.order, &segment)
+        .expect("the reversal is owed");
+    let tx = owing.transaction.as_str().to_owned();
+
+    // A credit record in the wallet's own state, and a reading planted beside it: only a test writes either, and Core
+    // asks the wallet nothing on them.
+    let credit = json!({ "asset": "USDC", "amount": AMOUNT }).to_string();
+    let planted = json!({
+        "segment": tx, "network": NODE, "movement": tx, "destination": wallet.provider,
+        "asset": "USDC", "amount": AMOUNT, "standing": "final", "reader": reader_name(NODE),
+        "version": READER_VERSION,
+    })
+    .to_string();
+    stuck
+        .core
+        .world()
+        .seed_state(&wallet.provider, &format!("credit/{tx}"), &credit);
+    stuck
+        .core
+        .world()
+        .seed_state(&wallet.provider, &format!("reading/{tx}"), &planted);
+    let answer = stuck
+        .core
+        .confirmed_on_tick(&linked.order, &segment)
+        .expect("the reversal is judged");
+    assert!(
+        matches!(
+            answer,
+            Confirmation::NotCompleted {
+                statement: None,
+                why: NotCounted::NotReturned,
+            }
+        ),
+        "no movement on the network, so nothing is asked: {answer:?}"
+    );
+
+    // The value comes back on the node's network, but its reader can't stand behind any movement now: nothing is
+    // asked, and the reversal waits.
+    stuck
+        .core
+        .return_on_network(NODE, &tx, &wallet.provider, "USDC", AMOUNT);
+    let mut plan = Plan::default();
+    plan.hostile
+        .insert(NODE.to_owned(), vec!["unread-movements".to_owned()]);
+    stuck.core.plant_readers(&plan);
+    let answer = stuck
+        .core
+        .confirmed_on_tick(&linked.order, &segment)
+        .expect("the reversal is judged");
+    assert!(
+        matches!(
+            answer,
+            Confirmation::NotCompleted {
+                statement: None,
+                why: NotCounted::ReaderUnreadable,
+            }
+        ),
+        "an unreadable reader settles nothing: {answer:?}"
+    );
+    assert!(
+        stuck.core.owed_reversal(&linked.order, &segment).is_ok(),
+        "the reversal stays owed"
+    );
+
+    // The reader reads it again: the wallet confirms on Core's reading, and the completion names the movement and its
+    // reader.
+    stuck.core.plant_readers(&Plan::default());
+    let answer = stuck
+        .core
+        .confirmed_on_tick(&linked.order, &segment)
+        .expect("the wallet is asked");
+    let Confirmation::Completed(done) = answer else {
+        panic!("completed: {answer:?}")
+    };
+    assert_eq!(done.whose.as_str(), wallet.provider, "on the wallet's word");
+    let named = stuck
+        .core
+        .verified_whats()
+        .into_iter()
+        .find_map(|w| match w {
+            What::Evidence {
+                order,
+                segment: s,
+                whose,
+                movement,
+                ..
+            } if order == linked.order && s == segment && whose.as_str() == wallet.provider => {
+                movement
+            }
+            _ => None,
+        });
+    let movement = named.expect("the completion's evidence names the movement it rests on");
+    assert_eq!(
+        (movement.network.as_str(), movement.id.as_str()),
+        (NODE, tx.as_str()),
+        "the movement back into the holding account, on the node's network"
+    );
+    assert_eq!(
+        (
+            movement.read_by.reader.as_str(),
+            movement.read_by.version.as_str()
+        ),
+        (reader_name(NODE).as_str(), READER_VERSION),
+        "and the reader and version that read it"
+    );
+    stuck.core.tick();
+    assert!(
+        wallet_holds(&mut stuck.core, &wallet, linked.order.as_str(), "ask-back"),
+        "landed again in the wallet for the linked order"
+    );
+}
+
+/// The node's network records a movement tied to the reversed segment that isn't the value back in full into the
+/// holding account: into another account, or short of what the move took in. Neither is the value back, so the wallet
+/// is asked nothing and the reversal stays owed (`T-020-60` (6), `REQ-ORD-3`).
+// verifies: REQ-ORD-3, INV-3
+#[test]
+fn movement_into_another_account_or_short_doesnt_confirm_a_reversal_into_a_held_node() {
+    use rutent_core_orch::reversal::{Confirmation, NotCounted};
+    for (into_holder, amount) in [(false, AMOUNT), (true, "999999")] {
+        let (mut stuck, _, linked, segment) = linked_first_move_failed();
+        let wallet = stuck.wallet.clone();
+        let owing = stuck
+            .core
+            .owed_reversal(&linked.order, &segment)
+            .expect("the reversal is owed");
+        let destination = if into_holder {
+            wallet.provider.clone()
+        } else {
+            "someone-else".to_owned()
+        };
+        stuck.core.return_on_network(
+            NODE,
+            owing.transaction.as_str(),
+            &destination,
+            "USDC",
+            amount,
+        );
+        let answer = stuck
+            .core
+            .confirmed_on_tick(&linked.order, &segment)
+            .expect("the reversal is judged");
+        assert!(
+            matches!(
+                answer,
+                Confirmation::NotCompleted {
+                    statement: None,
+                    why: NotCounted::NotReturned,
+                }
+            ),
+            "{destination} {amount}: {answer:?}"
+        );
+        assert!(
+            stuck.core.owed_reversal(&linked.order, &segment).is_ok(),
+            "{destination} {amount}: the reversal stays owed"
+        );
+    }
+}
+
 /// The linked order's first move fails and its reversal completes on the wallet's word: the value is landed again in
 /// the wallet for the linked order. The part is recalculated from the node, which retires the reversed move, and Core
 /// stops before the new route runs. Reopened, Core rebuilds the returned value from the log's `reversal_completed` and
@@ -2024,10 +2198,15 @@ fn returned_value_retired_by_a_recalculation_is_rebuilt_after_core_reopens() {
         .core
         .owed_reversal(&linked.order, &segment)
         .expect("the reversal is owed");
-    // The world's credit back into the account: it stands in for the network reader's confirmation (`T-020-60`).
-    stuck
-        .core
-        .credit_wallet(&wallet.provider, owing.transaction.as_str(), "USDC", AMOUNT);
+    // The node's network records the value back in the holding account; Core reads it through the node's reader
+    // (`T-020-60` (6)).
+    stuck.core.return_on_network(
+        NODE,
+        owing.transaction.as_str(),
+        &wallet.provider,
+        "USDC",
+        AMOUNT,
+    );
     let answer = stuck
         .core
         .confirmed_on_tick(&linked.order, &segment)
@@ -2113,10 +2292,15 @@ fn reversal_is_asked_of_the_holder_the_log_names_after_the_node_is_registered_ag
         .core
         .owed_reversal(&linked.order, &segment)
         .expect("the reversal is owed");
-    // The world's credit back into the account: it stands in for the network reader's confirmation (`T-020-60`).
-    stuck
-        .core
-        .credit_wallet(&wallet.provider, owing.transaction.as_str(), "USDC", AMOUNT);
+    // The node's network records the value back in the holding account; Core reads it through the node's reader
+    // (`T-020-60` (6)).
+    stuck.core.return_on_network(
+        NODE,
+        owing.transaction.as_str(),
+        &wallet.provider,
+        "USDC",
+        AMOUNT,
+    );
     let answer = stuck
         .core
         .confirmed_on_tick(&linked.order, &segment)
@@ -2435,9 +2619,13 @@ fn return_landed_before_a_restart_is_not_landed_again_before_its_recalculation()
         .core
         .owed_reversal(&linked.order, &segment)
         .expect("the reversal is owed");
-    stuck
-        .core
-        .credit_wallet(&wallet.provider, owing.transaction.as_str(), "USDC", AMOUNT);
+    stuck.core.return_on_network(
+        NODE,
+        owing.transaction.as_str(),
+        &wallet.provider,
+        "USDC",
+        AMOUNT,
+    );
     let answer = stuck
         .core
         .confirmed_on_tick(&linked.order, &segment)

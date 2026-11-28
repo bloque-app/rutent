@@ -155,6 +155,9 @@ pub struct ReversalDesk<'a> {
     pub stuck: &'a mut Stuck,
     /// The register of actors.
     pub actors: &'a mut dyn crate::intake::Actors,
+    /// The public records, read through Core's adapter for each listed network's reader in this pass: a reversal back
+    /// into a held public node is confirmed on its network's record (`T-020-60` (6)).
+    pub records: &'a dyn crate::closing::PublicRecords,
 }
 
 /// What a reversal step does with what the deployment lends: the reversals, what they reach, and the desk.

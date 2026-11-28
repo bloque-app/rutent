@@ -432,3 +432,26 @@ no module-interface change.
 | Rule switched off | Red |
 |---|---|
 | the wallet confirms only a credit in full (`== Some(units)` → any amount) | `wallet_confirms_a_reversed_segments_credit_only_in_full_from_its_statement` |
+
+### `T-020-60` (6): the wallet confirms on Core's reading of its node's network
+
+- **What changed.** The gap above is closed. A reversal back into a held public node is a movement on that node's
+  network, so Core reads it through the network's reader before it asks the wallet: the movement the network ties to
+  the reversed segment's transaction, final, into the holding account the order's `holding_withdrawal` names, of the
+  segment's asset and amount in full. Only then does Core hand the deployment its reading (`Providers::keep_reading`),
+  which the deployment keeps among the account's own state under `reading/{segment}` and the wallet's outside part
+  reads (`wallet.credit`, unchanged). Where there is no such reading Core asks the wallet nothing.
+- **The wallet's half.** `Wallet::confirmation` confirms only on a `Reading` (`wallet.rs`): every field present
+  (`segment`, `network`, `movement`, `destination`, `asset`, `amount`, `standing`, `reader`, `version`), `final`, tied
+  to the segment asked, into this account, on the node it is fixed to, in the asset asked and in full. A bare
+  `{"asset", "amount"}` credit record is no reading, and the old `credit/{segment}` key is read by nothing.
+- **Gone.** `Fleet::credit_wallet` and `WALLET_CREDIT_PREFIX`. The scenarios drive the network instead
+  (`Fleet::return_on_network`, the failed provider's reversal as the network itself records it), and Core reads it only
+  through the reader.
+- **Default.** The holding account is named on its network by its holder's id, as the simulated networks name it:
+  the catalogue registers no address per holding account yet (gap, owner `F-016` with `F-031`'s first real readers).
+
+| Rule switched off | Red |
+|---|---|
+| the wallet holds the reading's destination to itself | `wallet_confirms_a_reversed_segments_credit_only_in_full_from_its_statement` |
+| the wallet confirms only a `final` reading | `wallet_confirms_a_reversed_segments_credit_only_in_full_from_its_statement` |

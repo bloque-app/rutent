@@ -643,11 +643,27 @@ impl Core {
             .map_err(listing)
     }
 
-    /// The world's account at the wallet `provider`'s node takes a credit back for the reversal of the segment that ran
-    /// under `segment` ([`crate::sim::fleet::Fleet::credit_wallet`], `T-020-57`): the world's, never Core's. It stands
-    /// in for the network reader's confirmation, owned by `T-020-60`.
-    pub fn credit_wallet(&mut self, provider: &str, segment: &str, asset: &str, amount: &str) {
-        self.fleet.credit_wallet(provider, segment, asset, amount);
+    /// The node `network`'s network records the movement that brings the value of the reversed segment that ran under
+    /// `segment` back into the holding account `holder`: `amount` of `asset` ([`crate::sim::fleet::Fleet::return_on_network`],
+    /// `T-020-60` (6)). The world's, never Core's: Core reads it through the node's reader.
+    ///
+    /// # Panics
+    ///
+    /// Where the network refuses to record it.
+    pub fn return_on_network(
+        &mut self,
+        network: &str,
+        segment: &str,
+        holder: &str,
+        asset: &str,
+        amount: &str,
+    ) {
+        if let Some(refused) = self
+            .fleet
+            .return_on_network(network, segment, holder, asset, amount)
+        {
+            panic!("{network} refused the movement back: {refused:?}");
+        }
     }
 
     /// Asks the wallet of `provider` `operation`, in a statement the operator signs, and gives the statement and the

@@ -706,12 +706,15 @@ impl Ports for Due<'_> {
         };
         let mut decisions = core.policy.clone();
         let mut actors = super::Acting(std::rc::Rc::clone(&core.deployed.registers));
+        // One pass over Core's adapter for the reversals' reads too (`T-020-60` (3), (6)).
+        let pass = core.readers.pass(&core.clock);
         let mut desk = rutent_core_orch::schedule::ReversalDesk {
             key: &mut core.signer,
             decisions: &mut decisions,
             platform: &mut running,
             stuck: &mut core.stuck,
             actors: &mut actors,
+            records: &pass,
         };
         let mut parts = ReversalParts {
             clock: &core.clock,

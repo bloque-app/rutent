@@ -640,6 +640,7 @@ impl Jobs<'_> {
                             bounds: &bounds,
                             key: &mut *desk.key,
                             providers: &mut Nobody,
+                            records: desk.records,
                         };
                         let mut moving = crate::reversal::Moving {
                             decisions: &mut *desk.decisions,
@@ -659,6 +660,7 @@ impl Jobs<'_> {
                         bounds: &bounds,
                         key: &mut *desk.key,
                         providers: desk.platform.providers(),
+                        records: desk.records,
                     };
                     step.confirmed = Some(reversals.confirm_reversal(parts, &mut asking, at));
                     reversals.took_step(order, &segment, false);

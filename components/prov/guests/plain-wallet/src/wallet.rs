@@ -13,33 +13,64 @@ use rutent_contracts::provider_role::{
     ReversalConfirmationResult, Signature, SignatureScheme, Statement, Unknown, Withdrawal,
 };
 
-/// The prefix of the provider's own state keys under which the account's statement of credits is kept, one per
-/// reversed segment: `credit/{segment's transaction}` holds the JSON `{"asset": …, "amount": …}` of the credit that
-/// came back into the account for that segment's reversal (`T-020-57`). The wallet's outside part reads it; the
-/// sandboxed part reads no state. The outside part, built without this file, keeps the same text.
+/// The prefix of the provider's own state keys under which the deployment keeps, for the account, Core's reading of
+/// a movement back into it, one per reversed segment: `reading/{segment's transaction}` holds the JSON reading Core read
+/// from the node's network through the network's reader (`T-020-57`, `T-020-60` (6)). The wallet's outside part reads
+/// it; the sandboxed part reads no state. The outside part, built without this file, keeps the same text.
 #[allow(dead_code)]
-pub const CREDIT_PREFIX: &str = "credit/";
+pub const READING_PREFIX: &str = "reading/";
 
-/// The outside operation the sandboxed part asks its outside part for the account's statement of one credit.
+/// The outside operation the sandboxed part asks its outside part for the reading of one credit.
 pub const CREDIT: &str = "wallet.credit";
 
-/// A credit the account's statement says came back for a reversed segment: in which asset, and how much.
+/// Core's reading of a movement back into the account, as the deployment keeps it for the account: the movement the
+/// node's network ties to a reversed segment's transaction, where it went, in which asset and how much, that it is
+/// final, and the reader and version that read it (`T-020-60` (6)). The wallet confirms only on such a reading, never
+/// on a record of a credit alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Credit {
+pub struct Reading {
+    /// The reversed segment's transaction, which the network ties the movement to.
+    pub segment: String,
+    /// The network, the account's node.
+    pub network: String,
+    /// The movement's identifier on the network.
+    pub movement: String,
+    /// Where it went, as the network names the account.
+    pub destination: String,
     /// The asset.
     pub asset: String,
     /// The amount, in whole units.
     pub amount: String,
+    /// Where it stands under the network's rules: only `final` confirms.
+    pub standing: String,
+    /// The reader that read it, by its name on its host.
+    pub reader: String,
+    /// The reader's version that answered.
+    pub version: String,
 }
 
-impl Credit {
-    /// The credit an entry of the account's statement states, as the outside part read it: `None` where it states
-    /// nothing readable.
+impl Reading {
+    /// The reading an entry of the account's statement holds, as the outside part read it: `None` where it holds no
+    /// reading, every field present and none empty (a credit record alone is none).
     pub fn read(text: &str) -> Option<Self> {
         let value: serde_json::Value = serde_json::from_str(text).ok()?;
-        Some(Credit {
-            asset: value.get("asset")?.as_str()?.to_owned(),
-            amount: value.get("amount")?.as_str()?.to_owned(),
+        let field = |name: &str| {
+            value
+                .get(name)?
+                .as_str()
+                .filter(|v| !v.is_empty())
+                .map(str::to_owned)
+        };
+        Some(Reading {
+            segment: field("segment")?,
+            network: field("network")?,
+            movement: field("movement")?,
+            destination: field("destination")?,
+            asset: field("asset")?,
+            amount: field("amount")?,
+            standing: field("standing")?,
+            reader: field("reader")?,
+            version: field("version")?,
         })
     }
 }
@@ -237,8 +268,10 @@ impl Wallet {
     }
 
     /// The answer to Core's question whether the credit of a reversed segment came back into the account
-    /// (`reversal_confirmation`, `T-020-57`): confirmed only where the account's statement holds a credit for that very
-    /// segment, in the asset asked and of the amount asked, in full; otherwise not confirmed, which says nothing else.
+    /// (`reversal_confirmation`, `T-020-57`): confirmed only on Core's reading of the account's node's network, which the
+    /// deployment keeps for the account (`T-020-60` (6)): a movement final there, tied to that very segment, into this
+    /// account (`destination` is the account's own name, the provider asked), on its node where it is fixed to one, in
+    /// the asset asked and of the amount asked, in full; otherwise not confirmed, which says nothing else.
     /// A credit short of what is asked is not confirmed, so less returned never completes the reversal (`REQ-ORD-3`).
     /// A malformed or zero amount, or an asset the account isn't fixed to, is refused as final. The confirmation is
     /// nested in the account's own name, in the deployment and protocol version of `asked`, for the platform to sign.
@@ -246,7 +279,7 @@ impl Wallet {
         &self,
         asked: &Statement<Operation>,
         c: &ReversalConfirmationRequest,
-        credit: Option<&Credit>,
+        reading: Option<&Reading>,
     ) -> ResultBody {
         let units = amount(&c.amount).filter(|u| *u > 0);
         let fixed_elsewhere = self.fixed.as_ref().is_some_and(|(_, a)| *a != c.asset);
@@ -258,8 +291,15 @@ impl Wallet {
                 refusal: Refusal::Final(NoDetail {}),
             }),
             Some(units) => {
-                let arrived = credit.is_some_and(|credit| {
-                    credit.asset == c.asset && amount(&credit.amount) == Some(units)
+                let on_its_node =
+                    |network: &str| self.fixed.as_ref().is_none_or(|(n, _)| n == network);
+                let arrived = reading.is_some_and(|r| {
+                    r.standing == "final"
+                        && r.segment == c.segment
+                        && r.destination == c.provider
+                        && on_its_node(&r.network)
+                        && r.asset == c.asset
+                        && amount(&r.amount) == Some(units)
                 });
                 if arrived {
                     ReversalConfirmationOutcome::Confirmed(Confirmed {

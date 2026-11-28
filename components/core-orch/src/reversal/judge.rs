@@ -66,6 +66,15 @@ pub enum NotCounted {
     },
     /// Nothing came back to Core's question.
     Unanswered,
+    /// The reversed segment left a held public node, and the node's reader can't be read now: nothing is asked, and the
+    /// next pass reads again (`T-020-60` (6), ADR-0007 as amended).
+    ReaderUnreadable,
+    /// The reversed segment left a held public node, and its network records no movement back into the holding account
+    /// of the segment's asset and amount in full, final: nothing is asked (`T-020-60` (6)).
+    NotReturned,
+    /// The deployment didn't keep Core's reading for the holding account to confirm on: nothing is asked (`T-020-60`
+    /// (6)).
+    ReadingNotKept,
     /// It would count, but it answers no question of Core's: the log verifies only an answer under the transaction
     /// Core asked it under, so Core asks the origin reserve ([`super::Reversals::confirm_reversal`]).
     Unasked,

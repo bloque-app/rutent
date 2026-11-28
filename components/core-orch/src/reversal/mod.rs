@@ -88,7 +88,7 @@ use std::collections::BTreeMap;
 use rutent_contracts::core_internal::calls::{AppendFailure, Evidence, Reads};
 use rutent_contracts::core_internal::{
     About, Action, Actor, Afterwards, Answer, Carrier as Carries, DecisionRequest, Effect, Entry,
-    OperatorCommand, Outcome, Permit, ReadCheck, ReadOutcome, Receipt, Role, What,
+    OperatorCommand, Outcome, Permit, PublicMovement, ReadCheck, ReadOutcome, Receipt, Role, What,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::Tracking;
@@ -162,6 +162,10 @@ pub struct Asking<'a> {
     pub key: &'a mut dyn OperatorKey,
     /// The providers' modules.
     pub providers: &'a mut dyn Providers,
+    /// The public records, as Core's adapter for each listed network's reader reads them in this pass: a reversal
+    /// back into a held public node is confirmed on the movement its network records into the holding account
+    /// (`T-020-60` (6)).
+    pub records: &'a dyn crate::closing::PublicRecords,
 }
 
 /// What a reversal Core asks of a failed provider moves through: policy, which decides it, and the platform, which
@@ -452,6 +456,23 @@ struct Reversal {
     /// Core's asking the failed provider to reverse, kept from its permit until its answer is judged.
     asking: Option<AskState>,
     showing: Option<Showing>,
+    /// The movement back into a held public node's holding account Core read from the node's network, kept from the
+    /// question it was read for until the completion that names it (`T-020-60` (6)).
+    returned: Option<Returned>,
+}
+
+/// A movement into a held public node's holding account, as Core read it from the node's network through the
+/// network's reader: final there, of the reversed segment's asset and amount in full, into the `holder` of the order's
+/// `holding_withdrawal` (`T-020-60` (6)). The reversal's question is asked only on it, and its completion's `evidence`
+/// names it and the reader that read it (`REQ-AUD-4`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Returned {
+    /// The node's network.
+    network: String,
+    /// The movement, as the network ties it to the reversed segment's transaction, and the reader that read it.
+    moved: crate::closing::Moved,
+    /// Its figures, as the network records it now: where it went, its asset and amount.
+    figures: rutent_evidence::Movement,
 }
 
 /// Statements kept as they arrived, each once, by their bytes.
@@ -1011,7 +1032,7 @@ impl Reversals {
         let (completed, why) = match judged {
             Ok(whose) => {
                 let statement = answer_receipt.clone().ok_or(ReversalError::Unknown)?;
-                let completion = Self::completion(parts, at, whose, statement)?;
+                let completion = Self::completion(parts, at, whose, statement, None)?;
                 self.reversals
                     .get_mut(&at_key)
                     .ok_or(ReversalError::Unknown)?
@@ -1421,8 +1442,38 @@ impl Reversals {
             .get(&at_key)
             .is_none_or(|r| r.question.is_none())
         {
+            // A reversal back into a held public node is asked only on its network's record of the value back in the
+            // holding account, read through the network's reader in this pass and handed to the account by the
+            // deployment: the account confirms on that reading, never on a record of its own (`T-020-60` (6)).
+            let returned = if target.held_public {
+                let returned = match read_return(asking.records, &target, confirmer) {
+                    Ok(returned) => returned,
+                    Err(why) => {
+                        return Ok(Confirmation::NotCompleted {
+                            statement: None,
+                            why,
+                        });
+                    }
+                };
+                let kept = asking.providers.keep_reading(
+                    confirmer,
+                    &format!("{READING_PREFIX}{}", target.transaction.as_str()),
+                    &reading_text(&target, &returned),
+                );
+                if !kept {
+                    return Ok(Confirmation::NotCompleted {
+                        statement: None,
+                        why: NotCounted::ReadingNotKept,
+                    });
+                }
+                Some(returned)
+            } else {
+                None
+            };
             let question = self.question(parts, asking, at, &target)?;
-            self.reversal(at, &target.provider).question = Some(question);
+            let reversal = self.reversal(at, &target.provider);
+            reversal.question = Some(question);
+            reversal.returned = returned;
         }
         let reversal = self
             .reversals
@@ -1500,7 +1551,8 @@ impl Reversals {
             }
         };
         reversal.question = None;
-        let completion = Self::completion(parts, at, whose, statement)?;
+        let movement = reversal.returned.take().as_ref().and_then(public_movement);
+        let completion = Self::completion(parts, at, whose, statement, movement)?;
         self.reversals
             .get_mut(&at_key)
             .ok_or(ReversalError::Unknown)?
@@ -2070,6 +2122,7 @@ impl Reversals {
                 accepting: None,
                 asking: None,
                 showing: None,
+                returned: None,
             })
     }
 
@@ -2129,6 +2182,7 @@ impl Reversals {
                 node: inner_node(segment),
                 confirmer: Some(origin.clone()),
                 origin,
+                held_public: false,
                 transaction: transaction.clone(),
                 asset: asset.to_owned(),
                 amount: amount.to_owned(),
@@ -2168,11 +2222,17 @@ impl Reversals {
             Some(owing) => owing.clone(),
             None => self.owe(parts, at)?,
         };
+        let held_public = first_of_handed_on
+            && !at_node
+            && node
+                .as_deref()
+                .is_some_and(|node| parts.catalogue.nodes().is_public(node));
         Ok(Target {
             provider: owing.provider,
             node,
             origin,
             confirmer,
+            held_public,
             transaction: owing.transaction,
             asset: owing.asset,
             amount: owing.amount,
@@ -2236,6 +2296,7 @@ impl Reversals {
         at: At<'_>,
         whose: Whose,
         statement: Receipt,
+        movement: Option<PublicMovement>,
     ) -> Result<Completion, ReversalError> {
         let evidence_id = parts.fresh.id();
         let evidence = journal::verified(
@@ -2248,7 +2309,7 @@ impl Reversals {
                 grade: whose.grade,
                 whose: whose.maker.clone(),
                 rests_on: vec![statement.clone()],
-                movement: None,
+                movement,
                 publisher: match &whose.word {
                     Word::Publishers(publisher) => Some(publisher.clone()),
                     Word::Reserves => None,
@@ -2478,6 +2539,9 @@ struct Target {
     /// value, the holding account of the segment's node at a later inner node, and none where there is none
     /// (`REQ-ORD-3`, `T-020-27`).
     confirmer: Option<Id>,
+    /// Whether the segment is the first move of a route handed on at a public node, out of its holding account: its
+    /// value comes back on the node's network, which Core reads through its reader (`T-020-60` (6)).
+    held_public: bool,
     transaction: Id,
     asset: String,
     amount: String,
@@ -2684,6 +2748,76 @@ fn handed_on_holder(
     let node = inner_node(first)?;
     let (at, holder) = holders.get(order_id.as_str())?;
     (*at == node).then(|| holder.clone())
+}
+
+/// The provider's own state key, `reading/{segment}`, under which the deployment keeps, for a held public node's holding
+/// account, Core's reading of the movement back into it for the reversed segment `segment`'s transaction
+/// ([`Providers::keep_reading`], `T-020-60` (6)): what the plain wallet's outside part reads and confirms on.
+pub const READING_PREFIX: &str = "reading/";
+
+/// The movement back into `holder`, the holding account of the held public node `target`'s segment left, that the
+/// reversal is confirmed on, as the node's network records it, read through its reader (`T-020-60` (6)): the movement
+/// the network ties to the reversed segment's transaction, into the holding account, final under the network's rules,
+/// of the segment's asset and amount in full. A reader unreadable now settles nothing and is asked again on the next
+/// pass (ADR-0007 as amended); anything else short of that is not the value back, and nothing is asked.
+fn read_return(
+    records: &dyn crate::closing::PublicRecords,
+    target: &Target,
+    holder: &Id,
+) -> Result<Returned, NotCounted> {
+    let network = target.node.as_deref().ok_or(NotCounted::NotReturned)?;
+    let moved = records
+        .movement(network, &target.transaction)
+        .map_err(|_| NotCounted::ReaderUnreadable)?
+        .ok_or(NotCounted::NotReturned)?;
+    if moved.destination != holder.as_str() {
+        return Err(NotCounted::NotReturned);
+    }
+    let units = |amount: &str| amount.parse::<u128>().ok();
+    let in_full = |m: &rutent_evidence::Movement| {
+        m.destination == holder.as_str()
+            && m.asset == target.asset
+            && units(&m.amount).is_some_and(|u| Some(u) == units(&target.amount))
+    };
+    match records
+        .status(network, &moved.id)
+        .map_err(|_| NotCounted::ReaderUnreadable)?
+    {
+        rutent_evidence::Status::Final(m) if in_full(&m) => Ok(Returned {
+            network: network.to_owned(),
+            moved,
+            figures: m,
+        }),
+        _ => Err(NotCounted::NotReturned),
+    }
+}
+
+/// The reading the deployment hands the holding account for `target`'s reversal, as its module reads it: the reversed
+/// segment's transaction, the network and the movement on it, where it went, its asset and amount as the network
+/// records them, that it is final, and the reader and version that read it (`T-020-60` (6)).
+fn reading_text(target: &Target, returned: &Returned) -> String {
+    serde_json::json!({
+        "segment": target.transaction.as_str(),
+        "network": returned.network,
+        "movement": returned.moved.id.as_str(),
+        "destination": returned.figures.destination,
+        "asset": returned.figures.asset,
+        "amount": returned.figures.amount,
+        "standing": "final",
+        "reader": returned.moved.read_by.reader.as_str(),
+        "version": returned.moved.read_by.version.as_str(),
+    })
+    .to_string()
+}
+
+/// The public movement a completion's `evidence` names for `returned`, with the reader that read it (`REQ-AUD-4`).
+fn public_movement(returned: &Returned) -> Option<PublicMovement> {
+    Some(PublicMovement {
+        network: Id::new(returned.network.as_str())?,
+        id: Id::new(returned.moved.id.as_str())?,
+        node: None,
+        read_by: returned.moved.read_by.clone(),
+    })
 }
 
 /// A part's origin reserve: the provider of its withdrawal, its first segment. A route handed on has no withdrawal
