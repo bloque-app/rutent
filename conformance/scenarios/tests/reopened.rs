@@ -211,6 +211,23 @@ fn no_value_moves_twice_after_core_reopens() {
                 })
                 .count();
             assert_eq!(repeats, 0, "seed {seed}, {crash:?}: never handed again");
+            // The reserve answers status queries, so its status is the one step: a status that knows no result leaves
+            // the segment for the stuck check, and the platform's recorded answer, item (8)'s step for a provider that
+            // declares neither, is never read there (the review of #355's round 2, its Low).
+            let read_back = run
+                .log
+                .iter()
+                .filter(|e| {
+                    matches!(e, Entry::Verified(v) if matches!(&v.what, What::Effect {
+                        action: Action::ReadRecordedAnswer { .. },
+                        ..
+                    }))
+                })
+                .count();
+            assert_eq!(
+                read_back, 0,
+                "seed {seed}, {crash:?}: no recorded-answer read at a provider that answers status queries"
+            );
             if matches!(
                 crash,
                 Fault::CrashAfterRecord {
