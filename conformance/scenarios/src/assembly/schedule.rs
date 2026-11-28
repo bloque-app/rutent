@@ -499,7 +499,8 @@ impl Ports for Due<'_> {
             bounds: &core.bounds,
             resting,
         };
-        let accepted = super::holding::Accepted(&core.linked);
+        // Core's own register of the linked orders' accepted routes (`T-020-60` item (8)).
+        let accepted = &core.linked;
         let log = super::holding::LogHandle(std::rc::Rc::clone(&core.log));
         let mut delivering = core
             .mover
@@ -514,7 +515,7 @@ impl Ports for Due<'_> {
             })
             .handing_on(rutent_core_orch::stuck::HandingOn {
                 withdrawals: &mut wallets,
-                routes: &accepted,
+                routes: accepted,
                 log: &log,
             });
         with(
@@ -660,12 +661,11 @@ impl Ports for Due<'_> {
             swap_to: core.swap_to.as_deref_mut(),
             booked: &booked,
         };
-        // One pass over Core's adapter, at Core's clock: each question its readers are asked once in it, its answers
-        // dropped with it (`T-020-60` (3)).
-        let pass = core.readers.pass(&core.clock);
+        // Core's own pass over its adapter: each question its readers are asked once in it, its answers dropped with
+        // it (`T-020-60` (3)); Core builds it from the readers it holds, never from a reader of the deployment's.
         let mut grading = rutent_core_orch::closing::Evidenced {
             catalogue: &core.catalogue,
-            records: &pass,
+            records: rutent_core_orch::closing::Public::of(&core.readers),
             books: &booked,
             closing: &mut core.closing,
         };
@@ -744,15 +744,14 @@ impl Ports for Due<'_> {
         };
         let mut decisions = core.policy.clone();
         let mut actors = super::Acting(std::rc::Rc::clone(&core.deployed.registers));
-        // One pass over Core's adapter for the reversals' reads too (`T-020-60` (3), (6)).
-        let pass = core.readers.pass(&core.clock);
         let mut desk = rutent_core_orch::schedule::ReversalDesk {
             key: &mut core.signer,
             decisions: &mut decisions,
             platform: &mut running,
             stuck: &mut core.stuck,
             actors: &mut actors,
-            records: &pass,
+            records: rutent_core_orch::closing::Public::of(&core.readers),
+            closing: &core.closing,
         };
         let mut parts = ReversalParts {
             clock: &core.clock,

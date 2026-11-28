@@ -82,7 +82,7 @@ pub(super) struct Sent {
 
 impl Sent {
     /// Whether this ask moved nothing, by its result: it failed.
-    fn failed(&self) -> bool {
+    pub(super) fn failed(&self) -> bool {
         self.outcome == Some(Outcome::Failed {})
     }
 
@@ -161,6 +161,26 @@ impl Reversals {
         self.reversals
             .get(&key(order, segment))
             .map_or(0, |r| r.sent.len())
+    }
+
+    /// The transaction the reversal of the segment run under `transaction` was asked under: the last ask Core sent its
+    /// failed provider that didn't fail, under its own transaction, never the segment's. What a network records the
+    /// value's movement back under, and what Core reads it by (`T-020-60` (6), the review of round 1, L3).
+    pub fn asked_under(&self, transaction: &Id) -> Option<Id> {
+        self.reversals
+            .values()
+            .filter(|r| {
+                r.owing
+                    .as_ref()
+                    .is_some_and(|o| o.transaction == *transaction)
+            })
+            .find_map(|r| {
+                r.sent
+                    .iter()
+                    .rev()
+                    .find(|s| !s.failed())
+                    .map(|s| s.transaction.clone())
+            })
     }
 
     /// How many confirmations of the reversal of `segment` of `order` Core asked, as the log holds them.

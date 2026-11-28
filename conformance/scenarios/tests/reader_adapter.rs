@@ -135,7 +135,7 @@ fn network_whose_reader_does_not_start_is_raised_once_in_its_spell_citing_its_li
         .expect("the log holds the network's listing");
     assert_eq!(cites, &vec![listing], "it cites the network's listing");
     // Checked again while it still fails: the same spell, nothing more raised.
-    core.start_readers();
+    core.move_reader_host(nowhere);
     assert_eq!(core.reader_raises().len(), 1, "raised once in its spell");
     // Its reader passes again: the spell ends. A later failure raises it again.
     core.move_reader_host(host);
@@ -251,10 +251,13 @@ fn reader_answer_past_its_deadline_by_cores_clock_is_unreadable() {
     // And through Core's own start-up check: a reader whose answer comes late doesn't start.
     let mut core_side = readers.core_adapter();
     assert!(matches!(
-        core_side.check(&bank, &Jumping::by(window + 1)),
+        core_side.check_at(&bank, &Jumping::by(window + 1)),
         Standing::NotStarted(NotStarted::Unread(Unreadable::Refused(_)))
     ));
-    assert_eq!(core_side.check(&bank, &Jumping::by(1)), Standing::Started);
+    assert_eq!(
+        core_side.check_at(&bank, &Jumping::by(1)),
+        Standing::Started
+    );
 }
 
 /// A source that yields a counter, as a counter written as an id would.
@@ -474,12 +477,51 @@ fn public_records_stay_cores_seam_and_the_deployment_hands_core_no_reader_of_its
             .any(|p| p.starts_with("components/core-orch/src/closing/readers")),
         "Core's adapter implements it"
     );
-    // The assembly's grading reads through a pass of Core's adapter, and hands Core nothing of its own to read with.
+    // The grading and the reversals read through Core's own pass of its adapter (`Public::of`): the type the ports
+    // carry is Core's, and a stand-in in its place is a test hook no deployment's build has (the review of round 1,
+    // M1). The assembly builds each from the readers Core holds, and lists, checks and raises nothing itself.
     let schedule =
         std::fs::read_to_string(root.join("conformance/scenarios/src/assembly/schedule.rs"))
             .unwrap();
-    assert!(schedule.contains("records: &pass,"));
-    assert!(schedule.contains("core.readers.pass(&core.clock)"));
+    assert_eq!(
+        schedule
+            .matches("records: rutent_core_orch::closing::Public::of(&core.readers),")
+            .count(),
+        2
+    );
+    let assembly =
+        std::fs::read_to_string(root.join("conformance/scenarios/src/assembly/mod.rs")).unwrap();
+    for done_by_core in [
+        "check_all",
+        "readers.list(",
+        "Raised",
+        ".list_public_network(",
+        ".drop_public_network(",
+        "may_delist",
+    ] {
+        assert!(
+            !assembly.contains(done_by_core),
+            "the assembly does Core's `{done_by_core}`"
+        );
+    }
+    let hooks =
+        std::fs::read_to_string(root.join("components/core-orch/src/closing/readers/mod.rs"))
+            .unwrap();
+    for hook in [
+        "pub fn drawing_from",
+        "pub fn set_host",
+        "pub fn question",
+        "pub fn list(",
+        "pub fn check_at",
+    ] {
+        let at = hooks.find(hook).expect("the hook");
+        assert!(
+            hooks[..at].rfind("#[cfg(").is_some_and(|cfg| hooks[cfg..at]
+                .contains("feature = \"reader-test-hooks\"")
+                && !hooks[cfg..at].contains("\n    pub fn ")),
+            "`{hook}` is a test hook only"
+        );
+    }
 }
 
 // verifies: REQ-ORD-33, AC-1
@@ -592,6 +634,61 @@ fn listed_reader_is_checked_again_after_core_reopens_and_its_evidence_still_read
     );
 }
 
+/// A network's standing doesn't change under a quoted order that uses it (#346's review, L3; the review of round 1, L6):
+/// its delisting is refused while the order is quoted, before anything is handed over, as while value is in flight.
+// verifies: REQ-CAT-22, DEC-28
+#[test]
+fn delisting_is_refused_while_a_quoted_order_uses_the_network() {
+    let (mut core, session, _) = bank_only();
+    let (order, told) = quoted_or_not(&mut core, within("req-1", &session, AMOUNT, RESERVE, OTHER));
+    assert!(order.is_some() && is_quoted(&told), "{told:?}");
+    let refused = core
+        .delist_public_network(&id(&bank()))
+        .expect_err("refused while a quoted order uses it");
+    assert!(format!("{refused:?}").contains("InUse"), "{refused:?}");
+    assert_eq!(core.readers().standing(&bank()), Standing::Started);
+}
+
+/// A reopened Core lists and checks every network itself (the review of round 1, M1): Core's own reopening
+/// (`schedule::reopen`) takes each listing the log holds into the adapter the deployment built from its certificate,
+/// the CA, its clock and its host setting, asks each reader its rules, and puts each network that passes on the
+/// catalogue's public list. The assembly has no start-up step of its own to do it (the seam test holds that).
+// verifies: NFR-6, REQ-CAT-22
+#[test]
+fn reopened_core_lists_and_checks_every_network_through_its_own_reopening() {
+    let (core, _) = core_with("AC-1", &[RESERVE, "sim-exchange"]);
+    let listed = core.public_networks();
+    assert!(listed.len() > 1, "{listed:?}");
+    let core = rutent_scenarios::harness::Scenario::new(
+        "execution",
+        "AC-1",
+        given(&[RESERVE, "sim-exchange"]),
+    )
+    .reopen(core, 1, &mut rutent_scenarios::assembly::machine::Reference);
+    let mut names: Vec<String> = listed
+        .iter()
+        .map(|n| n.network.as_str().to_owned())
+        .collect();
+    names.sort();
+    assert_eq!(
+        core.readers().listed().keys().cloned().collect::<Vec<_>>(),
+        names,
+        "every listing the log holds, taken in by Core's reopening"
+    );
+    for network in &listed {
+        let name = network.network.as_str();
+        assert_eq!(core.readers().standing(name), Standing::Started, "{name}");
+        assert!(core.catalogue().nodes().is_started_network(name), "{name}");
+        assert!(
+            core.readers()
+                .put()
+                .iter()
+                .any(|put| put.network == name && matches!(put.asked, Asked::NetworkRules(_))),
+            "{name}'s reader checked on reopening"
+        );
+    }
+}
+
 /// A leaf certificate handed to Core as the operator's CA is refused as no CA (#343's review, L3, and the CA
 /// basic-constraints check), and a listing whose `ca` names another digest than the CA the deployment handed Core,
 /// such as a leaf's, reads as unreadable and never starts: a leaf can't stand in for the CA either way.
@@ -626,7 +723,7 @@ fn leaf_handed_as_the_ca_or_listed_by_its_digest_fails_closed() {
         Err(Unreadable::OtherCa)
     );
     assert_eq!(
-        adapter.check(&bank, &SystemClock),
+        adapter.check_at(&bank, &SystemClock),
         Standing::NotStarted(NotStarted::Unread(Unreadable::OtherCa))
     );
 }
@@ -641,7 +738,7 @@ fn reader_whose_rules_differ_from_its_listing_does_not_start() {
     let bank = bank();
     let readers = Readers::start(&listed, core.world_endpoints(), &Plan::default());
     let mut adapter = readers.core_adapter();
-    assert_eq!(adapter.check(&bank, &SystemClock), Standing::Started);
+    assert_eq!(adapter.check_at(&bank, &SystemClock), Standing::Started);
     let other_identity = {
         let mut network = listed[0].clone();
         if let Some(l) = network.listing.as_mut() {
@@ -651,8 +748,26 @@ fn reader_whose_rules_differ_from_its_listing_does_not_start() {
     };
     adapter.list(&other_identity);
     assert_eq!(
-        adapter.check(&bank, &SystemClock),
+        adapter.check_at(&bank, &SystemClock),
         Standing::NotStarted(NotStarted::OtherIdentity)
+    );
+    // A network that failed only its start-up check reads as unreadable in a pass, though its reader answers every
+    // question honestly: the gate alone holds it (the review of round 1, L1).
+    {
+        let pass = adapter.pass();
+        let movement = MovementId::new("any-movement").expect("an id");
+        assert_eq!(pass.status(&bank, &movement), Err(Unreadable::NotStarted));
+        assert_eq!(
+            pass.movement(&bank, &id("any-transaction")).map(|_| ()),
+            Err(Unreadable::NotStarted)
+        );
+        assert_eq!(pass.rules(&bank), Err(Unreadable::NotStarted));
+    }
+    assert!(
+        adapter
+            .question(&bank, Asked::NetworkRules(NoDetail {}), &SystemClock)
+            .is_ok(),
+        "its reader answers: only the start-up check's standing makes it unreadable"
     );
     // An EVM network's listing naming its chain id with another pool than the host's: its identity holds, its trust
     // rule doesn't.
@@ -665,7 +780,7 @@ fn reader_whose_rules_differ_from_its_listing_does_not_start() {
     let evm_readers = Readers::start(&evm, evm_core.world_endpoints(), &Plan::default());
     let mut evm_adapter = evm_readers.core_adapter();
     assert_eq!(
-        evm_adapter.check("polygon", &SystemClock),
+        evm_adapter.check_at("polygon", &SystemClock),
         Standing::Started
     );
     let mut other_trust = evm[0].clone();
@@ -676,9 +791,9 @@ fn reader_whose_rules_differ_from_its_listing_does_not_start() {
     }
     evm_adapter.list(&other_trust);
     assert_eq!(
-        evm_adapter.check("polygon", &SystemClock),
+        evm_adapter.check_at("polygon", &SystemClock),
         Standing::NotStarted(NotStarted::OtherTrust)
     );
     adapter.list(&listed[0]);
-    assert_eq!(adapter.check(&bank, &SystemClock), Standing::Started);
+    assert_eq!(adapter.check_at(&bank, &SystemClock), Standing::Started);
 }

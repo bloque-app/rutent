@@ -61,6 +61,54 @@ pub mod readers;
 pub use price::{PriceDesk, Reported, RouteRun, Unreported, report_logged_price, report_price};
 pub use readers::{Pass, Readers, Unreadable};
 
+/// The public records Core's grading and reversals read (the review of `T-020-60`'s round 1, M1): Core's own pass over
+/// its adapter for each listed network's reader ([`Public::of`]), built by Core from the [`Readers`] it holds, so no
+/// deployment hands Core a `PublicRecords` of its own. With the `reader-test-hooks` feature alone, which only the
+/// tests enable, a stand-in's records are read in its place ([`Public::stand_in`]).
+pub struct Public<'a>(PublicIs<'a>);
+
+enum PublicIs<'a> {
+    Pass(Pass<'a>),
+    #[cfg(any(test, feature = "reader-test-hooks"))]
+    Stand(&'a dyn PublicRecords),
+}
+
+impl<'a> Public<'a> {
+    /// One pass over Core's `readers`, at Core's clock: each question asked once in it, its answers dropped with it
+    /// (`T-020-60` (3)).
+    pub fn of(readers: &'a Readers) -> Self {
+        Public(PublicIs::Pass(readers.pass()))
+    }
+
+    /// A stand-in's records in place of Core's readers: a test hook, never in a deployment's build.
+    #[cfg(any(test, feature = "reader-test-hooks"))]
+    pub fn stand_in(records: &'a dyn PublicRecords) -> Self {
+        Public(PublicIs::Stand(records))
+    }
+
+    fn records(&self) -> &dyn PublicRecords {
+        match &self.0 {
+            PublicIs::Pass(pass) => pass,
+            #[cfg(any(test, feature = "reader-test-hooks"))]
+            PublicIs::Stand(records) => *records,
+        }
+    }
+}
+
+impl PublicRecords for Public<'_> {
+    fn rules(&self, network: &str) -> Result<Option<NetworkRules>, Unreadable> {
+        self.records().rules(network)
+    }
+
+    fn status(&self, network: &str, id: &MovementId) -> Result<Status, Unreadable> {
+        self.records().status(network, id)
+    }
+
+    fn movement(&self, network: &str, transaction: &Id) -> Result<Option<Moved>, Unreadable> {
+        self.records().movement(network, transaction)
+    }
+}
+
 use rutent_contracts::core_internal::calls::AppendFailure;
 use rutent_contracts::core_internal::{
     About, Actor, Entry, FeeTo, MismatchKind, MovementReader, Outcome, PublicMovement, Receipt,
@@ -337,6 +385,14 @@ impl Closing {
 
     /// Whether the segment `key` may take the movement, as its own (`node` false) or as a node's movement in or out:
     /// no other order took it, and no other segment of its order took it as its own where this one would too.
+    /// Whether any segment's evidence relies on the movement `movement` on `network` already: a movement one segment
+    /// took is no one else's, a reversal's movement back included (`T-020-60` (6), the review of round 1, L3).
+    pub fn relied_on(&self, network: &str, movement: &str) -> bool {
+        self.relied
+            .get(&(network.to_owned(), movement.to_owned()))
+            .is_some_and(|takers| !takers.is_empty())
+    }
+
     fn free_for(&self, network: &str, movement: &str, key: &(String, String), node: bool) -> bool {
         self.relied
             .get(&(network.to_owned(), movement.to_owned()))
@@ -380,8 +436,8 @@ impl Closing {
 pub struct Evidenced<'a> {
     /// The catalogue: each provider's declared grade, which nodes are private and which public.
     pub catalogue: &'a Catalogue,
-    /// The public networks.
-    pub records: &'a dyn PublicRecords,
+    /// The public networks, as Core's own pass over its readers reads them ([`Public::of`]).
+    pub records: Public<'a>,
     /// The private nodes' records.
     pub books: &'a dyn Books,
     /// Core's record across orders.
@@ -774,7 +830,7 @@ impl Evidenced<'_> {
                 .movement(&network, settled.transaction)
                 .map_err(Short::ReaderUnreadable)?;
             let ids: Vec<&MovementId> = moved.iter().map(|m| &m.id).collect();
-            match (network_of(self.records, &network, &ids)?, moved) {
+            match (network_of(&self.records, &network, &ids)?, moved) {
                 (Some(net), Some(moved)) => {
                     let expected = Expected {
                         network: network.clone(),
@@ -1399,7 +1455,7 @@ impl Evidenced<'_> {
                 .map(|(_, id, _, _)| id)
                 .or(moved.as_ref().map(|m| &m.id));
             let ids: Vec<&MovementId> = exit_id.into_iter().collect();
-            match (network_of(self.records, &network, &ids)?, moved) {
+            match (network_of(&self.records, &network, &ids)?, moved) {
                 (Some(net), Some(moved)) => {
                     let exit = PublicExit {
                         movement: movement.map_or(moved.id, |(_, id, _, _)| id.clone()),

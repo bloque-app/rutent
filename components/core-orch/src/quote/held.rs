@@ -539,6 +539,25 @@ impl Holds {
         })
     }
 
+    /// Releases every hold not redeemed whose quote's validity has passed at `now`: what a reopened Core does once its
+    /// holds are rebuilt, so a quote that lapsed while Core was down binds its reserve no more (`T-020-60` item (8), from
+    /// the check of `T-020-61` at `7557cd9e`). How many it released.
+    pub fn release_lapsed(&mut self, now: &Timestamp) -> usize {
+        let lapsed: Vec<String> = self
+            .held
+            .iter()
+            .filter(|(transaction, held)| {
+                !self.redeemed.contains_key(transaction.as_str())
+                    && held.valid_until().unix_nanos() < now.unix_nanos()
+            })
+            .map(|(transaction, _)| transaction.clone())
+            .collect();
+        for transaction in &lapsed {
+            self.held.remove(transaction);
+        }
+        lapsed.len()
+    }
+
     /// Drops the hold under `transaction`, with no effect beyond it; false if none was kept.
     pub fn drop_hold(&mut self, transaction: &Id) -> bool {
         self.held.remove(transaction.as_str()).is_some()

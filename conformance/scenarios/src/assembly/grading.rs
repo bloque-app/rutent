@@ -14,7 +14,6 @@ use rutent_conformance::sim::Spec;
 use rutent_contracts::provider_role::{InnerSegments, Statement};
 use rutent_contracts::router_api::Id;
 use rutent_core_orch::closing::{Books, Recorded};
-use rutent_evidence::replay::RecordedSegment;
 
 use crate::sim::Installed;
 
@@ -202,45 +201,13 @@ impl Booked {
         self.read_of(self.taken(node), transactions)
     }
 
+    /// The books' combining rule is Core's ([`rutent_core_orch::closing::publishers::combined`]).
     fn read_of(
         &self,
         records: Vec<Statement<InnerSegments>>,
         transactions: &[Id],
     ) -> Option<Recorded> {
-        let mut segments = Vec::new();
-        let mut read: Vec<Statement<InnerSegments>> = Vec::new();
-        for transaction in transactions {
-            let before = segments.len();
-            for record in &records {
-                let before_record = segments.len();
-                segments.extend(
-                    record
-                        .statement
-                        .segments
-                        .iter()
-                        .filter(|s| s.transaction == transaction.as_str())
-                        .map(|s| RecordedSegment {
-                            asset_in: s.asset_in.clone(),
-                            amount_in: s.amount_in.clone(),
-                            asset_out: s.asset_out.clone(),
-                            amount_out: s.amount_out.clone(),
-                            fee: s.fee.clone(),
-                        }),
-                );
-                if segments.len() > before_record && !read.contains(record) {
-                    read.push(record.clone());
-                }
-            }
-            // Every transaction asked ran inside the node, so one with no taken segment is a record refused or never
-            // made: nothing recorded for the node, never the rest of it passed off as all of it.
-            if segments.len() == before {
-                return None;
-            }
-        }
-        (!segments.is_empty()).then_some(Recorded {
-            segments,
-            records: read,
-        })
+        rutent_core_orch::closing::publishers::combined(&records, transactions)
     }
 }
 

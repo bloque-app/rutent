@@ -261,10 +261,21 @@ pub fn catalogue(reserves: &[(&str, &str)], expires_at: u64) -> Catalogue {
             .unwrap();
         catalogue.set_module_version(provider, Version::new("1.0.0").unwrap());
         for key in tuples_of(&ad) {
+            list_networks_of(&mut catalogue, &key);
             catalogue.set_evidence_floor(key, EvidenceGrade::Statement);
         }
     }
     catalogue
+}
+
+/// Each network `key`'s outer ends are on, put on the catalogue's public list as listed and started: the snapshot
+/// routes over no other (`T-020-60`).
+pub fn list_networks_of(catalogue: &mut Catalogue, key: &rutent_prov::catalogue::TupleKey) {
+    for end in [&key.origin, &key.destination] {
+        if let rutent_prov::catalogue::Endpoint::Outer(network) = end {
+            catalogue.list_public_network(network, true, true).unwrap();
+        }
+    }
 }
 
 // Tuples, prices, bounds, requests ------------------------------------------------------------------------------

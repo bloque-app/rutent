@@ -832,6 +832,14 @@ pub fn ramp_catalogue() -> Catalogue {
     ];
     for (i, (ad, category)) in ads.iter().enumerate() {
         join(&mut catalogue, &format!("g-{i}"), ad, *category);
+        // Each outer end's network listed and started: the snapshot routes over no other (`T-020-60`).
+        for key in rutent_prov::catalogue::tuples_of(ad) {
+            for end in [&key.origin, &key.destination] {
+                if let rutent_prov::catalogue::Endpoint::Outer(network) = end {
+                    catalogue.list_public_network(network, true, true).unwrap();
+                }
+            }
+        }
     }
     catalogue
 }

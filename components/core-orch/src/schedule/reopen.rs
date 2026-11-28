@@ -7,7 +7,12 @@
 //!
 //! 1. **The catalogue**: the host's holding accounts listed first, as the deployment keeps them; then every grant and
 //!    advertisement the log holds, by the key register's reading and the operator's settings held when each was
-//!    received ([`crate::settings::listing::relist`]).
+//!    received, and every public network's listing and delisting ([`crate::settings::listing::relist`]).
+//!    - **Each listed network's reader**, once the catalogue and the settings stand (`T-020-60` (7), the review of its
+//!      round 1, M1): Core's adapter, which the deployment built from its certificate, the operator's CA, its clock and
+//!      its host settings, takes in every listing the log holds and checks each reader before any of its networks starts
+//!      ([`crate::closing::Readers::start`]); a network whose reader passes goes on the catalogue's public list, and one
+//!      that doesn't is held off every route and raised to the operator.
 //! 2. **The settings**: rebuilt from the log, a setting whose result the log never took completed from what the
 //!    rebuilt catalogue answers now ([`Settings::reopen`]); then put back in the catalogue, over the floors and public
 //!    nodes the listing's joins set (a setting completes against the catalogue, so it comes after it).
@@ -18,7 +23,7 @@
 //!    hand-ons the log holds half of; the landings owed, asked of the holding accounts; **the stuck orders**, a
 //!    resolution done whose `stuck_resolved` the log lacks finished.
 //! 5. **The reversals**: the late answers kept, and each reversal's asks, their carrying-on, its confirmations and its
-//!    carrier (`asks`, H1).
+//!    carrier (`asks`, H1); and **the routes the linked orders were accepted on** ([`crate::stuck::Linked`]).
 //! 6. **The schedule**: when each segment was last asked its status, and the operator's cadences put in it; the
 //!    segments' node-record retry and the reversals' retry (`reversal_retries`) from the same settings; arrivals' and
 //!    the platform's settings.
@@ -30,7 +35,7 @@
 
 use std::collections::BTreeMap;
 
-use rutent_contracts::core_internal::calls::KeptStatements;
+use rutent_contracts::core_internal::calls::{KeptStatements, Operator};
 use rutent_contracts::core_internal::{Actor, Authorisation, Entry, Receipt, What};
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::router_api::{DECISION_RECORD_SHAPE, DecisionRecord, Id};
@@ -38,7 +43,8 @@ use rutent_prov::catalogue::Catalogue;
 
 use super::Schedule;
 use crate::arrival::Arrivals;
-use crate::closing::Closing;
+use crate::closing::readers::NotStarted;
+use crate::closing::{Closing, Readers};
 use crate::erasure::{Statements, Unsettled};
 use crate::hand_on::HandOn;
 use crate::intake::Intake;
@@ -104,6 +110,12 @@ pub struct Deployment<'a> {
     pub fresh: &'a mut dyn Fresh,
     /// The evidence store, as an erasure settles in it.
     pub erasing: &'a mut dyn Statements,
+    /// Core's adapter for each public network's reader, as the deployment built it from its certificate, the
+    /// operator's CA, its clock and its host settings, with no listing: the reopening lists into it from the log and
+    /// checks each reader (`T-020-60` (7)).
+    pub readers: &'a mut Readers,
+    /// The operator's channel, which a network whose reader didn't start is raised through.
+    pub operator: &'a mut dyn Operator,
 }
 
 /// What the catalogue's rebuild needs that the log doesn't hold ([`Relisting`], but for its read of the store).
@@ -152,12 +164,17 @@ pub struct Reopened {
     pub stuck: Stuck,
     /// The reversals.
     pub reversals: Reversals,
+    /// The routes the linked orders were accepted on, which the mover holds a hand-on's route to (`T-020-60` item (8)).
+    pub linked: crate::stuck::Linked,
     /// The schedule.
     pub schedule: Schedule,
     /// How many landings owed were found placed in their holding accounts.
     pub landings_found: usize,
     /// How many erasures decided and done were recorded.
     pub erasures_settled: usize,
+    /// The listed networks whose reader didn't pass Core's start-up check on reopening, with why: held off every route
+    /// and raised to the operator.
+    pub not_started: Vec<(String, NotStarted)>,
 }
 
 /// Why Core didn't reopen.
@@ -298,6 +315,33 @@ pub fn reopen(
         catalogue: Some(deployment.catalogue),
         ..Targets::default()
     });
+    // Each listed reader checked before any of its networks starts. A raise the log can't take now is tried again on
+    // the next check: the network stays held off every route whatever the raise did.
+    let not_started = {
+        let history = deployment.log.history();
+        let desk = crate::segments::RaiseDesk {
+            log: &mut *deployment.log,
+            clock: deployment.clock,
+            fresh: &mut *deployment.fresh,
+            operator: &mut *deployment.operator,
+            core: deployment.core,
+        };
+        match deployment
+            .readers
+            .start(&history, deployment.catalogue, desk)
+        {
+            Ok(not_started) => not_started,
+            Err(_) => deployment
+                .readers
+                .listed()
+                .keys()
+                .filter_map(|n| match deployment.readers.standing(n) {
+                    crate::closing::readers::Standing::NotStarted(why) => Some((n.clone(), why)),
+                    _ => None,
+                })
+                .collect(),
+        }
+    };
     // 3. Closing, the holds, the rounds' transactions, the prices reported, intake and arrivals.
     let closing = Closing::recorded(history);
     let mut reading = Reading {
@@ -305,7 +349,11 @@ pub fn reopen(
         kept: deployment.kept,
         in_force: deployment.in_force,
     };
-    let holds = Holds::reopened(history, &mut reading);
+    let mut holds = Holds::reopened(history, &mut reading);
+    // A quote that lapsed while Core was down binds its reserve no more: the rebuild releases its hold.
+    if let Some(now) = deployment.clock.now().timestamp() {
+        holds.release_lapsed(&now);
+    }
     let issued = Issued::recorded(history);
     let prices = Prices::recorded(history);
     let intake = Intake::reopened(history, &mut reading);
@@ -327,9 +375,11 @@ pub fn reopen(
         .platform
         .landings(&mut |landings| landings_found = segments.reconcile_landings(landings));
     let mut stuck = Stuck::reopened(&segments, deployment.clock, history, &mut exposures);
-    // 5. The reversals.
+    // 5. The reversals, and the routes the linked orders were accepted on.
     let mut reversals =
         Reversals::reopened(history, &mut |commitment| reading.kept.bytes(commitment));
+    let linked =
+        crate::stuck::Linked::reopened(history, &mut |commitment| reading.kept.bytes(commitment));
     {
         let mut parts = StuckParts {
             clock: deployment.clock,
@@ -387,8 +437,10 @@ pub fn reopen(
         hand_on,
         stuck,
         reversals,
+        linked,
         schedule,
         landings_found,
         erasures_settled,
+        not_started,
     })
 }

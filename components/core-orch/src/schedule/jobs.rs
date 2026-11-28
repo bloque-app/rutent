@@ -155,9 +155,12 @@ pub struct ReversalDesk<'a> {
     pub stuck: &'a mut Stuck,
     /// The register of actors.
     pub actors: &'a mut dyn crate::intake::Actors,
-    /// The public records, read through Core's adapter for each listed network's reader in this pass: a reversal back
-    /// into a held public node is confirmed on its network's record (`T-020-60` (6)).
-    pub records: &'a dyn crate::closing::PublicRecords,
+    /// The public records, as Core's own pass over its adapter for each listed network's reader reads them
+    /// ([`crate::closing::Public::of`]): a reversal back into a held public node is confirmed on its network's record
+    /// (`T-020-60` (6)). Never a `PublicRecords` of the deployment's own (the review of round 1, M1).
+    pub records: crate::closing::Public<'a>,
+    /// Core's record of the movements segments' evidence relies on, to read.
+    pub closing: &'a crate::closing::Closing,
 }
 
 /// What a reversal step does with what the deployment lends: the reversals, what they reach, and the desk.
@@ -281,6 +284,46 @@ impl<'p> Jobs<'p> {
     /// The ports, to ask and lend through.
     pub(super) fn ports_mut(&mut self) -> &mut dyn Ports {
         &mut *self.ports
+    }
+
+    /// The stuck watch's body for `order` alone, as [`Job::Watch`](super::Job::Watch) runs it on each order, with every
+    /// guard it has: its part timed on the route Core's own record names now, and one Core can't name declared stuck on
+    /// the last route the log names (`T-020-60` item (8), from the check of `T-020-61` at `7557cd9e`: no deployment keeps
+    /// a copy of it). `None` for an order that didn't start, or has no part.
+    pub fn watch_order(&mut self, order: &Id) -> Option<Result<Watch, String>> {
+        let core = self.ports.actors().core;
+        let order = order.clone();
+        {
+            let started = self.ports.intake().started(&order)?;
+            let first = started.first()?;
+            let Some((record, segments)) = current_route(&*self.ports, &order, started, &first)
+            else {
+                // Fails closed: a route Core can't name now is never timed on another route. Its part is declared stuck,
+                // for the operator, on the last route the log names for it (#316's round-3 L7, `T-020-61`).
+                let part = first.part.clone();
+                return Some(self.unnamed_route_stuck(&order, &part));
+            };
+            let part = first.part.clone();
+            let mut found = Err("the stuck orders weren't lent".to_owned());
+            self.ports.with_stuck(&mut |stuck, parts, _, channel| {
+                found = stuck
+                    .watch(
+                        parts,
+                        channel,
+                        Watching {
+                            order: &order,
+                            part: &part,
+                            segments: &segments,
+                            record: &record,
+                            at: 0,
+                            core: &core,
+                        },
+                    )
+                    .map_err(|why| format!("{why:?}"));
+            });
+            self.ports.fed();
+            Some(found)
+        }
     }
 }
 
@@ -998,8 +1041,12 @@ impl Duties for Jobs<'_> {
 
     fn land_settled(&mut self) -> usize {
         let mut landed = 0;
-        self.ports
-            .with_landings(&mut |segments, landings| landed = segments.land_settled(landings));
+        // What a reopened Core found owed and couldn't confirm is asked again first (`T-020-60` item (8)): Core retries
+        // it itself, so a release the operator confirmed since lands it on this tick.
+        self.ports.with_landings(&mut |segments, landings| {
+            segments.reconcile_owed(landings);
+            landed = segments.land_settled(landings);
+        });
         self.ports.fed();
         landed
     }
@@ -1365,41 +1412,11 @@ impl Duties for Jobs<'_> {
     }
 
     fn watch(&mut self) -> Vec<Watched> {
-        let core = self.ports.actors().core;
         let mut watched = Vec::new();
         for order in orders(&*self.ports) {
-            let Some(started) = self.ports.intake().started(&order) else {
+            let Some(found) = self.watch_order(&order) else {
                 continue;
             };
-            let Some(first) = started.first() else {
-                continue;
-            };
-            let Some((record, segments)) = current_route(&*self.ports, &order, started, &first)
-            else {
-                // Fails closed: a route Core can't name now is never timed on another route. Its part is declared stuck,
-                // for the operator, on the last route the log names for it (#316's round-3 L7, `T-020-61`).
-                let found = self.unnamed_route_stuck(&order, &first.part);
-                watched.push(Watched { order, found });
-                continue;
-            };
-            let mut found = Err("the stuck orders weren't lent".to_owned());
-            self.ports.with_stuck(&mut |stuck, parts, _, channel| {
-                found = stuck
-                    .watch(
-                        parts,
-                        channel,
-                        Watching {
-                            order: &order,
-                            part: &first.part,
-                            segments: &segments,
-                            record: &record,
-                            at: 0,
-                            core: &core,
-                        },
-                    )
-                    .map_err(|why| format!("{why:?}"));
-            });
-            self.ports.fed();
             if !matches!(found, Ok(Watch::Running | Watch::AlreadyStuck)) {
                 watched.push(Watched { order, found });
             }

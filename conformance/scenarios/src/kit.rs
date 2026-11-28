@@ -575,8 +575,10 @@ pub fn asset_at(ad: &rutent_contracts::provider_role::Advertisement, node: &str)
 pub const OPERATOR_WALLET: &str = "operator-wallet";
 
 /// Lists `installed`'s advertisement in Core's catalogue as a test kit does, with no log: granted by
-/// `operator-admin` at the epoch's 1 000th second, and joined at the simulated world's clock. The assembly grants
-/// through a decided catalogue change instead ([`crate::assembly::Core::grant`]).
+/// `operator-admin` at the epoch's 1 000th second, and joined at the simulated world's clock, and each network its
+/// tuples' outer ends are on put on the catalogue's public list as started, since the snapshot routes over no other
+/// (`T-020-60`). The assembly grants through a decided catalogue change instead ([`crate::assembly::Core::grant`]),
+/// and lists each network through Core's own listing, after its reader's check.
 pub fn list(catalogue: &mut Catalogue, installed: &Installed) {
     grant(
         catalogue,
@@ -584,6 +586,13 @@ pub fn list(catalogue: &mut Catalogue, installed: &Installed) {
         grant_terms(installed, "operator-admin", Instant(1_000)),
     );
     join(catalogue, installed, WORLD_AT);
+    for key in tuples_of(&installed.advertisement.statement().statement) {
+        for end in [&key.origin, &key.destination] {
+            if let rutent_prov::catalogue::Endpoint::Outer(network) = end {
+                let _ = catalogue.list_public_network(network, true, true);
+            }
+        }
+    }
 }
 
 /// The identifier the log names `provider`'s catalogue tuple `tuple` by in a grant (`change_catalogue`'s `tuple`),

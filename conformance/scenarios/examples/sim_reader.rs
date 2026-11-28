@@ -30,7 +30,8 @@
 //! something that is no answer), `other-movement` (answers about another movement or transaction than the one asked)
 //! `other-identity` (answers its rules naming another network's identity than the one it checked, a start-up liar),
 //! `unread-movements` (answers its rules, but no movement: every movement question is unreadable), `hang` (answers its
-//! rules, then never answers a movement question: the host's timeout path, `reader_hung`),
+//! rules, then never answers a movement question: the host's timeout path, `reader_hung`), `pending` (answers every
+//! final movement as still pending, as a network that hasn't finalised it would),
 //! and `undeclared` (also asks an endpoint it doesn't declare: the world's own host for the network, and for a light
 //! client a port its rule doesn't name). A key the listing doesn't name is the harness's to plant, in the host's
 //! configuration: the reader never holds a key.
@@ -268,9 +269,18 @@ impl Reader {
                     },
                 })
             }),
-            Asked::MovementStatus { movement } => self
-                .status(movement.as_str())
-                .map(|standing| Answered::MovementStatus { standing }),
+            // A reader planted to read every movement as not yet final answers a final one as pending: an honest
+            // answer of a network that hasn't finalised it yet (`T-020-60`'s round 1, L2).
+            Asked::MovementStatus { movement } => {
+                let pending = self.hostile("pending");
+                self.status(movement.as_str())
+                    .map(|standing| Answered::MovementStatus {
+                        standing: match standing {
+                            Standing::Final(moved) if pending => Standing::Pending(moved),
+                            standing => standing,
+                        },
+                    })
+            }
             Asked::MovementOf { transaction } => self
                 .movement_of(transaction.as_str())
                 .map(|movement| Answered::MovementOf { movement }),

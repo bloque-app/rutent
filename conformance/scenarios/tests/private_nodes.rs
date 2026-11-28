@@ -18,7 +18,6 @@ use rutent_contracts::state_machine::OrderState;
 use rutent_core_orch::intake::{OrderRequest, Status, Told};
 use rutent_core_orch::schedule::Job;
 use rutent_core_orch::segments::{Accounted, Ran, SegmentOutcome};
-use rutent_core_orch::snapshot::RouteRefusal;
 use rutent_evidence::replay::{NodeRecord, RecordedSegment, Replay, RouteEnd, replay_route};
 use rutent_prov::catalogue::LeftOutReason;
 use rutent_scenarios::assembly::Core;
@@ -330,7 +329,8 @@ fn deposit_at_a_private_node_closes_on_the_movement_in_and_the_reserves_statemen
     );
 
     // A reserve whose rail has no public record and that no publisher declares private can't end a route: it isn't
-    // routed to, and nothing moves.
+    // routed to, and nothing moves. Since `T-020-60`'s round 2 (M2) the snapshot leaves out every tuple with an outer end
+    // on no list, so the rail is offered no route at all: the order isn't quoted, and nothing is handed over.
     let (mut silent, session) = core_with("AC-34", &[IN, EXCHANGE, RAMP, OUT_SILENT]);
     assert_eq!(
         silent
@@ -340,22 +340,27 @@ fn deposit_at_a_private_node_closes_on_the_movement_in_and_the_reserves_statemen
         None
     );
     assert!(silent.world().network("sim-join-out-silent-bank").is_none());
-    let order = accepted(
-        &mut silent,
-        across(
+    let told = silent
+        .request(across(
             "req-silent",
             &session,
             OUT_SILENT,
             "sim-join-out-silent-bank",
+        ))
+        .expect("the request is taken");
+    let order = Core::order_of(&told).expect("an order opened");
+    let quoted = silent.quote(&kit::customer(), &order);
+    assert!(
+        matches!(
+            quoted,
+            Ok(rutent_core_orch::intake::Told::Exists {
+                status: rutent_core_orch::intake::Status::CantProceed { .. },
+                ..
+            })
         ),
+        "no route is offered to a rail on no list: {quoted:?}"
     );
-    let ran = silent.ran_on_tick(&order).expect("the order is taken up");
-    let [Ran::Refused { refused, .. }] = ran.as_slice() else {
-        panic!("the route is refused before anything is handed over: {ran:?}");
-    };
-    assert_eq!(refused.reason, RouteRefusal::NoPublicRecord(3));
     assert!(silent.world().journal(IN).is_empty(), "nothing moved");
-    assert_ne!(state(&mut silent, &order), OrderState::Complete);
 }
 
 // verifies: AC-35

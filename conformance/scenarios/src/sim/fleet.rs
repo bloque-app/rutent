@@ -731,7 +731,8 @@ impl Fleet {
     }
 
     /// The node's network records the movement that brings a reversed segment's value back into the holding account
-    /// `holder`, of `amount` of `asset`, tied to the reversed segment's transaction `segment` (`T-020-60` (6)): the
+    /// `holder`, of `amount` of `asset`, tied to the reversal's own transaction `segment`, the one its failed provider was
+    /// asked to reverse under (`T-020-60` (6)): the
     /// failed provider's reversal, as the network itself records it, which nothing of Core's writes. Core reads it only
     /// through the node's reader, and hands the account its reading to confirm on. Why the network refused it, where
     /// it did.

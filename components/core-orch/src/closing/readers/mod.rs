@@ -3,8 +3,13 @@
 //! [`PublicRecords`](super::PublicRecords) stays Core's seam (`REQ-MOD-3`), and Core implements it itself, here: a
 //! [`Pass`] over [`Readers`] asks each listed network's reader, run by a reader host apart from Core, over an mTLS client
 //! of Core's own ([`ReaderTls`]), under the operator's CA, on `rustls` with its `ring` provider. The deployment hands Core
-//! its certificate and key, the operator's CA, the addresses its host settings hold, and its clock: never a reader, and
-//! never a `PublicRecords` of its own.
+//! its certificate and key, the operator's CA, the addresses its host settings hold, and its clock, when it builds
+//! the adapter ([`Readers::new`], [`Readers::with_host`]): never a reader, and never a `PublicRecords` of its own.
+//! Everything else is Core's (the review of `T-020-60`'s round 1, M1): the listings, read from the log
+//! ([`listings_of`]); the start-up check when Core opens or reopens ([`Readers::start`], which `schedule::reopen`
+//! runs), when a listing or delisting is decided and carried out ([`listing::change_public_network`]) and when the
+//! deployment moves a host ([`Readers::move_host`]); the catalogue's public list of networks; the raise; and each pass,
+//! which Core's own grading and reversals build from the adapter ([`super::Public::of`]).
 //!
 //! 1. **Checked before it is read.** The host's certificate is held to the operator's CA and to the subject name the
 //!    listing names, never to a pinned leaf, so a rotated leaf under the same CA and name needs no listing change. The
@@ -30,6 +35,7 @@
 //! 5. **Unreadable.** Each of `PublicRecords`' three calls answers the reader's answer or [`Unreadable`]; closing takes
 //!    `Unreadable` as "doesn't settle yet".
 
+pub mod listing;
 pub mod raise;
 pub mod tls;
 
@@ -38,10 +44,11 @@ use std::collections::{BTreeMap, VecDeque};
 use std::io;
 use std::net::{SocketAddr, TcpStream};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rustls::pki_types::ServerName;
 use rustls::{ClientConnection, StreamOwned};
+use rutent_contracts::core_internal::calls::AppendFailure;
 use rutent_contracts::core_internal::{
     Action, CatalogueChange, Entry, MovementReader, NetworkListing, Outcome, PublicNetwork,
     Receipt, VerifiedEntry, What,
@@ -54,14 +61,18 @@ use rutent_contracts::reader::{
 };
 use rutent_contracts::router_api::{Id, Timestamp};
 use rutent_evidence::{MovementId, NetworkRules, Status};
+use rutent_prov::catalogue::Catalogue;
 
 use super::{Moved, PublicRecords};
+use crate::segments::RaiseDesk;
 use crate::snapshot::{Clock, Reading};
 
 pub use raise::Raised;
 pub use tls::{ReaderTls, TlsRefusal};
 
-/// How long, on Core's clock, Core waits for an answer by default: its deadline is the time it asked plus this.
+/// How long, on Core's clock, Core waits for an answer: its deadline is the time it asked plus this. It also bounds the
+/// whole of one exchange on the operating system's clock, connection, handshake, question and answer together, so a
+/// host that trickles its answer a byte at a time holds Core's run no longer than this (the review of round 1, L4).
 pub const ANSWER_WINDOW: Duration = Duration::from_secs(30);
 
 /// The largest answer Core reads, in bytes.
@@ -74,6 +85,10 @@ const NOTED: usize = 4096;
 /// amended).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Unreadable {
+    /// No listing in force names the network: it was never listed, or a decided delisting took it off. Core reads no
+    /// record of a network without a reader, so a segment on it settles nothing, on its provider's word or otherwise
+    /// (the review of round 1, M2).
+    NotListed,
     /// The network's reader didn't pass its start-up check, or wasn't checked yet: why is its standing's
     /// ([`Readers::standing`]).
     NotStarted,
@@ -168,8 +183,9 @@ pub struct Readers {
     listed: BTreeMap<String, NetworkListing>,
     standing: BTreeMap<String, NotStarted>,
     random: Box<dyn RandomSource>,
-    window: Duration,
+    clock: Box<dyn Clock>,
     put: RefCell<VecDeque<Put>>,
+    raised: Raised,
 }
 
 impl core::fmt::Debug for Readers {
@@ -183,9 +199,14 @@ impl core::fmt::Debug for Readers {
 }
 
 impl Readers {
-    /// Core's adapter, over the link's TLS the deployment handed it, for `deployment` under `versions`, drawing
-    /// request ids from the system's secure random. No network is listed yet.
-    pub fn new(tls: ReaderTls, deployment: Deployment, versions: ProtocolVersions) -> Self {
+    /// Core's adapter, over the link's TLS the deployment handed it, for `deployment` under `versions`, at Core's
+    /// `clock`, drawing request ids from the system's secure random. No network is listed yet, and no host is set.
+    pub fn new(
+        tls: ReaderTls,
+        deployment: Deployment,
+        versions: ProtocolVersions,
+        clock: Box<dyn Clock>,
+    ) -> Self {
         Readers {
             tls,
             hosts: BTreeMap::new(),
@@ -194,30 +215,45 @@ impl Readers {
             listed: BTreeMap::new(),
             standing: BTreeMap::new(),
             random: Box::new(SystemRandom),
-            window: ANSWER_WINDOW,
+            clock,
             put: RefCell::new(VecDeque::new()),
+            raised: Raised::default(),
         }
     }
 
-    /// The same, drawing request ids from `random`.
+    /// The same, the deployment's host setting `setting` holding `address`: where the reader host a listing names by
+    /// it is. The address stays the deployment's, so a host moved needs no listing change. Each listed network that
+    /// names the setting is unchecked again until Core's next start-up check ([`Readers::move_host`] moves a host and
+    /// checks at once).
+    #[must_use]
+    pub fn with_host(mut self, setting: &str, address: SocketAddr) -> Self {
+        self.put_host(setting, address);
+        self
+    }
+
+    fn put_host(&mut self, setting: &str, address: SocketAddr) {
+        self.hosts.insert(setting.to_owned(), address);
+        for (network, listing) in &self.listed {
+            if listing.endpoint.host_setting.as_str() == setting {
+                self.standing
+                    .entry(network.clone())
+                    .or_insert(NotStarted::Unchecked);
+            }
+        }
+    }
+
+    /// The same, drawing request ids from `random`: a test hook, never in a deployment's build (the review of round 1,
+    /// L5), so a deployment can't replace Core's random source (`DEC-28`'s condition (b)).
+    #[cfg(any(test, feature = "reader-test-hooks"))]
     #[must_use]
     pub fn drawing_from(mut self, random: Box<dyn RandomSource>) -> Self {
         self.random = random;
         self
     }
 
-    /// The same, giving each answer `window` on Core's clock before its deadline. Core's socket still waits no longer
-    /// than [`ANSWER_WINDOW`] on the operating system's clock: a window longer than it is for a deployment whose Core
-    /// clock isn't the host's (a scenario's simulated clock, which the reader host's wall clock can't follow, and which
-    /// would otherwise drop every question as dead on arrival, `T-015-05`).
-    #[must_use]
-    pub fn answering_within(mut self, window: Duration) -> Self {
-        self.window = window;
-        self
-    }
-
-    /// The deployment's host setting `setting` holds `address`: where the reader host a listing names by it is. The
-    /// address stays the deployment's, so a host moved needs no listing change.
+    /// The host setting `setting` now holds `address`, with no check: a test hook, never in a deployment's build. A
+    /// deployment moves a host through [`Readers::move_host`], which checks each listed reader there.
+    #[cfg(any(test, feature = "reader-test-hooks"))]
     pub fn set_host(&mut self, setting: &str, address: SocketAddr) {
         self.hosts.insert(setting.to_owned(), address);
     }
@@ -232,9 +268,17 @@ impl Readers {
         &self.tls
     }
 
-    /// Takes a decided listing of `network`'s reader in, in place of any earlier one: unchecked until
-    /// [`Readers::check`]. A delisting (a public network with no listing) takes it off.
+    /// Takes a decided listing of `network`'s reader in, in place of any earlier one, unchecked: a test hook, never in
+    /// a deployment's build, where Core takes each listing from its log ([`Readers::start`],
+    /// [`listing::change_public_network`]).
+    #[cfg(any(test, feature = "reader-test-hooks"))]
     pub fn list(&mut self, network: &PublicNetwork) {
+        self.take(network);
+    }
+
+    /// Takes a decided listing of `network`'s reader in, in place of any earlier one: unchecked until Core's start-up
+    /// check. A delisting (a public network with no listing) takes it off.
+    fn take(&mut self, network: &PublicNetwork) {
         let name = network.network.as_str().to_owned();
         match &network.listing {
             Some(listing) => {
@@ -282,10 +326,24 @@ impl Readers {
             .collect()
     }
 
-    /// The start-up check of `network`'s reader, at Core's `clock`: its `network_rules` answer, checked as every answer
+    /// The start-up check of `network`'s reader at `clock`, Core's own check with the clock a test hands it: a test
+    /// hook, never in a deployment's build.
+    #[cfg(any(test, feature = "reader-test-hooks"))]
+    pub fn check_at(&mut self, network: &str, clock: &dyn Clock) -> Standing {
+        self.check_with(network, clock)
+    }
+
+    /// The start-up check of `network`'s reader, at Core's clock: its `network_rules` answer, checked as every answer
     /// is, held to the listing's identity and trust rule. The network starts where it passes; otherwise it doesn't, and
     /// why is its standing. Nothing for a network no listing names.
-    pub fn check(&mut self, network: &str, clock: &dyn Clock) -> Standing {
+    fn check(&mut self, network: &str) -> Standing {
+        let clock = std::mem::replace(&mut self.clock, Box::new(crate::snapshot::SystemClock));
+        let standing = self.check_with(network, &*clock);
+        self.clock = clock;
+        standing
+    }
+
+    fn check_with(&mut self, network: &str, clock: &dyn Clock) -> Standing {
         let Some(listing) = self.listed.get(network) else {
             return Standing::NotListed;
         };
@@ -313,17 +371,76 @@ impl Readers {
         self.standing(network)
     }
 
-    /// Every listed network's start-up check, as Core does when it opens or reopens: the networks that didn't start,
-    /// with why.
-    pub fn check_all(&mut self, clock: &dyn Clock) -> Vec<(String, NotStarted)> {
-        let networks: Vec<String> = self.listed.keys().cloned().collect();
-        networks
-            .into_iter()
-            .filter_map(|network| match self.check(&network, clock) {
-                Standing::NotStarted(why) => Some((network, why)),
-                _ => None,
-            })
-            .collect()
+    /// Core's start-up check (`T-020-60` (2), (7)), as it runs when Core opens or reopens (`schedule::reopen`) and
+    /// whenever a host moves: every listing `history` holds in force taken in, in place of what the adapter held, and
+    /// one it no longer holds taken off; each listed reader asked `network_rules` and held to its listing; each network
+    /// on the catalogue's public list where its reader passed, held off every route where it didn't, and off the list
+    /// where no listing names it any more; and each network that didn't start raised to the operator, once in its spell,
+    /// citing its listing ([`Raised`]). The networks that didn't start, with why. Core's other networks run on.
+    ///
+    /// # Errors
+    ///
+    /// The first raise the log refused or couldn't take now: that network stays out of its spell, so the next check
+    /// raises it again. Every network is still checked and put on or off the list.
+    pub fn start(
+        &mut self,
+        history: &[(Receipt, Entry)],
+        catalogue: &mut Catalogue,
+        desk: RaiseDesk<'_>,
+    ) -> Result<Vec<(String, NotStarted)>, AppendFailure> {
+        let in_force = listings_of(history);
+        let gone: Vec<String> = self
+            .listed
+            .keys()
+            .filter(|n| !in_force.iter().any(|l| l.network.as_str() == n.as_str()))
+            .cloned()
+            .collect();
+        for network in gone {
+            self.listed.remove(&network);
+            self.standing.remove(&network);
+            catalogue.drop_public_network(&network);
+        }
+        let mut not_started = BTreeMap::new();
+        for network in &in_force {
+            self.take(network);
+            let name = network.network.as_str();
+            let started = match self.check(name) {
+                Standing::NotStarted(why) => {
+                    not_started.insert(name.to_owned(), why);
+                    false
+                }
+                _ => true,
+            };
+            let _ = catalogue.list_public_network(name, network.listing.is_some(), started);
+        }
+        let names: Vec<String> = self.listed.keys().cloned().collect();
+        self.raised
+            .raise(&names, &not_started, history, desk)
+            .map(|_| not_started.into_iter().collect())
+    }
+
+    /// The deployment moved its host setting `setting` to `address`: Core checks each listed reader again there, as on
+    /// opening ([`Readers::start`]), so a network started at the old address starts at the new one only on its
+    /// reader's passing.
+    ///
+    /// # Errors
+    ///
+    /// As [`Readers::start`].
+    pub fn move_host(
+        &mut self,
+        setting: &str,
+        address: SocketAddr,
+        history: &[(Receipt, Entry)],
+        catalogue: &mut Catalogue,
+        desk: RaiseDesk<'_>,
+    ) -> Result<Vec<(String, NotStarted)>, AppendFailure> {
+        self.put_host(setting, address);
+        self.start(history, catalogue, desk)
+    }
+
+    /// Whether `network` is raised to the operator as not started, in the spell now running.
+    pub fn is_raised(&self, network: &str) -> bool {
+        self.raised.is_raised(network)
     }
 
     /// The questions Core put, the last few thousand, in the order put.
@@ -331,12 +448,11 @@ impl Readers {
         self.put.borrow().iter().cloned().collect()
     }
 
-    /// A pass over the readers at Core's `clock`: each question asked once within it, its answer kept until the pass
-    /// ends, when the pass is dropped.
-    pub fn pass<'a>(&'a self, clock: &'a dyn Clock) -> Pass<'a> {
+    /// A pass over the readers at Core's clock: each question asked once within it, its answer kept until the pass
+    /// ends, when the pass is dropped. Core's grading and reversals each build theirs ([`super::Public::of`]).
+    pub fn pass(&self) -> Pass<'_> {
         Pass {
             readers: self,
-            clock,
             kept: RefCell::new(BTreeMap::new()),
         }
     }
@@ -364,25 +480,28 @@ impl Readers {
         None
     }
 
-    /// Asks `network`'s reader `asked` once, whatever its standing, at Core's `clock`: the start-up check's question,
-    /// checked as every answer is. A pass asks only a started network's reader ([`Pass`]).
+    /// Asks `network`'s reader `asked` once, whatever its standing, at `clock`: a test hook, never in a deployment's
+    /// build (the review of round 1, L5). A pass asks only a started network's reader ([`Pass`]).
     ///
     /// # Errors
     ///
     /// Where no listing names `network`, or as [`Unreadable`] names.
+    #[cfg(any(test, feature = "reader-test-hooks"))]
     pub fn question(
         &self,
         network: &str,
         asked: Asked,
         clock: &dyn Clock,
     ) -> Result<Answered, Unreadable> {
-        let listing = self.listed.get(network).ok_or(Unreadable::NotStarted)?;
+        let listing = self.listed.get(network).ok_or(Unreadable::NotListed)?;
         self.ask_listed(network, listing, asked, clock)
     }
 
-    /// Asks `network`'s reader `asked`, where its reader started: unreadable otherwise.
-    fn ask(&self, network: &str, asked: Asked, clock: &dyn Clock) -> Result<Answered, Unreadable> {
-        let listing = self.listed.get(network).ok_or(Unreadable::NotStarted)?;
+    /// Asks `network`'s reader `asked` at Core's clock, where its reader started: unreadable otherwise, a network no
+    /// listing names included.
+    fn ask(&self, network: &str, asked: Asked) -> Result<Answered, Unreadable> {
+        let clock = &*self.clock;
+        let listing = self.listed.get(network).ok_or(Unreadable::NotListed)?;
         if self.standing.contains_key(network) {
             return Err(Unreadable::NotStarted);
         }
@@ -411,7 +530,7 @@ impl Readers {
             request: request.clone(),
             reader: listing.endpoint.reader.clone(),
             network: Id::new(network).ok_or(Unreadable::Malformed)?,
-            deadline: later(asked_at, self.window).ok_or(Unreadable::Malformed)?,
+            deadline: later(asked_at, ANSWER_WINDOW).ok_or(Unreadable::Malformed)?,
             asked,
         };
         {
@@ -455,7 +574,8 @@ impl Readers {
     }
 
     /// One question over the mTLS link to `address`, the host held to the operator's CA and the listed subject name:
-    /// the answer's bytes, empty where the host had nothing to sign.
+    /// the answer's bytes, empty where the host had nothing to sign. The whole exchange is bounded by
+    /// [`ANSWER_WINDOW`] on the operating system's clock.
     fn exchange(
         &self,
         address: SocketAddr,
@@ -464,15 +584,12 @@ impl Readers {
     ) -> Result<Vec<u8>, Unreadable> {
         let name = ServerName::try_from(listing.reader.subject_name.as_str().to_owned())
             .map_err(|_| Unreadable::Unreachable)?;
-        let wait = self.window.clamp(Duration::from_secs(1), ANSWER_WINDOW);
-        let tcp = TcpStream::connect_timeout(&address, wait.min(Duration::from_secs(10)))
-            .map_err(|_| Unreadable::Unreachable)?;
-        tcp.set_read_timeout(Some(wait))
-            .and_then(|()| tcp.set_write_timeout(Some(wait)))
+        let until = Instant::now() + ANSWER_WINDOW;
+        let tcp = TcpStream::connect_timeout(&address, Duration::from_secs(10))
             .map_err(|_| Unreadable::Unreachable)?;
         let connection = ClientConnection::new(Arc::clone(&self.tls.client), name)
             .map_err(|_| Unreadable::Unreachable)?;
-        let mut stream = StreamOwned::new(connection, tcp);
+        let mut stream = StreamOwned::new(connection, Bounded { tcp, until });
         write_frame(&mut stream, question).map_err(|_| Unreadable::Unreachable)?;
         match read_frame(&mut stream) {
             Ok(Some(answer)) => Ok(answer),
@@ -480,6 +597,42 @@ impl Readers {
             Err(e) if e.kind() == io::ErrorKind::InvalidData => Err(Unreadable::Malformed),
             Err(_) => Err(Unreadable::Unreachable),
         }
+    }
+}
+
+/// A connection bounded as a whole: each read and write waits only for what is left until `until`, and none starts
+/// past it, so a peer that trickles bytes can't stretch one exchange past its bound (the review of round 1, L4).
+struct Bounded {
+    tcp: TcpStream,
+    until: Instant,
+}
+
+impl Bounded {
+    fn left(&self) -> io::Result<Duration> {
+        self.until
+            .checked_duration_since(Instant::now())
+            .filter(|left| !left.is_zero())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "the exchange's bound passed"))
+    }
+}
+
+impl io::Read for Bounded {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        let left = self.left()?;
+        self.tcp.set_read_timeout(Some(left))?;
+        io::Read::read(&mut self.tcp, bytes)
+    }
+}
+
+impl io::Write for Bounded {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let left = self.left()?;
+        self.tcp.set_write_timeout(Some(left))?;
+        io::Write::write(&mut self.tcp, bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        io::Write::flush(&mut self.tcp)
     }
 }
 
@@ -522,7 +675,6 @@ fn read_frame(input: &mut impl io::Read) -> io::Result<Option<Vec<u8>>> {
 /// One pass over the readers (`T-020-60` (3)): each question asked once, its answer kept until the pass is dropped.
 pub struct Pass<'a> {
     readers: &'a Readers,
-    clock: &'a dyn Clock,
     kept: RefCell<BTreeMap<(String, String), Result<Answered, Unreadable>>>,
 }
 
@@ -535,7 +687,7 @@ impl Pass<'_> {
         if let Some(kept) = self.kept.borrow().get(&key) {
             return kept.clone();
         }
-        let answered = self.readers.ask(network, asked, self.clock);
+        let answered = self.readers.ask(network, asked);
         self.kept.borrow_mut().insert(key, answered.clone());
         answered
     }
@@ -572,12 +724,10 @@ fn movement_of(m: &rutent_contracts::reader::Movement) -> rutent_evidence::Movem
     }
 }
 
-/// Each listed network, as its reader answers it in this pass.
+/// Each listed network, as its reader answers it in this pass: a network no listing names is unreadable, never "no
+/// record" (the review of round 1, M2, reversing the round's departure), so nothing on it settles.
 impl PublicRecords for Pass<'_> {
     fn rules(&self, network: &str) -> Result<Option<NetworkRules>, Unreadable> {
-        if !self.readers.listed.contains_key(network) {
-            return Ok(None);
-        }
         match self.answer(network, Asked::NetworkRules(NoDetail {}))? {
             Answered::NetworkRules { rules } => Ok(Some(rules_of(&rules.finality, &rules.reorg))),
             _ => Err(Unreadable::Malformed),
@@ -585,9 +735,6 @@ impl PublicRecords for Pass<'_> {
     }
 
     fn status(&self, network: &str, id: &MovementId) -> Result<Status, Unreadable> {
-        if !self.readers.listed.contains_key(network) {
-            return Ok(Status::Unknown);
-        }
         let movement = Id::new(id.as_str()).ok_or(Unreadable::Unstated)?;
         match self.answer(network, Asked::MovementStatus { movement })? {
             Answered::MovementStatus { standing } => Ok(match standing {
@@ -601,9 +748,10 @@ impl PublicRecords for Pass<'_> {
     }
 
     fn movement(&self, network: &str, transaction: &Id) -> Result<Option<Moved>, Unreadable> {
-        let Some(read_by) = self.readers.reader_of(network) else {
-            return Ok(None);
-        };
+        let read_by = self
+            .readers
+            .reader_of(network)
+            .ok_or(Unreadable::NotListed)?;
         match self.answer(
             network,
             Asked::MovementOf {
@@ -716,6 +864,42 @@ mod tests {
                 out.push(path);
             }
         }
+    }
+
+    /// A host that trickles a frame a byte at a time can't hold one exchange past its bound: each read waits only for
+    /// what is left of it (the review of round 1, L4).
+    // verifies: REQ-MDL-11
+    #[test]
+    fn exchange_with_a_host_that_trickles_its_answer_ends_at_its_bound() {
+        use std::io::Write as _;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+        let address = listener.local_addr().expect("its address");
+        let server = std::thread::spawn(move || {
+            let (mut peer, _) = listener.accept().expect("Core's connection");
+            // A frame of a thousand bytes, announced, then a byte every 100 ms: 100 s in all, unbounded per read.
+            let _ = peer.write_all(&1000u32.to_le_bytes());
+            for _ in 0..1000 {
+                if peer.write_all(&[0]).is_err() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        });
+        let tcp = std::net::TcpStream::connect(address).expect("connected");
+        let started = std::time::Instant::now();
+        let mut bounded = super::Bounded {
+            tcp,
+            until: started + std::time::Duration::from_millis(700),
+        };
+        let read = super::read_frame(&mut bounded);
+        let took = started.elapsed();
+        assert!(read.is_err(), "the frame never completes inside the bound");
+        assert!(
+            took < std::time::Duration::from_secs(3),
+            "the exchange ends at its bound, not per byte: {took:?}"
+        );
+        drop(bounded);
+        let _ = server.join();
     }
 
     // verifies: DEC-28

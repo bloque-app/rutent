@@ -83,6 +83,24 @@ impl Segments {
         if !self.awaits_answer(carry.order, carry.segment) {
             return CarriedOn::NotAwaiting;
         }
+        // A carry-on whose result the log didn't take: its result is written first, never a second effect after it.
+        if let Some((receipt, outcome, when, answered)) = self.carry_unwritten.get(&at).cloned() {
+            if journal::append(
+                parts.log,
+                journal::verified(carry.core, What::Result { effect: receipt }, &when, outcome),
+            )
+            .is_err()
+            {
+                return CarriedOn::Failed;
+            }
+            self.carry_unwritten.remove(&at);
+            return match answered {
+                Answered::Bytes(bytes) => self.take_answer(&at, bytes),
+                Answered::Refused(_) => {
+                    CarriedOn::Waiting("carried on once already: left for the stuck check")
+                }
+            };
+        }
         let Some(flight) = self.flights.get(&at) else {
             return CarriedOn::NotAwaiting;
         };
@@ -111,6 +129,7 @@ impl Segments {
             let answered = match self.decided(
                 parts,
                 carry.core,
+                &at,
                 action,
                 Ask::Status {
                     provider: &provider,
@@ -148,6 +167,7 @@ impl Segments {
             let answered = match self.decided(
                 parts,
                 carry.core,
+                &at,
                 action,
                 Ask::Repeat {
                     provider: &provider,
@@ -175,6 +195,7 @@ impl Segments {
         let answered = match self.decided(
             parts,
             carry.core,
+            &at,
             action,
             Ask::Recorded {
                 provider: &provider,
@@ -219,6 +240,7 @@ impl Segments {
         &mut self,
         parts: &mut Parts<'_>,
         core: &Actor,
+        segment: &(String, String),
         action: Action,
         ask: Ask<'_>,
     ) -> Result<Answered, CarriedOn> {
@@ -255,6 +277,8 @@ impl Segments {
             decision: permit,
             receipt: receipt.clone(),
         };
+        // Carried on from the effect's receipt on: whatever happens to its result, no second effect follows.
+        self.mark_carried_on(segment);
         let answered = if self.act_on(&receipt) {
             put(parts, &effect, ask)
         } else {
@@ -269,11 +293,24 @@ impl Segments {
             Ok(at) => (at, outcome),
             Err(_) => (effect_at, Outcome::Failed {}),
         };
-        journal::append(
+        if journal::append(
             parts.log,
-            journal::verified(core, What::Result { effect: receipt }, &at, outcome),
+            journal::verified(
+                core,
+                What::Result {
+                    effect: receipt.clone(),
+                },
+                &at,
+                outcome,
+            ),
         )
-        .map_err(|_| CarriedOn::Failed)?;
+        .is_err()
+        {
+            // Kept to be written first on the next carry-on of the segment (above).
+            self.carry_unwritten
+                .insert(segment.clone(), (receipt, outcome, at, answered));
+            return Err(CarriedOn::Failed);
+        }
         Ok(answered)
     }
 }

@@ -1172,10 +1172,17 @@ fn landing_owed_at_a_holding_account_that_runs_nothing_now_is_tried_once_it_runs
         .core
         .confirm_releases()
         .expect("the operator confirms the releases");
-    stuck.core = scenario().reopen(stuck.core, 1, &mut Reference);
+    // Core's own landing job asks again what it owes there, on its next tick: the deployment retries nothing
+    // (`T-020-60` item (8)).
+    stuck.core.tick();
     assert!(
         wallet_holds(&mut stuck.core, &wallet, &order, "ask-2"),
-        "landed once the wallet runs"
+        "landed by Core's tick once the wallet runs"
+    );
+    stuck.core = scenario().reopen(stuck.core, 1, &mut Reference);
+    assert!(
+        wallet_holds(&mut stuck.core, &wallet, &order, "ask-3"),
+        "still landed once Core reopens"
     );
     assert_eq!(
         stuck.core.holdings().attributions(),
@@ -1236,6 +1243,8 @@ fn stuck_order_is_handed_on_after_the_holding_account_restarts_mid_run() {
     let held = stuck.core.holdings().attributions();
     let start = stuck.core.fleet().platform.start_of(&wallet.provider);
     stuck.core = scenario().restart(stuck.core, 1, &mut Reference);
+    // The landings owed are Core's own landing job's to ask again, on the deployment's next tick (`T-020-60` item (8)).
+    stuck.core.tick();
     assert_eq!(stuck.core.restarts(), 1);
     assert_ne!(
         stuck.core.fleet().platform.start_of(&wallet.provider),
@@ -2104,6 +2113,27 @@ fn reversal_back_into_a_held_public_node_is_confirmed_from_the_networks_reader()
         "the reversal stays owed"
     );
 
+    // The reader reads the movement as not yet final: Core hands the wallet the reading as the reader gave it, pending,
+    // and the wallet, which confirms only a final one, doesn't confirm: the reversal stays owed (the review of round 1,
+    // L2: the reading carries the reader's own standing, so the wallet's check is the one that holds).
+    let mut pending = Plan::default();
+    pending
+        .hostile
+        .insert(NODE.to_owned(), vec!["pending".to_owned()]);
+    stuck.core.plant_readers(&pending);
+    let answer = stuck
+        .core
+        .confirmed_on_tick(&linked.order, &segment)
+        .expect("the wallet is asked");
+    assert!(
+        !matches!(answer, Confirmation::Completed(_)),
+        "a pending movement confirms nothing: {answer:?}"
+    );
+    assert!(
+        stuck.core.owed_reversal(&linked.order, &segment).is_ok(),
+        "the reversal stays owed"
+    );
+
     // The reader reads it again: the wallet confirms on Core's reading, and the completion names the movement and its
     // reader.
     stuck.core.plant_readers(&Plan::default());
@@ -2132,10 +2162,15 @@ fn reversal_back_into_a_held_public_node_is_confirmed_from_the_networks_reader()
             _ => None,
         });
     let movement = named.expect("the completion's evidence names the movement it rests on");
+    let under = stuck
+        .core
+        .reversal_asked_under(&tx)
+        .expect("the reversal's own transaction");
+    assert_ne!(under.as_str(), tx, "never the forward segment's");
     assert_eq!(
         (movement.network.as_str(), movement.id.as_str()),
-        (NODE, tx.as_str()),
-        "the movement back into the holding account, on the node's network"
+        (NODE, under.as_str()),
+        "the movement back into the holding account, on the node's network, under the reversal's own transaction"
     );
     assert_eq!(
         (

@@ -166,8 +166,11 @@ pub struct Asking<'a> {
     pub providers: &'a mut dyn Providers,
     /// The public records, as Core's adapter for each listed network's reader reads them in this pass: a reversal
     /// back into a held public node is confirmed on the movement its network records into the holding account
-    /// (`T-020-60` (6)).
-    pub records: &'a dyn crate::closing::PublicRecords,
+    /// (`T-020-60` (6)). Core's own pass ([`crate::closing::Public::of`]), never a `PublicRecords` of the deployment's.
+    pub records: &'a crate::closing::Public<'a>,
+    /// Core's record of the movements segments' evidence relies on: a movement back another segment took confirms no
+    /// reversal (the review of round 1, L3).
+    pub closing: &'a crate::closing::Closing,
 }
 
 /// What a reversal Core asks of a failed provider moves through: policy, which decides it, and the platform, which
@@ -483,17 +486,21 @@ struct Reversal {
 }
 
 /// A movement into a held public node's holding account, as Core read it from the node's network through the
-/// network's reader: final there, of the reversed segment's asset and amount in full, into the `holder` of the order's
-/// `holding_withdrawal` (`T-020-60` (6)). The reversal's question is asked only on it, and its completion's `evidence`
+/// network's reader: the one the network ties to the reversal's own transaction, into the `holder` of the order's
+/// `holding_withdrawal`, of the reversed segment's asset and amount in full, taken by no segment's evidence, final or
+/// pending there as the reader says, which the reading carries for the account to hold (`T-020-60` (6)). The reversal's question is asked only on it, and its completion's `evidence`
 /// names it and the reader that read it (`REQ-AUD-4`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Returned {
     /// The node's network.
     network: String,
-    /// The movement, as the network ties it to the reversed segment's transaction, and the reader that read it.
+    /// The movement, as the network ties it to the reversal's own transaction, and the reader that read it.
     moved: crate::closing::Moved,
     /// Its figures, as the network records it now: where it went, its asset and amount.
     figures: rutent_evidence::Movement,
+    /// Where it stands on the network as its reader says now: `final` or `pending`. The holding account confirms only a
+    /// final one (the review of round 1, L2).
+    standing: &'static str,
 }
 
 /// Statements kept as they arrived, each once, by their bytes.
@@ -1502,7 +1509,18 @@ impl Reversals {
             // holding account, read through the network's reader in this pass and handed to the account by the
             // deployment: the account confirms on that reading, never on a record of its own (`T-020-60` (6)).
             let returned = if target.held_public {
-                let returned = match read_return(asking.records, &target, confirmer) {
+                // The movement back is the reversal's own: the last ask the failed provider was sent that didn't fail,
+                // under its own transaction, never the forward segment's (the review of round 1, L3).
+                let under = self.reversals.get(&at_key).and_then(|r| {
+                    r.sent
+                        .iter()
+                        .rev()
+                        .find(|s| !s.failed())
+                        .map(|s| s.transaction.clone())
+                });
+                let returned = match under.ok_or(NotCounted::NotReturned).and_then(|under| {
+                    read_return(asking.records, asking.closing, &target, confirmer, &under)
+                }) {
                     Ok(returned) => returned,
                     Err(why) => {
                         return Ok(Confirmation::NotCompleted {
@@ -2833,15 +2851,17 @@ pub const READING_PREFIX: &str = "reading/";
 /// pass (ADR-0007 as amended); anything else short of that is not the value back, and nothing is asked.
 fn read_return(
     records: &dyn crate::closing::PublicRecords,
+    closing: &crate::closing::Closing,
     target: &Target,
     holder: &Id,
+    under: &Id,
 ) -> Result<Returned, NotCounted> {
     let network = target.node.as_deref().ok_or(NotCounted::NotReturned)?;
     let moved = records
-        .movement(network, &target.transaction)
+        .movement(network, under)
         .map_err(|_| NotCounted::ReaderUnreadable)?
         .ok_or(NotCounted::NotReturned)?;
-    if moved.destination != holder.as_str() {
+    if moved.destination != holder.as_str() || closing.relied_on(network, moved.id.as_str()) {
         return Err(NotCounted::NotReturned);
     }
     let units = |amount: &str| amount.parse::<u128>().ok();
@@ -2858,6 +2878,13 @@ fn read_return(
             network: network.to_owned(),
             moved,
             figures: m,
+            standing: "final",
+        }),
+        rutent_evidence::Status::Pending(m) if in_full(&m) => Ok(Returned {
+            network: network.to_owned(),
+            moved,
+            figures: m,
+            standing: "pending",
         }),
         _ => Err(NotCounted::NotReturned),
     }
@@ -2865,7 +2892,8 @@ fn read_return(
 
 /// The reading the deployment hands the holding account for `target`'s reversal, as its module reads it: the reversed
 /// segment's transaction, the network and the movement on it, where it went, its asset and amount as the network
-/// records them, that it is final, and the reader and version that read it (`T-020-60` (6)).
+/// records them, where it stands as the reader says (`final` or `pending`), and the reader and version that read it
+/// (`T-020-60` (6)).
 fn reading_text(target: &Target, returned: &Returned) -> String {
     serde_json::json!({
         "segment": target.transaction.as_str(),
@@ -2874,7 +2902,7 @@ fn reading_text(target: &Target, returned: &Returned) -> String {
         "destination": returned.figures.destination,
         "asset": returned.figures.asset,
         "amount": returned.figures.amount,
-        "standing": "final",
+        "standing": returned.standing,
         "reader": returned.moved.read_by.reader.as_str(),
         "version": returned.moved.read_by.version.as_str(),
     })

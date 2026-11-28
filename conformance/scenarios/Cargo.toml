@@ -35,7 +35,8 @@ ed25519-dalek = "2.2.0"
 # choosing, so a module restarted under the process id it had is shown seen as restarted all the same. Never in the
 # library, so a build of it alone has none of the hook.
 rutent-prov = { path = "../../components/prov", features = ["test-support"] }
-rutent-core-orch = { path = "../../components/core-orch", features = ["test-support"] }
+# And the test hooks on Core's reader adapter (`T-020-60`'s round 1, L5), in the tests only.
+rutent-core-orch = { path = "../../components/core-orch", features = ["test-support", "reader-test-hooks"] }
 # The simulated networks' readers run by the reader host inside the test harness (`T-024-25`, `DEC-28`): the host
 # itself, for the tests only, which `tools/boundary-check` admits as this one edge; the mTLS link's client side, on
 # rustls over ring as the host's; and the test CA the harness makes and the certificates it issues. Never in the

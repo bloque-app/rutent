@@ -555,6 +555,7 @@ impl Readers {
             tls,
             context.deployment.clone(),
             context.protocol_versions(),
+            Box::new(rutent_core_orch::snapshot::SystemClock),
         );
         core.set_host(readers::HOST_SETTING, link.address());
         for public in listed {
@@ -621,6 +622,7 @@ impl Readers {
             tls,
             context.deployment.clone(),
             context.protocol_versions(),
+            Box::new(rutent_core_orch::snapshot::SystemClock),
         );
         core.set_host(readers::HOST_SETTING, self.link.address());
         for (network, listing) in &self.listings {

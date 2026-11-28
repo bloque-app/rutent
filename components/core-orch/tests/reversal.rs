@@ -1335,7 +1335,8 @@ impl World {
             bounds: &bounds,
             key: &mut self.key,
             providers: answering,
-            records: &NoRecords,
+            records: &rutent_core_orch::closing::Public::stand_in(&NoRecords),
+            closing: &rutent_core_orch::closing::Closing::new(),
         };
         self.reversals.confirm_reversal(&mut parts, &mut asking, at)
     }
@@ -1464,7 +1465,8 @@ impl World {
             bounds: &bounds,
             key: &mut self.key,
             providers: &mut no_one,
-            records: &NoRecords,
+            records: &rutent_core_orch::closing::Public::stand_in(&NoRecords),
+            closing: &rutent_core_orch::closing::Closing::new(),
         };
         let mut moving = Moving {
             decisions: &mut self.policy,

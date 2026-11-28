@@ -17,7 +17,8 @@
 //!   `order_opened` names by commitment, and what its route delivers; a linked order's from its acceptance, the
 //!   authorisation policy registered for it and the first order's route end;
 //! - the routes linked orders were accepted on, from their acceptances and the records their routes were chosen by,
-//!   under the segment ids `accept_linked` derives;
+//!   under the segment ids `accept_linked` derives (Core's own register, `rutent_core_orch::stuck::Linked`, rebuilt by
+//!   Core's reopening, `T-020-60` item (8));
 //!
 //! - the hand-ons the log holds half of ([`rutent_core_orch::hand_on::HandOn::reopened`]);
 //! - the landings the segments owed, asked of the holding accounts, whose host record goes on beside the platform
@@ -156,7 +157,7 @@ impl Core {
     /// review of #355's round 2, M3), which rebuilds every part in its own order; the assembly hands it only the
     /// deployment's pieces (the clock, the log's and the evidence store's handles, policy's register of authorisations,
     /// the host's accounts, the installed advertisements and their grant terms, the platform, fresh ids) and then holds
-    /// what it answers, tells its own registers (policy's sources, the filings, the requests and the linked routes) and
+    /// what it answers, tells its own registers (policy's sources and the requests) and
     /// lets Core's run resume.
     ///
     /// # Errors
@@ -283,6 +284,11 @@ impl Core {
         let mut in_force =
             |order: &Id, authorisation: &Id| authorised(&logged, order, authorisation);
         let core_actor = kit::core();
+        let mut channel = rutent_core_orch::notice::Channel {
+            notices: &mut self.notices,
+            key: &mut self.notice_signer,
+            transport: &mut self.wire,
+        };
         let reopened = reopen(
             &history,
             &mut Deployment {
@@ -308,6 +314,8 @@ impl Core {
                 },
                 fresh: &mut self.fresh,
                 erasing: &mut super::erasure::Bound(&self.bound),
+                readers: &mut self.readers,
+                operator: &mut channel,
             },
         )
         .map_err(|e| {
@@ -339,9 +347,10 @@ impl Core {
         self.hand_on = reopened.hand_on;
         self.stuck = reopened.stuck;
         self.life.reversals = reopened.reversals;
+        self.linked = reopened.linked;
         self.schedule = reopened.schedule;
         // The deployment's own registers, told what Core rebuilt: each order still waiting for its customer told to
-        // policy's sources and the filings again (`T-020-51`, `T-020-55`), and intake's requests.
+        // policy's sources again (`T-020-51`, `T-020-55`), and intake's requests.
         for (_, entry) in &history {
             let Entry::Verified(VerifiedEntry {
                 what:
@@ -362,10 +371,6 @@ impl Core {
                     &record.origin_reserve,
                 );
             }
-            if let Some(filing) = self.arrivals.filing_of(order) {
-                self.filings
-                    .insert(order.as_str().to_owned(), filing.clone());
-            }
         }
         let orders: Vec<Id> = self.intake.orders().filter_map(Id::new).collect();
         for order in &orders {
@@ -377,45 +382,6 @@ impl Core {
         let _ = self.feed();
         // What each started order runs on, rebuilt by Core's own resume from the parts, all rebuilt now (`T-020-61`).
         rutent_core_orch::schedule::resume(&mut super::schedule::Due(self));
-        self.reaccept_linked(&history);
         Ok(())
-    }
-
-    /// The routes the linked orders were accepted on, rebuilt from the log (`Core::accepted_in_the_log`): every
-    /// acceptance of an order intake never opened, an order a hand-on links to (`T-020-46`).
-    fn reaccept_linked(&mut self, history: &[(Receipt, Entry)]) {
-        let opened: Vec<&Id> = history
-            .iter()
-            .filter_map(|(_, e)| match e {
-                Entry::Verified(VerifiedEntry {
-                    what: What::OrderOpened { order, .. },
-                    ..
-                }) => Some(order),
-                _ => None,
-            })
-            .collect();
-        let linked: Vec<Id> = history
-            .iter()
-            .filter_map(|(_, e)| match e {
-                Entry::Verified(VerifiedEntry {
-                    what: What::Acceptance { order, .. },
-                    ..
-                }) if !opened.contains(&order) => Some(order.clone()),
-                _ => None,
-            })
-            .collect();
-        for order in linked {
-            let route = rutent_core_orch::hand_on::accepted_in_the_log(
-                history,
-                &mut |commitment| {
-                    let kept = KeptStatements::kept(&mut self.kept, commitment).ok()??;
-                    rutent_core_audit::receipts::store::bearing_out(&kept)
-                },
-                &order,
-            );
-            if let Some(route) = route {
-                self.linked.insert(order.as_str().to_owned(), route);
-            }
-        }
     }
 }

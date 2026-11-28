@@ -388,8 +388,20 @@ fn quote_held_before_a_restart_is_accepted_after_core_reopens_while_its_validity
     );
     assert_eq!(core.holds().redeemed_by(&hold), Some(&order));
     assert!(core.started(&order).is_some(), "the order starts");
-    // Past its validity, the other quote shown is gone: its acceptance is refused, and nothing is recorded.
+    // Past its validity, Core reopens: the rebuild itself releases the other quote's hold, before anything asks of it
+    // (`T-020-60` item (8): the rebuild, not the clock read at an acceptance, releases it).
     core.clock.advance(30 * 86_400);
+    let (lapsed_hold, _) = held[1].clone();
+    assert!(
+        core.holds().held(&lapsed_hold).is_some(),
+        "the live Core still holds it until something asks of it"
+    );
+    let mut core = reopened(core);
+    assert!(
+        core.holds().held(&lapsed_hold).is_none(),
+        "the rebuild released the lapsed quote's hold"
+    );
+    // The other quote shown is gone: its acceptance is refused, and nothing is recorded.
     let recorded = acceptances(&core).len();
     assert!(
         core.accept(&kit::customer(), &lapsing, &lapsing_digest)
@@ -398,7 +410,6 @@ fn quote_held_before_a_restart_is_accepted_after_core_reopens_while_its_validity
     );
     assert_eq!(acceptances(&core).len(), recorded, "nothing was recorded");
     // Its hold lapsed with it: Core holds it no more, and nothing redeems it (the review of #355, L2).
-    let (lapsed_hold, _) = held[1].clone();
     assert!(
         core.holds().held(&lapsed_hold).is_none(),
         "the lapsed quote's hold is released"

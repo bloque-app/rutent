@@ -122,7 +122,9 @@ pub fn reason(why: &NotStarted) -> Option<ReaderNotStarted> {
         NotStarted::Unread(unreadable) => match unreadable {
             Unreadable::NoHost => ReaderNotStarted::NoHost,
             Unreadable::OtherCa => ReaderNotStarted::OtherCa,
-            Unreadable::Unreachable | Unreadable::NotStarted => ReaderNotStarted::Unreachable,
+            Unreadable::Unreachable | Unreadable::NotStarted | Unreadable::NotListed => {
+                ReaderNotStarted::Unreachable
+            }
             Unreadable::NoAnswer => ReaderNotStarted::NoAnswer,
             Unreadable::Malformed | Unreadable::Unstated => ReaderNotStarted::Malformed,
             Unreadable::NotSigned => ReaderNotStarted::NotSigned,

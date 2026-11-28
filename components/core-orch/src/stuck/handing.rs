@@ -41,10 +41,86 @@ pub struct AcceptedRoute {
     pub plan: Vec<PartPlan>,
 }
 
-/// The linked order's accepted route, from where the assembly keeps what the order was accepted on.
+/// The linked order's accepted route, as Core's own register keeps what the order was accepted on ([`Linked`]).
 pub trait LinkedRoutes {
     /// The route `linked` was accepted on, or `None` where Core holds none.
     fn accepted(&self, linked: &Id) -> Option<AcceptedRoute>;
+}
+
+/// The routes the linked orders were accepted on: Core's own register (`T-020-60` item (8), from the check of
+/// `T-020-61` at `7557cd9e`), which the mover holds a hand-on's route to before the holding account is asked anything.
+/// A linked order Core accepts is taken in ([`Linked::accept`]); a reopened Core rebuilds every one from its log
+/// ([`Linked::reopened`], which `schedule::reopen` runs): each acceptance of an order intake never opened, read with the
+/// decision record its route was chosen by, held to the log's digest.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Linked {
+    routes: std::collections::BTreeMap<String, AcceptedRoute>,
+}
+
+impl Linked {
+    /// No route accepted yet.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Takes in the route a linked order was accepted on, in place of any earlier one of that order.
+    pub fn accept(&mut self, route: AcceptedRoute) {
+        self.routes.insert(route.order.as_str().to_owned(), route);
+    }
+
+    /// The register as `history`, the log's entries in order, rebuilds it, the decision records read back through
+    /// `kept`: every acceptance of an order no `order_opened` names (a hand-on's linked order), with its accepted route
+    /// as the log holds it ([`crate::hand_on::accepted_in_the_log`]). An acceptance whose route can't be read back is
+    /// left out, and the mover holds nothing to it (fails closed).
+    pub fn reopened(
+        history: &[(rutent_contracts::core_internal::Receipt, Entry)],
+        kept: &mut dyn FnMut(&rutent_contracts::module_interface::Digest) -> Option<Vec<u8>>,
+    ) -> Self {
+        use rutent_contracts::core_internal::{VerifiedEntry, What};
+        let opened: Vec<&Id> = history
+            .iter()
+            .filter_map(|(_, e)| match e {
+                Entry::Verified(VerifiedEntry {
+                    what: What::OrderOpened { order, .. },
+                    ..
+                }) => Some(order),
+                _ => None,
+            })
+            .collect();
+        let mut linked = Linked::new();
+        for (_, entry) in history {
+            let Entry::Verified(VerifiedEntry {
+                what: What::Acceptance { order, .. },
+                ..
+            }) = entry
+            else {
+                continue;
+            };
+            if opened.contains(&order) {
+                continue;
+            }
+            if let Some(route) = crate::hand_on::accepted_in_the_log(history, kept, order) {
+                linked.accept(route);
+            }
+        }
+        linked
+    }
+
+    /// How many routes it holds.
+    pub fn len(&self) -> usize {
+        self.routes.len()
+    }
+
+    /// Whether it holds none.
+    pub fn is_empty(&self) -> bool {
+        self.routes.is_empty()
+    }
+}
+
+impl LinkedRoutes for Linked {
+    fn accepted(&self, linked: &Id) -> Option<AcceptedRoute> {
+        self.routes.get(linked.as_str()).cloned()
+    }
 }
 
 /// The log's entries, as it holds them: where the linked order's acceptance and decision record, and the original

@@ -15,9 +15,13 @@
 //!   a re-advertisement the register accepted is listed as such, one it refused is not listed at all (`T-024-21`). It is
 //!   judged by the listings and cutovers the log held when it was received, never by those it holds now (`REQ-PRT-4`,
 //!   `T-020-54`), and the deployment then sets what it sets on a joined advertisement ([`Relisting::joined`]).
+//! - **Each `done` listing or delisting of a public network** (`T-020-60`, the review of its round 1, M1) is put on, or
+//!   taken off, the catalogue's public list of networks, a listed network held off every route until its reader passes
+//!   Core's start-up check, which the reopening runs once the catalogue is rebuilt (`closing::readers::Readers::start`):
+//!   a catalogue rebuilt by this alone routes nothing over a public network.
 //! - **Any other `done` catalogue change** but the ones the platform or the settings hold (a setting, a release's
-//!   acceptance or confirmation, a public network's listing) refuses the reopening: a catalogue rebuilt without it would
-//!   grant what the log revoked.
+//!   acceptance or confirmation) refuses the reopening: a catalogue rebuilt without it would grant what the log
+//!   revoked.
 //!
 //! An advertisement the deployment installed that the log committed to in none of its stated entries is no
 //! advertisement this Core ever recorded, tampered with or never received: the reopening is refused (`REQ-AUD-2`).
@@ -133,6 +137,7 @@ pub fn relist<'c>(
                             provider,
                             tuple,
                             class,
+                            public_network,
                             ..
                         },
                     decision,
@@ -141,6 +146,23 @@ pub fn relist<'c>(
                     continue;
                 };
                 if !done.contains(&receipt) || skipped(*change) {
+                    continue;
+                }
+                if change.is_about_a_public_network() {
+                    // Listed, held off every route until its reader passes Core's start-up check; or delisted.
+                    if let Some(network) = public_network {
+                        let name = network.network.as_str();
+                        match change {
+                            CatalogueChange::ListPublicNetwork => {
+                                catalogue
+                                    .list_public_network(name, network.listing.is_some(), false)
+                                    .map_err(|e| RelistRefused::Refused(format!("{e:?}")))?;
+                            }
+                            _ => {
+                                catalogue.drop_public_network(name);
+                            }
+                        }
+                    }
                     continue;
                 }
                 if *change != CatalogueChange::Grant || (tuple.is_none() && class.is_none()) {
@@ -360,15 +382,14 @@ fn regrant(
 }
 
 /// The catalogue changes the log holds that Core's catalogue lists nothing for: a setting (rebuilt by
-/// [`Settings::reopened`]), a release accepted or confirmed (the platform's record holds it), and a public network's
-/// listing (`T-020-60`'s, until Core reads through the network's reader).
+/// [`Settings::reopened`]) and a release accepted or confirmed (the platform's record holds it).
 fn skipped(change: CatalogueChange) -> bool {
     matches!(
         change,
         CatalogueChange::SetSetting
             | CatalogueChange::ConfirmReleases
             | CatalogueChange::AcceptModule
-    ) || change.is_about_a_public_network()
+    )
 }
 
 /// The tuples of the advertisement the log's key register accepted last for `provider`, read back from the evidence

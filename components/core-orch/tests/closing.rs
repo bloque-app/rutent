@@ -833,7 +833,7 @@ fn grading<'a>(
 ) -> Evidenced<'a> {
     Evidenced {
         catalogue,
-        records: nets,
+        records: rutent_core_orch::closing::Public::stand_in(nets),
         books,
         closing,
     }
@@ -3590,7 +3590,7 @@ fn private_node_record_listing_a_reversal_is_read() {
         let mut closing = Closing::new();
         let mut grading = Evidenced {
             catalogue: &catalogue,
-            records: &nets,
+            records: rutent_core_orch::closing::Public::stand_in(&nets),
             books,
             closing: &mut closing,
         };

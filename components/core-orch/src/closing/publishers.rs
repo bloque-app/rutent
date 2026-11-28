@@ -109,3 +109,46 @@ pub fn taken(
     check_inner_segments(&record, advertisement).map_err(|_| NotTaken::NotDeclared)?;
     Ok(record)
 }
+
+/// What `records`, the records Core took of a private node, each provider's in the order its books keep them, give
+/// for `transactions`, in the order asked: each segment the records state under each transaction, and the records
+/// they were read from, each once (`REQ-ORD-41`; the books' combining rule, Core's own since `T-020-60`'s round 2,
+/// from the check of `T-020-61` at `7557cd9e`). Every transaction asked ran inside the node, so one no record states
+/// is a record refused or never made: the node recorded nothing, never the rest of it passed off as all of it.
+pub fn combined(
+    records: &[Statement<InnerSegments>],
+    transactions: &[rutent_contracts::router_api::Id],
+) -> Option<super::Recorded> {
+    let mut segments = Vec::new();
+    let mut read: Vec<Statement<InnerSegments>> = Vec::new();
+    for transaction in transactions {
+        let before = segments.len();
+        for record in records {
+            let before_record = segments.len();
+            segments.extend(
+                record
+                    .statement
+                    .segments
+                    .iter()
+                    .filter(|s| s.transaction == transaction.as_str())
+                    .map(|s| rutent_evidence::replay::RecordedSegment {
+                        asset_in: s.asset_in.clone(),
+                        amount_in: s.amount_in.clone(),
+                        asset_out: s.asset_out.clone(),
+                        amount_out: s.amount_out.clone(),
+                        fee: s.fee.clone(),
+                    }),
+            );
+            if segments.len() > before_record && !read.contains(record) {
+                read.push(record.clone());
+            }
+        }
+        if segments.len() == before {
+            return None;
+        }
+    }
+    (!segments.is_empty()).then_some(super::Recorded {
+        segments,
+        records: read,
+    })
+}
