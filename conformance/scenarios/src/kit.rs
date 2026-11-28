@@ -537,8 +537,9 @@ pub fn joined(
             rutent_contracts::provider_role::EvidenceGrade::Statement,
         );
     }
+    // Each private node its publisher holds, its holding account the test world's stand-in ([`LEDGER_HOLDER`]).
     for node in &ad.private_nodes {
-        let _ = catalogue.register_private_holding(node, &ad.publisher, "holding");
+        let _ = catalogue.register_private_holding(node, &ad.publisher, LEDGER_HOLDER);
     }
     // The public nodes its tuples reach, on the operator's list, their holding account a wallet the operator
     // publishes (`REQ-CAT-23`).
@@ -547,6 +548,27 @@ pub fn joined(
         let _ = catalogue.add_public_node(&node);
         let _ = catalogue.register_public_holding(&node, OPERATOR_WALLET);
     }
+}
+
+/// The test worlds' stand-in holding module for a simulated provider's own private node, its ledger, and for a public
+/// node whose catalogued holding account is the kit's [`OPERATOR_WALLET`] with no wallet installed there, which the
+/// platform doesn't run either: the deployment answers its balance in the same way, in the wallet's place. For the private node, its ledger (`T-020-60`, from
+/// `T-020-61`'s round 2): the simulated world models no account there, so the deployment answers its balance itself
+/// (`crate::assembly`'s [`Modules`](rutent_core_orch::segments::Modules) port, through the world), stating as the node's
+/// balance what Core's orders rest there now. The holding check reads it like any account and finds no difference: a
+/// difference is the business of the scenarios that install a real account at a node
+/// (`crate::assembly::Core::install_publisher_account`), which takes the stand-in's place there.
+pub const LEDGER_HOLDER: &str = "sim-ledger-holder";
+
+/// The asset the stand-in holder holds at `node`, a simulated provider's private node or a public node: the asset of the
+/// first of `ad`'s tuples to start or end there.
+pub fn asset_at(ad: &rutent_contracts::provider_role::Advertisement, node: &str) -> Option<String> {
+    use rutent_prov::catalogue::Endpoint;
+    let at = |e: &Endpoint| matches!(e, Endpoint::Inner(n) | Endpoint::Outer(n) if n == node);
+    tuples_of(ad)
+        .into_iter()
+        .find(|key| at(&key.origin) || at(&key.destination))
+        .map(|key| key.asset)
 }
 
 /// The module the operator publishes to hold the value resting at each public node (`REQ-CAT-23`).

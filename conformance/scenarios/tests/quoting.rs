@@ -214,16 +214,16 @@ fn charge_above_the_formulas_maximum_is_flagged() {
     assert_eq!(charges_raised(&honest), 0);
 }
 
-/// How many charges were raised to the operator: a tick also runs the holding check (`T-020-61`), which raises the holders
-/// this world's register doesn't name (`T-020-63`), not charges.
+/// How many charges were raised to the operator: every raise, since a tick's holding check (`T-020-61`) reads each
+/// simulated ledger's stand-in holder and finds nothing to raise (`kit::LEDGER_HOLDER`, `T-020-60`).
 fn charges_raised(core: &Core) -> usize {
-    core.raised()
-        .iter()
-        .filter(|r| {
-            matches!(
-                r.difference,
-                rutent_contracts::core_internal::Difference::Charge { .. }
-            )
-        })
-        .count()
+    let raised = core.raised();
+    assert!(
+        raised.iter().all(|r| matches!(
+            r.difference,
+            rutent_contracts::core_internal::Difference::Charge { .. }
+        )),
+        "only charges are raised: {raised:?}"
+    );
+    raised.len()
 }

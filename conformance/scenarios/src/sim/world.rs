@@ -81,6 +81,10 @@ pub struct SimWorld {
     /// readings of movements into a held public node's account, read through the node's reader (`T-020-60` (6)).
     /// Never a scenario's: only Core's [`rutent_core_orch::rounds::Providers::keep_reading`] writes it.
     kept: BTreeMap<(String, String), String>,
+    /// What Core's orders rest at each simulated provider's private node now, by node and asset, in whole units: what the
+    /// test worlds' stand-in holder ([`crate::kit::LEDGER_HOLDER`]) answers as the node's balance. The deployment sets it
+    /// before the holding check reads the accounts.
+    ledger: std::cell::RefCell<BTreeMap<(String, String), u128>>,
     /// Each provider's secrets, by name (`T-024-07`), which only that provider's own declared lookup is answered from.
     secrets: BTreeMap<(String, String), String>,
     /// Every secret value the world handed a provider, by provider (`T-024-07`).
@@ -222,6 +226,20 @@ impl SimWorld {
     pub fn keep_reading(&mut self, provider: &str, key: &str, text: &str) {
         self.kept
             .insert((provider.to_owned(), key.to_owned()), text.to_owned());
+    }
+
+    /// Sets what Core's orders rest at the simulated providers' private nodes now, for the stand-in holder to answer.
+    pub fn set_ledger(&self, resting: BTreeMap<(String, String), u128>) {
+        *self.ledger.borrow_mut() = resting;
+    }
+
+    /// The stand-in holder's balance at `node` in `asset`: what Core's orders rest there now.
+    pub fn ledger_balance(&self, node: &str, asset: &str) -> u128 {
+        self.ledger
+            .borrow()
+            .get(&(node.to_owned(), asset.to_owned()))
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Records `movement` on its network, as the network itself records a movement no provider's module made through

@@ -518,18 +518,6 @@ fn three_orders_hold(core: &mut Core) {
     }
 }
 
-/// The checks and raises the log holds, in order.
-fn checks_and_raises(core: &Core) -> Vec<(String, Option<Difference>)> {
-    entries(core)
-        .into_iter()
-        .filter_map(|v| match v.what {
-            What::HoldingCheck { account, .. } => Some((account.as_str().to_owned(), None)),
-            What::Raise { raise } => Some((String::new(), Some(raise.difference))),
-            _ => None,
-        })
-        .collect()
-}
-
 /// The wallet is asked directly, as an operator's statement the host's attribution doesn't know of.
 fn ask_directly(core: &mut Core, wallet: &str, kind: &str, order: &str, amount: &str) {
     let statement = if kind == "withdrawal" {
@@ -606,12 +594,15 @@ fn shared_holding_account_raises_on_a_difference_and_only_then() {
         core.raised()
     );
     assert!(raised_by(&core, Direction::Short).is_empty());
+    // The wallet's node's checks: the simulated ledgers' stand-in holders are checked too (`kit::LEDGER_HOLDER`).
+    let wallets_checks = entries(&core)
+        .into_iter()
+        .filter(
+            |v| matches!(&v.what, What::HoldingCheck { node, .. } if node.as_str() == WALLET_NODE),
+        )
+        .count();
     assert_eq!(
-        checks_and_raises(&core)
-            .iter()
-            .filter(|(account, _)| !account.is_empty())
-            .count(),
-        2,
+        wallets_checks, 2,
         "the log holds the two checks, and not the balance"
     );
 

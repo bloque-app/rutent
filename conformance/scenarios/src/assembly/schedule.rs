@@ -574,7 +574,7 @@ impl Ports for Due<'_> {
         // named: the register is the definition of what is checked (`T-020-63`).
         let registers = self.0.deployed.registers.borrow();
         let holdings = self.0.holdings.borrow();
-        registers
+        let mut accounts: Vec<PublicAccount> = registers
             .holding_accounts
             .iter()
             .filter_map(|(node, provider)| {
@@ -588,10 +588,53 @@ impl Ports for Due<'_> {
                     attribution: account.map(|a| a.attribution()).unwrap_or_default(),
                 })
             })
-            .collect()
+            .collect();
+        // The kit's public nodes no wallet was installed at, whose catalogued holder is the kit's operator wallet, which
+        // the platform doesn't run: the test world's stand-in holder answers in its place, and its own record of each
+        // order is what Core's orders rest there (`kit::LEDGER_HOLDER`).
+        let resting = self.0.segments.resting_totals_by_asset();
+        for (node, asset) in &registers.stand_in_public {
+            if registers.holding_accounts.contains_key(node)
+                || self
+                    .0
+                    .catalogue
+                    .nodes()
+                    .holding(node)
+                    .is_none_or(|h| h.reference != kit::OPERATOR_WALLET)
+            {
+                continue;
+            }
+            let attribution = resting
+                .iter()
+                .filter(|((at, _, held), _)| at == node && held == asset)
+                .filter_map(|((_, order, _), amount)| {
+                    Some(rutent_prov::holding::HeldForOrder {
+                        order: order.clone(),
+                        amount: amount.as_str().parse().ok()?,
+                    })
+                })
+                .collect();
+            accounts.push(PublicAccount {
+                node: node.clone(),
+                provider: kit::LEDGER_HOLDER.to_owned(),
+                asset: asset.clone(),
+                decimals: DECIMALS,
+                attribution,
+            });
+        }
+        accounts
     }
 
     fn publisher_accounts(&self) -> Vec<PublisherAccount> {
+        // The stand-in holder's answer is what Core's orders rest at each node now (`kit::LEDGER_HOLDER`).
+        let mut ledger: std::collections::BTreeMap<(String, String), u128> =
+            std::collections::BTreeMap::new();
+        for ((node, _, asset), amount) in self.0.segments.resting_totals_by_asset() {
+            if let Ok(units) = amount.as_str().parse::<u128>() {
+                *ledger.entry((node, asset)).or_insert(0) += units;
+            }
+        }
+        self.0.fleet.platform.world.set_ledger(ledger);
         self.0
             .deployed
             .registers

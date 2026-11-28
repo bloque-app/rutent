@@ -37,10 +37,6 @@ fn alone(provider: &str, accepts: &'static str) -> (Core, Id) {
         delivery: rutent_scenarios::assembly::machine::Delivery::Once,
     };
     let (mut core, _) = Scenario::new("charge-check", accepts, given).core(1, &mut Reference);
-    // Core's ticks run every job (`T-020-61`): the holding check raises the charging reserve's ledger node, a holder its
-    // catalogue lists and this world's register doesn't name (`T-020-63`), once a spell. That is not a charge: its first
-    // tick, before any order, spends it, and the charges are read apart from it ([`charges_raised`]).
-    core.tick();
     let session = core.open_session(&kit::customer()).expect("a session");
     (core, session)
 }
@@ -1085,10 +1081,15 @@ fn terms_whose_kept_statement_names_another_commitment_are_not_kept() {
     assert_eq!(core.terms_held(), held + 2);
 }
 
-/// The charges raised to the operator: a tick's other checks (a holding account's, say) raise of their own.
+/// The charges raised to the operator: every raise, since a tick's holding check reads the charging reserve's ledger
+/// through the test world's stand-in holder and raises nothing (`kit::LEDGER_HOLDER`, `T-020-60`).
 fn charges_raised(core: &Core) -> Vec<Raise> {
-    core.raised()
-        .into_iter()
-        .filter(|r| matches!(r.difference, Difference::Charge { .. }))
-        .collect()
+    let raised = core.raised();
+    assert!(
+        raised
+            .iter()
+            .all(|r| matches!(r.difference, Difference::Charge { .. })),
+        "only charges are raised: {raised:?}"
+    );
+    raised
 }

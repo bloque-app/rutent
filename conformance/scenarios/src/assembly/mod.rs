@@ -332,6 +332,31 @@ impl Providers for Running<'_> {
     }
 }
 
+/// The test worlds' stand-in holder's answer to a `holding_balance` question (`kit::LEDGER_HOLDER`): what Core's orders
+/// rest at the node in the asset asked, in the question's deployment and protocol version, under its transaction. It
+/// carries the question's signature as a placeholder: nothing checks a balance's signature, and the stand-in holds no
+/// key. `None` for any other question.
+fn ledger_answer(world: &SimWorld, question: &Statement<Operation>) -> Option<Vec<u8>> {
+    let Operation::HoldingBalance(asked) = &question.statement else {
+        return None;
+    };
+    let balance = world.ledger_balance(&asked.node, &asked.asset);
+    let answer = serde_json::json!({
+        "deployment": question.deployment,
+        "protocol_version": question.protocol_version,
+        "shape": rutent_contracts::provider_role::RESULT_SHAPE,
+        "maker": kit::LEDGER_HOLDER,
+        "made_at": question.made_at,
+        "signature": question.signature,
+        "statement": {
+            "kind": "holding_balance",
+            "transaction": asked.transaction,
+            "outcome": { "status": "answered", "balance": balance.to_string() },
+        },
+    });
+    serde_json::to_vec(&answer).ok()
+}
+
 /// Hands `question` to `provider`'s module on the platform, at Core's clock, and answers what came back.
 fn ask_platform(
     platform: &mut Platform<SimWorld>,
@@ -533,8 +558,14 @@ impl Modules for Running<'_> {
         provider: &Id,
         question: &Statement<Operation>,
     ) -> rutent_core_orch::segments::Answered {
-        // The production platform carries it, at Core's clock (`T-020-63`).
+        // The production platform carries it, at Core's clock (`T-020-63`); the test worlds' stand-in holder of a
+        // simulated provider's own private node is answered by the world (`kit::LEDGER_HOLDER`).
         self.platform.world.set_clock(self.clock.instant());
+        if provider.as_str() == kit::LEDGER_HOLDER
+            && let Some(answer) = ledger_answer(&self.platform.world, question)
+        {
+            return rutent_core_orch::segments::Answered::Bytes(answer);
+        }
         Modules::ask_for_balance(self.platform, effect, provider, question)
     }
 
@@ -2479,8 +2510,43 @@ impl Core {
         // sets (a floor on each tuple, the public nodes listed) give way to the operator's settings (L2 of #337's review).
         let at = self.time_of_stated(&receipt);
         kit::join(&mut self.catalogue, installed, at);
+        self.register_ledger_holders(
+            &installed.advertisement.statement().statement,
+            &installed.spec,
+        );
         self.reapply_catalogue_settings();
         Ok(())
+    }
+
+    /// The deployment's register names the test worlds' stand-in holder ([`kit::LEDGER_HOLDER`]) as the account of each
+    /// private node `ad` declares, in the asset its tuples hold there, unless the register names an account there
+    /// already: the holding check then reads every node the catalogue lists a holder at (`T-020-60`).
+    fn register_ledger_holders(
+        &mut self,
+        ad: &rutent_contracts::provider_role::Advertisement,
+        spec: &rutent_conformance::sim::Spec,
+    ) {
+        let mut registers = self.deployed.registers.borrow_mut();
+        for node in spec.public_nodes() {
+            if let Some(asset) = kit::asset_at(ad, &node) {
+                registers.stand_in_public.entry(node).or_insert(asset);
+            }
+        }
+        for node in &ad.private_nodes {
+            let Some(asset) = kit::asset_at(ad, node) else {
+                continue;
+            };
+            registers
+                .publisher_accounts
+                .entry(node.clone())
+                .or_insert_with(|| rutent_core_orch::schedule::PublisherAccount {
+                    node: node.clone(),
+                    publisher: ad.publisher.clone(),
+                    module: kit::LEDGER_HOLDER.to_owned(),
+                    asset,
+                    decimals: schedule::DECIMALS,
+                });
+        }
     }
 
     /// Puts the operator's catalogue settings back after the deployment's own listing touched the catalogue: each

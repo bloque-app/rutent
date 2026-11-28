@@ -73,6 +73,10 @@ pub struct Registers {
     /// operator the way to it. Kept across a reopen with the rest of the register, so a reopened Core reads them again
     /// (the review's S1).
     pub publisher_accounts: BTreeMap<String, rutent_core_orch::schedule::PublisherAccount>,
+    /// The public nodes whose holding account is the test kit's operator wallet ([`crate::kit::OPERATOR_WALLET`]), a
+    /// module the platform doesn't run, with the asset its tuples hold there: the holding check reads each through the
+    /// test world's stand-in holder (`T-020-60`) until the operator installs a wallet there. Policy reads nothing here.
+    pub stand_in_public: BTreeMap<String, String>,
 }
 
 impl Registers {
