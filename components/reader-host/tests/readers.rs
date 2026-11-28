@@ -592,10 +592,11 @@ fn restarted_reader_host_answers_nothing_until_each_readers_checks_pass_again() 
 // verifies: DEC-28
 #[test]
 fn question_past_its_deadline_is_dropped_by_the_reader_host() {
-    // A pool whose movement answers take 1 500 ms from each endpoint, so a question waits behind another: the late
-    // question below, due 400 ms after it is made, arrives some 300 ms before its deadline and has its turn at least
-    // 1 100 ms past it, margins a loaded runner keeps (the milestone reviewer's check of `T-015-05` at `3a53de34`, Low 3:
-    // the 400 ms answer left the turn no margin past the deadline).
+    // A pool whose movement answers take 1 000 ms from each endpoint, the pool asked in turn, so a question waits some
+    // 3 s behind another: the late question below, due 400 ms after it is made, arrives some 300 ms before its deadline
+    // and has its turn more than 2 s past it, margins a loaded runner keeps (the milestone reviewer's check of `T-015-05`
+    // at `3a53de34`, Low 3: the 400 ms answers left the turn no margin past the deadline). The reader is given 6 s
+    // before it counts as hung, past the 3 s a question takes.
     let connector = Arc::new(StubConnector::default());
     for endpoint in pool() {
         let honest = evm_node(false);
@@ -603,13 +604,14 @@ fn question_past_its_deadline_is_dropped_by_the_reader_host() {
             endpoint.trim_start_matches("https://"),
             Box::new(move |body: &str| {
                 if body.contains("rutent_movementStatus") {
-                    std::thread::sleep(Duration::from_millis(1_500));
+                    std::thread::sleep(Duration::from_millis(1_000));
                 }
                 honest(body)
             }),
         );
     }
-    let reader = rpc_reader("base", &["inspect"]);
+    let mut reader = rpc_reader("base", &["inspect"]);
+    reader.limits.hang_after_ms = 6_000;
     let rig = Rig::start(vec![reader.clone()], connector, &[]);
     assert!(rig.host.wait_ready(&reader.name, READY));
     let asked = |question: &rutent_contracts::reader::ReaderQuestion| {

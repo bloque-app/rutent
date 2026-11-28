@@ -673,5 +673,6 @@ Rule-offs for the two fixes, each alone and put back:
   the host, a TCP pass-through and never TLS terminated in front of it, or reaches the host's port from Core's network alone.
 - The comment in `prov/src/proxy/statement_keys.rs` no longer says the host's code has "no path" to a bucket's declared
   secrets: the mount and keys path are free strings, and the token's policy on the store is the real bound.
-- `question_past_its_deadline_is_dropped_by_the_reader_host`: the pool's answers take 1 500 ms, so the late question arrives
-  about 300 ms before its deadline and has its turn more than a second past it.
+- `question_past_its_deadline_is_dropped_by_the_reader_host`: each pool endpoint's movement answer takes 1 000 ms (the pool
+  asked in turn, some 3 s a question) and the reader 6 s before it counts as hung, so the late question arrives about
+  300 ms before its deadline and has its turn more than 2 s past it.

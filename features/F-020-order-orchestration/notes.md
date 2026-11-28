@@ -11264,7 +11264,8 @@ carry-overs touch.
   counts no try (the tick's try is counted at its effect), a tick-taken record forgives no grading try.
   `tick_reads_are_rebuilt_from_the_log_and_a_tick_taken_record_forgives_no_grading_try`. The CHANGELOG says `by` has no default.
 - The check of `T-015-05` at `3a53de34`: the comment in `prov/src/proxy/statement_keys.rs` now says the token's policy is the
-  bound; F-015's notes record the reserved handshake slot; the past-deadline test's answers take 1 500 ms, leaving margins.
+  bound; F-015's notes record the reserved handshake slot; the past-deadline test's answers take 1 000 ms an endpoint, leaving
+  margins of 300 ms and 2 s.
 
 ### Defaults taken (reversible, each failing closed)
 
