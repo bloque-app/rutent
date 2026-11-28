@@ -328,25 +328,26 @@ impl Catalogue {
     }
 
     /// Takes `network` onto the public list of networks from a permitted listing naming its reader service (`DEC-28`,
-    /// `REQ-CAT-22`, `T-020-60`): on it where its reader passed Core's start-up check (`started`), and held off every
-    /// route otherwise, so the snapshot routes nothing to it.
+    /// `REQ-CAT-22`, `T-020-60`): `listed` says the decided change names a listing (the catalogue reads no core-internal
+    /// shape, `DEC-2`, so Core says it); the network is on the list where its reader passed Core's start-up check
+    /// (`started`), and held off every route otherwise, so the snapshot routes nothing to it.
     ///
     /// # Errors
     ///
-    /// If `network` names no listing, or a blank network.
+    /// If the change names no listing, or the network is blank.
     pub fn list_public_network(
         &mut self,
-        network: &rutent_contracts::core_internal::PublicNetwork,
+        network: &str,
+        listed: bool,
         started: bool,
     ) -> Result<(), NodeError> {
-        let name = network.network.as_str();
-        if name.trim().is_empty() {
+        if network.trim().is_empty() {
             return Err(NodeError::Blank);
         }
-        if network.listing.is_none() {
-            return Err(NodeError::NoListing(name.to_owned()));
+        if !listed {
+            return Err(NodeError::NoListing(network.to_owned()));
         }
-        self.nodes.take_network(name, started);
+        self.nodes.take_network(network, started);
         Ok(())
     }
 

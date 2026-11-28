@@ -85,7 +85,15 @@ const REFERRED: [&str; 5] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 67] = [
+const RUST_RULES: [(&str, &str); 69] = [
+    (
+        "decision-request-to-list-a-public-network-from-an-rpc-pool-naming-one-host-twice",
+        "an rpc pool names each host once",
+    ),
+    (
+        "decision-request-to-list-a-public-network-from-an-rpc-pool-with-fewer-endpoints-than-its-quorum",
+        "an rpc pool has at least as many endpoints as its quorum",
+    ),
     (
         "decision-request-to-list-a-public-network-naming-no-listing",
         "a public network names its listing exactly when it is listed",
@@ -365,7 +373,12 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 158] = [
+const SCHEMA_RULES: [SchemaRule; 159] = [
+    (
+        "verified-entry-of-graded-evidence-whose-movement-names-no-reader",
+        &[("/what/movement", "required")],
+        "missing field `read_by`",
+    ),
     (
         "decision-request-to-list-a-public-network-under-a-hexadecimal-ip-subject-name",
         &[("/action/public_network/listing/reader/subject_name", "not")],

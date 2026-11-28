@@ -234,6 +234,24 @@ fn a_table_header_inside_a_string_hides_no_dependency() {
     );
     // A dependencies table spelled otherwise, and one inherited from the workspace, fail closed.
     assert!(parse_manifest(&router_with("[dev_dependencies]\nrutent-stm = \"1\"")).is_err());
+    // So does one nested under another table, however spelled (the review of T-024-25 at 64309ac3, Low 4).
+    for nested in [
+        "[package.dependencies]\nrutent-stm = \"1\"",
+        "[features.x.dev-dependencies]\nrutent-stm = \"1\"",
+        "[dependencies.rutent-contracts.build_dependencies]\nrutent-stm = \"1\"",
+    ] {
+        assert!(
+            parse_manifest(&router_with(nested))
+                .is_err_and(|e| e.contains("unrecognised dependency table")),
+            "{nested}"
+        );
+    }
+    assert!(
+        parse_manifest(&router_with(
+            "[dependencies.rutent-contracts]\npath = \"x\""
+        ))
+        .is_ok()
+    );
     assert!(
         parse_manifest(&router_with(
             "[dependencies]\nrutent-stm = { workspace = true }"

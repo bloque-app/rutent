@@ -59,7 +59,7 @@ nothing down.
 | An answer answers the kind of question it names, or is unreadable | none | `ReaderAnswer::check` |
 | An answer is held to the question asked: its request, network, kind, movement and transaction | none | `check_reader_answer` |
 | An answer is the listed reader's: its maker the reader asked, its key the listed statement key, its version the listed version | none | `check_reader_answer` |
-| An answer reaches Core by the question's deadline, by Core's clock; the answer's `made_at` is never read for it | none | `check_reader_answer` |
+| An answer reaches Core by the question's deadline, by Core's clock, an answer arriving exactly at its deadline accepted; the answer's `made_at` is never read for it | none | `check_reader_answer` |
 | An answer names Core's deployment and a protocol version in force (`REQ-PRT-1`), and holds to its own rules, built in memory as read | the envelope's | `check_reader_answer` (`Expected`, `Statement::check_context`, `ReaderAnswer::check`) |
 | An answer's envelope names its shape | `const` | `Statement::check_shape`, in `check_reader_answer` |
 

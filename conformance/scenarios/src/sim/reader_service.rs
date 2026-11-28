@@ -24,6 +24,14 @@ use serde_json::{Value, json};
 
 use super::readers::{Endpoints, Plan, WorldServer, served_json};
 
+/// How long, on Core's clock, a scenario's Core gives each reader's answer: ten years. A scenario's Core clock is a
+/// simulated one, set days before the operating system's time and moved by the scenario, which the reader host's own
+/// wall clock can't follow; the host drops a question whose deadline its own clock has passed (`T-015-05`), so the
+/// deployment sets a window that spans the gap, and Core's socket still waits no longer than
+/// `rutent_core_orch::closing::readers::ANSWER_WINDOW`. Core's own deadline check on arrival is unchanged: an answer past
+/// it by Core's clock is refused (`reader answer past its deadline by core's clock is unreadable`).
+pub const SIMULATED_ANSWER_WINDOW: Duration = Duration::from_secs(10 * 365 * 86_400);
+
 /// How long the host is given to start every reader and pass their start-up checks.
 const STARTS_WITHIN: Duration = Duration::from_secs(120);
 
@@ -254,7 +262,8 @@ impl ReaderService {
             self.chain.as_bytes(),
             self.key.as_bytes(),
         )?;
-        let mut readers = rutent_core_orch::closing::Readers::new(tls, deployment, versions);
+        let mut readers = rutent_core_orch::closing::Readers::new(tls, deployment, versions)
+            .answering_within(SIMULATED_ANSWER_WINDOW);
         readers.set_host(super::readers::HOST_SETTING, self.address);
         for network in listed {
             readers.list(network);

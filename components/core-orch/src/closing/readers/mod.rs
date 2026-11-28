@@ -204,7 +204,10 @@ impl Readers {
         self
     }
 
-    /// The same, giving each answer `window` on Core's clock before its deadline.
+    /// The same, giving each answer `window` on Core's clock before its deadline. Core's socket still waits no longer
+    /// than [`ANSWER_WINDOW`] on the operating system's clock: a window longer than it is for a deployment whose Core
+    /// clock isn't the host's (a scenario's simulated clock, which the reader host's wall clock can't follow, and which
+    /// would otherwise drop every question as dead on arrival, `T-015-05`).
     #[must_use]
     pub fn answering_within(mut self, window: Duration) -> Self {
         self.window = window;
@@ -459,10 +462,11 @@ impl Readers {
     ) -> Result<Vec<u8>, Unreadable> {
         let name = ServerName::try_from(listing.reader.subject_name.as_str().to_owned())
             .map_err(|_| Unreadable::Unreachable)?;
-        let tcp = TcpStream::connect_timeout(&address, self.window.min(Duration::from_secs(10)))
+        let wait = self.window.clamp(Duration::from_secs(1), ANSWER_WINDOW);
+        let tcp = TcpStream::connect_timeout(&address, wait.min(Duration::from_secs(10)))
             .map_err(|_| Unreadable::Unreachable)?;
-        tcp.set_read_timeout(Some(self.window))
-            .and_then(|()| tcp.set_write_timeout(Some(self.window)))
+        tcp.set_read_timeout(Some(wait))
+            .and_then(|()| tcp.set_write_timeout(Some(wait)))
             .map_err(|_| Unreadable::Unreachable)?;
         let connection = ClientConnection::new(Arc::clone(&self.tls.client), name)
             .map_err(|_| Unreadable::Unreachable)?;

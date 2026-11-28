@@ -625,7 +625,8 @@ impl Readers {
         core.set_host(readers::HOST_SETTING, self.link.address());
         for (network, listing) in &self.listings {
             core.list(&PublicNetwork {
-                network: rutent_contracts::router_api::Id::new(network.as_str()).expect("a network"),
+                network: rutent_contracts::router_api::Id::new(network.as_str())
+                    .expect("a network"),
                 listing: Some(listing.clone()),
             });
         }
@@ -634,7 +635,7 @@ impl Readers {
 
     /// The same host served on another link, under a leaf `ca` issues for `name` with a fresh key: a rotated
     /// certificate, where `ca` is the operator's and `name` the listed one. Where it listens.
-    pub fn serve_leaf(&mut self, ca: &TestCa, name: &str) -> &Link {
+    pub fn serve_leaf(&mut self, ca: &TestCa, name: &str) -> SocketAddr {
         let leaf = ca.issue(name, ExtendedKeyUsagePurpose::ServerAuth);
         let tls = LinkTls::new(
             self.ca_pem.as_bytes(),
@@ -649,8 +650,9 @@ impl Readers {
             self.host.clone(),
         )
         .expect("the link");
+        let address = link.address();
         self.others.push(link);
-        self.others.last().expect("just served")
+        address
     }
 
     /// Asks `network`'s reader `asked` over the link, through Core's own adapter at Core's clock (the host's system

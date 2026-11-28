@@ -4211,6 +4211,72 @@ fn arrival_refiled_by_a_login_whose_party_may_not_refile_is_refused() {
     }
 }
 
+/// An agent in the operator's role, acting for the operator (`REQ-AUZ-8`; the milestone reviewer's check of `T-020-59`):
+/// it lists or delists a public network only where the register lists it for that permission, within the scope the
+/// operator set, as the operator's login does; the same agent unlisted, or an agent of another party in the operator's
+/// role, is refused.
+// verifies: REQ-AUZ-8, REQ-AUZ-1
+#[test]
+fn agent_in_the_operators_role_lists_a_public_network_only_within_the_scope_the_operator_set() {
+    let list = Permission::Change(CatalogueChange::ListPublicNetwork);
+    let delist = Permission::Change(CatalogueChange::DelistPublicNetwork);
+    let agent = actor(
+        "operator",
+        "operator-agent-1",
+        Role::Operator,
+        ActorKind::Agent,
+    );
+    let asked = |caller: &Actor, permission: Permission| -> DecisionRequest {
+        every_permission(caller)
+            .into_iter()
+            .find(|(p, _)| *p == permission)
+            .expect("the sweep asks it")
+            .1
+    };
+    let mut policy = engine(
+        Kept::with_a_decision_record(),
+        Register::holding(&agent, &[list, delist]).of_the_operator(&agent),
+    );
+    for permission in [list, delist] {
+        let decision = policy.decide(&asked(&agent, permission)).unwrap();
+        assert_eq!(decision.outcome, Answer::Permit {}, "{permission:?}");
+        assert_eq!(policy.log().entry_of(&decision).who, agent);
+    }
+    // Unlisted for it: refused.
+    let mut policy = engine(
+        Kept::with_a_decision_record(),
+        Register::holding(&operator(), &[list, delist]).of_the_operator(&operator()),
+    );
+    for permission in [list, delist] {
+        let decision = policy.decide(&asked(&agent, permission)).unwrap();
+        assert_eq!(
+            decision.outcome, NOT_PERMITTED,
+            "unlisted agent: {permission:?}"
+        );
+    }
+    // Another party's agent in the operator's role, listed: refused, as it acts for no deployment operator.
+    let outsider = actor(
+        "bridge-pay",
+        "bridge-pay-agent",
+        Role::Operator,
+        ActorKind::Agent,
+    );
+    let mut policy = engine(
+        Kept::with_a_decision_record(),
+        Register::holding(&outsider, &[list, delist])
+            .listing(&outsider)
+            .and_holding(&operator(), &[list, delist])
+            .of_the_operator(&operator()),
+    );
+    for permission in [list, delist] {
+        let decision = policy.decide(&asked(&outsider, permission)).unwrap();
+        assert_eq!(
+            decision.outcome, NOT_PERMITTED,
+            "another party's agent: {permission:?}"
+        );
+    }
+}
+
 /// Listing a public network with the reader service that reads it, and delisting one, are the operator's alone
 /// (`DEC-28`, item `reader-registration-path`, `T-020-59`): each a permission of its own beside the lifecycle
 /// permissions. An operator's login that the register lists for it, and that is the deployment operator's, naming its

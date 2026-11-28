@@ -11188,3 +11188,107 @@ scenario tests) and `tools/licence-check/src/artifact.rs`, a `DEC-20` path. No o
   Checks of the `by` change: `rutent-contracts`, `rutent-core-audit`, core-orch, core-authz `--lib`, the whole scenarios package,
   `invariants` and `assembly` on seeds 11 to 15, prov, conformance, `role_suite`, licence-check, the contract guard against
   `origin/develop` (2202 paths) and `origin/m3` (32): no violations; plan-check and tag-check `--strict`; fmt; clippy.
+
+## T-020-60: Core's adapter for each public network's reader service (`DEC-28`, ADR-0007 as amended)
+
+Stacked on `T-020-61` (#355) until it lands; `origin/m3` (3a53de34) merged in too, for `T-015-05`'s files the
+carry-overs touch.
+
+### Design: where each piece lives
+
+- **Core's adapter** is `core-orch::closing::readers` (`Readers`, `Pass`, `ReaderTls`). The deployment hands it the operator's
+  CA, Core's client certificate and key (PEM), the addresses its host settings hold (`Readers::set_host`) and, per pass, Core's
+  clock: never a reader and never a `PublicRecords`. `PublicRecords` stays Core's seam in `closing`, and its one production
+  implementation is `impl PublicRecords for Pass`.
+- **The link.** `rustls` with `ring` only (`cargo tree -i aws-lc-rs` finds nothing), the CA the one root, no resumption, no early
+  data. The CA must be a CA by its basic constraints (`tls::is_ca`, a small DER walk; L3 of #343's review, and the CA
+  basic-constraints check routed here), and each listing's `ca` must name its SHA-256 digest, else the network is `OtherCa`.
+  The host is held to the CA and the listed subject name by `rustls`' web-PKI verifier, so a rotated leaf passes unchanged.
+- **Each answer**: its signature verified under the listing's statement key (`verify_envelope`), then `check_reader_answer`
+  against the question Core sent and the listing's key and version, at Core's clock read when the answer arrived. The deadline
+  is the time asked plus `ANSWER_WINDOW` (30 s of Core's clock); an answer exactly at it is taken. The frame is the reader host's
+  (four little-endian length bytes, then the JSON), written again in `core-orch`, which can't depend on the host.
+- **Request ids** come from `RandomSource`, by default the system's secure random through `ring` (`SystemRandom`), never Core's
+  seeded identifiers and never a counter; `RequestId::from_random` is the one constructor `core-orch` calls, which
+  `core_makes_a_request_id_only_from_its_random_source` scans for (every other constructor: `new`, `try_from`, `deserialize`,
+  the turbofish forms), and a source that gives a counter makes no question at all (`from_random` refuses its zero top half).
+- **The pass** is one lend of the segments (`with_segments`): the assembly builds `core.readers.pass(&core.clock)` there, and
+  the pass keeps each answer by (network, question) until it is dropped.
+- **Unreadable** is `Short::ReaderUnreadable(Unreadable)`: closing returns it before anything is checked (each status the
+  check reads is read first, into `closing::Network`), so it appends no entry, grades nothing down and counts no movement
+  as not found. A network no listing names still reads as "no record" (`Ok(None)`), as before.
+- **The start-up check** (`Readers::check`, `check_all`) asks `network_rules` and holds identity and trust rule to the listing
+  (version by `check_reader_answer`). The assembly's `Core::start_readers` runs it on assembly, on every reopen and restart,
+  after each decided listing or delisting, and when the deployment's host moves (`move_reader_host`, `plant_readers`).
+- **The catalogue's public list of networks** (`components/prov/src/catalogue/`): `Catalogue::list_public_network` takes a
+  network only from a `PublicNetwork` that names a listing, marked started or not; the snapshot leaves out every tuple with an
+  end on a listed network that didn't start (`LeftOutReason::NetworkNotStarted`). A network no listing names is unchanged.
+- **The simulated readers in every scenario.** `rutent-reader-host` stays a dev-dependency (`DEC-28`), so the library runs
+  the host as a process of its own: `examples/sim_reader.rs host` runs `T-024-25`'s harness (`tests/readers_support`) over the
+  world's endpoints, read through a loopback connection (`sim::readers::WorldServer`), and hands back its address, the test
+  CA and Core's certificate (`sim::reader_service::ReaderService`). The assembly starts it as Core is put together; it goes on
+  across a reopen, as the deployment's does. The world's networks now live in the endpoints themselves, so readers read the
+  world as it stands: the assembly's `Readings`, its `impl PublicRecords`, the read-then-refresh and `publish_to_readers` are
+  gone (`grading::Booked` keeps only the private nodes' books). `harness`'s fixed `now` and 2099 deadline went with the
+  harness's own Core side: `readers_support::Readers::ask` is Core's adapter (`question`) at Core's clock.
+
+### Items and carry-overs, as built
+
+1. Checked before read: as above. Tests `reader_hosts_rotated_certificate_…`, `reader_answer_past_its_deadline_…`,
+   `reader_answer_not_signed_…`; the CA check in `only_a_certificate_whose_basic_constraints_name_it_a_ca_is_one`.
+1a. No sequencer: the adapter's docs; `reader_request_ids_are_drawn_…` and the source scan.
+2. Start-up check and listing: `network_whose_reader_is_unreachable_does_not_start_and_cannot_be_listed`; the operator is told
+   why through `Core::not_started` (see the gaps: not yet a raise entry).
+3. One answer per pass: `one_grading_reads_each_movement_once_from_its_reader`.
+4. Unreadable: `unreadable_reader_settles_nothing_and_grades_nothing_down` (scenario) and
+   `unreadable_network_waits_settles_nothing_and_closes_no_part` (`core-orch`); `final_deposit_to_a_network_whose_reader_is_unreadable_is_not_routed_to`.
+5. `read_by`: core-internal `PublicMovement.read_by` (`MovementReader`), required, folded into 1.0.0 with every fixture and a
+   changelog line; `Closing::recorded` rebuilds it into `Seen`. `evidence_entry_names_the_reader_and_the_version_…`.
+6. Reversal back into a held public node: **not built** (see the gaps).
+7. Restarts: `listed_reader_is_checked_again_after_core_reopens_and_its_evidence_still_reads`.
+- #343 L3 (leaf as anchor): `TlsRefusal::NotACa`, and `OtherCa` for a listing naming another digest. L5: the scan. L7: a
+  delisting of a network never listed is refused (`may_delist`, `DelistRefused::NeverListed`).
+- #346 L3: a delisting is refused while an order with value in flight uses the network (`DelistRefused::InUse`). A reader that
+  fails its start-up check under such an order: the network is held off new routes, and the order's segments on it wait,
+  unreadable, timed by the stuck watch, until the reader passes again (`hostile_reader_leaves_its_segment_unsettled_and_core_running`).
+- #353 round 2: `delist_public_network` asks under `delist-{network}`.
+- #353 Low 3: Core's clock and the CA digest on Core's side, as above.
+- T-024-25's five Lows: 1, the equivalence test compares Core's adapter with the world's `SimulatedNetwork` directly; 2, the
+  hostile acts each assert their own reason; 3, every EVM network, both movement questions, a start-up liar
+  (`other-identity`, a new hostile act); the timeout path is the host's (`reader_hung`, `T-015-04`'s tests) and Core's own
+  socket bound, with no scenario of its own (gap); 4, the nested dependencies header: see the gaps; 5, the harness's peer
+  servers and the world's loopback server stop and join on drop, the host process ends when its input closes, and the
+  program is the example `cargo test` builds (shelling out to cargo is kept only for a run of one test binary that built no
+  example).
+- T-020-67's Lows 1, 3, 4: the tick's reads rebuilt from `by: tick` (`rebuilt_tick_reads`), a failed read before its effect
+  counts no try (the tick's try is counted at its effect), a tick-taken record forgives no grading try.
+  `tick_reads_are_rebuilt_from_the_log_and_a_tick_taken_record_forgives_no_grading_try`. The CHANGELOG says `by` has no default.
+- The check of `T-015-05` at `3a53de34`: the comment in `prov/src/proxy/statement_keys.rs` now says the token's policy is the
+  bound; F-015's notes record the reserved handshake slot; the past-deadline test's answers take 1 500 ms, leaving margins.
+
+### Defaults taken (reversible, each failing closed)
+
+- `ANSWER_WINDOW` = 30 s of Core's clock; Core's socket waits as long on the operating system's clock.
+- A network no listing names reads as no record (`Ok(None)`), as before this row: listing every network a route can touch is
+  the deployment's to do; the scenarios list every one.
+- The rules a pass reads are asked each pass (not kept from the start-up check): Core keeps no copy of a network.
+- The operator is told why a network didn't start through `Core::not_started` and the catalogue's withheld mark.
+
+### Gaps, with owners
+
+- **(6) A reversal into a held public node confirmed from the network's reader, and `Fleet::credit_wallet` going**: not built.
+  It needs the plain wallet to confirm on a reading Core hands it (the guest's `wallet.credit` outside part, the
+  `reversal_confirmation` question) and Core's reversal path (`reversal/`) to read the movement into the holding account named by
+  `holding_withdrawal` through its reader: outside this row's edit list. Owner: a follow-up row under F-020 with F-016's wallet;
+  `credit_wallet` keeps its note that it stands in for the reader.
+- **The not-started raise**: a `Difference` of its own (`reader_not_started`) is a core-internal shape not yet in the contract;
+  until then the operator reads `Core::not_started`. Owner: the contract round of `T-020-45`'s kind.
+- **The stand-in holding module for the test worlds** (from `T-020-61`'s round 2): not built here; the scenarios still count
+  around the private ledgers' `not answered` raises. Owner: `T-020-61`'s follow-up, or F-024.
+- **A public node's `confirmations`** (#326's first comment) still stop at `Settings`: a reader's `movement_status` says final by
+  its own rule, and no answer carries a depth Core could hold to the operator's count. Owner: `F-031` with the readers.
+- **The VOS scenarios** (`rutent-scenarios-vos`) build this library, whose assembly now starts the reader host's process: their
+  runner must build `examples/sim_reader` and set `RUTENT_SIM_READER`. Owner: F-024 with the VOS session (`stm-vos.yml` is a
+  `DEC-20` path this row doesn't edit).
+- T-024-25 Low 4 (a nested dependencies header no longer refused by boundary-check) and T-020-67's capped-segment stuck-check
+  test and its notes' exactness: not done here. Owner: the next round of this row.

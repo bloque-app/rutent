@@ -662,3 +662,16 @@ Rule-offs for the two fixes, each alone and put back:
 | Key store settings refuse an unknown field | `key_store_settings_that_name_a_secrets_path_are_refused` | `unwrap_err()` on `Ok`: settings with a `secrets` path were read |
 | `next()` is a loop (recursion per dead question put back) | `thousands_of_expired_questions_behind_a_slow_one_are_dropped_without_growing_the_workers_stack` | `has overflowed its stack`, the test process aborted (`SIGABRT`): what aborted the host |
 | `pending` capped at `MAX_PENDING` | `reader_host_refuses_more_questions_waiting_than_its_cap` | `unwrap_err()` on `Ok`: 4097 questions waiting passed |
+
+## T-020-60: the reader host's Lows from the check of T-015-05 (at `3a53de34`)
+
+- **For M4 and F-030: Core's reserved handshake slot is keyed by source address.** `RESERVED_FOR_CORE` keeps a handshake
+  slot for a source address Core has authenticated from before (`CoreSlots`), since the address is the one signal before a
+  handshake ends: Core's certificate is read only once it completes. So the slot is the address's, not Core's: another peer
+  behind the same address (a NAT, a proxy, a load balancer that hides the peer's own address) can take it, and Core behind
+  a new address has none until its first handshake there completes. M4's deployment (F-030) keeps the peer's own address to
+  the host, a TCP pass-through and never TLS terminated in front of it, or reaches the host's port from Core's network alone.
+- The comment in `prov/src/proxy/statement_keys.rs` no longer says the host's code has "no path" to a bucket's declared
+  secrets: the mount and keys path are free strings, and the token's policy on the store is the real bound.
+- `question_past_its_deadline_is_dropped_by_the_reader_host`: the pool's answers take 1 500 ms, so the late question arrives
+  about 300 ms before its deadline and has its turn more than a second past it.

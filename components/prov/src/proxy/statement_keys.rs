@@ -5,10 +5,12 @@
 //! [`StatementKeys`] is built from [`KeyStoreSettings`] and the store's token, and resolves the private half of a
 //! statement key by the public key's text, under the reader's name, as the `keys` resolver of
 //! [`crate::proxy::kv_bucket`] does, from the same server, mount, keys path and namespace. Its settings name the keys'
-//! path and no other: they carry no `secrets` path, as a process role's settings do, so the host's code has no path to
-//! a bucket's declared secrets to point it at, and a settings file that names one is refused. The token and the
-//! transport stay inside: nothing of them is given back. Which paths the token itself may read is the store's policy,
-//! not this facade's: a deployment gives the reader host a token whose policy reaches the readers' keys alone.
+//! path and no other: they carry no `secrets` path, as a process role's settings do, and a settings file that names one
+//! is refused. That keeps the host's code from naming a bucket's declared secrets by that field, but bounds nothing by
+//! itself: the mount and the keys path are free strings, so a settings file could point them at any path the store
+//! holds. The real bound is the token's policy on the store: a deployment gives the reader host a token whose policy
+//! reaches the readers' keys alone (the milestone reviewer's check of `T-015-05` at `3a53de34`, Low 1). The token and the
+//! transport stay inside: nothing of them is given back.
 
 use core::fmt;
 use std::path::PathBuf;

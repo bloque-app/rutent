@@ -360,10 +360,9 @@ impl World for SimWorld {
                 .push(entry);
         } else if let Some(network) = self.chains.get(&endpoint.host)
             && let Ok(movement) = serde_json::from_str::<Movement>(&body)
+            && let Some(why) = self.readers.record(network, &movement)
         {
-            if let Some(why) = self.readers.record(network, &movement) {
-                self.refused_movements.push((movement, format!("{why:?}")));
-            }
+            self.refused_movements.push((movement, format!("{why:?}")));
         }
     }
 

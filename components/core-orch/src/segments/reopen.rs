@@ -1482,7 +1482,11 @@ fn rebuilt_tries(
     // The held record forgives the key's last read only where the grading put it: a record a tick's read produced forgives
     // none of the grading's tries (the milestone reviewer's check of `T-020-67`, Low 4).
     for (key, count) in &mut tries {
-        let last_by = reads.iter().rev().find(|(k, _)| k == key).map(|(_, by)| *by);
+        let last_by = reads
+            .iter()
+            .rev()
+            .find(|(k, _)| k == key)
+            .map(|(_, by)| *by);
         if last_by == Some(ReadBy::Grading)
             && held
                 .iter()
@@ -1508,7 +1512,12 @@ fn rebuilt_tick_reads(
     let done = tries
         .keys()
         .filter(|key| {
-            reads.iter().rev().find(|(k, _)| k == *key).map(|(_, by)| *by) == Some(ReadBy::Tick)
+            reads
+                .iter()
+                .rev()
+                .find(|(k, _)| k == *key)
+                .map(|(_, by)| *by)
+                == Some(ReadBy::Tick)
                 && held.iter().any(|(order, node, maker)| {
                     *order == key.0 && *node == key.2 && *maker == key.3
                 })
@@ -1533,7 +1542,11 @@ mod rebuilt_tries_tests {
         reads.extend((0..5).map(|_| (key("s1"), ReadBy::Tick)));
         let (tick, done) = rebuilt_tick_reads(&reads, &held);
         assert_eq!(tick.get(&key("s1")), Some(&5));
-        assert_eq!(done, vec![key("s1")], "the tick's last read took the record");
+        assert_eq!(
+            done,
+            vec![key("s1")],
+            "the tick's last read took the record"
+        );
         assert_eq!(
             rebuilt_tries(&reads, &held).get(&key("s1")),
             Some(&2),

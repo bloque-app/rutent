@@ -2204,6 +2204,63 @@ fn public_record_is_the_networks_whatever_the_piece_names() {
     );
 }
 
+/// A network whose reader is unreadable settles nothing and grades nothing down (`T-020-60`, ADR-0007 as amended): the
+/// withdrawal whose public record is the network's waits, unreadable, with no `evidence` entry, where its provider's own
+/// pieces would have settled it as the provider's word had Core read no record of the network at all; and a part can't
+/// end in a final deposit to that network. Read again, the same segment settles on the public record.
+// verifies: REQ-ORD-39, INV-3, REQ-ORD-33
+#[test]
+fn unreadable_network_waits_settles_nothing_and_closes_no_part() {
+    let route = route(None);
+    let catalogue = catalogue(&[("reserve-bank-co", "bank-co", 1, &["ledger-in"])]);
+    let (_, mut nets, books) = fixture_world();
+    nets.unreadable.insert("co-ach".to_owned());
+    let log = Log::default();
+    let part = Part::new(
+        "ord-1",
+        &route,
+        end("polygon", "acct-9", ("USDC", 6), D.1),
+        &log,
+    );
+    let w = withdrawal("tx-w", json!([piece(1, "ach-77", "reserve-bank-co")]));
+    let mut closing = Closing::new();
+    assert_eq!(
+        part.grade(
+            &mut grading(&catalogue, &nets, &books, &mut closing),
+            0,
+            "reserve-bank-co",
+            "tx-w",
+            &w,
+            W.1,
+        ),
+        Graded::Waits(Short::ReaderUnreadable(Unreadable::NotStarted))
+    );
+    assert!(
+        closing.evidences("co-ach", "ach-77").is_none(),
+        "nothing taken"
+    );
+    // A final deposit to an unreadable network can't close: it isn't routed to.
+    nets.unreadable.insert("polygon".to_owned());
+    let deposit_op = route.last().expect("a deposit").clone();
+    assert!(!grading(&catalogue, &nets, &books, &mut closing).can_close(&deposit_op));
+    nets.unreadable.clear();
+    assert!(grading(&catalogue, &nets, &books, &mut closing).can_close(&deposit_op));
+    // Read again: the withdrawal settles, on the network's public record.
+    let (_, whats) = settles(part.grade(
+        &mut grading(&catalogue, &nets, &books, &mut closing),
+        0,
+        "reserve-bank-co",
+        "tx-w",
+        &w,
+        W.1,
+    ));
+    assert_eq!(
+        named(&whats)[0].2,
+        EvidenceGrade::PublicRecord,
+        "graded on the record once read"
+    );
+}
+
 /// The stand-in grading settles a segment on its provider's word, but never a part's final deposit: a statement
 /// alone closes no order. The part reaches its deposit as the state machine takes it, each segment before it settled.
 // verifies: REQ-ORD-33

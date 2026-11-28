@@ -29,6 +29,7 @@
 //! A hostile act makes it misbehave, for the host and Core to hold: `crash` (on a question), `malformed` (answers
 //! something that is no answer), `other-movement` (answers about another movement or transaction than the one asked)
 //! `other-identity` (answers its rules naming another network's identity than the one it checked, a start-up liar),
+//! `unread-movements` (answers its rules, but no movement: every movement question is unreadable),
 //! and `undeclared` (also asks an endpoint it doesn't declare: the world's own host for the network, and for a light
 //! client a port its rule doesn't name). A key the listing doesn't name is the harness's to plant, in the host's
 //! configuration: the reader never holds a key.
@@ -229,6 +230,10 @@ impl Reader {
         let unreadable = |why: &str| Answered::Unreadable {
             why: Reason::new(why).unwrap_or_else(|| Reason::new("unreadable").expect("a reason")),
         };
+        // A reader planted to lose track of the movements answers its rules but can't stand behind any movement.
+        if self.hostile("unread-movements") && !matches!(asked, Asked::NetworkRules(_)) {
+            return unreadable("movements_unread");
+        }
         let answered = match asked {
             Asked::NetworkRules(_) => self.read("rutent_rules", json!([])).and_then(|value| {
                 let finality: Finality = serde_json::from_value(value["finality"].clone())

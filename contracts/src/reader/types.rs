@@ -297,16 +297,25 @@ impl TrustRule {
     /// Checks the rules of a trust rule the schema can't state, and the ones it does: a pool's quorum is at least
     /// [`LEAST_QUORUM`], its endpoints are distinct, and it has at least as many as its quorum.
     pub fn check(&self) -> Result<(), Violation> {
+        // Each refusal through the contracts' rule switch, so a contract test sees an invalid listing break one rule
+        // alone (`T-020-45`; the check of `T-020-59`'s invalid fixtures, routed to `T-020-60`).
+        let broke = |rule: &'static str| {
+            if crate::rule_switch::switched_off(rule) {
+                Ok(())
+            } else {
+                Err(Violation(rule))
+            }
+        };
         if let TrustRule::RpcPool { endpoints, quorum } = self {
             if *quorum < LEAST_QUORUM {
-                return Err(Violation("an rpc pool's quorum is at least two"));
+                broke("an rpc pool's quorum is at least two")?;
             }
             if endpoints
                 .iter()
                 .enumerate()
                 .any(|(i, e)| endpoints[..i].contains(e))
             {
-                return Err(Violation("an rpc pool names each endpoint once"));
+                broke("an rpc pool names each endpoint once")?;
             }
             // A quorum is of nodes, not of spellings: two endpoints on one host, by another scheme, port or trailing
             // `/`, are one node agreeing with itself (`T-020-59`'s review, M2). Separate names that resolve to one
@@ -316,12 +325,10 @@ impl TrustRule {
                 .enumerate()
                 .any(|(i, e)| endpoints[..i].iter().any(|o| o.host() == e.host()))
             {
-                return Err(Violation("an rpc pool names each host once"));
+                broke("an rpc pool names each host once")?;
             }
             if (endpoints.len() as u64) < u64::from(*quorum) {
-                return Err(Violation(
-                    "an rpc pool has at least as many endpoints as its quorum",
-                ));
+                broke("an rpc pool has at least as many endpoints as its quorum")?;
             }
         }
         Ok(())

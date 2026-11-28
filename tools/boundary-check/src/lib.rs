@@ -200,6 +200,12 @@ pub fn parse_manifest(text: &str) -> Result<(String, Vec<Dep>), String> {
             return Err(format!("unrecognised dependency table `{key}`"));
         }
     }
+    // A dependencies table nested under another (`[package.dependencies]`, `[features.x.dependencies]`, a dependency's own
+    // `dependencies` sub-table): never one cargo reads as the package's, and never one the check follows, so it fails
+    // closed as the line-based reader once refused it (the review of `T-024-25` at `64309ac3`, Low 4).
+    if let Some(path) = nested_dependencies(root, &mut Vec::new()) {
+        return Err(format!("unrecognised dependency table `{path}`"));
+    }
     let mut deps: Vec<Dep> = Vec::new();
     for table in DEP_TABLES {
         let Some(item) = root.get(table) else {
@@ -229,6 +235,27 @@ pub fn parse_manifest(text: &str) -> Result<(String, Vec<Dep>), String> {
         }
     }
     Ok((name, deps))
+}
+
+/// The dotted path of the first table below the top whose key names a dependencies table, however spelled.
+fn nested_dependencies<'a>(
+    table: &'a dyn toml_edit::TableLike,
+    path: &mut Vec<&'a str>,
+) -> Option<String> {
+    for (key, item) in table.iter() {
+        let Some(inner) = item.as_table_like() else {
+            continue;
+        };
+        path.push(key);
+        if path.len() > 1 && key.replace('_', "-").contains("dependencies") {
+            return Some(path.join("."));
+        }
+        if let Some(found) = nested_dependencies(inner, path) {
+            return Some(found);
+        }
+        path.pop();
+    }
+    None
 }
 
 /// Loads the graph of the workspace rooted at `root`, from the `members` of its root manifest.

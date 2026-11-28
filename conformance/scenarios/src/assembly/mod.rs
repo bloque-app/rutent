@@ -475,8 +475,7 @@ impl Modules for Running<'_> {
         about: &Statement<Operation>,
     ) -> rutent_core_orch::segments::Answered {
         self.platform.world.set_clock(self.clock.instant());
-        let answered = Modules::status(self.platform, effect, provider, asking, about);
-        answered
+        Modules::status(self.platform, effect, provider, asking, about)
     }
 
     fn ask_for_record(
@@ -530,8 +529,7 @@ impl Modules for Running<'_> {
     ) -> rutent_core_orch::segments::Answered {
         // The production platform carries it, at Core's clock (`T-020-63`).
         self.platform.world.set_clock(self.clock.instant());
-        let answered = Modules::repeat_operation(self.platform, effect, provider, transaction);
-        answered
+        Modules::repeat_operation(self.platform, effect, provider, transaction)
     }
 
     fn recorded_answer(
@@ -1167,7 +1165,8 @@ impl Core {
             .map_err(|e| AssemblyError::Listing(format!("Core's reader link: {e:?}")))?,
             context.deployment.clone(),
             context.protocol_versions(),
-        );
+        )
+        .answering_within(crate::sim::reader_service::SIMULATED_ANSWER_WINDOW);
         readers.set_host(crate::sim::readers::HOST_SETTING, reader_service.address());
 
         // The evidence store and the log: the store's read taken once, the log opened with it.
@@ -1639,7 +1638,11 @@ impl Core {
         self.not_started = self.readers.check_all(&self.clock).into_iter().collect();
         for network in &listed {
             let started = !self.not_started.contains_key(network.network.as_str());
-            let _ = self.catalogue.list_public_network(network, started);
+            let _ = self.catalogue.list_public_network(
+                network.network.as_str(),
+                network.listing.is_some(),
+                started,
+            );
         }
     }
 

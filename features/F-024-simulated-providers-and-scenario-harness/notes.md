@@ -2413,3 +2413,23 @@ Rule-offs, each alone and reverted:
 | A dependency inherited from the workspace refused | `a table header inside a string hides no dependency` | `workspace = true` read as an edge |
 | A delisting takes its network off | `delisted simulated network is no longer listed` | `polygon` still listed after its delisting |
 | Prov has no build script, by `cargo metadata` (prov's manifest given `build = "gen.rs"` and the file) | `providers library is its own root and it has no build script as cargo reads it` | a `custom-build` target |
+
+## T-020-60: every scenario reads through Core's adapter
+
+- The assembly's `Readings` and its `impl PublicRecords` are gone, with the read-then-refresh after each operation and
+  `SimWorld::publish_to_readers`. What stays of it is `grading::Booked`, the private nodes' books Core took.
+- The world's networks live in `sim::readers::Endpoints` (`SimWorld::network` gives a copy, `network_mut` a hold), so a
+  reader reads the world as it stands.
+- The deployment's reader host is `sim::reader_service::ReaderService`: `examples/sim_reader.rs` in its `host` mode, a
+  process of its own running `tests/readers_support` over the world's endpoints, which it reads through
+  `Endpoints::serve_loopback`. The assembly starts it as Core is put together, carries it across a reopen or restart, and
+  starts it again under a `Plan` when a scenario plants a reader fault (`Core::plant_readers`, `tie_payments_by_destination`)
+  or moves the host (`Core::move_reader_host`). `rutent-reader-host` stays a dev-dependency (`DEC-28`): the library never links
+  it.
+- The program is found as `RUTENT_SIM_READER`, the example itself, or the example `cargo test` built beside the test binary;
+  only a run of one test binary that built no example builds it with cargo (a run with `--test <name>` alone: build the
+  examples first, `cargo build -p rutent-scenarios --examples`, to skip that).
+- The whole suite took 18 m 39 s locally on the first run, `invariants` 131 s.
+- **Gap, owner F-024 with the VOS session:** `rutent-scenarios-vos` builds this library, whose assembly now starts the host's
+  process: its runner (`scenarios.sh`, `stm-vos.yml`, a `DEC-20` path) must build `examples/sim_reader` and set
+  `RUTENT_SIM_READER`.

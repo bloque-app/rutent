@@ -604,6 +604,25 @@ fn delisted_simulated_network_is_no_longer_listed() {
         .clone();
     core.delist_public_network(&evm)
         .expect("the delisting is decided");
+    // Under an id of the network's own, never one drawn from Core's source (#353's review, round 2).
+    assert!(
+        core.log().entries().iter().any(|(_, e)| matches!(e,
+            rutent_contracts::core_internal::Entry::Verified(v)
+                if matches!(&v.what, rutent_contracts::core_internal::What::Effect { decision, .. }
+                    if decision.request().as_str() == format!("delist-{evm}")))),
+        "asked as delist-{evm}"
+    );
+    // Off Core's adapter and the catalogue's public list.
+    assert_eq!(
+        core.readers().standing(evm.as_str()),
+        rutent_core_orch::closing::readers::Standing::NotListed
+    );
+    assert!(!core.catalogue().nodes().is_started_network(evm.as_str()));
+    // A network no listing names has nothing to delist: refused, and the log takes nothing (#343's review, L7).
+    let entries = core.log().entries().len();
+    assert!(core.delist_public_network(&evm).is_err(), "delisted twice");
+    assert!(core.delist_public_network(&id("never-listed")).is_err());
+    assert_eq!(core.log().entries().len(), entries);
     let kept: Vec<_> = listed
         .iter()
         .filter(|n| n.network != evm)
