@@ -1848,7 +1848,7 @@ impl Core {
                 cadences: Some(self.schedule.cadences_mut()),
                 arrivals: Some(&mut self.arrivals),
                 platform: Some(&mut self.fleet.platform),
-                segments: Some(&self.segments),
+                segments: Some(&mut self.segments),
                 reversals: Some(&mut self.life.reversals),
             },
             &rutent_core_orch::settings::SettingAsked {
@@ -1858,18 +1858,7 @@ impl Core {
             },
         );
         self.bounds = self.settings.bounds(&self.base_bounds);
-        self.sync_record_retry();
         set
-    }
-
-    /// The segments' retry of a node-record read Core didn't take is the operator's `publishers_records` cadence
-    /// (`T-020-67`): set from the schedule's cadences wherever a setting is taken or the settings are rebuilt.
-    fn sync_record_retry(&mut self) {
-        let seconds = self
-            .schedule
-            .cadences()
-            .of(rutent_core_orch::schedule::Job::PublishersRecords);
-        self.segments.set_record_retry_seconds(seconds);
     }
 
     /// The operator's settings, as Core holds them (`T-020-49`).
@@ -2330,9 +2319,8 @@ impl Core {
         {
             self.register_ledger_holders(&ad.statement, spec);
         }
-        // The deployment's defaults the join sets (a floor on each tuple, the public nodes listed) give way to the
-        // operator's settings (L2 of #337's review).
-        self.reapply_catalogue_settings();
+        // The deployment's defaults the join sets (a floor on each tuple, the public nodes listed) gave way to the
+        // operator's settings in Core's own join (the review of #356's round 2, M1).
         Ok(advertised)
     }
 
@@ -2365,17 +2353,6 @@ impl Core {
                     decimals: schedule::DECIMALS,
                 });
         }
-    }
-
-    /// Puts the operator's catalogue settings back after the deployment's own listing touched the catalogue: each
-    /// evidence floor, and each public node listed or taken off, as `Settings` holds them (`T-020-49`).
-    pub(crate) fn reapply_catalogue_settings(&mut self) {
-        self.settings
-            .apply(&mut rutent_core_orch::settings::Targets {
-                catalogue: Some(&mut self.catalogue),
-                platform: Some(&mut self.fleet.platform),
-                ..rutent_core_orch::settings::Targets::default()
-            });
     }
 
     /// A test hook (`T-020-55`, the review of `8f7ddefd`): `bytes` appended as an advertisement's stated entry, kept and

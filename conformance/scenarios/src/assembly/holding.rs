@@ -479,8 +479,15 @@ impl Core {
             .borrow_mut()
             .holding_decimals
             .insert(node.to_owned(), super::schedule::DECIMALS);
-        // The node listed for its wallet gives way to the operator's own setting of it (L2 of #337's review).
-        self.reapply_catalogue_settings();
+        // The node the deployment listed for its wallet gives way to the operator's own setting of it (L2 of #337's
+        // review): the deployment's own catalogue edit, kept to what Core's settings hold of that node.
+        if self
+            .settings
+            .public_node(node)
+            .is_some_and(|set| !set.listed)
+        {
+            self.catalogue.remove_public_node(node);
+        }
         Ok(wallet)
     }
 

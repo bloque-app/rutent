@@ -964,6 +964,50 @@ fn policys_log_backed_answers_are_cores_and_the_assembly_supplies_only_the_deplo
     assert_eq!(sources.supply(&acts), Reply::Missing, "the register's own");
 }
 
+/// An advertisement joined live after the operator set an evidence floor on one of its tuples stays at the operator's
+/// floor (the review of #356's round 2, M1): the deployment's `joined` sets every tuple's floor to the provider's own
+/// statement, and Core's own entry point puts the operator's catalogue settings back over it, with no call of the
+/// deployment's after it.
+// verifies: AC-33, REQ-AUZ-6
+#[test]
+fn advertisement_joined_after_a_floor_is_set_stays_at_the_operators_floor() {
+    use rutent_conformance::signing::sign_value;
+    use rutent_contracts::provider_role::EvidenceGrade;
+    use rutent_core_orch::settings::listing::Advertised;
+    use rutent_prov::catalogue::{Endpoint, tuples_of};
+    let (mut core, origin, ad) = run_with_origins_advertisement(Given::one_reserve(Staged::AtOnce));
+    let installed = core
+        .installed
+        .iter()
+        .find(|one| one.advertisement.statement().statement.provider == origin.as_str())
+        .expect("the origin is installed");
+    let spec = installed.spec.clone();
+    let tuple = tuples_of(&installed.advertisement.statement().statement)
+        .into_iter()
+        .find(|t| matches!(t.origin, Endpoint::Inner(_)))
+        .expect("a deposit");
+    core.set_evidence_floor(tuple.clone(), EvidenceGrade::PublicRecord);
+    assert_eq!(
+        core.catalogue().evidence_floor(&tuple),
+        Some(EvidenceGrade::PublicRecord),
+        "the operator's floor is set"
+    );
+
+    // The reserve advertises again, validly; Core joins it live through its own entry point.
+    let key = advertising_signer(&core, origin.as_str());
+    core.clock.advance(1);
+    let mut again = ad;
+    again["made_at"] = serde_json::json!(core.clock.timestamp());
+    sign_value(&mut again, &key);
+    let listed = core.receive_advertisement(&serde_json::to_vec(&again).unwrap(), &spec);
+    assert!(matches!(listed, Ok(Advertised::Listed(_))), "{listed:?}");
+    assert_eq!(
+        core.catalogue().evidence_floor(&tuple),
+        Some(EvidenceGrade::PublicRecord),
+        "the join's own default floor gave way to the operator's"
+    );
+}
+
 /// An order run through the assembled Core, the origin reserve its acceptance names, and the advertisement that
 /// reserve's install sent, as JSON.
 fn run_with_origins_advertisement(

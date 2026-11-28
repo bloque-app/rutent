@@ -14,7 +14,8 @@
 //!   one the log's key register accepted last for its maker ([`Relisting::accepted`]), read back from the evidence store:
 //!   a re-advertisement the register accepted is listed as such, one it refused is not listed at all (`T-024-21`). It is
 //!   judged by the listings and cutovers the log held when it was received, never by those it holds now (`REQ-PRT-4`,
-//!   `T-020-54`), and the deployment then sets what it sets on a joined advertisement ([`Relisting::joined`]).
+//!   `T-020-54`), and the deployment then sets what it sets on a joined advertisement ([`Relisting::joined`]), the
+//!   operator's catalogue settings held then put back over it.
 //! - **Each `done` listing or delisting of a public network** (`T-020-60`, the review of its round 1, M1) is put on, or
 //!   taken off, the catalogue's public list of networks, a listed network held off every route until its reader passes
 //!   Core's start-up check, which the reopening runs once the catalogue is rebuilt (`closing::readers::Readers::start`):
@@ -30,7 +31,9 @@
 //! **A live Core lists by the same rule** ([`advertise`], the review of #355's round 2, M2): an advertisement a provider
 //! sends is kept, stated in the log as its maker's claim, and joined into the catalogue only where the log's key register
 //! accepted that very statement, judged by the listings and cutovers the log holds when it was received, then the
-//! deployment sets what it sets on a joined advertisement. An advertisement is its maker's signed statement, not an
+//! deployment sets what it sets on a joined advertisement, and Core puts the operator's catalogue settings back over
+//! it (each evidence floor, each public node listed or taken off: the review of #356's round 2, M1), so nothing the
+//! deployment's `joined` sets lowers what the operator set. An advertisement is its maker's signed statement, not an
 //! action anyone decides: what policy decided of it is the operator's grant before it (`super::grant`) and the
 //! operator's settings the log holds, and the key register is the log's. So a live Core and a reopened one list the
 //! same advertisements, by one reading (`join_received`).
@@ -214,7 +217,8 @@ pub fn relist<'c>(
 
 /// Joins `bytes`, the advertisement the log received as `stated`, into `catalogue` as Core lists one, live or reopened:
 /// judged by the listings and cutovers `before`, the log's entries before it, held, at the time the log received it;
-/// then the deployment sets on it what `joined` sets. The caller has held it to the key register's accepted commitment.
+/// then the deployment sets on it what `joined` sets, and the operator's catalogue settings `before` holds are put back
+/// over it. The caller has held it to the key register's accepted commitment.
 fn join_received(
     before: &[(Receipt, Entry)],
     stated: &StatedEntry,
@@ -240,6 +244,14 @@ fn join_received(
             ))
         })?;
     joined(catalogue, bytes);
+    // The deployment's defaults on a joined advertisement (a floor on each tuple, its public nodes listed) give way to
+    // the operator's catalogue settings the log held when it was received: each evidence floor, each public node listed
+    // or taken off, each cutover (the review of #356's round 2, M1). A live Core and a reopened one do it alike, so no
+    // tuple is routed below the operator's floor between a join and the next reopening.
+    held.apply(&mut Targets {
+        catalogue: Some(catalogue),
+        ..Targets::default()
+    });
     Ok(())
 }
 
