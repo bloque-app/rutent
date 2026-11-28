@@ -122,8 +122,10 @@ impl From<AppendFailure> for SettingRefused {
 /// segments, read only, are what an unlist is held to: with none, no node is unlisted (it fails closed).
 #[derive(Default)]
 pub struct Targets<'a> {
-    /// Core's segments, read: whether value rests at a node, or a segment in flight moves value from or to it.
-    pub segments: Option<&'a crate::segments::Segments>,
+    /// Core's segments: whether value rests at a node, or a segment in flight moves value from or to it, read; and how
+    /// often a node-record read Core didn't take is asked again, the operator's `publishers_records` cadence, set
+    /// (`T-020-67`; the review of #356's round 2, M1).
+    pub segments: Option<&'a mut crate::segments::Segments>,
     /// Core's catalogue.
     pub catalogue: Option<&'a mut Catalogue>,
     /// Core's schedule's cadences.
@@ -395,6 +397,7 @@ impl Settings {
         } = asked.setting
             && targets
                 .segments
+                .as_deref()
                 .is_none_or(|segments| segments.touches_node(&node.network))
         {
             return Err(SettingRefused::Rests {
@@ -535,6 +538,11 @@ impl Settings {
             for (provider, seconds) in &self.status_cadences {
                 cadences.set_status_of(provider, *seconds);
             }
+        }
+        if let Some(segments) = targets.segments.as_deref_mut()
+            && let Some(seconds) = self.cadences.get(Job::PublishersRecords.name())
+        {
+            segments.set_record_retry_seconds(*seconds);
         }
         if let Some(catalogue) = targets.catalogue.as_deref_mut() {
             for (version, cutover) in &self.cutovers {
@@ -724,6 +732,13 @@ fn apply_one(setting: &OperatorSetting, targets: &mut Targets<'_>) -> Result<(),
                         }
                     }
                 }
+            }
+            // The segments ask a node-record read again on the publishers' records' cadence (`T-020-67`).
+            if provider.is_none()
+                && Job::named(job.as_str()) == Some(Job::PublishersRecords)
+                && let Some(segments) = targets.segments.as_deref_mut()
+            {
+                segments.set_record_retry_seconds(seconds.get());
             }
         }
         OperatorSetting::DepositWait { seconds } => {

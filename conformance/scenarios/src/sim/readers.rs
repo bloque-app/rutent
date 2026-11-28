@@ -13,19 +13,22 @@
 //!   name ([`identity_of`]), read by a light-client-shaped reader through one peer ([`peer_of`]).
 //!
 //! The world serves each reader's endpoints ([`Endpoints`]): the pool's endpoints and the peer, each at an address of
-//! its own, answering one JSON-RPC request per exchange (a line, for the peer) from the network as the world last
-//! published it ([`crate::sim::SimWorld::publish_to_readers`]). The world's faults planted at an endpoint
-//! ([`EndpointFault`]): one that lies, each in a lie of its own, and one that is silent. The readers themselves, and
-//! the faults planted in them, are the test harness's (`conformance/scenarios/examples/sim_reader.rs`,
-//! `conformance/scenarios/tests/readers_support/`): the reader host is a dev-dependency of this crate, for its tests
-//! only (`DEC-28`).
-//!
-//! `Readings`' `impl PublicRecords` stays Core's path until `T-020-60` puts Core on the adapter: these readers answer
-//! as it does over the same world, which `simulated reader answers as its simulated network does` holds.
+//! its own, answering one JSON-RPC request per exchange (a line, for the peer) from the network as it stands: the
+//! endpoints hold the world's networks themselves, so what a reader reads is the world now, never a copy anyone
+//! refreshed (`T-020-60`). The world's faults planted at an endpoint ([`EndpointFault`]): one that lies, each in a lie of
+//! its own, and one that is silent. The readers themselves, and the faults planted in them ([`Plan`]), are the test
+//! harness's (`conformance/scenarios/examples/sim_reader.rs`, `conformance/scenarios/tests/readers_support/`): the
+//! reader host is a dev-dependency of this crate, for its tests only (`DEC-28`), so the assembly runs it as a process of
+//! its own ([`crate::sim::reader_service`]), as a deployment runs its reader host apart from Core, and Core reads every
+//! public record through its own adapter (`rutent_core_orch::closing::Readers`).
 
-use std::collections::BTreeMap;
-use std::net::{IpAddr, Ipv4Addr};
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::{self, BufRead as _, BufReader, Write as _};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::Duration;
 
 use rutent_contracts::core_internal::{
     NetworkListing, PublicNetwork, ReaderEndpoint, ReaderIdentity, SubjectName,
@@ -37,7 +40,7 @@ use rutent_contracts::reader::{
     Standing, TrustRule,
 };
 use rutent_contracts::router_api::{Amount, Id, Version};
-use rutent_evidence::{MovementId, PublicNetwork as _, SimulatedNetwork, Status};
+use rutent_evidence::{MovementId, NetworkRules, PublicNetwork as _, SimulatedNetwork, Status};
 use serde_json::{Value, json};
 
 /// The simulated readers' version, which every listing names and every answer carries.
@@ -271,20 +274,48 @@ pub struct Served {
 struct Snapshot {
     /// Each endpoint the world serves a reader, by host.
     endpoints: BTreeMap<String, Served>,
-    /// Each network as the world last published it.
+    /// Each network, as it stands: the world's own networks, which the world records movements on and a scenario
+    /// drives.
     networks: BTreeMap<String, SimulatedNetwork>,
-    /// Every movement recorded on each network, in the order first delivered, with where it went and how much: what a
+    /// Every movement delivered to each network, in the order first delivered, with where it went and how much: what a
     /// reader that ties a deposit by its destination and amount reads.
     seen: BTreeMap<String, Vec<(MovementId, String, String)>>,
     /// The faults planted at endpoints, by host.
     faults: BTreeMap<String, EndpointFault>,
+    /// Where the world answers, for endpoints held in another process than the world's: the reader host's, which asks
+    /// the world over a loopback connection ([`Endpoints::serve_loopback`]).
+    remote: Option<SocketAddr>,
 }
 
-/// The endpoints the simulated world serves the readers, and the networks they answer from, as the world last
-/// published them: shared, so the reader host's network, on threads of its own, reads what the world holds.
+/// The endpoints the simulated world serves the readers, and the networks they answer from, as they stand: shared, so
+/// the reader host's network, on threads of its own, reads what the world holds.
 #[derive(Debug, Clone, Default)]
 pub struct Endpoints {
     inner: Arc<Mutex<Snapshot>>,
+}
+
+/// A simulated network of the world's, held for a scenario to drive (blocks, reorgs and checkpoints): the world's own,
+/// so the readers read what the scenario did as soon as it is done.
+pub struct NetworkMut<'a> {
+    guard: std::sync::MutexGuard<'a, Snapshot>,
+    network: String,
+}
+
+impl std::ops::Deref for NetworkMut<'_> {
+    type Target = SimulatedNetwork;
+
+    fn deref(&self) -> &SimulatedNetwork {
+        &self.guard.networks[&self.network]
+    }
+}
+
+impl std::ops::DerefMut for NetworkMut<'_> {
+    fn deref_mut(&mut self) -> &mut SimulatedNetwork {
+        self.guard
+            .networks
+            .get_mut(&self.network)
+            .expect("a network the world serves")
+    }
 }
 
 impl Endpoints {
@@ -296,10 +327,25 @@ impl Endpoints {
         f(&mut snapshot)
     }
 
-    /// Serves `network`'s reader its endpoints: its pool's three, or its peer, each at an address of its own, in a
-    /// range of the readers' own (`185.12.71.0/24`, public), apart from the providers' hosts.
-    pub(crate) fn serve(&self, network: &str) {
+    /// Endpoints held in the reader host's process: `endpoints`, served by a world in another process, which answers
+    /// them at `world` ([`Endpoints::serve_loopback`]).
+    pub fn remote(endpoints: BTreeMap<String, Served>, world: SocketAddr) -> Self {
+        let remote = Endpoints::default();
+        remote.with(|s| {
+            s.endpoints = endpoints;
+            s.remote = Some(world);
+        });
+        remote
+    }
+
+    /// Serves `network` under `rules`, if it isn't served yet, and its reader its endpoints: its pool's three, or its
+    /// peer, each at an address of its own, in a range of the readers' own (`185.12.71.0/24`, public), apart from the
+    /// providers' hosts.
+    pub(crate) fn serve(&self, network: &str, rules: NetworkRules) {
         self.with(|s| {
+            s.networks
+                .entry(network.to_owned())
+                .or_insert_with(|| SimulatedNetwork::new(network, rules));
             let hosts: Vec<(String, bool)> = match rule_of(network) {
                 Rule::RpcPool => POOL
                     .iter()
@@ -318,26 +364,52 @@ impl Endpoints {
         });
     }
 
-    /// Takes in `networks` and the movements delivered to them, in order: what the readers answer from from now on.
-    pub(crate) fn publish(
+    /// Records `movement`, delivered to `network`, on it: the network's own record of it, and the movement among those
+    /// delivered to it, in the order first delivered. Why the network refused it, where it did.
+    pub(crate) fn record(
         &self,
-        networks: &BTreeMap<String, SimulatedNetwork>,
-        delivered: &[rutent_conformance::sim::Movement],
-    ) {
-        let mut seen: BTreeMap<String, Vec<(MovementId, String, String)>> = BTreeMap::new();
-        for m in delivered {
-            let Some(id) = MovementId::new(m.id.clone()) else {
-                continue;
-            };
-            let list = seen.entry(m.network.clone()).or_default();
-            if !list.iter().any(|(i, ..)| *i == id) {
-                list.push((id, m.destination.clone(), m.amount.clone()));
-            }
-        }
+        network: &str,
+        movement: &rutent_conformance::sim::Movement,
+    ) -> Option<rutent_evidence::RecordRefused> {
+        let id = MovementId::new(movement.id.clone())?;
         self.with(|s| {
-            s.networks = networks.clone();
-            s.seen = seen;
-        });
+            let list = s.seen.entry(movement.network.clone()).or_default();
+            if !list.iter().any(|(i, ..)| *i == id) {
+                list.push((
+                    id.clone(),
+                    movement.destination.clone(),
+                    movement.amount.clone(),
+                ));
+            }
+            s.networks.get_mut(network).and_then(|net| {
+                net.record(
+                    id,
+                    rutent_evidence::Movement {
+                        destination: movement.destination.clone(),
+                        asset: movement.asset.clone(),
+                        amount: movement.amount.clone(),
+                    },
+                )
+                .err()
+            })
+        })
+    }
+
+    /// The network `network` as it stands now, a copy.
+    pub fn network(&self, network: &str) -> Option<SimulatedNetwork> {
+        self.with(|s| s.networks.get(network).cloned())
+    }
+
+    /// The network `network`, held to drive.
+    pub fn network_mut(&self, network: &str) -> Option<NetworkMut<'_>> {
+        let guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.networks.contains_key(network).then(|| NetworkMut {
+            guard,
+            network: network.to_owned(),
+        })
     }
 
     /// Plants `fault` at the endpoint `host`, or clears it.
@@ -378,6 +450,9 @@ impl Endpoints {
     /// (`[id]`: where a movement stands) and `rutent_movementsTo` (`[destination, amount]`: the movements to that
     /// destination of that amount, in the order the network first recorded them).
     pub fn answer(&self, host: &str, body: &str) -> Option<String> {
+        if let Some(world) = self.with(|s| s.remote) {
+            return ask_world(world, host, body);
+        }
         self.with(|s| {
             let served = s.endpoints.get(host)?;
             let fault = s.faults.get(host).copied();
@@ -440,6 +515,165 @@ impl Endpoints {
                 _ => Value::Null,
             };
             Some(json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string())
+        })
+    }
+}
+
+/// How long the reader host's process waits on the world for one answer.
+const WORLD_WAIT: Duration = Duration::from_secs(10);
+
+/// What the world at `world` answers `host` to `body`, asked over a loopback connection from the reader host's process:
+/// one line out, one line back.
+fn ask_world(world: SocketAddr, host: &str, body: &str) -> Option<String> {
+    let mut stream = TcpStream::connect_timeout(&world, WORLD_WAIT).ok()?;
+    stream.set_read_timeout(Some(WORLD_WAIT)).ok()?;
+    let line = json!({"host": host, "body": body}).to_string();
+    stream.write_all(format!("{line}\n").as_bytes()).ok()?;
+    let mut reply = String::new();
+    BufReader::new(stream).read_line(&mut reply).ok()?;
+    let reply: Value = serde_json::from_str(&reply).ok()?;
+    reply["answer"].as_str().map(str::to_owned)
+}
+
+/// The world's answers, served on a loopback port to a reader host run as a process of its own: each connection one
+/// question, `{"host", "body"}` as a line, answered as a line, `{"answer"}`, by the endpoint `host` names, as the world
+/// stands ([`Endpoints::answer`]). Stopped, its thread joined and its port closed, when dropped (the review of
+/// `T-024-25` at `64309ac3`, Low 5: nothing of the harness's outlives it).
+pub struct WorldServer {
+    address: SocketAddr,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl WorldServer {
+    /// Where it answers.
+    pub fn address(&self) -> SocketAddr {
+        self.address
+    }
+}
+
+impl Drop for WorldServer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        // Wakes the accepter, which sees the stop and returns.
+        let _ = TcpStream::connect_timeout(&self.address, Duration::from_secs(1));
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+impl Endpoints {
+    /// Serves the world's answers on a loopback port, for a reader host in another process ([`WorldServer`]).
+    ///
+    /// # Errors
+    ///
+    /// If no loopback port can be had.
+    pub fn serve_loopback(&self) -> io::Result<WorldServer> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let address = listener.local_addr()?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let (stopping, endpoints) = (stop.clone(), self.clone());
+        let thread = std::thread::Builder::new()
+            .name("sim world's answers".to_owned())
+            .spawn(move || {
+                for stream in listener.incoming() {
+                    if stopping.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    let Ok(stream) = stream else { continue };
+                    let _ = stream.set_read_timeout(Some(WORLD_WAIT));
+                    let Ok(mut writer) = stream.try_clone() else {
+                        continue;
+                    };
+                    let mut line = String::new();
+                    if BufReader::new(stream).read_line(&mut line).is_err() {
+                        continue;
+                    }
+                    let Ok(asked) = serde_json::from_str::<Value>(&line) else {
+                        continue;
+                    };
+                    let answer = match (asked["host"].as_str(), asked["body"].as_str()) {
+                        (Some(host), Some(body)) => endpoints.answer(host, body),
+                        _ => None,
+                    };
+                    let _ = writer.write_all(format!("{}\n", json!({"answer": answer})).as_bytes());
+                }
+            })?;
+        Ok(WorldServer {
+            address,
+            stop,
+            thread: Some(thread),
+        })
+    }
+}
+
+/// An endpoint the world serves, as JSON: what the reader host's process is handed of it.
+pub fn served_json(served: &Served) -> Value {
+    json!({"network": served.network, "address": served.address.to_string(), "peer": served.peer})
+}
+
+/// An endpoint the world serves, read back from [`served_json`].
+pub fn served_of(value: &Value) -> Option<Served> {
+    Some(Served {
+        network: value["network"].as_str()?.to_owned(),
+        address: value["address"].as_str()?.parse().ok()?,
+        peer: value["peer"].as_bool()?,
+    })
+}
+
+/// The faults planted in the readers (`T-024-25`): what the reader host runs each simulated reader under.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Plan {
+    /// Every reader ties a deposit by its destination and amount (`Core::tie_payments_by_destination`).
+    pub ties: bool,
+    /// The hostile acts planted in each network's reader, by network: `crash`, `malformed`, `other-movement`,
+    /// `undeclared`.
+    pub hostile: BTreeMap<String, Vec<String>>,
+    /// The networks whose reader host signs with a key the listing doesn't name.
+    pub unlisted_key: BTreeSet<String>,
+}
+
+impl Plan {
+    /// `act` planted in every listed network's reader.
+    pub fn everywhere(listed: &[PublicNetwork], act: &str) -> Self {
+        let mut plan = Plan::default();
+        for network in listed {
+            let name = network.network.as_str().to_owned();
+            if act == "unlisted-key" {
+                plan.unlisted_key.insert(name);
+            } else {
+                plan.hostile.insert(name, vec![act.to_owned()]);
+            }
+        }
+        plan
+    }
+
+    /// `act` planted in `network`'s reader alone.
+    #[must_use]
+    pub fn with(mut self, network: &str, act: &str) -> Self {
+        if act == "unlisted-key" {
+            self.unlisted_key.insert(network.to_owned());
+        } else {
+            self.hostile
+                .entry(network.to_owned())
+                .or_default()
+                .push(act.to_owned());
+        }
+        self
+    }
+
+    /// The plan as JSON, for the reader host's process.
+    pub fn to_json(&self) -> Value {
+        json!({"ties": self.ties, "hostile": self.hostile, "unlisted_key": self.unlisted_key})
+    }
+
+    /// The plan read back from [`Plan::to_json`].
+    pub fn of_json(value: &Value) -> Option<Self> {
+        Some(Plan {
+            ties: value["ties"].as_bool()?,
+            hostile: serde_json::from_value(value["hostile"].clone()).ok()?,
+            unlisted_key: serde_json::from_value(value["unlisted_key"].clone()).ok()?,
         })
     }
 }

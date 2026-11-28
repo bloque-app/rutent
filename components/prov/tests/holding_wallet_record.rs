@@ -162,18 +162,35 @@ fn reversal_asked(
     .expect("a reversal confirmation question")
 }
 
-/// What the wallet answers about a reversed segment's credit, given the account's statement of it.
-fn confirms(w: &Wallet, segment: &str, amount: &str, credit: Option<(&str, &str)>) -> &'static str {
+/// Core's reading of a movement back into the account, as the deployment keeps it: final on `polygon`, tied to
+/// `segment`, into the account, of `amount` of `asset`, read by the network's reader.
+fn reading(segment: &str, asset: &str, amount: &str) -> wallet::Reading {
+    wallet::Reading {
+        segment: segment.to_owned(),
+        network: "polygon".to_owned(),
+        movement: segment.to_owned(),
+        destination: ME.to_owned(),
+        asset: asset.to_owned(),
+        amount: amount.to_owned(),
+        standing: "final".to_owned(),
+        reader: "polygon-reader".to_owned(),
+        version: "0.1.0".to_owned(),
+    }
+}
+
+/// What the wallet answers about a reversed segment's credit, given Core's reading of it.
+fn confirms(
+    w: &Wallet,
+    segment: &str,
+    amount: &str,
+    read: Option<wallet::Reading>,
+) -> &'static str {
     use rutent_contracts::provider_role::ReversalConfirmationOutcome;
     let asked = reversal_asked(segment, amount);
     let Operation::ReversalConfirmation(c) = &asked.statement else {
         unreachable!()
     };
-    let credit = credit.map(|(asset, amount)| wallet::Credit {
-        asset: asset.to_owned(),
-        amount: amount.to_owned(),
-    });
-    let ResultBody::ReversalConfirmation(r) = w.confirmation(&asked, c, credit.as_ref()) else {
+    let ResultBody::ReversalConfirmation(r) = w.confirmation(&asked, c, read.as_ref()) else {
         panic!("not a confirmation's result");
     };
     assert_eq!(
@@ -203,28 +220,85 @@ fn confirms(w: &Wallet, segment: &str, amount: &str, credit: Option<(&str, &str)
     }
 }
 
-/// The account confirms a reversed segment's credit only where its statement holds that segment's credit in full and
-/// in the asset asked (`T-020-57`, `REQ-ORD-3`): a short credit, another asset, no credit or a malformed amount
+/// The account confirms a reversed segment's credit only on Core's reading of its node's network (`T-020-57`,
+/// `T-020-60` (6), `REQ-ORD-3`): a movement final there, tied to that segment, into this account, in full and in the
+/// asset asked. A short credit, another asset, a movement not final, tied to another segment, into another account or
+/// on another node than the one it is fixed to, no reading, a credit record that is no reading, or a malformed amount
 /// confirms nothing; an account fixed to another asset refuses.
 // verifies: REQ-ORD-43, INV-1
 #[test]
 fn wallet_confirms_a_reversed_segments_credit_only_in_full_from_its_statement() {
     let mut w = Wallet::default();
+    let with = |change: fn(&mut wallet::Reading)| {
+        let mut r = reading("tx-move", "USDC", "1000");
+        change(&mut r);
+        Some(r)
+    };
     assert_eq!(
-        confirms(&w, "tx-move", "1000", Some(("USDC", "1000"))),
+        confirms(
+            &w,
+            "tx-move",
+            "1000",
+            Some(reading("tx-move", "USDC", "1000"))
+        ),
         "confirmed"
     );
     assert_eq!(
-        confirms(&w, "tx-move", "1000", Some(("USDC", "990"))),
+        confirms(
+            &w,
+            "tx-move",
+            "1000",
+            Some(reading("tx-move", "USDC", "990"))
+        ),
         "not confirmed",
         "less came back"
     );
     assert_eq!(
-        confirms(&w, "tx-move", "1000", Some(("USDT", "1000"))),
+        confirms(
+            &w,
+            "tx-move",
+            "1000",
+            Some(reading("tx-move", "USDT", "1000"))
+        ),
         "not confirmed",
         "another asset"
     );
+    assert_eq!(
+        confirms(
+            &w,
+            "tx-move",
+            "1000",
+            with(|r| r.standing = "pending".to_owned())
+        ),
+        "not confirmed",
+        "not final"
+    );
+    assert_eq!(
+        confirms(
+            &w,
+            "tx-move",
+            "1000",
+            with(|r| r.segment = "tx-other".to_owned())
+        ),
+        "not confirmed",
+        "tied to another segment"
+    );
+    assert_eq!(
+        confirms(
+            &w,
+            "tx-move",
+            "1000",
+            with(|r| r.destination = "someone-else".to_owned())
+        ),
+        "not confirmed",
+        "into another account"
+    );
     assert_eq!(confirms(&w, "tx-move", "1000", None), "not confirmed");
+    assert_eq!(
+        wallet::Reading::read(r#"{"asset":"USDC","amount":"1000"}"#),
+        None,
+        "a credit record alone is no reading"
+    );
     assert_eq!(confirms(&w, "tx-move", "01000", None), "refused");
     assert_eq!(confirms(&w, "tx-move", "0", None), "refused");
     // Fixed to USDC by a landing, an account asked about another asset refuses.
@@ -246,4 +320,24 @@ fn wallet_confirms_a_reversed_segments_credit_only_in_full_from_its_statement() 
         r.outcome,
         rutent_contracts::provider_role::ReversalConfirmationOutcome::Refused(_)
     ));
+    // Fixed to `polygon` by the landing, a reading on another network is not its node's.
+    assert_eq!(
+        confirms(
+            &w,
+            "tx-move",
+            "1000",
+            with(|r| r.network = "bsc".to_owned())
+        ),
+        "not confirmed",
+        "on another node"
+    );
+    assert_eq!(
+        confirms(
+            &w,
+            "tx-move",
+            "1000",
+            Some(reading("tx-move", "USDC", "1000"))
+        ),
+        "confirmed"
+    );
 }

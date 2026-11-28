@@ -1796,7 +1796,11 @@
           ],
           "movement": {
             "network": "bsc",
-            "id": "0x9f3c2a"
+            "id": "0x9f3c2a",
+            "read_by": {
+              "reader": "bsc-reader",
+              "version": "0.1.0"
+            }
           }
         },
         "when": {

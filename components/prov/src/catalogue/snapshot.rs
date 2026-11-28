@@ -35,6 +35,12 @@ pub enum LeftOutReason {
     /// Its advertisement was made under an older protocol version whose cutover has passed: no tuple of it is routed from
     /// the date (`REQ-PRT-4`, `T-020-67`).
     PastCutover(String),
+    /// A network on it is listed, but its reader didn't pass Core's start-up check: it doesn't start, and nothing is
+    /// routed to it (`DEC-28`, `REQ-CAT-22`, `T-020-60`).
+    NetworkNotStarted(String),
+    /// A network on it is on no list: no decided listing names its reader service, or a decided delisting took it off.
+    /// Nothing is routed over a network Core reads no record of (`REQ-CAT-22`, `DEC-28`, `T-020-60`'s round 1, M2).
+    NetworkNotListed(String),
     /// A name in it can't be written into the router's snapshot.
     NotRepresentable(&'static str),
 }
@@ -141,6 +147,21 @@ impl Catalogue {
             .publisher_of_provider(provider)
             .unwrap_or_default();
         for end in [&tuple.origin, &tuple.destination] {
+            // Every outer end is on one list or the other (`REQ-CAT-22`): a public network whose reader passed Core's
+            // start-up check, or a rail a publisher declares private, read from its publisher's record and never from a
+            // reader. A public network listed that didn't start, and one no listing names (never listed, or delisted),
+            // is routed over by no tuple.
+            if let Endpoint::Outer(network) = end {
+                let network = network.as_str();
+                if self.nodes.is_withheld_network(network) {
+                    return Err(LeftOutReason::NetworkNotStarted(network.to_owned()));
+                }
+                if !self.nodes.is_started_network(network)
+                    && self.publishers.publisher_of_node(network).is_none()
+                {
+                    return Err(LeftOutReason::NetworkNotListed(network.to_owned()));
+                }
+            }
             if let Endpoint::Inner(node) = end {
                 // A private node is its declaring publisher's: another publisher's provider can't use it.
                 let listed = self.nodes.is_public(node)

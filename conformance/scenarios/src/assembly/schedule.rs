@@ -471,8 +471,7 @@ impl Ports for Due<'_> {
         let operator = kit::operator();
         let mut policy = core.policy.clone();
         let resting = core.segments.resting_totals();
-        let readings = core.readings.clone();
-        readings.refresh(&core.fleet.platform.world);
+        let booked = core.booked.clone();
         let running = std::cell::RefCell::new(Running {
             platform: &mut core.fleet.platform,
             clock: &core.clock,
@@ -480,7 +479,7 @@ impl Ports for Due<'_> {
             feed: &mut core.feed,
             log: &core.log,
             swap_to: core.swap_to.as_deref_mut(),
-            readings: &readings,
+            booked: &booked,
         });
         let mut parts = StuckParts {
             clock: &core.clock,
@@ -500,7 +499,8 @@ impl Ports for Due<'_> {
             bounds: &core.bounds,
             resting,
         };
-        let accepted = super::holding::Accepted(&core.linked);
+        // Core's own register of the linked orders' accepted routes (`T-020-60` item (8)).
+        let accepted = &core.linked;
         let log = super::holding::LogHandle(std::rc::Rc::clone(&core.log));
         let mut delivering = core
             .mover
@@ -515,7 +515,7 @@ impl Ports for Due<'_> {
             })
             .handing_on(rutent_core_orch::stuck::HandingOn {
                 withdrawals: &mut wallets,
-                routes: &accepted,
+                routes: accepted,
                 log: &log,
             });
         with(
@@ -570,7 +570,7 @@ impl Ports for Due<'_> {
         // named: the register is the definition of what is checked (`T-020-63`).
         let registers = self.0.deployed.registers.borrow();
         let holdings = self.0.holdings.borrow();
-        registers
+        let mut accounts: Vec<PublicAccount> = registers
             .holding_accounts
             .iter()
             .filter_map(|(node, provider)| {
@@ -584,10 +584,53 @@ impl Ports for Due<'_> {
                     attribution: account.map(|a| a.attribution()).unwrap_or_default(),
                 })
             })
-            .collect()
+            .collect();
+        // The kit's public nodes no wallet was installed at, whose catalogued holder is the kit's operator wallet, which
+        // the platform doesn't run: the test world's stand-in holder answers in its place, and its own record of each
+        // order is what Core's orders rest there (`kit::LEDGER_HOLDER`).
+        let resting = self.0.segments.resting_totals_by_asset();
+        for (node, asset) in &registers.stand_in_public {
+            if registers.holding_accounts.contains_key(node)
+                || self
+                    .0
+                    .catalogue
+                    .nodes()
+                    .holding(node)
+                    .is_none_or(|h| h.reference != kit::OPERATOR_WALLET)
+            {
+                continue;
+            }
+            let attribution = resting
+                .iter()
+                .filter(|((at, _, held), _)| at == node && held == asset)
+                .filter_map(|((_, order, _), amount)| {
+                    Some(rutent_prov::holding::HeldForOrder {
+                        order: order.clone(),
+                        amount: amount.as_str().parse().ok()?,
+                    })
+                })
+                .collect();
+            accounts.push(PublicAccount {
+                node: node.clone(),
+                provider: kit::LEDGER_HOLDER.to_owned(),
+                asset: asset.clone(),
+                decimals: DECIMALS,
+                attribution,
+            });
+        }
+        accounts
     }
 
     fn publisher_accounts(&self) -> Vec<PublisherAccount> {
+        // The stand-in holder's answer is what Core's orders rest at each node now (`kit::LEDGER_HOLDER`).
+        let mut ledger: std::collections::BTreeMap<(String, String), u128> =
+            std::collections::BTreeMap::new();
+        for ((node, _, asset), amount) in self.0.segments.resting_totals_by_asset() {
+            if let Ok(units) = amount.as_str().parse::<u128>() {
+                *ledger.entry((node, asset)).or_insert(0) += units;
+            }
+        }
+        self.0.fleet.platform.world.set_ledger(ledger);
         self.0
             .deployed
             .registers
@@ -608,8 +651,7 @@ impl Ports for Due<'_> {
 
     fn with_segments(&mut self, with: &mut dyn FnMut(&mut Segments, &mut SegmentParts<'_>)) {
         let core = &mut *self.0;
-        let readings = core.readings.clone();
-        readings.refresh(&core.fleet.platform.world);
+        let booked = core.booked.clone();
         let mut running = Running {
             platform: &mut core.fleet.platform,
             clock: &core.clock,
@@ -617,12 +659,14 @@ impl Ports for Due<'_> {
             feed: &mut core.feed,
             log: &core.log,
             swap_to: core.swap_to.as_deref_mut(),
-            readings: &readings,
+            booked: &booked,
         };
+        // Core's own pass over its adapter: each question its readers are asked once in it, its answers dropped with
+        // it (`T-020-60` (3)); Core builds it from the readers it holds, never from a reader of the deployment's.
         let mut grading = rutent_core_orch::closing::Evidenced {
             catalogue: &core.catalogue,
-            records: &readings,
-            books: &readings,
+            records: rutent_core_orch::closing::Public::of(&core.readers),
+            books: &booked,
             closing: &mut core.closing,
         };
         let mut decisions = core.policy.clone();
@@ -655,8 +699,7 @@ impl Ports for Due<'_> {
     ) {
         let core = &mut *self.0;
         let (core_actor, operator) = (kit::core(), kit::operator());
-        let readings = core.readings.clone();
-        readings.refresh(&core.fleet.platform.world);
+        let booked = core.booked.clone();
         let mut running = Running {
             platform: &mut core.fleet.platform,
             clock: &core.clock,
@@ -664,7 +707,7 @@ impl Ports for Due<'_> {
             feed: &mut core.feed,
             log: &core.log,
             swap_to: core.swap_to.as_deref_mut(),
-            readings: &readings,
+            booked: &booked,
         };
         let mut decisions = core.policy.clone();
         let mut moving = Moving {
@@ -689,8 +732,7 @@ impl Ports for Due<'_> {
     fn with_reversal_desk(&mut self, with: &mut rutent_core_orch::schedule::ReversalsLent<'_>) {
         let core = &mut *self.0;
         let (core_actor, operator) = (kit::core(), kit::operator());
-        let readings = core.readings.clone();
-        readings.refresh(&core.fleet.platform.world);
+        let booked = core.booked.clone();
         let mut running = Running {
             platform: &mut core.fleet.platform,
             clock: &core.clock,
@@ -698,7 +740,7 @@ impl Ports for Due<'_> {
             feed: &mut core.feed,
             log: &core.log,
             swap_to: core.swap_to.as_deref_mut(),
-            readings: &readings,
+            booked: &booked,
         };
         let mut decisions = core.policy.clone();
         let mut actors = super::Acting(std::rc::Rc::clone(&core.deployed.registers));
@@ -708,6 +750,8 @@ impl Ports for Due<'_> {
             platform: &mut running,
             stuck: &mut core.stuck,
             actors: &mut actors,
+            records: rutent_core_orch::closing::Public::of(&core.readers),
+            closing: &core.closing,
         };
         let mut parts = ReversalParts {
             clock: &core.clock,

@@ -688,7 +688,7 @@ fn rpc_endpoint_names_a_host_and_nothing_that_could_be_a_key() {
         "https://rpc-a.base.example",
         "https://rpc-a.base.example/",
         "wss://rpc-a.base.example:8546",
-        "https://1rpc.io",
+        "https://1node.base.example",
     ] {
         assert!(RpcEndpoint::new(text).is_some(), "{text}");
     }

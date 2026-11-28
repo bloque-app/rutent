@@ -644,6 +644,8 @@ impl Jobs<'_> {
                                 bounds: &bounds,
                                 key: &mut *desk.key,
                                 providers: &mut Nobody,
+                                records: &desk.records,
+                                closing: desk.closing,
                             };
                             let before = reversals.asks_sent(order, &segment);
                             let asked = reversals.ask(parts, &mut asking, &mut moving, at);
@@ -672,6 +674,8 @@ impl Jobs<'_> {
                         bounds: &bounds,
                         key: &mut *desk.key,
                         providers: desk.platform.providers(),
+                        records: &desk.records,
+                        closing: desk.closing,
                     };
                     step.confirmed = Some(reversals.confirm_reversal(parts, &mut asking, at));
                 });

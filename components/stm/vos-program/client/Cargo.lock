@@ -2275,6 +2275,7 @@ dependencies = [
 name = "rutent-core-orch"
 version = "0.0.0"
 dependencies = [
+ "rustls",
  "rutent-contracts",
  "rutent-evidence",
  "rutent-prov",

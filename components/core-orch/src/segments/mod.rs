@@ -703,13 +703,35 @@ struct Tracked {
     since: Reading,
 }
 
+/// A carry-on's result the log couldn't take now, to be written first on the segment's next carry-on.
+#[derive(Debug, Clone)]
+pub(crate) struct UnwrittenCarryOn {
+    /// The carry-on effect's receipt.
+    pub(crate) effect: Receipt,
+    /// The result's outcome.
+    pub(crate) outcome: rutent_contracts::core_internal::Outcome,
+    /// The result's time.
+    pub(crate) at: Timestamp,
+    /// The answer the segment takes once the result is written, if any.
+    pub(crate) answer: Option<Vec<u8>>,
+}
+
 /// Core's record of the segments it handed over, kept across orders by the assembly: the effects acted on, the
 /// transactions assigned, the drains not yet appended, each segment from its permit to its final outcome, and the
 /// orders followed. A Core that reopens rebuilds it from the log ([`Segments::reopened`], `T-020-46`): the effects
 /// acted on are every effect the log holds, so no second `move_value` follows a restart.
 #[derive(Debug, Clone, Default)]
 pub struct Segments {
+    /// A carry-on's result the log couldn't take now, by order and segment: its effect's receipt, its outcome, its time
+    /// and the answer the segment takes of what came back, written before anything else is tried for the segment, so a
+    /// carry-on effect is never followed by a second one without its result (`T-020-60` item (8), from the check of
+    /// `T-020-61` at `7557cd9e`). A reopened Core rebuilds each from the log's carry-on effects with no result.
+    carry_unwritten: BTreeMap<(String, String), UnwrittenCarryOn>,
     acted: BTreeSet<String>,
+    /// The segments, by order and segment, whose move policy was asked to decide, permitted or not: tried, whatever
+    /// came of it, so a recalculation may start from a route whose move policy refused with no flight kept
+    /// (`T-020-60` item (8)). A reopened Core rebuilds it from the log's decisions.
+    moves_decided: BTreeSet<(String, String)>,
     /// The records of private nodes already asked for while a segment was graded, by order, segment, node and provider:
     /// a segment graded again while it waits asks nothing and appends nothing more (`T-020-58`). A Core that reopens
     /// asks again, once.
@@ -726,9 +748,11 @@ pub struct Segments {
     tick_tries: BTreeMap<(String, String, String, String), u32>,
     /// When the tick last asked each read, in whole seconds: the tick's own due time.
     tick_last: BTreeMap<(String, String, String, String), u64>,
-    /// The reads whose record the tick took: it asks for no more of them (the grading, which the tick's answer feeds, asks
-    /// for none either).
-    tick_done: BTreeSet<(String, String, String, String)>,
+    /// The reads whose record the tick took, each with the transactions that record was about: the tick asks for no more
+    /// of them while what it would ask about is among those, and asks again once a later segment's transaction isn't, so
+    /// the books never keep an early record lacking it (#351's round 3). The grading, which the tick's answer feeds, asks
+    /// for none either.
+    tick_done: BTreeMap<(String, String, String, String), BTreeSet<String>>,
     /// The publishers' records of private nodes the log held when Core reopened, by what they say (`T-020-58`): a record
     /// read again after a restart, signed afresh, that says the same of the same order and node is not kept a second
     /// time, and cites the receipt the log gave the first.
@@ -1210,6 +1234,24 @@ impl Segments {
             }
             // Gone from the node, whether a later segment, a reversal or a resolution took it: read as passed, never
             // restored, so a reopened Core attributes nothing a Core that ran on wouldn't (`INV-1`, `INV-8`).
+            found.push((key, node, asset, amount, at != AtNode::Rests));
+        }
+        landing::reconcile(&mut self.landing, landings, found)
+    }
+
+    /// The landings a reopened Core found and couldn't confirm, asked of the holding accounts again (`T-020-60` item (8),
+    /// from the check of `T-020-61` at `7557cd9e`): Core's own landing job runs this before it lands anything, so once
+    /// the operator confirms a held release and the account's module runs, what Core owes there is restored without
+    /// the deployment doing anything. Only what is still owed is asked, nothing when nothing is; how many were placed.
+    pub fn reconcile_owed(&mut self, landings: &mut dyn Landings) -> usize {
+        if !self.landing.owes_reconciling() {
+            return 0;
+        }
+        let mut found = Vec::new();
+        for (key, node, asset, amount, at) in self.values_at_nodes() {
+            if !self.landing.unreconciled(&key) || !landings.holds(&node) || amount.is_zero() {
+                continue;
+            }
             found.push((key, node, asset, amount, at != AtNode::Rests));
         }
         landing::reconcile(&mut self.landing, landings, found)
@@ -1706,6 +1748,12 @@ impl Segments {
                     .any(|r| r.as_str() == segment.as_str())
             })
         })
+    }
+
+    /// Whether policy was asked to decide the move of `segment` of `order`, permitted or not: a segment Core tried.
+    pub fn move_decided(&self, order: &Id, segment: &Id) -> bool {
+        self.moves_decided
+            .contains(&(order.as_str().to_owned(), segment.as_str().to_owned()))
     }
 
     /// Whether `segment` of `order` was handed over and has no final outcome: from its permit on, its effect may be
@@ -2545,6 +2593,8 @@ impl Segments {
             at: now(parts.clock)?,
         };
         let decision = parts.decisions.decide(&request)?;
+        self.moves_decided
+            .insert((live.order.as_str().to_owned(), segment.as_str().to_owned()));
         let Some(permit) = decision.permit() else {
             return Ok(Accounted {
                 segment: segment.clone(),

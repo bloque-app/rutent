@@ -1,11 +1,10 @@
-//! What the assembly's grading reads of the simulated world (`T-020-09`): each part runs under
-//! `closing::Evidenced`, over the simulated public networks the providers' movements are recorded on, as they stood when
-//! Core last looked: at the start of each run and after each operation carried out. The world lives inside the
-//! platform, which the segments hold as their modules, so the readings are a copy, refreshed.
+//! What the assembly keeps of the private nodes' books for Core's grading (`T-020-58`): Core asks each publisher's
+//! provider for its record through the platform (`closing::publishers`) and hands what it took as a record to
+//! [`Booked`], which only keeps it for the closing to read ([`Books`]). The assembly chooses no node and no provider.
 //!
-//! The private nodes' books are no reading of the world (`T-020-58`): Core asks each publisher's provider for its record
-//! through the platform (`closing::publishers`) and hands what it took as a record to [`Readings`], which only keeps it
-//! for the closing to read ([`Books`]). The assembly chooses no node and no provider.
+//! The public networks are no part of it (`T-020-60`): Core reads every public record through its own adapter, each
+//! listed network's reader service (`rutent_core_orch::closing::Readers`), and the assembly holds no copy of any
+//! network and implements no `PublicRecords` of its own.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -14,15 +13,12 @@ use std::rc::Rc;
 use rutent_conformance::sim::Spec;
 use rutent_contracts::provider_role::{InnerSegments, Statement};
 use rutent_contracts::router_api::Id;
-use rutent_core_orch::closing::{Books, Moved, PublicRecords, Recorded};
-use rutent_evidence::replay::RecordedSegment;
-use rutent_evidence::{MovementId, NetworkRules, PublicNetwork, SimulatedNetwork, Status};
+use rutent_core_orch::closing::{Books, Recorded};
 
-use crate::sim::{Installed, SimWorld};
+use crate::sim::Installed;
 
 #[derive(Default)]
 struct Read {
-    networks: BTreeMap<String, SimulatedNetwork>,
     /// What each provider of a private node answered when Core last asked it for its record of the node, taken as one,
     /// by provider and node (`T-020-58`).
     records: BTreeMap<(String, String, String), Statement<InnerSegments>>,
@@ -32,11 +28,6 @@ struct Read {
     /// Each question of a node's record Core put, as the platform carried it: the provider, the node and the
     /// transaction.
     asked: Vec<(String, String, String)>,
-    /// Every movement recorded on each network, in the order first read, with where it went and how much: what a
-    /// network that ties a deposit by its destination and amount reads.
-    seen: BTreeMap<String, Vec<(MovementId, String, String)>>,
-    /// The planted fault: a deposit tied to the first movement to its destination of its amount.
-    ties: bool,
     /// The providers whose answer to the question of their record is altered on its way to Core: a planted fault.
     forged: BTreeMap<String, Tamper>,
 }
@@ -59,42 +50,27 @@ pub enum Tamper {
     NotKnown,
 }
 
-/// The simulated networks, as Core last read them, and the records of the private nodes it took.
+/// The records of the private nodes Core took.
 #[derive(Clone, Default)]
-pub(crate) struct Readings {
+pub(crate) struct Booked {
     read: Rc<RefCell<Read>>,
-    /// Each network a provider's tuples are on.
-    networks: Rc<Vec<String>>,
     /// Each provider that moves value, whose journal is its book and whose private node, where it has one, its
     /// publisher records the segments it serves in.
     movers: Rc<Vec<Spec>>,
 }
 
-impl Readings {
-    /// Readings of the networks and books of `installed`.
+impl Booked {
+    /// The books of `installed`.
     pub(crate) fn of(installed: &[Installed]) -> Self {
-        let mut networks = Vec::new();
-        let mut movers = Vec::new();
-        for one in installed {
-            // The networks the fleet serves for the provider's tuples, as it serves them.
-            networks.extend(crate::sim::fleet::networks_of(&one.spec));
-            if one.spec.role.moves_value() {
-                movers.push(one.spec.clone());
-            }
-        }
-        networks.sort();
-        networks.dedup();
-        Readings {
+        let movers = installed
+            .iter()
+            .filter(|one| one.spec.role.moves_value())
+            .map(|one| one.spec.clone())
+            .collect();
+        Booked {
             read: Rc::default(),
-            networks: Rc::new(networks),
             movers: Rc::new(movers),
         }
-    }
-
-    /// From now on, a movement is tied to a segment by its destination and amount, the first such movement on the
-    /// network, rather than by its transaction: as a reserve paying two orders with one payment would have it.
-    pub(crate) fn tie_by_destination(&self) {
-        self.read.borrow_mut().ties = true;
     }
 
     /// From now on, `provider`'s answer to the question of its record is altered as `how` says.
@@ -191,93 +167,12 @@ impl Readings {
         };
         restamped().unwrap_or(answer)
     }
-
-    /// Whether the planted fault ties movements by destination and amount.
-    pub(crate) fn ties(&self) -> bool {
-        self.read.borrow().ties
-    }
-
-    /// Reads `world` again: every network and book as it stands now. The networks' readers read the same, published
-    /// to the endpoints the world serves them (`T-024-25`).
-    pub(crate) fn refresh(&self, world: &SimWorld) {
-        world.publish_to_readers();
-        let mut read = self.read.borrow_mut();
-        for network in self.networks.iter() {
-            if let Some(net) = world.network(network) {
-                read.networks.insert(network.clone(), net.clone());
-            }
-        }
-        let recorded: Vec<rutent_conformance::sim::Movement> = world
-            .delivered()
-            .iter()
-            .filter_map(|d| serde_json::from_str(&d.body).ok())
-            .collect();
-        for m in recorded {
-            let Some(id) = MovementId::new(m.id.clone()) else {
-                continue;
-            };
-            let seen = read.seen.entry(m.network.clone()).or_default();
-            if !seen.iter().any(|(i, ..)| *i == id) {
-                seen.push((id, m.destination, m.amount));
-            }
-        }
-    }
-}
-
-impl Readings {
-    fn status_of(&self, read: &Read, network: &str, id: &MovementId) -> Status {
-        read.networks
-            .get(network)
-            .map_or(Status::Unknown, |net| net.status(id))
-    }
-}
-
-/// Each simulated network's movements; a movement is tied to a segment by its transaction, which the simulated
-/// providers give it as its identifier (`rutent_conformance::sim::movements_of`), and goes where the network records.
-impl PublicRecords for Readings {
-    fn rules(&self, network: &str) -> Option<NetworkRules> {
-        self.read
-            .borrow()
-            .networks
-            .get(network)
-            .map(PublicNetwork::rules)
-    }
-
-    fn status(&self, network: &str, id: &MovementId) -> Status {
-        self.status_of(&self.read.borrow(), network, id)
-    }
-
-    fn movement(&self, network: &str, transaction: &Id) -> Option<Moved> {
-        let id = MovementId::new(transaction.as_str())?;
-        let tied = {
-            let read = self.read.borrow();
-            match (read.ties, self.status_of(&read, network, &id)) {
-                (true, Status::Pending(m) | Status::Final(m)) => read
-                    .seen
-                    .get(network)
-                    .and_then(|seen| {
-                        seen.iter()
-                            .find(|(_, to, amount)| *to == m.destination && *amount == m.amount)
-                    })
-                    .map(|(first, ..)| first.clone()),
-                _ => None,
-            }
-        };
-        let id = tied.unwrap_or(id);
-        match self.status(network, &id) {
-            Status::Pending(m) | Status::Final(m) => Some(Moved {
-                id,
-                destination: m.destination,
-            }),
-            Status::Unknown | Status::ReorgedOut => None,
-        }
-    }
 }
 
 /// Each private node, as its publisher records the segments inside it (`REQ-ORD-41`): the records Core took of every
 /// provider that serves in it, for the transactions asked, in the order the providers are installed and the
 /// transactions are asked, each segment as its record states it.
-impl Books for Readings {
+impl Books for Booked {
     fn took(&self, provider: &str, node: &str, order: &str, record: Statement<InnerSegments>) {
         let key = (provider.to_owned(), node.to_owned(), order.to_owned());
         let mut read = self.read.borrow_mut();
@@ -299,52 +194,20 @@ impl Books for Readings {
     }
 }
 
-impl Readings {
+impl Booked {
     /// What every record Core took of `node` gives for `transactions`, whether the books still hold it or not: what a
     /// scenario asks of Core's books after the orders have settled (`T-024-14`).
     pub(crate) fn recorded_ever(&self, node: &str, transactions: &[Id]) -> Option<Recorded> {
         self.read_of(self.taken(node), transactions)
     }
 
+    /// The books' combining rule is Core's ([`rutent_core_orch::closing::publishers::combined`]).
     fn read_of(
         &self,
         records: Vec<Statement<InnerSegments>>,
         transactions: &[Id],
     ) -> Option<Recorded> {
-        let mut segments = Vec::new();
-        let mut read: Vec<Statement<InnerSegments>> = Vec::new();
-        for transaction in transactions {
-            let before = segments.len();
-            for record in &records {
-                let before_record = segments.len();
-                segments.extend(
-                    record
-                        .statement
-                        .segments
-                        .iter()
-                        .filter(|s| s.transaction == transaction.as_str())
-                        .map(|s| RecordedSegment {
-                            asset_in: s.asset_in.clone(),
-                            amount_in: s.amount_in.clone(),
-                            asset_out: s.asset_out.clone(),
-                            amount_out: s.amount_out.clone(),
-                            fee: s.fee.clone(),
-                        }),
-                );
-                if segments.len() > before_record && !read.contains(record) {
-                    read.push(record.clone());
-                }
-            }
-            // Every transaction asked ran inside the node, so one with no taken segment is a record refused or never
-            // made: nothing recorded for the node, never the rest of it passed off as all of it.
-            if segments.len() == before {
-                return None;
-            }
-        }
-        (!segments.is_empty()).then_some(Recorded {
-            segments,
-            records: read,
-        })
+        rutent_core_orch::closing::publishers::combined(&records, transactions)
     }
 }
 

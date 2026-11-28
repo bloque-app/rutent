@@ -327,6 +327,41 @@ impl Catalogue {
         self.nodes.remove_public(node)
     }
 
+    /// Takes `network` onto the public list of networks from a permitted listing naming its reader service (`DEC-28`,
+    /// `REQ-CAT-22`, `T-020-60`): `listed` says the decided change names a listing (the catalogue reads no core-internal
+    /// shape, `DEC-2`, so Core says it); the network is on the list where its reader passed Core's start-up check
+    /// (`started`), and held off every route otherwise, so the snapshot routes nothing to it.
+    ///
+    /// # Errors
+    ///
+    /// If the change names no listing, the network is blank, or a provider declares it as its private node.
+    pub fn list_public_network(
+        &mut self,
+        network: &str,
+        listed: bool,
+        started: bool,
+    ) -> Result<(), NodeError> {
+        if network.trim().is_empty() {
+            return Err(NodeError::Blank);
+        }
+        if !listed {
+            return Err(NodeError::NoListing(network.to_owned()));
+        }
+        // A network a provider declares as its private node is never also a listed public one (`REQ-CAT-22`;
+        // `T-020-60`, the review of #356's round 2, Low 3): the private rails Core routes over unread and the networks it
+        // reads through their readers don't overlap.
+        if self.publishers.publisher_of_node(network).is_some() {
+            return Err(NodeError::DeclaredPrivate(network.to_owned()));
+        }
+        self.nodes.take_network(network, started);
+        Ok(())
+    }
+
+    /// Takes `network` off the public list of networks, as a decided delisting does; whether it was on it.
+    pub fn drop_public_network(&mut self, network: &str) -> bool {
+        self.nodes.drop_network(network)
+    }
+
     /// Registers a public node's holding account, by default a plain wallet, as a module outside the core
     /// (`REQ-CAT-23`). `reference` must be a module the operator publishes ([`Self::publish_operator_module`]):
     /// a provider's module is never a node's holding account (`T-016-04`).

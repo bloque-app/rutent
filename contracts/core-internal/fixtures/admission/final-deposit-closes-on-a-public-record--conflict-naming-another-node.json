@@ -1797,7 +1797,11 @@
           "movement": {
             "network": "co-ach",
             "id": "ach-77",
-            "node": "x"
+            "node": "x",
+            "read_by": {
+              "reader": "co-ach-reader",
+              "version": "0.1.0"
+            }
           }
         },
         "when": {

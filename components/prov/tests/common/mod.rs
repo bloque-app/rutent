@@ -117,8 +117,8 @@ pub fn internal_rail_advertisement() -> Advertisement {
 pub const JOINED_AT: Instant = Instant(1_500);
 
 /// A catalogue of `acme`'s advertisements, each with a grant, a module version, an evidence floor of grade 4 (the
-/// weakest) on every tuple, `polygon` on the public list with a holding account, and `acme-ledger` with the
-/// publisher's. Only what the caller leaves out of this is missing.
+/// weakest) on every tuple, `polygon` on the public list with a holding account, every outer end's network listed
+/// and started, and `acme-ledger` with the publisher's. Only what the caller leaves out of this is missing.
 pub fn acme_catalogue(ads: &[Advertisement]) -> Catalogue {
     acme_catalogue_made_at(ads, JOINED_AT)
 }
@@ -144,6 +144,13 @@ pub fn acme_catalogue_made_at(ads: &[Advertisement], made_at: Instant) -> Catalo
         join_made_at(&mut catalogue, ad, made_at, JOINED_AT).unwrap();
         catalogue.set_module_version(&ad.provider, Version::new("1.0.0").unwrap());
         for key in keys {
+            // Every outer end's network listed with a reader that passed Core's start-up check: the snapshot routes
+            // over no other (`T-020-60`).
+            for end in [&key.origin, &key.destination] {
+                if let rutent_prov::catalogue::Endpoint::Outer(network) = end {
+                    catalogue.list_public_network(network, true, true).unwrap();
+                }
+            }
             catalogue.set_evidence_floor(key, EvidenceGrade::Statement);
         }
     }

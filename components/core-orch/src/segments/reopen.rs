@@ -225,6 +225,58 @@ impl Segments {
                 segments.note_record_try(key.clone(), 0);
             }
         }
+        // The tick's reads too, each a try of the tick's own (the milestone reviewer's check of `T-020-67`, Low 1): a
+        // reopened Core doesn't ask on the tick past its cap, and doesn't ask again for a record the tick's read took.
+        let (tick_tries, tick_done) = rebuilt_tick_reads(&reads, &held);
+        for (key, count) in tick_tries {
+            for _ in 0..count {
+                segments.note_tick_try(key.clone(), 0);
+            }
+        }
+        // Each with the transactions its last tick read was about, which the record taken covers.
+        let about_of = |key: &ReadKey| -> std::collections::BTreeSet<String> {
+            history
+                .iter()
+                .rev()
+                .find_map(|(_, entry)| match entry {
+                    Entry::Verified(VerifiedEntry {
+                        what:
+                            What::Effect {
+                                action:
+                                    Action::ReadNodeRecord {
+                                        order,
+                                        segment,
+                                        node,
+                                        provider,
+                                        by: ReadBy::Tick,
+                                        about,
+                                        ..
+                                    },
+                                ..
+                            },
+                        ..
+                    }) if (
+                        order.as_str(),
+                        segment.as_str(),
+                        node.as_str(),
+                        provider.as_str(),
+                    ) == (
+                        key.0.as_str(),
+                        key.1.as_str(),
+                        key.2.as_str(),
+                        key.3.as_str(),
+                    ) =>
+                    {
+                        Some(about.iter().map(|t| t.as_str().to_owned()).collect())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_default()
+        };
+        for key in tick_done {
+            let about = about_of(&key);
+            segments.note_tick_done(key, about);
+        }
         for input in &inputs {
             if let (Observed::StuckResolved { .. }, Some(part)) =
                 (&input.observed, &input.subject.part)
@@ -380,7 +432,76 @@ impl Segments {
         segments.measure_what_the_log_lacks(history);
         segments.park_unpaired_on_reopening(history);
         segments.hold_in_flight(exposures, &inputs, &holds);
+        segments.unwritten_carry_ons(clock, history);
+        // Each move policy was asked to decide, permitted or not, as the log holds the decision.
+        for (_, entry) in history {
+            if let Entry::Verified(VerifiedEntry {
+                what: What::Decide { request, .. },
+                ..
+            }) = entry
+                && let rutent_contracts::core_internal::Action::MoveValue { order, segment, .. } =
+                    &request.action
+            {
+                segments
+                    .moves_decided
+                    .insert((order.as_str().to_owned(), segment.as_str().to_owned()));
+            }
+        }
         segments
+    }
+
+    /// Each carry-on effect the log holds no result of (a decided status question, repeat or read of the platform's
+    /// record, its result refused or never written before Core stopped), kept to be written first on the segment's next
+    /// carry-on, never a second effect after it (the review of #356's round 2, its Low 4). What came back was lost with
+    /// Core's process, so the result rebuilt is `unanswered`, at the reopening's time, and the segment is left as a
+    /// carry-on that got no answer: the stuck check times it.
+    fn unwritten_carry_ons(&mut self, clock: &dyn Clock, history: &[(Receipt, Entry)]) {
+        let resulted: Vec<&Receipt> = history
+            .iter()
+            .filter_map(|(_, e)| match e {
+                Entry::Verified(VerifiedEntry {
+                    what: What::Result { effect },
+                    ..
+                }) => Some(effect),
+                _ => None,
+            })
+            .collect();
+        let Ok(at) = now(clock) else {
+            return;
+        };
+        for (receipt, entry) in history {
+            let Entry::Verified(VerifiedEntry {
+                what: What::Effect { action, .. },
+                ..
+            }) = entry
+            else {
+                continue;
+            };
+            let (rutent_contracts::core_internal::Action::AskStatus { order, segment, .. }
+            | rutent_contracts::core_internal::Action::RepeatOperation {
+                order, segment, ..
+            }
+            | rutent_contracts::core_internal::Action::ReadRecordedAnswer {
+                order,
+                segment,
+                ..
+            }) = action
+            else {
+                continue;
+            };
+            if resulted.contains(&receipt) {
+                continue;
+            }
+            self.carry_unwritten.insert(
+                (order.as_str().to_owned(), segment.as_str().to_owned()),
+                UnwrittenCarryOn {
+                    effect: receipt.clone(),
+                    outcome: Outcome::Unanswered {},
+                    at: at.clone(),
+                    answer: None,
+                },
+            );
+        }
     }
 
     /// The values reversals brought back to the held nodes linked orders' first moves left, rebuilt from the log
@@ -1481,10 +1602,18 @@ fn rebuilt_tries(
     for (key, _) in reads.iter().filter(|(_, by)| *by == ReadBy::Grading) {
         *tries.entry(key.clone()).or_default() += 1;
     }
+    // The held record forgives the key's last read only where the grading put it: a record a tick's read produced forgives
+    // none of the grading's tries (the milestone reviewer's check of `T-020-67`, Low 4).
     for (key, count) in &mut tries {
-        if held
+        let last_by = reads
             .iter()
-            .any(|(order, node, maker)| *order == key.0 && *node == key.2 && *maker == key.3)
+            .rev()
+            .find(|(k, _)| k == key)
+            .map(|(_, by)| *by);
+        if last_by == Some(ReadBy::Grading)
+            && held
+                .iter()
+                .any(|(order, node, maker)| *order == key.0 && *node == key.2 && *maker == key.3)
         {
             *count = count.saturating_sub(1);
         }
@@ -1493,9 +1622,62 @@ fn rebuilt_tries(
     tries
 }
 
+/// The tick's reads the log holds (`by: tick`), counted for each key, and the keys whose last read was the tick's and whose
+/// record the log holds for the order, node and provider: what the tick took, which it asks for no more.
+fn rebuilt_tick_reads(
+    reads: &[(ReadKey, ReadBy)],
+    held: &[(String, String, String)],
+) -> (BTreeMap<ReadKey, u32>, Vec<ReadKey>) {
+    let mut tries: BTreeMap<ReadKey, u32> = BTreeMap::new();
+    for (key, _) in reads.iter().filter(|(_, by)| *by == ReadBy::Tick) {
+        *tries.entry(key.clone()).or_default() += 1;
+    }
+    let done = tries
+        .keys()
+        .filter(|key| {
+            reads
+                .iter()
+                .rev()
+                .find(|(k, _)| k == *key)
+                .map(|(_, by)| *by)
+                == Some(ReadBy::Tick)
+                && held.iter().any(|(order, node, maker)| {
+                    *order == key.0 && *node == key.2 && *maker == key.3
+                })
+        })
+        .cloned()
+        .collect();
+    (tries, done)
+}
+
 #[cfg(test)]
 mod rebuilt_tries_tests {
-    use super::{ReadBy, rebuilt_tries};
+    use super::{ReadBy, rebuilt_tick_reads, rebuilt_tries};
+
+    /// A reopened Core counts the tick's reads from the log's `by: tick` effects, as its own tries, and takes a record the
+    /// tick's last read produced as taken (the milestone reviewer's check of `T-020-67`, Low 1); that record forgives none
+    /// of the grading's tries (Low 4).
+    // verifies: REQ-ORD-41, NFR-5
+    #[test]
+    fn tick_reads_are_rebuilt_from_the_log_and_a_tick_taken_record_forgives_no_grading_try() {
+        let held = [("o".to_owned(), "n".to_owned(), "p".to_owned())];
+        let mut reads: Vec<_> = (0..2).map(|_| (key("s1"), ReadBy::Grading)).collect();
+        reads.extend((0..5).map(|_| (key("s1"), ReadBy::Tick)));
+        let (tick, done) = rebuilt_tick_reads(&reads, &held);
+        assert_eq!(tick.get(&key("s1")), Some(&5));
+        assert_eq!(
+            done,
+            vec![key("s1")],
+            "the tick's last read took the record"
+        );
+        assert_eq!(
+            rebuilt_tries(&reads, &held).get(&key("s1")),
+            Some(&2),
+            "the tick's record forgives none of the grading's two"
+        );
+        let (_, none) = rebuilt_tick_reads(&reads, &[]);
+        assert!(none.is_empty(), "no record held, nothing taken");
+    }
 
     fn key(segment: &str) -> (String, String, String, String) {
         ("o".into(), segment.into(), "n".into(), "p".into())

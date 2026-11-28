@@ -12,7 +12,7 @@ use execution_support::*;
 use readers_support::{Plan, Read, Readers, TestCa};
 use rutent_contracts::module_interface::{CallOutcome, RefusalReason, Refused};
 use rutent_contracts::provider_role::NoDetail;
-use rutent_contracts::reader::{Answered, Asked, ReaderMismatch, Standing, Tied};
+use rutent_contracts::reader::{Answered, Asked, Standing};
 use rutent_contracts::router_api::Id;
 use rutent_evidence::{Movement, MovementId};
 use rutent_reader_host::config::Protocol;
@@ -20,10 +20,12 @@ use rutent_reader_host::records::{CallRecord, ConnectionOutcome};
 use rutent_scenarios::assembly::Core;
 use rutent_scenarios::kit::{AMOUNT, RESERVE};
 use rutent_scenarios::sim::readers::{
-    self, EndpointFault, PEER_PORT, Rule, peer_of, pool_host, rule_of, standing_of,
+    self, EndpointFault, PEER_PORT, Rule, peer_of, pool_host, rule_of,
 };
 
 const EXCHANGE: &str = "sim-exchange";
+
+const RAMP: &str = "sim-ramp";
 
 fn id(text: &str) -> Id {
     Id::new(text).expect("an id")
@@ -74,7 +76,7 @@ fn drive(core: &mut Core, network: &str) -> [String; 4] {
         asset: "USDC".to_owned(),
         amount: format!("{}", 100 * n),
     };
-    let net = core.world().network_mut(network).expect("a network");
+    let mut net = core.world().network_mut(network).expect("a network");
     net.record(MovementId::new(ids[0].clone()).unwrap(), movement(1))
         .unwrap();
     net.advance(3);
@@ -107,9 +109,15 @@ fn listed_as_routed(
     listed
 }
 
+/// Each simulated network's reader, read through Core's own adapter over the deployment's reader host, answers as the
+/// simulated network itself does: its rules, where each movement stands and the movement it ties to a transaction,
+/// each compared with the world's network directly, never with a second reading of the same conversion (the review of
+/// `T-024-25` at `64309ac3`, Low 1), on every listed network, both rules.
 // verifies: REQ-ORD-39, DEC-28
 #[test]
 fn simulated_reader_answers_as_its_simulated_network_does() {
+    use rutent_core_orch::closing::PublicRecords as _;
+    use rutent_evidence::{PublicNetwork as _, Status};
     let names = [RESERVE, EXCHANGE];
     let (mut core, session) = core_with("AC-1", &names);
     // An order run first, so the scenario's own movements are on its networks.
@@ -121,6 +129,12 @@ fn simulated_reader_answers_as_its_simulated_network_does() {
         BTreeSet::from([Rule::LightClient, Rule::RpcPool]),
         "one network follows the Substrate rule, another the EVM rule"
     );
+    // Every listed reader passed Core's start-up check: the listing's identity, trust rule and version.
+    assert!(
+        core.reader_raises().is_empty(),
+        "{:?}",
+        core.reader_raises()
+    );
     let mut asked: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for network in &listed {
         let network = network.network.as_str().to_owned();
@@ -128,60 +142,44 @@ fn simulated_reader_answers_as_its_simulated_network_does() {
         ids.extend(delivered_to(&mut core, &network).into_iter().map(|m| m.id));
         asked.insert(network, ids);
     }
-    // What Core reads now, published to the readers' endpoints too.
-    let _ = core.public_records();
-    let readers = Readers::start(&listed, core.world().reader_endpoints(), &Plan::default());
 
     let mut standings = BTreeSet::new();
     for (network, ids) in &asked {
-        let net = core.world().network(network).expect("a network").clone();
-        // Its rules: the listing's identity and trust rule, and the network's own finality and reorg rule.
-        let (_, read) = readers.ask(network, Asked::NetworkRules(NoDetail {}));
-        let Some(Answered::NetworkRules { rules }) = read.answered() else {
-            panic!("{network}'s rules: {read:?}");
-        };
-        let listing = readers::listing_of(network).listing.unwrap();
-        assert_eq!(rules.identity, listing.identity);
-        assert_eq!(rules.trust, listing.trust);
+        let net = core.world().network(network).expect("a network");
+        let pass = core.public_records();
         assert_eq!(
-            (rules.finality, rules.reorg),
-            readers::rules_of(rutent_evidence::PublicNetwork::rules(&net))
+            pass.rules(network).expect("readable"),
+            Some(net.rules()),
+            "{network}'s rules"
         );
         for movement in ids {
-            // Where it stands: as the simulated network says.
-            let expected = standing_of(&rutent_evidence::PublicNetwork::status(
-                &net,
-                &MovementId::new(movement.clone()).unwrap(),
-            ))
-            .expect("a standing");
-            let (_, read) = readers.ask(network, status_of(movement));
+            let movement_id = MovementId::new(movement.clone()).unwrap();
+            let truth = net.status(&movement_id);
             assert_eq!(
-                read.answered(),
-                Some(&Answered::MovementStatus {
-                    standing: expected.clone()
-                }),
+                pass.status(network, &movement_id).expect("readable"),
+                truth,
                 "{network}: {movement}"
             );
-            standings.insert(match &expected {
-                Standing::Unknown(_) => "unknown",
-                Standing::Pending(_) => "pending",
-                Standing::Final(_) => "final",
-                Standing::ReorgedOut(_) => "reorged_out",
+            standings.insert(match &truth {
+                Status::Unknown => "unknown",
+                Status::Pending(_) => "pending",
+                Status::Final(_) => "final",
+                Status::ReorgedOut => "reorged_out",
             });
-            // The movement tied to it as a transaction: as Core's public records tie it.
-            let tied = core
-                .public_records()
+            // The movement tied to it as a transaction: the movement that transaction names, where the network holds
+            // it, gone where it doesn't, as the simulated providers give each movement its transaction.
+            let tied = pass
                 .movement(network, &id(movement))
-                .map(|moved| Tied {
-                    id: id(moved.id.as_str()),
-                    destination: id(&moved.destination),
+                .expect("readable")
+                .map(|moved| {
+                    assert_eq!(moved.read_by.reader.as_str(), readers::reader_name(network));
+                    (moved.id.as_str().to_owned(), moved.destination)
                 });
-            let (_, read) = readers.ask(network, movement_of(movement));
-            assert_eq!(
-                read.answered(),
-                Some(&Answered::MovementOf { movement: tied }),
-                "{network}: the movement of {movement}"
-            );
+            let expected = match truth {
+                Status::Pending(m) | Status::Final(m) => Some((movement.clone(), m.destination)),
+                Status::Unknown | Status::ReorgedOut => None,
+            };
+            assert_eq!(tied, expected, "{network}: the movement of {movement}");
         }
     }
     assert_eq!(
@@ -189,7 +187,6 @@ fn simulated_reader_answers_as_its_simulated_network_does() {
         4,
         "unknown, pending, final and reorged out are each answered"
     );
-    drop(readers);
 
     // Core opened again on its log lists the same networks, and lists none anew.
     let entries = core.log().entries().len();
@@ -328,10 +325,13 @@ fn simulated_reader_reaches_only_the_endpoints_it_declares() {
     );
 }
 
+/// On every EVM network listed, and for both questions about a movement (where it stands, and which movement a
+/// transaction is tied to), one lying or silent RPC of three leaves the reader answering what the network says, and
+/// two leave it unreadable (the review of `T-024-25` at `64309ac3`, Low 3: not the first network or `status_of` alone).
 // verifies: REQ-ORD-39, DEC-28
 #[test]
 fn simulated_evm_network_with_one_lying_rpc_of_three_still_answers_and_with_two_is_unreadable() {
-    let names = [RESERVE, EXCHANGE];
+    let names = [RESERVE, EXCHANGE, RAMP];
     let (mut core, _) = core_with("AC-1", &names);
     let listed = listed_as_routed(&core, &names);
     let evm: Vec<_> = listed
@@ -339,65 +339,74 @@ fn simulated_evm_network_with_one_lying_rpc_of_three_still_answers_and_with_two_
         .filter(|n| rule_of(n.network.as_str()) == Rule::RpcPool)
         .cloned()
         .collect();
-    let network = evm
-        .first()
-        .expect("an evm network")
-        .network
-        .as_str()
-        .to_owned();
-    let [paid, ..] = drive(&mut core, &network);
-    let _ = core.public_records();
+    assert!(!evm.is_empty(), "an evm network");
+    let mut paid = BTreeMap::new();
+    for network in &evm {
+        let network = network.network.as_str().to_owned();
+        let [final_one, ..] = drive(&mut core, &network);
+        paid.insert(network, final_one);
+    }
     let endpoints = core.world().reader_endpoints();
     let readers = Readers::start(&evm, endpoints.clone(), &Plan::default());
-    let truth = readers
-        .ask(&network, status_of(&paid))
-        .1
-        .answered()
-        .cloned();
-    assert!(
-        matches!(
-            truth,
-            Some(Answered::MovementStatus {
-                standing: Standing::Final(_)
-            })
-        ),
-        "{truth:?}"
-    );
-    let truth = truth.as_ref();
-    let [a, b, _] = readers::POOL.map(|label| pool_host(&network, label));
-    let with = |faults: &[(&str, EndpointFault)]| {
-        for host in [&a, &b] {
-            endpoints.plant(host, None);
+    for (network, paid) in &paid {
+        for asked in [status_of(paid), movement_of(paid)] {
+            let truth = readers.ask(network, asked.clone()).1.answered().cloned();
+            assert!(
+                matches!(
+                    truth,
+                    Some(Answered::MovementStatus {
+                        standing: Standing::Final(_)
+                    }) | Some(Answered::MovementOf { movement: Some(_) })
+                ),
+                "{network}: {truth:?}"
+            );
+            let truth = truth.as_ref();
+            let [a, b, _] = readers::POOL.map(|label| pool_host(network, label));
+            let with = |faults: &[(&str, EndpointFault)]| {
+                for host in [&a, &b] {
+                    endpoints.plant(host, None);
+                }
+                for (host, fault) in faults {
+                    endpoints.plant(host, Some(*fault));
+                }
+                readers.ask(network, asked.clone()).1
+            };
+            let answered = |read: Read| read.answered().cloned();
+            // One endpoint of three lies, or is silent: the other two agree, and the reader answers what the network
+            // says.
+            assert_eq!(
+                answered(with(&[(&a, EndpointFault::Lies)])).as_ref(),
+                truth,
+                "{network}: one lying rpc of three"
+            );
+            assert_eq!(
+                answered(with(&[(&a, EndpointFault::Silent)])).as_ref(),
+                truth,
+                "{network}: one silent rpc of three"
+            );
+            // Two do: no two agree, or too few answer, and the reader can't stand behind an answer.
+            for (faults, why) in [
+                (
+                    [(&a, EndpointFault::Lies), (&b, EndpointFault::Lies)],
+                    "rpc_answers_disagree",
+                ),
+                (
+                    [(&a, EndpointFault::Silent), (&b, EndpointFault::Silent)],
+                    "too_few_rpc_answers",
+                ),
+                (
+                    [(&a, EndpointFault::Lies), (&b, EndpointFault::Silent)],
+                    "rpc_answers_disagree",
+                ),
+            ] {
+                let faults = faults.map(|(h, f)| (h.as_str(), f));
+                let read = with(&faults);
+                assert_eq!(read.why(), Some(why), "{network}: {faults:?}: {read:?}");
+            }
+            // And with the pool whole again, it answers once more.
+            assert_eq!(answered(with(&[])).as_ref(), truth);
         }
-        for (host, fault) in faults {
-            endpoints.plant(host, Some(*fault));
-        }
-        readers.ask(&network, status_of(&paid)).1
-    };
-    let answered = |read: Read| read.answered().cloned();
-    // One endpoint of three lies, or is silent: the other two agree, and the reader answers what the network says.
-    assert_eq!(
-        answered(with(&[(&a, EndpointFault::Lies)])).as_ref(),
-        truth,
-        "one lying rpc of three"
-    );
-    assert_eq!(
-        answered(with(&[(&a, EndpointFault::Silent)])).as_ref(),
-        truth,
-        "one silent rpc of three"
-    );
-    // Two do: no two agree, or too few answer, and the reader can't stand behind an answer.
-    for faults in [
-        [(&a, EndpointFault::Lies), (&b, EndpointFault::Lies)],
-        [(&a, EndpointFault::Silent), (&b, EndpointFault::Silent)],
-        [(&a, EndpointFault::Lies), (&b, EndpointFault::Silent)],
-    ] {
-        let faults = faults.map(|(h, f)| (h.as_str(), f));
-        let read = with(&faults);
-        assert!(read.is_unreadable(), "{faults:?}: {read:?}");
     }
-    // And with the pool whole again, it answers once more.
-    assert_eq!(answered(with(&[])).as_ref(), truth);
 }
 
 // verifies: REQ-ORD-38
@@ -428,7 +437,6 @@ fn simulated_reader_that_ties_a_deposit_by_destination_and_amount_plants_the_sha
         shared.len() >= 2,
         "two movements to one destination of one amount: {moved:?}"
     );
-    let _ = core.public_records();
     let endpoints = core.world().reader_endpoints();
 
     // The reader planted as the scenario planted its network: it matches by destination and amount.
@@ -469,11 +477,14 @@ fn simulated_reader_that_ties_a_deposit_by_destination_and_amount_plants_the_sha
             "{} is tied to the first",
             movement.id
         );
-        // As Core's public records tie it under the same fault.
-        let moved = core
-            .public_records()
-            .movement(&bank, &id(&movement.id))
-            .expect("a movement");
+        // As Core reads it, through its adapter, from the deployment's reader host planted the same way.
+        let moved = rutent_core_orch::closing::PublicRecords::movement(
+            &core.public_records(),
+            &bank,
+            &id(&movement.id),
+        )
+        .expect("readable")
+        .expect("a movement");
         assert_eq!(
             (tied.id.as_str(), tied.destination.as_str()),
             (moved.id.as_str(), moved.destination.as_str())
@@ -494,38 +505,79 @@ fn simulated_reader_that_ties_a_deposit_by_destination_and_amount_plants_the_sha
     }
 }
 
-/// A reader planted hostile, as the harness plants one: it crashes, answers malformed, names another movement, or its
-/// host signs with a key the listing doesn't name. Core reads nothing it can settle on from any of them.
+/// A reader planted hostile, as the harness plants one: it crashes, answers malformed, names another movement, lies
+/// about its network's identity at start-up, or its host signs with a key the listing doesn't name. Core reads nothing
+/// it can settle on from any of them, each for its own reason (the review of `T-024-25` at `64309ac3`, Low 2), and
+/// Core's own start-up check keeps every such network from starting while the others run on (Low 3: a start-up liar).
 // verifies: REQ-ORD-39, DEC-28
 #[test]
 fn hostile_simulated_reader_leaves_core_nothing_to_settle_on() {
+    use rutent_core_orch::closing::Unreadable;
+    use rutent_core_orch::closing::readers::{NotStarted, Standing as Stood};
     let names = [RESERVE, EXCHANGE];
     let (mut core, _) = core_with("AC-1", &names);
     let listed = listed_as_routed(&core, &names);
     for network in &listed {
         drive(&mut core, network.network.as_str());
     }
-    let _ = core.public_records();
     let endpoints = core.world().reader_endpoints();
-    for act in ["crash", "malformed", "other-movement", "unlisted-key"] {
+    for act in [
+        "crash",
+        "malformed",
+        "other-movement",
+        "other-identity",
+        "unlisted-key",
+    ] {
         let readers = Readers::start(&listed, endpoints.clone(), &Plan::everywhere(&listed, act));
         for network in &listed {
             let network = network.network.as_str();
             let (_, read) = readers.ask(network, status_of(&format!("{network}-final")));
-            assert!(read.is_unreadable(), "{act} on {network}: {read:?}");
+            // A start-up liar answers its movements as they stand; it lies about its rules alone.
+            assert_eq!(
+                read.is_unreadable(),
+                act != "other-identity",
+                "{act} on {network}: {read:?}"
+            );
             match act {
                 "crash" => assert_eq!(read.why(), Some("reader_crashed"), "{read:?}"),
-                "unlisted-key" => assert!(
-                    matches!(&read, Read::Refused(m) if m.contains(&ReaderMismatch::SignedWithAnotherKey)),
-                    "{read:?}"
-                ),
-                _ => assert!(
-                    read.why().is_some(),
-                    "{act}: signed as unreadable: {read:?}"
-                ),
+                "malformed" => assert_eq!(read.why(), Some("answer_breaks_its_shape"), "{read:?}"),
+                "other-movement" => {
+                    assert_eq!(read.why(), Some("answer_to_another_question"), "{read:?}");
+                }
+                "other-identity" => {
+                    // Its movements it answers as they stand; its rules it lies about, which the host holds to its
+                    // configuration and signs as unreadable.
+                    let (_, rules) = readers.ask(network, Asked::NetworkRules(NoDetail {}));
+                    assert_eq!(rules.why(), Some("rules_not_as_configured"), "{rules:?}");
+                }
+                _ => assert_eq!(read, Read::Unreadable(Unreadable::NotSigned), "{read:?}"),
             }
         }
     }
+    // The same faults planted in the deployment's reader host beside Core, one network at a time: that network's
+    // reader fails Core's start-up check and doesn't start, and every other listed network still does.
+    let first = listed[0].network.as_str().to_owned();
+    for act in ["crash", "other-identity", "unlisted-key"] {
+        core.plant_readers(&Plan::default().with(&first, act));
+        assert!(
+            matches!(
+                core.readers().standing(&first),
+                Stood::NotStarted(NotStarted::Unread(_))
+            ),
+            "{act}: {:?}",
+            core.readers().standing(&first)
+        );
+        for other in listed.iter().skip(1) {
+            assert_eq!(
+                core.readers().standing(other.network.as_str()),
+                Stood::Started,
+                "{act}: {} runs on",
+                other.network
+            );
+        }
+    }
+    core.plant_readers(&Plan::default());
+    assert_eq!(core.readers().standing(&first), Stood::Started);
 }
 
 /// The test CA the harness makes is the one every listing names, by digest, and the same at every run.
@@ -556,6 +608,25 @@ fn delisted_simulated_network_is_no_longer_listed() {
         .clone();
     core.delist_public_network(&evm)
         .expect("the delisting is decided");
+    // Under an id of the network's own, never one drawn from Core's source (#353's review, round 2).
+    assert!(
+        core.log().entries().iter().any(|(_, e)| matches!(e,
+            rutent_contracts::core_internal::Entry::Verified(v)
+                if matches!(&v.what, rutent_contracts::core_internal::What::Effect { decision, .. }
+                    if decision.request().as_str() == format!("delist-{evm}")))),
+        "asked as delist-{evm}"
+    );
+    // Off Core's adapter and the catalogue's public list.
+    assert_eq!(
+        core.readers().standing(evm.as_str()),
+        rutent_core_orch::closing::readers::Standing::NotListed
+    );
+    assert!(!core.catalogue().nodes().is_started_network(evm.as_str()));
+    // A network no listing names has nothing to delist: refused, and the log takes nothing (#343's review, L7).
+    let entries = core.log().entries().len();
+    assert!(core.delist_public_network(&evm).is_err(), "delisted twice");
+    assert!(core.delist_public_network(&id("never-listed")).is_err());
+    assert_eq!(core.log().entries().len(), entries);
     let kept: Vec<_> = listed
         .iter()
         .filter(|n| n.network != evm)

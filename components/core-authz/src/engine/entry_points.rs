@@ -342,6 +342,16 @@ pub(super) const CARRIES_OUT_NOTHING: &[(&str, &str, &str)] = &[
         "the catalogue's nodes: the operator's decided setting unlisting one (`T-020-49`)",
     ),
     (
+        "list_public_network",
+        "prov/src/catalogue/mod.rs",
+        "the catalogue's public list of networks: a decided `list_public_network` whose reader passed Core's start-up check (`T-020-60`)",
+    ),
+    (
+        "drop_public_network",
+        "prov/src/catalogue/mod.rs",
+        "the catalogue's public list of networks: a decided `delist_public_network` (`T-020-60`)",
+    ),
+    (
         "register_public_holding",
         "prov/src/catalogue/mod.rs",
         "a holding account's register",

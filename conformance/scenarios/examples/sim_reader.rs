@@ -4,7 +4,16 @@
 //! ```text
 //! sim_reader rpc [--match destination] [--hostile <act>[,<act>...]]
 //! sim_reader light-client --peer <host>:p2p:<port> [--match destination] [--hostile <act>[,<act>...]]
+//! sim_reader host
 //! ```
+//!
+//! In its `host` mode it is the simulated networks' reader host itself (`T-020-60`), run by the assembly as a process of
+//! its own beside Core (`rutent_scenarios::sim::reader_service`): it reads its configuration (the listings, the
+//! endpoints the world serves, where the world answers, and the faults planted in the readers) as one JSON line from its
+//! standard input, runs `T-024-25`'s harness (`tests/readers_support`) over them, with each reader this same program
+//! in its `rpc` or `light-client` mode, tells where its link listens and what Core is to be handed (the test CA's
+//! certificate, and Core's client certificate and key) as one JSON line on its standard output, and serves until its
+//! standard input closes.
 //!
 //! It speaks the reader host's wire ([`rutent_reader_host::wire`]) and nothing else: it has no network of its own, and
 //! reads its network only through the host, from the endpoints the simulated world serves it
@@ -19,6 +28,10 @@
 //!
 //! A hostile act makes it misbehave, for the host and Core to hold: `crash` (on a question), `malformed` (answers
 //! something that is no answer), `other-movement` (answers about another movement or transaction than the one asked)
+//! `other-identity` (answers its rules naming another network's identity than the one it checked, a start-up liar),
+//! `unread-movements` (answers its rules, but no movement: every movement question is unreadable), `hang` (answers its
+//! rules, then never answers a movement question: the host's timeout path, `reader_hung`), `pending` (answers every
+//! final movement as still pending, as a network that hasn't finalised it would),
 //! and `undeclared` (also asks an endpoint it doesn't declare: the world's own host for the network, and for a light
 //! client a port its rule doesn't name). A key the listing doesn't name is the harness's to plant, in the host's
 //! configuration: the reader never holds a key.
@@ -34,6 +47,9 @@ use rutent_reader_host::wire::{
     FromReader, OpenResult, ReceiveResult, RpcResult, ToReader, read_frame, write_frame,
 };
 use serde_json::{Value, json};
+
+#[path = "../tests/readers_support/mod.rs"]
+mod readers_support;
 
 /// How many times a start-up check asks again before it gives up, each after a pause.
 const CHECK_TRIES: usize = 200;
@@ -216,15 +232,34 @@ impl Reader {
         let unreadable = |why: &str| Answered::Unreadable {
             why: Reason::new(why).unwrap_or_else(|| Reason::new("unreadable").expect("a reason")),
         };
+        // A reader planted to lose track of the movements answers its rules but can't stand behind any movement.
+        if self.hostile("unread-movements") && !matches!(asked, Asked::NetworkRules(_)) {
+            return unreadable("movements_unread");
+        }
         let answered = match asked {
             Asked::NetworkRules(_) => self.read("rutent_rules", json!([])).and_then(|value| {
                 let finality: Finality = serde_json::from_value(value["finality"].clone())
                     .map_err(|_| "network_answer_malformed".to_owned())?;
                 let reorg: ReorgRule = serde_json::from_value(value["reorg"].clone())
                     .map_err(|_| "network_answer_malformed".to_owned())?;
+                // A reader planted to lie about its network's identity at start-up names a genesis hash, or a chain id,
+                // of another network than the one it checked.
+                let identity = if self.hostile("other-identity") {
+                    match found {
+                        NetworkIdentity::GenesisHash { .. } => NetworkIdentity::GenesisHash {
+                            hash: GenesisHash::new(format!("0x{}", "ab".repeat(32)))
+                                .expect("a genesis hash"),
+                        },
+                        NetworkIdentity::ChainId { .. } => NetworkIdentity::ChainId {
+                            id: ChainId::new("999999").expect("a chain id"),
+                        },
+                    }
+                } else {
+                    found.clone()
+                };
                 Ok(Answered::NetworkRules {
                     rules: NetworkRules {
-                        identity: found.clone(),
+                        identity,
                         finality,
                         reorg,
                         trust: self
@@ -234,9 +269,18 @@ impl Reader {
                     },
                 })
             }),
-            Asked::MovementStatus { movement } => self
-                .status(movement.as_str())
-                .map(|standing| Answered::MovementStatus { standing }),
+            // A reader planted to read every movement as not yet final answers a final one as pending: an honest
+            // answer of a network that hasn't finalised it yet (`T-020-60`'s round 1, L2).
+            Asked::MovementStatus { movement } => {
+                let pending = self.hostile("pending");
+                self.status(movement.as_str())
+                    .map(|standing| Answered::MovementStatus {
+                        standing: match standing {
+                            Standing::Final(moved) if pending => Standing::Pending(moved),
+                            standing => standing,
+                        },
+                    })
+            }
             Asked::MovementOf { transaction } => self
                 .movement_of(transaction.as_str())
                 .map(|movement| Answered::MovementOf { movement }),
@@ -286,8 +330,74 @@ fn another(asked: &Asked) -> Asked {
     }
 }
 
+/// The reader host's mode: serves until its standard input closes.
+fn host() -> ! {
+    use std::io::BufRead as _;
+    let tell = |told: Value| {
+        println!("{told}");
+    };
+    let mut line = String::new();
+    if std::io::stdin().lock().read_line(&mut line).is_err() {
+        std::process::exit(2);
+    }
+    let started = std::panic::catch_unwind(|| {
+        let config: Value = serde_json::from_str(&line).expect("a configuration");
+        let listed: Vec<rutent_contracts::core_internal::PublicNetwork> =
+            serde_json::from_value(config["listed"].clone()).expect("the listings");
+        let served = config["endpoints"]
+            .as_object()
+            .expect("the endpoints")
+            .iter()
+            .map(|(host, served)| {
+                (
+                    host.clone(),
+                    rutent_scenarios::sim::readers::served_of(served).expect("an endpoint"),
+                )
+            })
+            .collect();
+        let world = config["world"]
+            .as_str()
+            .and_then(|a| a.parse().ok())
+            .expect("where the world answers");
+        let plan = rutent_scenarios::sim::readers::Plan::of_json(&config["plan"]).expect("a plan");
+        let endpoints = rutent_scenarios::sim::readers::Endpoints::remote(served, world);
+        readers_support::Readers::start(&listed, endpoints, &plan)
+    });
+    let readers = match started {
+        Ok(readers) => readers,
+        Err(why) => {
+            let why = why
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| why.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+                .unwrap_or_default();
+            tell(json!({ "error": why }));
+            std::process::exit(3);
+        }
+    };
+    tell(json!({
+        "address": readers.address().to_string(),
+        "ca": readers.ca_pem,
+        "chain": readers.core_chain_pem,
+        "key": readers.core_key_pem,
+    }));
+    let mut rest = String::new();
+    while std::io::stdin()
+        .lock()
+        .read_line(&mut rest)
+        .is_ok_and(|n| n > 0)
+    {
+        rest.clear();
+    }
+    drop(readers);
+    std::process::exit(0);
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|m| m == "host") {
+        host();
+    }
     // The provider's jail, from inside, before anything is read: what every reader does first.
     if let Err(e) = rutent_reader_host::jail::confine_reader() {
         eprintln!("sim_reader: not confined: {e}");
@@ -357,6 +467,13 @@ fn main() {
         };
         if reader.hostile("crash") {
             std::process::exit(3);
+        }
+        // A reader planted to hang answers its rules, so it starts, and never answers a movement question: the host
+        // gives it up at its hang bound and answers for it that it can't stand behind an answer (`reader_hung`).
+        if reader.hostile("hang") && !matches!(question.asked, Asked::NetworkRules(_)) {
+            loop {
+                std::thread::park();
+            }
         }
         if reader.hostile("malformed") {
             send(&FromReader::Answer {

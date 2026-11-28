@@ -200,6 +200,12 @@ pub fn parse_manifest(text: &str) -> Result<(String, Vec<Dep>), String> {
             return Err(format!("unrecognised dependency table `{key}`"));
         }
     }
+    // A dependencies table nested under another (`[package.dependencies]`, `[features.x.dependencies]`, a dependency's own
+    // `dependencies` sub-table): never one cargo reads as the package's, and never one the check follows, so it fails
+    // closed as the line-based reader once refused it (the review of `T-024-25` at `64309ac3`, Low 4).
+    if let Some(path) = nested_dependencies(root, &mut Vec::new()) {
+        return Err(format!("unrecognised dependency table `{path}`"));
+    }
     let mut deps: Vec<Dep> = Vec::new();
     for table in DEP_TABLES {
         let Some(item) = root.get(table) else {
@@ -229,6 +235,109 @@ pub fn parse_manifest(text: &str) -> Result<(String, Vec<Dep>), String> {
         }
     }
     Ok((name, deps))
+}
+
+/// The dotted path of the first table below the top whose key names a dependencies table, however spelled.
+fn nested_dependencies<'a>(
+    table: &'a dyn toml_edit::TableLike,
+    path: &mut Vec<&'a str>,
+) -> Option<String> {
+    for (key, item) in table.iter() {
+        let Some(inner) = item.as_table_like() else {
+            continue;
+        };
+        path.push(key);
+        if path.len() > 1 && key.replace('_', "-").contains("dependencies") {
+            return Some(path.join("."));
+        }
+        if let Some(found) = nested_dependencies(inner, path) {
+            return Some(found);
+        }
+        path.pop();
+    }
+    None
+}
+
+/// The features of our crates that only tests may turn on (`T-020-60`, the review of #356's round 2, Low 1): each
+/// crate's feature, which is enabled only from a `[dev-dependencies]` entry (the crate's own tests through its self
+/// dev-dependency among them), and never from a `[dependencies]` or `[build-dependencies]` entry, another feature's
+/// list (`[features]`, which a normal dependency could turn on), or the crate's own `default`.
+pub const TEST_ONLY_FEATURES: [(&str, &str); 1] = [("rutent-core-orch", "reader-test-hooks")];
+
+/// Where `text`, a member's manifest, turns on a test-only feature ([`TEST_ONLY_FEATURES`]) outside a dev-dependency:
+/// each as `table.key`, such as `dependencies.rutent-core-orch` or `features.default`.
+///
+/// # Errors
+///
+/// If the manifest isn't TOML with a package name.
+pub fn test_only_features_enabled(text: &str) -> Result<Vec<String>, String> {
+    let doc = document(text)?;
+    let root = doc.as_item().as_table_like().ok_or("not a table")?;
+    let name = root
+        .get("package")
+        .and_then(|p| p.get("name"))
+        .and_then(|n| n.as_str())
+        .ok_or("no package name")?;
+    let mut found = Vec::new();
+    let names = |item: &toml_edit::Item| -> Vec<String> {
+        item.as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    for (krate, feature) in TEST_ONLY_FEATURES {
+        for table in ["dependencies", "build-dependencies"] {
+            let Some(entry) = root
+                .get(table)
+                .and_then(|t| t.as_table_like())
+                .and_then(|t| t.get(krate))
+            else {
+                continue;
+            };
+            let enabled = entry
+                .as_table_like()
+                .and_then(|spec| spec.get("features"))
+                .is_some_and(|f| names(f).iter().any(|n| n == feature));
+            if enabled {
+                found.push(format!("{table}.{krate}"));
+            }
+        }
+        if let Some(features) = root.get("features").and_then(|f| f.as_table_like()) {
+            for (key, list) in features.iter() {
+                let turns_on = names(list).iter().any(|n| {
+                    n == &format!("{krate}/{feature}")
+                        || n == &format!("{krate}?/{feature}")
+                        || (name == krate && n == feature)
+                });
+                if turns_on {
+                    found.push(format!("features.{key}"));
+                }
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// Every member of the workspace rooted at `root` that turns on a test-only feature outside a dev-dependency
+/// ([`test_only_features_enabled`]), with where.
+///
+/// # Errors
+///
+/// If a manifest can't be read or parsed.
+pub fn test_only_features_outside_tests(root: &Path) -> std::io::Result<Vec<(String, String)>> {
+    let bad = |m: String| std::io::Error::new(std::io::ErrorKind::InvalidData, m);
+    let root_manifest = std::fs::read_to_string(root.join("Cargo.toml"))?;
+    let mut found = Vec::new();
+    for member in members(&root_manifest).map_err(|e| bad(format!("Cargo.toml: {e}")))? {
+        let text = std::fs::read_to_string(root.join(&member).join("Cargo.toml"))?;
+        for at in test_only_features_enabled(&text).map_err(|e| bad(format!("{member}: {e}")))? {
+            found.push((member.clone(), at));
+        }
+    }
+    Ok(found)
 }
 
 /// Loads the graph of the workspace rooted at `root`, from the `members` of its root manifest.

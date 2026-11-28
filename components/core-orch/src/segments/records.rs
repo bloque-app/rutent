@@ -36,8 +36,16 @@ pub const MAX_RECORD_TRIES: u32 = 24;
 
 /// The most times the tick asks one provider for one node's record on behalf of one segment while a Core lives
 /// (`T-020-67`): its own bound, three days at the hourly retry, apart from the grading's [`MAX_RECORD_TRIES`], so that a
-/// segment that waits long is still graded with a record the publisher has by then. Not rebuilt on a restart.
+/// segment that waits long is still graded with a record the publisher has by then. Rebuilt on a restart from the log's
+/// `read_node_record` effects the tick asked (`by: tick`, `T-020-60`).
 pub const MAX_TICK_TRIES: u32 = 72;
+
+/// Whether the record the tick took, about `taken`, covers a read about `about`: every transaction it would ask about is
+/// one the record was about. A later segment's transaction at the node isn't, so the tick asks again, and the books never
+/// keep an early record that lacks it (#351's round 3).
+pub(super) fn covers(taken: Option<&std::collections::BTreeSet<String>>, about: &[Id]) -> bool {
+    taken.is_some_and(|taken| about.iter().all(|t| taken.contains(t.as_str())))
+}
 
 /// Whether `retry` seconds have passed since `last` at `now`, a clock that went back counting as passed.
 fn now_or_back(now: u64, last: u64, retry: u64) -> bool {
@@ -119,6 +127,34 @@ impl Segments {
         let tries = self.record_tries.entry(key).or_default();
         tries.count = tries.count.saturating_add(1);
         tries.last = tries.last.max(at);
+    }
+
+    /// Notes a tick's read put (`T-020-67`), counted once its effect is in the log: a read that failed before its effect
+    /// counts no try (the milestone reviewer's check of `T-020-67`, Low 3), and a reopened Core counts each from the log's
+    /// `by: tick` effects (Low 1).
+    pub(super) fn note_tick_try(&mut self, key: Key, at: u64) {
+        *self.tick_tries.entry(key.clone()).or_insert(0) += 1;
+        let last = self.tick_last.entry(key).or_insert(at);
+        *last = (*last).max(at);
+    }
+
+    /// That the tick took the record of `key`, about the transactions `about` (rebuilt from the log on reopening): no tick
+    /// asks for it again while it would ask about no other transaction ([`covers`]).
+    pub(super) fn note_tick_done(&mut self, key: Key, about: std::collections::BTreeSet<String>) {
+        self.tick_done.entry(key).or_default().extend(about);
+    }
+
+    /// How many times the tick has put the read of `node`'s record to `provider` for `segment` of `order`.
+    pub fn tick_tries(&self, order: &Id, segment: &Id, node: &str, provider: &str) -> u32 {
+        self.tick_tries
+            .get(&(
+                order.as_str().to_owned(),
+                segment.as_str().to_owned(),
+                node.to_owned(),
+                provider.to_owned(),
+            ))
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Whether a read for `key` may be put at `now`: its record isn't taken, fewer than [`MAX_RECORD_TRIES`] have been put,
@@ -211,7 +247,7 @@ impl Segments {
             read.node.to_owned(),
             read.provider.to_owned(),
         );
-        if self.tick_done.contains(&key)
+        if covers(self.tick_done.get(&key), read.about)
             || self.tick_tries.get(&key).copied().unwrap_or(0) >= MAX_TICK_TRIES
         {
             return None;
@@ -226,21 +262,34 @@ impl Segments {
             return None;
         }
         let read = self.ask_node_record(parts, read, false);
-        self.tick_last.insert(key.clone(), seconds);
-        *self.tick_tries.entry(key).or_insert(0) += 1;
+        // Asked now, whatever came of it: a read that left no effect waits its cadence too, but counts no try; one that
+        // did was counted when its effect was appended.
+        let last = self.tick_last.entry(key).or_insert(seconds);
+        *last = (*last).max(seconds);
         Some(read)
     }
 
-    /// That the record of `node` asked of `provider` for `segment` of `order` was taken (by the tick's read, whose answer
-    /// feeds the books): it is asked for no more by the grading or the tick.
-    pub fn note_record_taken(&mut self, order: &Id, segment: &Id, node: &str, provider: &str) {
+    /// That the record of `node` asked of `provider` for `segment` of `order`, about the transactions `about`, was taken
+    /// (by the tick's read, whose answer feeds the books): the grading asks for it no more, nor does the tick while it would
+    /// ask about no other transaction.
+    pub fn note_record_taken(
+        &mut self,
+        order: &Id,
+        segment: &Id,
+        node: &str,
+        provider: &str,
+        about: &[Id],
+    ) {
         let key = (
             order.as_str().to_owned(),
             segment.as_str().to_owned(),
             node.to_owned(),
             provider.to_owned(),
         );
-        self.tick_done.insert(key.clone());
+        self.note_tick_done(
+            key.clone(),
+            about.iter().map(|t| t.as_str().to_owned()).collect(),
+        );
         self.records_read.insert(key);
     }
 
@@ -304,17 +353,19 @@ impl Segments {
         ) else {
             return Read::Failed;
         };
-        // The read is the log's from here: it counts as a try, which a restart counts again from the effect.
+        // The read is the log's from here: it counts as a try, the grading's or the tick's, which a restart counts again
+        // from the effect.
+        let key = (
+            read.order.as_str().to_owned(),
+            read.segment.as_str().to_owned(),
+            read.node.to_owned(),
+            read.provider.to_owned(),
+        );
+        let effect_seconds = u64::try_from(effect_at.unix_nanos() / 1_000_000_000).unwrap_or(0);
         if counted {
-            self.note_record_try(
-                (
-                    read.order.as_str().to_owned(),
-                    read.segment.as_str().to_owned(),
-                    read.node.to_owned(),
-                    read.provider.to_owned(),
-                ),
-                u64::try_from(effect_at.unix_nanos() / 1_000_000_000).unwrap_or(0),
-            );
+            self.note_record_try(key, effect_seconds);
+        } else {
+            self.note_tick_try(key, effect_seconds);
         }
         let effect = Effect {
             action,
@@ -385,5 +436,39 @@ impl Segments {
             }
             _ => Read::Failed,
         }
+    }
+}
+
+#[cfg(test)]
+mod covers_tests {
+    use super::covers;
+    use rutent_contracts::router_api::Id;
+    use std::collections::BTreeSet;
+
+    fn ids(names: &[&str]) -> Vec<Id> {
+        names.iter().map(|n| Id::new(*n).expect("an id")).collect()
+    }
+
+    /// The tick asks for a node's record again once it would ask about a transaction the record it took wasn't about: a
+    /// later segment at the node, so the books never keep an early record that lacks it (#351's round 3). A read about
+    /// what the taken record covered, or less, is not put again; nothing taken covers nothing.
+    // verifies: REQ-ORD-41, NFR-5
+    #[test]
+    fn tick_asks_again_for_a_record_that_lacks_a_later_segments_transaction() {
+        let taken: BTreeSet<String> = ["tx-1".to_owned()].into();
+        assert!(
+            covers(Some(&taken), &ids(&["tx-1"])),
+            "the same transactions"
+        );
+        assert!(
+            !covers(Some(&taken), &ids(&["tx-1", "tx-2"])),
+            "a later segment's transaction the record lacks"
+        );
+        assert!(!covers(None, &ids(&["tx-1"])), "nothing taken yet");
+        let both: BTreeSet<String> = ["tx-1".to_owned(), "tx-2".to_owned()].into();
+        assert!(
+            covers(Some(&both), &ids(&["tx-2"])),
+            "fewer than it covered"
+        );
     }
 }

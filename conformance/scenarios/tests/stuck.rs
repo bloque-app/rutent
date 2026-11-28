@@ -20,8 +20,8 @@ use rutent_contracts::state_machine::{Observed, OrderState, SegmentState};
 use rutent_core_authz::engine::Unbuilt;
 use rutent_core_orch::recalc::{NotRecalculable, Recalculation};
 use rutent_core_orch::segments::{
-    Accounted, Graded, Grading, NoProxy, Ran, SegmentOutcome, SegmentsError, Short, StatusError,
-    ToGrade,
+    Accounted, Graded, Grading, NoProxy, Ran, RecordWanted, SegmentOutcome, SegmentsError, Short,
+    StatusError, ToGrade,
 };
 use rutent_core_orch::snapshot::Clock;
 use rutent_core_orch::stuck::{
@@ -542,6 +542,96 @@ fn segment_past_twice_the_p99_makes_the_order_stuck_and_warns_the_operator() {
         world.fleet.platform.operations_received(origin_reserve()),
         handled,
         "nothing is asked of the provider again"
+    );
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// A grading that wants its node's record from the origin reserve at each grading, takes no answer as the record, and
+/// holds the segment waiting on it.
+struct NeverTakes;
+
+impl Grading for NeverTakes {
+    fn records_wanted(&mut self, settled: &ToGrade<'_>) -> Vec<RecordWanted> {
+        vec![RecordWanted {
+            node: format!("{}-ledger", origin_reserve()),
+            provider: origin_reserve().into(),
+            about: vec![settled.segment.as_str().to_owned()],
+        }]
+    }
+
+    fn record_read(
+        &mut self,
+        _: &rutent_contracts::router_api::Id,
+        _: &RecordWanted,
+        _: Option<(
+            &rutent_contracts::provider_role::Statement<rutent_contracts::provider_role::Operation>,
+            &[u8],
+        )>,
+        _: &rutent_contracts::router_api::Timestamp,
+    ) -> bool {
+        false
+    }
+
+    fn grade(&mut self, _: &ToGrade<'_>) -> Graded {
+        Graded::Waits(Short::Unreadable)
+    }
+}
+
+/// A segment whose node record its publisher never gives is asked for it no more than the cap, however long it waits,
+/// and then waits on what it waits on: the stuck check names it, a capped segment, on its tuple's clock, so a cap on the
+/// reads never hides a segment from the stuck watch (`REQ-ORD-29`, `INV-3`, `T-020-67`'s Low 2).
+// verifies: REQ-ORD-29, INV-3
+#[test]
+fn segment_capped_on_its_node_record_reads_is_named_by_the_stuck_check() {
+    segments_support::list_node_record_reads();
+    let (mut world, mut core) = settled_history(&[30; HISTORY]);
+    core.take_up(Named::another(21));
+    let session = world.context().session;
+    let reads = |core: &Core| {
+        count(core, |w| {
+            matches!(
+                w,
+                What::Effect {
+                    action: rutent_contracts::core_internal::Action::ReadNodeRecord { .. },
+                    ..
+                }
+            )
+        })
+    };
+    let cap = rutent_core_orch::segments::MAX_RECORD_TRIES as usize;
+    let mut carried = false;
+    for _ in 0..cap + 6 {
+        let _ = core.try_run_with(
+            &world.catalogue,
+            &mut world.fleet.platform,
+            &mut NoProxy,
+            &mut NeverTakes,
+            &session,
+        );
+        carried |= core
+            .segments
+            .carried_since(&id("ord-21"), &id("p1-s1-of-21"))
+            .is_some();
+        core.clock.set(core.clock.now().floor().0 + 3600);
+    }
+    assert_eq!(reads(&core), cap, "asked no more than the cap");
+    assert!(
+        carried,
+        "the withdrawal was carried out and waits on its record"
+    );
+    let (mut stuck, mut raises) = (Stuck::new(), Raises::default());
+    let Ok(Watch::Stuck(called)) = watch(&mut core, &mut stuck, &mut raises) else {
+        panic!("a capped segment is still timed");
+    };
+    assert_eq!(
+        (called.order.as_str(), called.segment.as_str(), called.basis),
+        ("ord-21", "p1-s1-of-21", StuckBasis::TwiceP99),
+        "the stuck check names the capped segment"
+    );
+    assert!(
+        called.held_seconds >= cap as u64 * 3600,
+        "held past the cap's reads: {called:?}"
     );
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");

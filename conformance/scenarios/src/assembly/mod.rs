@@ -93,9 +93,7 @@ use rutent_core_orch::intake::{
 use rutent_core_orch::rounds::{Fresh, Issued, OperatorKey, Parts as Rounds, Providers};
 use rutent_core_orch::segments::{Modules, NoProxy, Segments, SegmentsError, Status, StatusError};
 use rutent_core_orch::snapshot::{Exposures, Price, Releases};
-use rutent_core_orch::stuck::{
-    Mover, NoRouteLeft, Parts as StuckParts, ResolveError, Stuck, StuckError,
-};
+use rutent_core_orch::stuck::{Mover, ResolveError, Stuck, StuckError};
 use rutent_prov::catalogue::Catalogue;
 use rutent_prov::module::lifecycle::Staging;
 use rutent_prov::module::platform::Platform;
@@ -107,13 +105,10 @@ use crate::kit::{self, RealKey, Seeded, SharedClock};
 use crate::sim::{Fleet, Installed, SimWorld};
 use rutent_core_orch::schedule::Started;
 
-/// Who hands a statement to Core in a scenario: the maker its envelope names, acting for its publisher. A scenario
-/// hands over its providers' own statements, so none is a relay's copy (`T-020-28`).
-fn handed_over_by(catalogue: &Catalogue, bytes: &[u8]) -> Actor {
-    let acts = serde_json::from_slice::<serde_json::Value>(bytes)
-        .ok()
-        .and_then(|v| v["maker"].as_str().and_then(Id::new))
-        .unwrap_or_else(|| Id::new("unknown").expect("an id"));
+/// Who the deployment's transport says handed a statement to Core: the provider `acts`, whose module the platform
+/// carried it from, acting for its publisher (`T-020-28`). Never the maker the statement's own envelope claims: a
+/// scenario's transport knows which module answered (`T-020-60` item (8), from the check of `T-020-61`).
+fn handed_over_by(catalogue: &Catalogue, acts: Id) -> Actor {
     let party = match catalogue.publishers().publisher(acts.as_str()) {
         Some(rutent_prov::catalogue::Publisher::Operator) => Id::new("operator"),
         Some(rutent_prov::catalogue::Publisher::Party(publisher)) => Id::new(publisher),
@@ -295,6 +290,14 @@ impl Providers for Asking<'_> {
     fn ask(&mut self, provider: &Id, question: &[u8]) -> Option<Vec<u8>> {
         ask_platform(&mut self.fleet.platform, self.clock, provider, question)
     }
+
+    fn keep_reading(&mut self, provider: &Id, key: &str, text: &str) -> bool {
+        self.fleet
+            .platform
+            .world
+            .keep_reading(provider.as_str(), key, text);
+        true
+    }
 }
 
 /// The platform as Core's reversals reach it: the modules a decided reversal is carried out through, and the providers'
@@ -313,6 +316,40 @@ impl Providers for Running<'_> {
     fn ask(&mut self, provider: &Id, question: &[u8]) -> Option<Vec<u8>> {
         ask_platform(self.platform, self.clock, provider, question)
     }
+
+    /// The deployment keeps Core's reading of a movement into a held public node's holding account among the
+    /// account's statement, which the platform serves the account's module from its own state (`T-020-60` (6)).
+    fn keep_reading(&mut self, provider: &Id, key: &str, text: &str) -> bool {
+        self.platform
+            .world
+            .keep_reading(provider.as_str(), key, text);
+        true
+    }
+}
+
+/// The test worlds' stand-in holder's answer to a `holding_balance` question (`kit::LEDGER_HOLDER`): what Core's orders
+/// rest at the node in the asset asked, in the question's deployment and protocol version, under its transaction. It
+/// carries the question's signature as a placeholder: nothing checks a balance's signature, and the stand-in holds no
+/// key. `None` for any other question.
+fn ledger_answer(world: &SimWorld, question: &Statement<Operation>) -> Option<Vec<u8>> {
+    let Operation::HoldingBalance(asked) = &question.statement else {
+        return None;
+    };
+    let balance = world.ledger_balance(&asked.node, &asked.asset);
+    let answer = serde_json::json!({
+        "deployment": question.deployment,
+        "protocol_version": question.protocol_version,
+        "shape": rutent_contracts::provider_role::RESULT_SHAPE,
+        "maker": kit::LEDGER_HOLDER,
+        "made_at": question.made_at,
+        "signature": question.signature,
+        "statement": {
+            "kind": "holding_balance",
+            "transaction": asked.transaction,
+            "outcome": { "status": "answered", "balance": balance.to_string() },
+        },
+    });
+    serde_json::to_vec(&answer).ok()
 }
 
 /// Hands `question` to `provider`'s module on the platform, at Core's clock, and answers what came back.
@@ -380,7 +417,7 @@ struct Running<'a> {
     feed: &'a mut Feed,
     log: &'a Rc<RefCell<CoreLog>>,
     swap_to: Option<&'a mut (dyn Environment + 'static)>,
-    readings: &'a grading::Readings,
+    booked: &'a grading::Booked,
 }
 
 impl Modules for Running<'_> {
@@ -434,7 +471,6 @@ impl Modules for Running<'_> {
         }
         self.platform.world.set_clock(self.clock.instant());
         let first = Modules::carry_out(self.platform, effect, provider, operation);
-        self.readings.refresh(&self.platform.world);
         if self.faults.crash_after_effect == Some(n) {
             panic!("{}", durable::CRASHED);
         }
@@ -447,7 +483,6 @@ impl Modules for Running<'_> {
         // The same operation again, under its transaction: the provider answers it as it did, and Core takes the
         // answer that came second, where one came.
         let again = Modules::carry_out(self.platform, effect, provider, operation);
-        self.readings.refresh(&self.platform.world);
         match again {
             again @ rutent_core_orch::segments::Answered::Bytes(_) => {
                 self.faults.delivered_twice += 1;
@@ -465,9 +500,7 @@ impl Modules for Running<'_> {
         about: &Statement<Operation>,
     ) -> rutent_core_orch::segments::Answered {
         self.platform.world.set_clock(self.clock.instant());
-        let answered = Modules::status(self.platform, effect, provider, asking, about);
-        self.readings.refresh(&self.platform.world);
-        answered
+        Modules::status(self.platform, effect, provider, asking, about)
     }
 
     fn ask_for_record(
@@ -480,7 +513,7 @@ impl Modules for Running<'_> {
         self.platform.world.set_clock(self.clock.instant());
         let after = self.faults.record_answered_after;
         if let Operation::InnerSegmentsQuery(q) = &question.statement {
-            self.readings
+            self.booked
                 .note_asked(provider.as_str(), &q.node, &q.transaction);
         }
         // The production platform carries it; only the fault a scenario planted on the answer's way to Core is added.
@@ -491,9 +524,9 @@ impl Modules for Running<'_> {
         }
         match answered {
             Answered::Bytes(bytes) => {
-                let bytes = self.readings.tampered(provider.as_str(), bytes);
+                let bytes = self.booked.tampered(provider.as_str(), bytes);
                 Answered::Bytes(if after > 0 {
-                    self.readings.made_later(provider.as_str(), bytes, after)
+                    self.booked.made_later(provider.as_str(), bytes, after)
                 } else {
                     bytes
                 })
@@ -508,8 +541,14 @@ impl Modules for Running<'_> {
         provider: &Id,
         question: &Statement<Operation>,
     ) -> rutent_core_orch::segments::Answered {
-        // The production platform carries it, at Core's clock (`T-020-63`).
+        // The production platform carries it, at Core's clock (`T-020-63`); the test worlds' stand-in holder of a
+        // simulated provider's own private node is answered by the world (`kit::LEDGER_HOLDER`).
         self.platform.world.set_clock(self.clock.instant());
+        if provider.as_str() == kit::LEDGER_HOLDER
+            && let Some(answer) = ledger_answer(&self.platform.world, question)
+        {
+            return rutent_core_orch::segments::Answered::Bytes(answer);
+        }
         Modules::ask_for_balance(self.platform, effect, provider, question)
     }
 
@@ -521,9 +560,7 @@ impl Modules for Running<'_> {
     ) -> rutent_core_orch::segments::Answered {
         // The production platform carries it, at Core's clock (`T-020-63`).
         self.platform.world.set_clock(self.clock.instant());
-        let answered = Modules::repeat_operation(self.platform, effect, provider, transaction);
-        self.readings.refresh(&self.platform.world);
-        answered
+        Modules::repeat_operation(self.platform, effect, provider, transaction)
     }
 
     fn recorded_answer(
@@ -692,7 +729,9 @@ struct Carried {
     clock: SharedClock,
     feed: Feed,
     fresh: Seeded,
-    ties: bool,
+    /// The deployment's reader host, apart from Core, which goes on as it stands: Core reopened asks it again
+    /// (`T-020-60` (7)).
+    readers: crate::sim::reader_service::ReaderService,
     /// The host's holding accounts, beside the platform that runs their wallets: the host's attribution of each
     /// order and its own transactions' count go on with it (`T-020-46`).
     holdings: rutent_prov::holding::wallet::Holdings,
@@ -737,7 +776,6 @@ pub struct Core {
     /// Arrivals and the orders filed on automatic deposits (`T-020-04`), held beside intake.
     arrivals: rutent_core_orch::arrival::Arrivals,
     /// Each filing on an automatic deposit Core was handed, by the order it opened: what its start takes.
-    filings: BTreeMap<String, rutent_core_orch::arrival::Filing>,
     segments: Segments,
     /// The parts Core declared stuck, and the mover that carries their resolutions out (`T-020-16`).
     stuck: Stuck,
@@ -745,7 +783,9 @@ pub struct Core {
     /// The operator's holding accounts, the routes the linked orders were accepted on and what Core handed on
     /// (`T-020-26`).
     holdings: Rc<RefCell<rutent_prov::holding::wallet::Holdings>>,
-    linked: BTreeMap<String, rutent_core_orch::stuck::AcceptedRoute>,
+    /// Core's register of the routes the linked orders were accepted on, rebuilt by its own reopening (`T-020-60` item
+    /// (8)).
+    linked: rutent_core_orch::stuck::Linked,
     hand_on: rutent_core_orch::hand_on::HandOn,
     /// The notices Core sends, whose operator channel a charge above its formula is raised through (`T-020-14`),
     /// the key they are signed with and the transport that takes them.
@@ -763,7 +803,13 @@ pub struct Core {
     /// the log whenever Core is put together on a disk (`Holds::recorded`), and a reopened Core keeps each hold again
     /// from the log (`Holds::reopened`, `T-020-57`).
     holds: rutent_core_orch::quote::Holds,
-    readings: grading::Readings,
+    booked: grading::Booked,
+    /// Core's adapter for each listed network's reader service (`T-020-60`, `DEC-28`): every public record Core reads,
+    /// it reads through it, a pass at a time.
+    readers: rutent_core_orch::closing::Readers,
+    /// The deployment's reader host, run apart from Core as a process of its own, which the adapter reaches through the
+    /// host setting [`crate::sim::readers::HOST_SETTING`]: the deployment's, not Core's, so it goes on across a reopen.
+    reader_service: Option<crate::sim::reader_service::ReaderService>,
     issued: Issued,
     /// What goes wrong with an order and how it ends (`T-024-06`).
     pub(crate) life: lifecycle::Lifecycle,
@@ -908,7 +954,7 @@ impl Core {
     ///
     /// If Core can't be put together again.
     pub fn reopened(
-        self,
+        mut self,
         config: &Config,
         environment: &mut dyn Environment,
     ) -> Result<Self, AssemblyError> {
@@ -918,7 +964,10 @@ impl Core {
             clock: self.clock,
             feed: self.feed,
             fresh: self.fresh,
-            ties: self.readings.ties(),
+            readers: self
+                .reader_service
+                .take()
+                .expect("the deployment's reader host"),
             // The host's holdings are shared within Core (`Rc`), so they are taken out of the share, not moved.
             holdings: std::mem::take(&mut *self.holdings.borrow_mut()),
             holding_accounts: self.deployed.registers.borrow().holding_accounts.clone(),
@@ -994,7 +1043,10 @@ impl Core {
             // Core's fresh identifiers come from a source of the restarted Core's own: a Core that drew the stopped one's
             // sequence again would draw identifiers the log already holds.
             fresh: Seeded::new(config.seed ^ 0x7e57_a27e_d000_0000 ^ (restarts as u64)),
-            ties: self.readings.ties(),
+            readers: self
+                .reader_service
+                .take()
+                .expect("the deployment's reader host"),
             // The host's holding accounts go with the restart: what they held in memory, each order's attribution, the
             // transactions they asked under and the start they last saw, is rebuilt from the deployment's register, the
             // platform's record and the log as Core opens (`Core::reopen_holdings`), never carried.
@@ -1036,7 +1088,7 @@ impl Core {
             })?;
             confirmed.push(provider);
         }
-        self.reconcile_landings();
+        // The landings owed are Core's to retry, on its own landing job's next run (`T-020-60` item (8)).
         Ok(confirmed)
     }
 
@@ -1076,14 +1128,14 @@ impl Core {
             .unwrap_or_default();
         let restarts = carried.as_ref().map_or(0, |c| c.restarts);
         let confirm = carried.as_ref().and_then(|c| c.confirm);
-        let (fleet, installed, clock, carried_feed, carried_fresh, ties) = match carried {
+        let (fleet, installed, clock, carried_feed, carried_fresh, reader_service) = match carried {
             Some(c) => (
                 c.fleet,
                 c.installed,
                 c.clock,
                 Some(c.feed),
                 Some(c.fresh),
-                c.ties,
+                Some(c.readers),
             ),
             None => {
                 // The platform and the simulated providers, staging set explicitly.
@@ -1118,9 +1170,37 @@ impl Core {
                     .unwrap_or(kit::START);
                 let clock =
                     SharedClock::at(earliest.saturating_sub(GRANTED_BEFORE).min(kit::START));
-                (fleet, installed, clock, None, None, false)
+                (fleet, installed, clock, None, None, None)
             }
         };
+        // The deployment's reader host, apart from Core: a process of its own serving each network the operator lists,
+        // over the world's endpoints (`T-020-60`, `T-024-25`). A reopened Core finds the one it ran beside.
+        let reader_service = match reader_service {
+            Some(service) => service,
+            None => crate::sim::reader_service::ReaderService::start(
+                &fleet.public_networks(),
+                &fleet.platform.world.reader_endpoints(),
+                &crate::sim::readers::Plan::default(),
+            )
+            .map_err(|e| AssemblyError::Listing(format!("the reader host: {e}")))?,
+        };
+        // What the deployment hands Core for its readers, and nothing more (`T-020-60`, its round 1's M1): its
+        // certificate and key, the operator's CA, the clock the reader link runs on and the address its host setting
+        // holds. The link's clock is the operating system's, as the reader host's process is: a scenario's simulated
+        // clock runs days behind it, so a question timed by it would reach the host already past its deadline.
+        // Everything else (the listings, each check, the public list, the raise, each pass) Core does itself.
+        let readers = rutent_core_orch::closing::Readers::new(
+            rutent_core_orch::closing::readers::ReaderTls::new(
+                reader_service.ca_pem().as_bytes(),
+                reader_service.chain_pem().as_bytes(),
+                reader_service.key_pem().as_bytes(),
+            )
+            .map_err(|e| AssemblyError::Listing(format!("Core's reader link: {e:?}")))?,
+            context.deployment.clone(),
+            context.protocol_versions(),
+            Box::new(rutent_core_orch::snapshot::SystemClock),
+        )
+        .with_host(crate::sim::readers::HOST_SETTING, reader_service.address());
 
         // The evidence store and the log: the store's read taken once, the log opened with it.
         let (store, log) = read_back(&disk, &clock).map_err(AssemblyError::Log)?;
@@ -1287,12 +1367,11 @@ impl Core {
             catalogue,
             intake: Intake::new(),
             arrivals: rutent_core_orch::arrival::Arrivals::new(),
-            filings: BTreeMap::new(),
             segments: Segments::new(),
             stuck: Stuck::new(),
             mover: Mover::new(),
             holdings,
-            linked: BTreeMap::new(),
+            linked: rutent_core_orch::stuck::Linked::new(),
             hand_on: rutent_core_orch::hand_on::HandOn::new(),
             notices: rutent_core_orch::notice::Notices::new(
                 kit::id("rutent-scenarios"),
@@ -1304,7 +1383,9 @@ impl Core {
             kept_through: None,
             closing: rutent_core_orch::closing::Closing::new(),
             holds: rutent_core_orch::quote::Holds::new(),
-            readings: grading::Readings::default(),
+            booked: grading::Booked::default(),
+            readers,
+            reader_service: Some(reader_service),
             issued: Issued::new(),
             life: lifecycle::Lifecycle::new(),
             exposures: Exposures::new(),
@@ -1343,12 +1424,7 @@ impl Core {
         // Each provider is granted before the advertisement it sends was made; then the clock moves to the
         // scenario's start, and each advertisement is recorded as received then.
         // What the grading reads, and what it took, rebuilt from the log the disk holds (`T-020-09`).
-        core.readings = grading::Readings::of(&core.installed);
-        if ties {
-            core.readings.tie_by_destination();
-        }
-        core.closing = rutent_core_orch::closing::Closing::recorded(core.log.borrow().entries());
-        core.holds = rutent_core_orch::quote::Holds::recorded(core.log.borrow().entries());
+        core.booked = grading::Booked::of(&core.installed);
         if reopened {
             // A host restarted with its platform opens its holding accounts again from what is kept beyond its memory
             // (`T-024-21`); one reopened alone carried them.
@@ -1357,6 +1433,8 @@ impl Core {
             }
             // Core reopens itself on its log, every part rebuilt in Core's own order (`schedule::reopen`, the review of
             // #355's round 2, M3); the assembly hands it only the deployment's pieces and holds what it answers.
+            // Each listed reader is checked again before any of its networks starts, by Core's own reopening
+            // (`T-020-60` (7)).
             core.reopen_core()?;
             // A platform restarted beside Core holds its releases until the operator confirms them, which the operator's
             // login does through Core's decided path before anything is asked of a provider, and the landings owed are
@@ -1488,31 +1566,142 @@ impl Core {
     /// From now on, the destination's network ties each deposit to the first movement to its account of its amount, as
     /// a reserve paying two orders with one payment would have it: a fault the scenarios plant (`T-020-09`).
     pub fn tie_payments_by_destination(&mut self) {
-        self.readings.tie_by_destination();
+        let mut plan = self.reader_plan();
+        plan.ties = true;
+        self.plant_readers(&plan);
+    }
+
+    /// The faults the deployment's reader host runs its readers under now.
+    pub fn reader_plan(&self) -> crate::sim::readers::Plan {
+        self.reader_service
+            .as_ref()
+            .map(|s| s.plan().clone())
+            .unwrap_or_default()
+    }
+
+    /// From now on, the deployment's reader host runs its readers under `plan` (`T-024-25`'s planted faults): the
+    /// host is started again, at a new address its host setting then holds, and Core checks each listed reader again,
+    /// as it does when the deployment moves a host (`T-020-60`).
+    ///
+    /// # Panics
+    ///
+    /// If the reader host can't be started again.
+    pub fn plant_readers(&mut self, plan: &crate::sim::readers::Plan) {
+        let service = self
+            .reader_service
+            .take()
+            .expect("the deployment's reader host")
+            .restarted_under(plan)
+            .expect("the reader host, started again");
+        let address = service.address();
+        self.reader_service = Some(service);
+        self.move_reader_host(address);
+    }
+
+    /// The deployment's host setting [`crate::sim::readers::HOST_SETTING`] now holds `address`, as when the deployment
+    /// moves its reader host: Core checks each listed reader again there, puts each network on or off the catalogue's
+    /// public list, and raises each that didn't start (`T-020-60`; `Readers::move_host`, Core's own).
+    pub fn move_reader_host(&mut self, address: std::net::SocketAddr) {
+        let history: Vec<(Receipt, Entry)> = self.log.borrow().entries().to_vec();
+        let core = kit::core();
+        let mut channel = rutent_core_orch::notice::Channel {
+            notices: &mut self.notices,
+            key: &mut self.notice_signer,
+            transport: &mut self.wire,
+        };
+        // A raise the log can't take now is tried again on the next check: the network stays out of its spell.
+        let _ = self.readers.move_host(
+            crate::sim::readers::HOST_SETTING,
+            address,
+            &history,
+            &mut self.catalogue,
+            rutent_core_orch::segments::RaiseDesk {
+                log: &mut self.general,
+                clock: &self.clock,
+                fresh: &mut self.fresh,
+                operator: &mut channel,
+                core: &core,
+            },
+        );
+    }
+
+    /// The endpoints the world serves its networks' readers.
+    pub fn world_endpoints(&self) -> crate::sim::readers::Endpoints {
+        self.fleet.platform.world.reader_endpoints()
+    }
+
+    /// The receipt of the last decided listing of `network` the log holds: what a raise of it as not started cites.
+    pub fn listing_receipt(&self, network: &str) -> Option<Receipt> {
+        rutent_core_orch::closing::readers::raise::listing_of(self.log.borrow().entries(), network)
+    }
+
+    /// Every raise of a network whose reader didn't start, as the log holds it, in order: its network, why, and the
+    /// receipts it cites (`T-020-60` (2)).
+    pub fn reader_raises(
+        &self,
+    ) -> Vec<(
+        String,
+        rutent_contracts::core_internal::ReaderNotStarted,
+        Vec<Receipt>,
+    )> {
+        self.log
+            .borrow()
+            .entries()
+            .iter()
+            .filter_map(|(_, e)| match e {
+                Entry::Verified(VerifiedEntry {
+                    what: What::Raise { raise },
+                    ..
+                }) => match &raise.difference {
+                    rutent_contracts::core_internal::Difference::ReaderNotStarted {
+                        network,
+                        why,
+                    } => Some((network.as_str().to_owned(), *why, raise.cites.clone())),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Core's adapter for the listed networks' readers.
+    pub fn readers(&self) -> &rutent_core_orch::closing::Readers {
+        &self.readers
+    }
+
+    /// The deployment's reader host.
+    ///
+    /// # Panics
+    ///
+    /// Never once Core is put together, which starts it.
+    pub fn reader_service(&self) -> &crate::sim::reader_service::ReaderService {
+        self.reader_service
+            .as_ref()
+            .expect("the deployment's reader host")
     }
 
     /// From now on, `provider`'s record of the segments inside its node is altered after it was signed, as a forger
     /// would: a fault the scenarios plant (`T-024-14`). Core's books refuse it, so the replay finds nothing recorded.
     pub fn forge_record_of(&mut self, provider: &str) {
-        self.readings.forge(provider, Tamper::Figure);
+        self.booked.forge(provider, Tamper::Figure);
     }
 
     /// From now on, `provider`'s answer to the question of its record is altered as `how` says (`T-020-58`): Core takes
     /// it only as a record of the node asked about, so the replay finds nothing recorded.
     pub fn tamper_with_record_of(&mut self, provider: &str, how: Tamper) {
-        self.readings.forge(provider, how);
+        self.booked.forge(provider, how);
     }
 
     /// From now on, `provider`'s answer to the question of its record is as it made it, a fault planted by
     /// [`Core::tamper_with_record_of`] lifted (`T-020-67`).
     pub fn lift_tamper_of_record_of(&mut self, provider: &str) {
-        self.readings.unforge(provider);
+        self.booked.unforge(provider);
     }
 
     /// How many records closing's books hold now, whatever the node: the orders still in flight through a private node
     /// hold theirs, and an order whose segments there have settled holds none (`T-020-58`).
     pub fn records_held(&self) -> usize {
-        self.readings.held()
+        self.booked.held()
     }
 
     /// Core's clock moved on by `seconds`: the time that passes between one call a scenario makes and the next.
@@ -1530,14 +1719,14 @@ impl Core {
         &self,
         node: &str,
     ) -> Vec<Statement<rutent_contracts::provider_role::InnerSegments>> {
-        self.readings.taken(node)
+        self.booked.taken(node)
     }
 
     /// Every question of a private node's record Core put to a provider, as the platform carried it: the provider, the
     /// node and the transaction, in the order put (`T-020-58`). The assembly chooses none: Core does, from the routes
     /// it runs, when it closes a segment and on its tick.
     pub fn publishers_asked(&self) -> Vec<(String, String, String)> {
-        self.readings.asked()
+        self.booked.asked()
     }
 
     /// The log.
@@ -1592,8 +1781,7 @@ impl Core {
         transactions: &[Id],
     ) -> Option<Vec<rutent_evidence::replay::RecordedSegment>> {
         // The books are what Core took of its providers' answers when it last asked them (`T-020-58`).
-        self.readings.refresh(&self.fleet.platform.world);
-        self.readings
+        self.booked
             .recorded_ever(node, transactions)
             .map(|r| r.segments)
     }
@@ -1658,7 +1846,7 @@ impl Core {
                 cadences: Some(self.schedule.cadences_mut()),
                 arrivals: Some(&mut self.arrivals),
                 platform: Some(&mut self.fleet.platform),
-                segments: Some(&self.segments),
+                segments: Some(&mut self.segments),
                 reversals: Some(&mut self.life.reversals),
             },
             &rutent_core_orch::settings::SettingAsked {
@@ -1668,18 +1856,7 @@ impl Core {
             },
         );
         self.bounds = self.settings.bounds(&self.base_bounds);
-        self.sync_record_retry();
         set
-    }
-
-    /// The segments' retry of a node-record read Core didn't take is the operator's `publishers_records` cadence
-    /// (`T-020-67`): set from the schedule's cadences wherever a setting is taken or the settings are rebuilt.
-    fn sync_record_retry(&mut self) {
-        let seconds = self
-            .schedule
-            .cadences()
-            .of(rutent_core_orch::schedule::Job::PublishersRecords);
-        self.segments.set_record_retry_seconds(seconds);
     }
 
     /// The operator's settings, as Core holds them (`T-020-49`).
@@ -1951,7 +2128,7 @@ impl Core {
     }
 
     /// Lists each simulated network a provider's tuples are on with its reader service, as the operator does: a
-    /// `list_public_network` the operator's login asks for and policy decides, its effect and its result, one for each
+    /// `list_public_network` the operator's login asks for and policy decides, carried out by Core, one for each
     /// network, before any order (`T-024-25`, `DEC-28`; [`Fleet::public_networks`]). Each decision is asked under an
     /// id of the network's own (`list-{network}`), never one drawn from Core's source, so the listings leave every
     /// identifier a scenario draws as it was.
@@ -1964,14 +2141,18 @@ impl Core {
     }
 
     /// Delists `network`, as the operator does: a `delist_public_network` the operator's login asks for and policy
-    /// decides, its effect and its result (`DEC-28`, `T-020-59`). Core's catalogue takes nothing from it until
-    /// `T-020-60`; [`Core::public_networks`] no longer names the network.
+    /// decides, carried out by Core (`DEC-28`, `T-020-59`), under an id of the network's own (`delist-{network}`),
+    /// never one drawn from Core's source, so a scenario that delists mid-run shifts no later identifier (#353's review
+    /// round 2). Core takes the network off its adapter and the catalogue's public list; [`Core::public_networks`] no
+    /// longer names it.
     ///
     /// # Errors
     ///
-    /// If policy doesn't permit it, or the log takes no step of it.
+    /// If no listing in force names the network (#343's review, L7), an open or quoted order uses it (#346's review, L3:
+    /// a network's standing doesn't change under an order that uses it), policy doesn't permit it, or the log takes no
+    /// step of it.
     pub fn delist_public_network(&mut self, network: &Id) -> Result<(), AssemblyError> {
-        let request = self.fresh.id();
+        let request = kit::id(&format!("delist-{}", network.as_str()));
         self.change_public_network(
             CatalogueChange::DelistPublicNetwork,
             rutent_contracts::core_internal::PublicNetwork {
@@ -1982,121 +2163,92 @@ impl Core {
         )
     }
 
-    /// A listing or a delisting of a public network by the operator's login, under `request`: decided by policy, its
-    /// effect appended, then its `done` result.
+    /// Lists `network` again, as the operator does: a `list_public_network` the operator's login asks for and policy
+    /// decides, carried out by Core after its reader's check, under `request`, an id the test names (`T-020-60`, the
+    /// review of #356's round 2, Low 2).
+    ///
+    /// # Errors
+    ///
+    /// If policy doesn't permit it, the catalogue refuses it, or the log takes no step of it.
+    pub fn list_public_network(
+        &mut self,
+        network: rutent_contracts::core_internal::PublicNetwork,
+        request: &str,
+    ) -> Result<(), AssemblyError> {
+        self.change_public_network(
+            CatalogueChange::ListPublicNetwork,
+            network,
+            kit::id(request),
+        )
+    }
+
+    /// A listing or a delisting of a public network by the operator's login, under `request`, through Core's own
+    /// command (`rutent_core_orch::closing::readers::listing::change_public_network`, the review of `T-020-60`'s round
+    /// 1, M1): decided by policy, its effect appended, carried out in Core's adapter and the catalogue's public list
+    /// after the reader's check, then its result.
     fn change_public_network(
         &mut self,
         change: CatalogueChange,
         network: rutent_contracts::core_internal::PublicNetwork,
         request: Id,
     ) -> Result<(), AssemblyError> {
-        let listing = |step: &str, e: AppendFailure| {
-            AssemblyError::Listing(format!("a public network's {step}: {e:?}"))
+        use rutent_core_orch::closing::readers::listing::{
+            NetworkAsked, NetworkDesk, change_public_network,
         };
         let decider = kit::operator_login();
-        let request = DecisionRequest {
-            request,
-            caller: decider.clone(),
-            action: Action::ChangeCatalogue {
-                change,
-                provider: decider.party.clone(),
-                version: None,
-                tuple: None,
-                class: None,
-                advertising_keys: Vec::new(),
-                statement_key: None,
-                setting: None,
-                versions: Vec::new(),
-                public_network: Some(Box::new(network)),
-            },
-            at: self.clock.timestamp(),
+        let core = kit::core();
+        let mut decisions = self.policy.clone();
+        let mut channel = rutent_core_orch::notice::Channel {
+            notices: &mut self.notices,
+            key: &mut self.notice_signer,
+            transport: &mut self.wire,
         };
-        let decision =
-            rutent_contracts::core_internal::calls::Decisions::decide(&mut self.policy, &request)
-                .map_err(|e| listing("decision", e))?;
-        let permit = decision.permit().ok_or_else(|| {
+        let changed = change_public_network(
+            &mut self.readers,
+            &mut NetworkDesk {
+                log: &mut self.general,
+                decisions: &mut decisions,
+                catalogue: &mut self.catalogue,
+                clock: &self.clock,
+                fresh: &mut self.fresh,
+                operator: &mut channel,
+                core: &core,
+                intake: &self.intake,
+                exposures: &self.exposures,
+            },
+            &NetworkAsked {
+                change,
+                network: &network,
+                request: &request,
+                caller: &decider,
+            },
+        );
+        let _ = self.feed();
+        changed.map(|_| ()).map_err(|why| {
             AssemblyError::Listing(format!(
-                "a public network's {change:?} wasn't permitted: {:?}",
-                decision.outcome
+                "{} isn't {change:?}: {why:?}",
+                network.network.as_str()
             ))
-        })?;
-        let effect = self
-            .verified(
-                What::Effect {
-                    action: request.action,
-                    decision: permit,
-                },
-                Outcome::ToTakeEffect {},
-            )
-            .map_err(|e| listing("effect", e))?;
-        self.verified(What::Result { effect }, Outcome::Done {})
-            .map_err(|e| listing("result", e))?;
-        Ok(())
+        })
     }
 
     /// Every public network the log lists now, in the order first listed: each decided `list_public_network` carried
     /// out, a later one of the same network taking its place, and a later `delist_public_network` carried out taking
     /// it off (#353's review, Low 2). What names each network's reader service (`T-024-25`, `DEC-28`).
     pub fn public_networks(&self) -> Vec<rutent_contracts::core_internal::PublicNetwork> {
-        let log = self.log.borrow();
-        let entries = log.entries();
-        let done: Vec<Receipt> = entries
-            .iter()
-            .filter_map(|(_, e)| match e {
-                Entry::Verified(VerifiedEntry {
-                    what: What::Result { effect },
-                    outcome: Outcome::Done {},
-                    ..
-                }) => Some(effect.clone()),
-                _ => None,
-            })
-            .collect();
-        let mut listed: Vec<rutent_contracts::core_internal::PublicNetwork> = Vec::new();
-        for (receipt, entry) in entries {
-            let Entry::Verified(VerifiedEntry {
-                what:
-                    What::Effect {
-                        action:
-                            Action::ChangeCatalogue {
-                                change,
-                                public_network: Some(network),
-                                ..
-                            },
-                        ..
-                    },
-                ..
-            }) = entry
-            else {
-                continue;
-            };
-            if !done.contains(receipt) {
-                continue;
-            }
-            let at = listed.iter().position(|n| n.network == network.network);
-            match (change, at) {
-                (CatalogueChange::ListPublicNetwork, Some(at)) => listed[at] = (**network).clone(),
-                (CatalogueChange::ListPublicNetwork, None) => listed.push((**network).clone()),
-                (CatalogueChange::DelistPublicNetwork, Some(at)) => {
-                    listed.remove(at);
-                }
-                _ => {}
-            }
-        }
-        listed
+        rutent_core_orch::closing::readers::listings_of(self.log.borrow().entries())
     }
 
     /// Whether the planted fault ties a network's movements to segments by destination and amount
     /// ([`Core::tie_payments_by_destination`]): what a simulated reader planted the same way matches by (`T-024-25`).
     pub fn ties_by_destination(&self) -> bool {
-        self.readings.ties()
+        self.reader_plan().ties
     }
 
-    /// The public records Core reads now: the simulated networks as they stand, read again (`T-020-09`), through the
-    /// assembly's `impl PublicRecords` that `T-020-60` replaces with Core's reader adapter. What a simulated reader is
-    /// held to answer as (`T-024-25`).
-    pub fn public_records(&self) -> &dyn rutent_core_orch::closing::PublicRecords {
-        self.readings.refresh(&self.fleet.platform.world);
-        &self.readings
+    /// The public records Core reads now, through its own adapter, one pass at Core's clock (`T-020-60`): what a
+    /// scenario reads of them is what Core reads, from each listed network's reader service.
+    pub fn public_records(&self) -> rutent_core_orch::closing::Pass<'_> {
+        self.readers.pass()
     }
 
     /// A judgement's origin names its maker's release, so a verifier's accepted release is recorded; a reserve's is
@@ -2176,21 +2328,48 @@ impl Core {
             },
         )
         .map_err(|e| AssemblyError::Listing(format!("the advertisement: {e:?}")))?;
-        // The deployment's defaults the join sets (a floor on each tuple, the public nodes listed) give way to the
-        // operator's settings (L2 of #337's review).
-        self.reapply_catalogue_settings();
+        // The test worlds' stand-in holder is the account of each node it lists that no account was installed at
+        // (`kit::LEDGER_HOLDER`, `T-020-60`).
+        if let Ok(ad) = serde_json::from_slice::<
+            Statement<rutent_contracts::provider_role::Advertisement>,
+        >(bytes)
+        {
+            self.register_ledger_holders(&ad.statement, spec);
+        }
+        // The deployment's defaults the join sets (a floor on each tuple, the public nodes listed) gave way to the
+        // operator's settings in Core's own join (the review of #356's round 2, M1).
         Ok(advertised)
     }
 
-    /// Puts the operator's catalogue settings back after the deployment's own listing touched the catalogue: each
-    /// evidence floor, and each public node listed or taken off, as `Settings` holds them (`T-020-49`).
-    pub(crate) fn reapply_catalogue_settings(&mut self) {
-        self.settings
-            .apply(&mut rutent_core_orch::settings::Targets {
-                catalogue: Some(&mut self.catalogue),
-                platform: Some(&mut self.fleet.platform),
-                ..rutent_core_orch::settings::Targets::default()
-            });
+    /// The deployment's register names the test worlds' stand-in holder ([`kit::LEDGER_HOLDER`]) as the account of each
+    /// private node `ad` declares, in the asset its tuples hold there, unless the register names an account there
+    /// already: the holding check then reads every node the catalogue lists a holder at (`T-020-60`).
+    fn register_ledger_holders(
+        &mut self,
+        ad: &rutent_contracts::provider_role::Advertisement,
+        spec: &rutent_conformance::sim::Spec,
+    ) {
+        let mut registers = self.deployed.registers.borrow_mut();
+        for node in spec.public_nodes() {
+            if let Some(asset) = kit::asset_at(ad, &node) {
+                registers.stand_in_public.entry(node).or_insert(asset);
+            }
+        }
+        for node in &ad.private_nodes {
+            let Some(asset) = kit::asset_at(ad, node) else {
+                continue;
+            };
+            registers
+                .publisher_accounts
+                .entry(node.clone())
+                .or_insert_with(|| rutent_core_orch::schedule::PublisherAccount {
+                    node: node.clone(),
+                    publisher: ad.publisher.clone(),
+                    module: kit::LEDGER_HOLDER.to_owned(),
+                    asset,
+                    decimals: schedule::DECIMALS,
+                });
+        }
     }
 
     /// A test hook (`T-020-55`, the review of `8f7ddefd`): `bytes` appended as an advertisement's stated entry, kept and
@@ -2490,13 +2669,16 @@ impl Core {
         Ok(told)
     }
 
-    /// Declares the part of `order` stuck for want of a route (`REQ-ORD-28`): its recalculations at their bound, the
-    /// value left resting where the last segment that settled put it. Core's record of the order's ends is taken
-    /// from the log's own entries, as the assembly follows an order (`T-020-11`, `T-020-16`).
+    /// Has Core's own run leave the part of `order` with no route (`REQ-ORD-28`; `T-020-60` item (8), the check of
+    /// `T-020-61`'s Low): every installed provider refuses its dry runs while Core's ticks recalculate the part from
+    /// where its value is evidenced, so the recalculation finds no route and Core's run declares the part stuck, the
+    /// value resting where the last segment that settled put it, or, at a failed final deposit, has it wait for its
+    /// customer (`REQ-ORD-43`). The assembly declares nothing itself; the refusals end once the part is left so. The
+    /// part's route must have failed, and not been recalculated yet, as Core's run recalculates only such a part.
     ///
     /// # Errors
     ///
-    /// If the order hasn't started, or the part can't be declared.
+    /// If the order hasn't started, or Core's run didn't leave the part with no route.
     pub fn leave_no_route(&mut self, order: &Id) -> Result<(), StepError> {
         let started = self
             .intake
@@ -2511,36 +2693,37 @@ impl Core {
                 .part_id
                 .as_str(),
         );
-        let core = kit::core();
-        let outcome = rutent_core_orch::recalc::Recalculation::NoRouteLeft { recalculated: 0 };
-        let last = started.record.record_id().clone();
-        let mut parts = StuckParts {
-            clock: &self.clock,
-            log: &mut self.general,
-            fresh: &mut self.fresh,
-            issued: &self.issued,
-            segments: &mut self.segments,
-            exposures: &mut self.exposures,
-        };
-        self.stuck.no_route(
-            &mut parts,
-            NoRouteLeft {
-                order,
-                part: &part,
-                outcome: &outcome,
-                last_record: &last,
-                core: &core,
-            },
-        )?;
-        self.feed()?;
-        let entries: Vec<Entry> = self
-            .log
-            .borrow()
-            .entries()
+        let providers: Vec<String> = self
+            .installed
             .iter()
-            .map(|(_, e)| e.clone())
+            .map(|one| one.spec.provider.clone())
             .collect();
-        self.stuck.follow(&self.segments, &entries, order)?;
+        for provider in &providers {
+            self.world().refuse_dry_runs(provider, true);
+        }
+        // Left with no route: stuck, or, at a failed final deposit, waiting for its customer (`REQ-ORD-43`).
+        let left = |core: &Self| {
+            core.is_stuck(order, &part)
+                || core.segments.order(order).is_some_and(|o| {
+                    o.parts.iter().any(|p| {
+                        p.part_id.as_str() == part.as_str()
+                            && p.state
+                                == rutent_contracts::state_machine::OrderState::WaitingForCustomer
+                    })
+                })
+        };
+        for _ in 0..4 {
+            if left(self) {
+                break;
+            }
+            self.tick();
+        }
+        for provider in &providers {
+            self.world().refuse_dry_runs(provider, false);
+        }
+        if !left(self) {
+            return Err(StepError::NotNow("Core's run left the part with no route"));
+        }
         Ok(())
     }
 

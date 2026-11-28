@@ -154,6 +154,10 @@ pub(super) struct Landing {
     reversed: BTreeSet<At>,
     unconfirmed: BTreeSet<At>,
     unreleased: BTreeSet<At>,
+    /// What a Core that reopened found of a landing and couldn't confirm (the account's module not running, its release
+    /// held until the operator confirms it): asked again by Core's own landing job until the account answers
+    /// (`T-020-60` item (8), from the check of `T-020-61` at `7557cd9e`).
+    unreconciled: BTreeSet<At>,
 }
 
 /// What a call owes one segment.
@@ -231,15 +235,30 @@ impl Landing {
     pub(super) fn found(&mut self, at: At, placed: Option<bool>) {
         match placed {
             Some(true) => {
+                self.unconfirmed.remove(&at);
+                self.unreconciled.remove(&at);
                 self.placed.insert(at);
             }
             Some(false) => {
+                self.unconfirmed.remove(&at);
+                self.unreconciled.remove(&at);
                 self.passed.insert(at);
             }
             None => {
-                self.unconfirmed.insert(at);
+                self.unconfirmed.insert(at.clone());
+                self.unreconciled.insert(at);
             }
         }
+    }
+
+    /// Whether a reopened Core's finding of the segment `at`'s landing is still owed: the account didn't answer it.
+    pub(super) fn unreconciled(&self, at: &At) -> bool {
+        self.unreconciled.contains(at)
+    }
+
+    /// Whether any reopened Core's finding is still owed.
+    pub(super) fn owes_reconciling(&self) -> bool {
+        !self.unreconciled.is_empty()
     }
 
     pub(super) fn is_placed(&self, at: &At) -> bool {

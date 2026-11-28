@@ -675,6 +675,17 @@ impl authz::Policy for Deployment_ {
     }
 }
 
+thread_local! {
+    /// Whether this test's register lists Core's actor for reading private nodes' records ([`list_node_record_reads`]).
+    static NODE_RECORD_READS: Cell<bool> = const { Cell::new(false) };
+}
+
+/// This test's register lists Core's actor for reading private nodes' records (`T-020-58`): its gradings' reads are then
+/// permitted and taken as effects. Off by default, so a test that doesn't ask finds them refused, as the kit always did.
+pub fn list_node_record_reads() {
+    NODE_RECORD_READS.with(|r| r.set(true));
+}
+
 /// The deployment's registers, as the policy engine asks them: which actor acts for which party
 /// (`Source::ActsFor`), which actor holds which permission (`Source::Permissions`: Core's actor carries the user's
 /// authorisation onward, the operator's login promotes a staged release and reads an order's state and age), whose
@@ -713,6 +724,11 @@ impl authz::Sources for Register {
             }
             authz::Source::Permissions { permission, .. } => yes(match permission {
                 Permission::CarryOnward => need.input == core().acts,
+                // Core's actor carries the operator's standing permission to read a private node's record onward
+                // (`T-020-58`) only in a test that lists it ([`list_node_record_reads`]).
+                Permission::ReadNodeRecord => {
+                    NODE_RECORD_READS.with(Cell::get) && need.input == core().acts
+                }
                 Permission::Change(CatalogueChange::Promote | CatalogueChange::MarkStale)
                 | Permission::ReadOrderState => need.input == operator().acts,
                 _ => false,
@@ -2653,6 +2669,13 @@ impl Grading for Recorded {
             network: id(&network),
             id: settled.transaction.clone(),
             node: None,
+            read_by: rutent_contracts::core_internal::MovementReader {
+                reader: id(&rutent_scenarios::sim::readers::reader_name(&network)),
+                version: rutent_contracts::router_api::Version::new(
+                    rutent_scenarios::sim::readers::READER_VERSION,
+                )
+                .expect("a version"),
+            },
         };
         Graded::Settles {
             cites: settled.evidence.clone(),

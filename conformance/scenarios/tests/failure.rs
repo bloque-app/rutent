@@ -434,11 +434,8 @@ fn failed_final_deposit_waiting_for_its_customer_is_not_declared_stuck_past_its_
         "the deposit's reversal is owed and never comes"
     );
     core.clock.advance(7 * 86_400);
-    let watched = core.watch(&order).expect("watched");
-    assert!(
-        matches!(watched, rutent_core_orch::stuck::Watch::Running),
-        "{watched:?}"
-    );
+    let watched = watched_on_tick(&mut core, &order);
+    assert!(watched.is_none(), "{watched:?}");
     assert_eq!(state(&mut core, &order), OrderState::WaitingForCustomer);
     assert!(!core.is_stuck(&order, &core.part_of(&order).expect("a part")));
 }
@@ -573,6 +570,25 @@ fn executed_price_is_reported_correctly_after_core_reopens_mid_recalculation() {
 /// The seconds each operation takes in the p99 scenario, and what twice it is.
 const TAKES: u64 = 10;
 
+/// What Core's own tick found timing `order`'s part, where it was more than running: Core's stuck watch as its
+/// schedule runs it, over every order on one `tick`, never asked per order (`T-020-60` item (8)). `None` where the tick
+/// found it running, or stuck already.
+fn watched_on_tick(
+    core: &mut Core,
+    order: &rutent_contracts::router_api::Id,
+) -> Option<rutent_core_orch::stuck::Watch> {
+    let round = core.tick();
+    assert!(
+        round.did(rutent_core_orch::schedule::Job::Watch),
+        "the tick ran the stuck watch"
+    );
+    round
+        .watched
+        .into_iter()
+        .find(|w| &w.order == order)
+        .map(|w| w.found.expect("the tick timed the part"))
+}
+
 /// The reserve settles twenty orders; the next one's deposit is taken by the provider, which stops answering; past
 /// twice its p99 the order is stuck. Core, the order and the deposit's segment.
 fn stuck_by_silence() -> (
@@ -634,13 +650,13 @@ fn stuck_by_silence() -> (
     // Exactly twice its p99 is not over it; a second more is. The clock is Core's: nothing else says the time passed.
     core.clock.advance(2 * TAKES - 1);
     assert_eq!(
-        core.watch(&order).expect("watched"),
-        Watch::Running,
+        watched_on_tick(&mut core, &order),
+        None,
         "not yet twice its p99"
     );
     assert_eq!(state(&mut core, &order), OrderState::FirstSegmentSettled);
     core.clock.advance(2 * TAKES + 5);
-    let Watch::Stuck(called) = core.watch(&order).expect("watched") else {
+    let Some(Watch::Stuck(called)) = watched_on_tick(&mut core, &order) else {
         panic!("stuck past twice the p99");
     };
     assert_eq!(
@@ -709,7 +725,7 @@ fn stuck_by_silence() -> (
     (core, order, deposit)
 }
 
-// verifies: AC-5
+// verifies: AC-5, REQ-ORD-29, REQ-ORD-6
 #[test]
 fn provider_silent_past_twice_its_p99_makes_the_order_stuck_and_a_late_delivery_moves_nothing_twice()
  {

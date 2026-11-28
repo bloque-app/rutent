@@ -134,12 +134,11 @@ pub const WALLET_HANDLES: [&str; 5] = [
     "reversal_confirmation",
 ];
 
-/// The outside operation a plain wallet's sandboxed part asks its outside part for the account's statement of one
-/// credit, and the prefix of the provider's own state keys that statement is kept under, one per reversed segment, as
-/// the guest names them (`components/prov/guests/plain-wallet/src/wallet.rs`, `T-020-57`).
+/// The outside operation a plain wallet's sandboxed part asks its outside part for the reading of one credit, which
+/// the deployment keeps among the provider's own state under `reading/{segment}`
+/// ([`rutent_core_orch::reversal::READING_PREFIX`]), as the guest names it
+/// (`components/prov/guests/plain-wallet/src/wallet.rs`, `T-020-57`, `T-020-60` (6)).
 pub const WALLET_CREDIT: &str = "wallet.credit";
-/// See [`WALLET_CREDIT`].
-pub const WALLET_CREDIT_PREFIX: &str = "credit/";
 
 /// The plain wallet of a public node, admitted to the platform on the operator's own signed release (`T-024-17`).
 #[derive(Debug, Clone)]
@@ -731,21 +730,29 @@ impl Fleet {
         }
     }
 
-    /// The world's account at the wallet `provider`'s node takes a credit back for the reversal of the segment that ran
-    /// under `segment`: `amount` of `asset`, as the node's own record of the account would show it. The account's
-    /// statement, which the deployment keeps for the wallet among the provider's own state, holds it from then, and the
-    /// wallet's outside part reads it when Core asks whether the credit came back (`T-020-57`). It is the world's, as a
-    /// simulated reserve's credit is (`Behaviour::reversal_credited`): nothing of Core's writes it.
-    ///
-    /// It stands in for the network reader's confirmation, owned by `T-020-60` (the reader adapter): in a deployment a
-    /// reversal back into a held public node is a movement on that node's network, which its reader confirms; nothing
-    /// in production writes this record.
-    pub fn credit_wallet(&mut self, provider: &str, segment: &str, asset: &str, amount: &str) {
-        self.platform.world.seed_state(
-            provider,
-            &format!("{WALLET_CREDIT_PREFIX}{segment}"),
-            &json!({ "asset": asset, "amount": amount }).to_string(),
-        );
+    /// The node's network records the movement that brings a reversed segment's value back into the holding account
+    /// `holder`, of `amount` of `asset`, tied to the reversal's own transaction `segment`, the one its failed provider was
+    /// asked to reverse under (`T-020-60` (6)): the
+    /// failed provider's reversal, as the network itself records it, which nothing of Core's writes. Core reads it only
+    /// through the node's reader, and hands the account its reading to confirm on. Why the network refused it, where
+    /// it did.
+    pub fn return_on_network(
+        &mut self,
+        network: &str,
+        segment: &str,
+        holder: &str,
+        asset: &str,
+        amount: &str,
+    ) -> Option<rutent_evidence::RecordRefused> {
+        self.platform
+            .world
+            .record_movement(&rutent_conformance::sim::Movement {
+                network: network.to_owned(),
+                id: segment.to_owned(),
+                destination: holder.to_owned(),
+                asset: asset.to_owned(),
+                amount: amount.to_owned(),
+            })
     }
 
     /// The providers whose releases the platform holds until the operator confirms them, each with the versions it

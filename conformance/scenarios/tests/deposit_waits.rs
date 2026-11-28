@@ -137,6 +137,42 @@ fn a_waiting_deposit_is_accepted_in_a_later_session_after_core_reopens() {
     assert_eq!(state(&mut core, &order), OrderState::Complete);
 }
 
+/// The same wait across a restart of Core and its platform both, at the assembly's level (`T-020-60` item (8), from the
+/// check of `T-020-61`): the restarted Core rebuilds the wait from its log, its end unchanged and nothing accepted, and the
+/// customer's acceptance in a session opened after the restart is taken on it.
+// verifies: REQ-QTE-10, NFR-6
+#[test]
+fn a_waiting_deposit_goes_on_waiting_across_a_restart_of_core_and_its_platform() {
+    let (core, _, order, digest, _) = waiting("AC-13");
+    let lasts = core.wait_ends(&order).expect("a wait has its end");
+    let mut core =
+        Scenario::new("execution", "AC-13", slow_given()).restart(core, 1, &mut Reference);
+    assert_eq!(core.restarts(), 1, "Core and its platform restarted");
+    assert_eq!(core.wait_ends(&order), Some(lasts), "the wait goes on");
+    assert!(
+        entries(&core)
+            .iter()
+            .all(|v| !matches!(v.what, What::Acceptance { .. })),
+        "nothing accepted across the restart"
+    );
+    core.registers()
+        .list(&component(SLOW, SLOW, Role::Provider));
+    let later = core
+        .open_session(&kit::customer())
+        .expect("a session of its own, after the restart");
+    let asked = core
+        .accept_filed(&kit::customer(), &later, &order, &digest)
+        .expect("the acceptance is taken");
+    assert_eq!(
+        asked,
+        Filed::Waiting {
+            order: Some(order.clone()),
+            wait: FiledWait::CustomerAcceptance
+        },
+        "the route is shown anew"
+    );
+}
+
 /// A wait past its lifetime is ended by Core's schedule, on the assembled Core: `wait_ended` and the order's refusal in
 /// the real log, the deposit free, nothing moved at the reserve (`GUA-1`).
 // verifies: GUA-1

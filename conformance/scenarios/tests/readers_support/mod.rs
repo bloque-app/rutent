@@ -12,10 +12,14 @@
 //!   connector that answers a pool's requests from the world ([`SimConnector`]), and a dialer that connects a light
 //!   client's peer, by its public address, to a loopback server answering from the world ([`SimDialer`], [`PeerServer`]).
 //!   The host's own egress layer holds every call to the reader's declared destinations, as in production.
-//! - **Core's side** ([`Readers::ask`]): a question under a request id drawn at random, over an mTLS client holding the
-//!   host to the test CA and the listed subject name, its answer's signature verified against the key it names and
-//!   then held to the question and to the listing's key and version (`check_reader_answer`), as `T-020-60`'s adapter
-//!   will.
+//! - **Core's side** ([`Readers::ask`]): Core's own adapter (`rutent_core_orch::closing::Readers`, `T-020-60`), handed
+//!   the test CA, Core's client certificate and the host's address as a deployment hands them: a question under a
+//!   request id drawn from Core's random source, its deadline and its arrival on Core's clock, over Core's mTLS client
+//!   holding the host to the test CA and the listed subject name, its answer's signature verified against the listed
+//!   key and then held to the question and to the listing's key and version (`check_reader_answer`).
+//! - **As a process of its own** (`examples/sim_reader.rs host`): the assembly runs this harness in the simulated reader
+//!   host's process beside Core (`rutent_scenarios::sim::reader_service`), over the world's endpoints read through a
+//!   loopback connection, so every scenario reads through Core's adapter.
 //! - **The planted faults** ([`Plan`]): a reader that ties a deposit by destination and amount, a hostile reader
 //!   (`crash`, `malformed`, `other-movement`, `undeclared`) and a key the listing doesn't name; an endpoint that lies or
 //!   is silent is the world's, planted on its endpoints (`Endpoints::plant`).
@@ -26,9 +30,7 @@
 
 #![allow(dead_code)]
 
-use std::collections::hash_map::RandomState;
-use std::collections::{BTreeMap, BTreeSet};
-use std::hash::{BuildHasher, Hasher};
+use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::num::NonZeroU16;
@@ -40,22 +42,19 @@ use rcgen::{
     BasicConstraints, Certificate, CertificateParams, DistinguishedName, DnType,
     ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, SerialNumber,
 };
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName};
-use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
-use rutent_conformance::signing::{base64url, verify};
+use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
+use rutent_conformance::signing::base64url;
 use rutent_contracts::core_internal::{NetworkListing, PublicNetwork};
 use rutent_contracts::module_interface::{Host as HostName, Identifier, Name, SecretValue};
-use rutent_contracts::provider_role::Statement;
-use rutent_contracts::reader::{
-    Answered, Asked, Expected, ReaderAnswer, ReaderMismatch, ReaderQuestion, RequestId, TrustRule,
-    check_reader_answer,
-};
-use rutent_contracts::router_api::{Id, ProtocolVersion, Timestamp};
+use rutent_contracts::reader::{Answered, Asked, ReaderMismatch, TrustRule};
+use rutent_contracts::router_api::ProtocolVersion;
+use rutent_core_orch::closing::Unreadable as CoreUnreadable;
+use rutent_core_orch::closing::readers::Put;
 use rutent_prov::egress::{ConnectError, Connector, Dial, Dialer, NameResolver, Request, Response};
 use rutent_prov::keys::{ResolveError, Resolver};
 use rutent_reader_host::config::{LightClientRule, PortRule, Protocol, ReaderLimits};
 use rutent_reader_host::egress::Network;
-use rutent_reader_host::link::{Link, LinkTls, read_answer, write_question};
+use rutent_reader_host::link::{Link, LinkTls};
 use rutent_reader_host::records::{CallRecord, MemoryRecords};
 use rutent_reader_host::{Host, HostConfig, ReaderConfig, Services};
 use rutent_scenarios::sim::readers::{
@@ -88,12 +87,21 @@ impl TestCa {
     /// The test CA: an Ed25519 key from [`CA_SEED`], and fixed fields (its name, serial and validity), so its
     /// certificate is deterministic (an Ed25519 signature is).
     pub fn new() -> Self {
+        Self::of(CA_SEED, "rutent scenarios test CA")
+    }
+
+    /// Another CA than the operator's, of its own key and name: what no listing names.
+    pub fn other() -> Self {
+        Self::of(*b"rutent-scenarios-other-ca-seed-1", "another CA")
+    }
+
+    fn of(seed: [u8; 32], common_name: &str) -> Self {
         // PKCS #8 v1 of an Ed25519 key (RFC 8410): the fixed prefix, then the 32-byte seed.
         let mut pkcs8 = vec![
             0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22,
             0x04, 0x20,
         ];
-        pkcs8.extend_from_slice(&CA_SEED);
+        pkcs8.extend_from_slice(&seed);
         let key = KeyPair::from_pkcs8_der_and_sign_algo(
             &PrivatePkcs8KeyDer::from(pkcs8),
             &rcgen::PKCS_ED25519,
@@ -101,7 +109,7 @@ impl TestCa {
         .expect("the test CA's key");
         let mut params = CertificateParams::new(Vec::<String>::new()).expect("parameters");
         let mut name = DistinguishedName::new();
-        name.push(DnType::CommonName, "rutent scenarios test CA");
+        name.push(DnType::CommonName, common_name);
         params.distinguished_name = name;
         params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
         params.serial_number = Some(SerialNumber::from(vec![0x01]));
@@ -137,64 +145,11 @@ impl TestCa {
     }
 }
 
-/// The simulated reader's program, `examples/sim_reader.rs`, as this tree builds it (#353's review, Low 1):
-/// `RUTENT_SIM_READER` if set, else built here, once per test process, by `cargo build --example sim_reader` on this
-/// package's own manifest into the target directory this test runs from, and found by the path cargo reports for that
-/// build. A run of one test binary alone builds it too, and never runs a reader another tree built into a shared target
-/// directory. Panics, naming the command, if it can't be built.
+/// The simulated reader's program, `examples/sim_reader.rs`, as this tree builds it (#353's review, Low 1): the
+/// library's [`rutent_scenarios::sim::reader_service::program`], which finds the example `cargo test` built beside the
+/// test binary and builds it only for a run of one test binary that built none.
 pub fn sim_reader() -> PathBuf {
-    static BUILT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    BUILT
-        .get_or_init(|| {
-            if let Some(path) = std::env::var_os("RUTENT_SIM_READER") {
-                return PathBuf::from(path);
-            }
-            let exe = std::env::current_exe().expect("the test's own path");
-            // `<target>/<profile>/deps/<test>`: the reader goes into the same target directory and profile.
-            let profile_dir = exe
-                .parent()
-                .and_then(std::path::Path::parent)
-                .expect("the test runs from a profile's directory");
-            let target = profile_dir
-                .parent()
-                .expect("the profile's directory is in a target directory");
-            let release = profile_dir.file_name().is_some_and(|p| p == "release");
-            let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-            let mut build = std::process::Command::new(
-                std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()),
-            );
-            build
-                .args(["build", "--quiet", "--example", "sim_reader"])
-                .args(["--message-format", "json"])
-                .arg("--manifest-path")
-                .arg(&manifest)
-                .arg("--target-dir")
-                .arg(target);
-            if release {
-                build.arg("--release");
-            }
-            let out = build.output().expect("cargo runs");
-            let built = String::from_utf8_lossy(&out.stdout)
-                .lines()
-                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-                .filter(|m| {
-                    m["reason"] == "compiler-artifact"
-                        && m["target"]["name"] == "sim_reader"
-                        && m["target"]["kind"]
-                            .as_array()
-                            .is_some_and(|k| k.iter().any(|k| k == "example"))
-                })
-                .find_map(|m| m["executable"].as_str().map(PathBuf::from));
-            match built {
-                Some(path) if out.status.success() && path.is_file() => path,
-                _ => panic!(
-                    "the simulated reader wasn't built: `cargo build --example sim_reader --manifest-path {}`: {}",
-                    manifest.display(),
-                    String::from_utf8_lossy(&out.stderr)
-                ),
-            }
-        })
-        .clone()
+    rutent_scenarios::sim::reader_service::program()
 }
 
 /// The harness's key store, as `T-014-01`'s resolver: each reader's statement key, by the reader and the public key's
@@ -300,17 +255,36 @@ impl Connector for SimConnector {
 }
 
 /// A light client's peer, as the world serves it: a loopback server answering one JSON-RPC request per line, as the
-/// peer's endpoint does ([`Endpoints::answer`]); a silent peer answers nothing.
+/// peer's endpoint does ([`Endpoints::answer`]); a silent peer answers nothing. Stopped, and its accepting thread
+/// joined, when dropped (the review of `T-024-25` at `64309ac3`, Low 5); a connection's thread ends with its
+/// connection, which the reader's process holds.
 pub struct PeerServer {
     pub address: SocketAddr,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for PeerServer {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = TcpStream::connect_timeout(&self.address, Duration::from_secs(1));
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 impl PeerServer {
     pub fn serve(endpoints: Endpoints, host: String) -> PeerServer {
         let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
         let address = listener.local_addr().expect("its address");
-        std::thread::spawn(move || {
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopping = stop.clone();
+        let thread = std::thread::spawn(move || {
             for stream in listener.incoming() {
+                if stopping.load(std::sync::atomic::Ordering::SeqCst) {
+                    return;
+                }
                 let Ok(stream) = stream else { continue };
                 let (endpoints, host) = (endpoints.clone(), host.clone());
                 std::thread::spawn(move || {
@@ -330,7 +304,11 @@ impl PeerServer {
                 });
             }
         });
-        PeerServer { address }
+        PeerServer {
+            address,
+            stop,
+            thread: Some(thread),
+        }
     }
 }
 
@@ -339,6 +317,7 @@ impl PeerServer {
 #[derive(Default)]
 pub struct SimDialer {
     peers: BTreeMap<IpAddr, SocketAddr>,
+    servers: Vec<PeerServer>,
     dialled: Mutex<Vec<SocketAddr>>,
 }
 
@@ -361,49 +340,26 @@ impl Dialer for SimDialer {
     }
 }
 
-/// The faults planted in the readers.
-#[derive(Debug, Clone, Default)]
-pub struct Plan {
-    /// Every reader ties a deposit by its destination and amount (`Core::ties_by_destination`).
-    pub ties: bool,
-    /// The hostile acts planted in each network's reader, by network.
-    pub hostile: BTreeMap<String, Vec<&'static str>>,
-    /// The networks whose reader host signs with a key the listing doesn't name.
-    pub unlisted_key: BTreeSet<String>,
-}
+pub use rutent_scenarios::sim::readers::Plan;
 
-impl Plan {
-    /// `act` planted in every listed network's reader.
-    pub fn everywhere(listed: &[PublicNetwork], act: &'static str) -> Self {
-        let mut plan = Plan::default();
-        for network in listed {
-            let name = network.network.as_str().to_owned();
-            if act == "unlisted-key" {
-                plan.unlisted_key.insert(name);
-            } else {
-                plan.hostile.insert(name, vec![act]);
-            }
-        }
-        plan
-    }
-}
-
-/// What Core reads of an answer.
+/// What Core reads of an answer, through its own adapter (`rutent_core_orch::closing::Readers`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Read {
-    /// An answer that passed every check: its signature, the question it answers, the listed key and version.
-    Answered(ReaderAnswer),
-    /// An answer refused before anything in it is read: unreadable.
+    /// An answer that passed every check: its signature under the listed key, the question it answers, the listed key
+    /// and version, and its deadline on Core's clock. A reader's own unreadable answer is one too, which settles nothing.
+    Answered(Answered),
+    /// An answer refused by `check_reader_answer` before anything in it is read: unreadable.
     Refused(Vec<ReaderMismatch>),
-    /// No answer at all: unreadable.
-    Nothing,
+    /// Anything else Core's adapter reads as unreadable: no answer, one that isn't a signed answer, or one whose
+    /// signature doesn't verify under the listed key.
+    Unreadable(CoreUnreadable),
 }
 
 impl Read {
     /// The answer, where Core may read it.
     pub fn answered(&self) -> Option<&Answered> {
         match self {
-            Read::Answered(answer) => Some(&answer.answer),
+            Read::Answered(answer) => Some(answer),
             _ => None,
         }
     }
@@ -432,7 +388,16 @@ pub struct Readers {
     pub endpoints: Endpoints,
     listings: BTreeMap<String, NetworkListing>,
     configs: BTreeMap<String, ReaderConfig>,
-    client: Arc<ClientConfig>,
+    /// Core's side of the link: Core's own adapter, as the deployment hands it the test CA, its client certificate
+    /// and the host's address (`T-020-60`), asking at Core's clock.
+    core: rutent_core_orch::closing::Readers,
+    /// The test CA's certificate, PEM: what the deployment hands Core as the operator's CA.
+    pub ca_pem: String,
+    /// Further links to the same host, each under a leaf of its own ([`Readers::serve_leaf`]).
+    others: Vec<Link>,
+    /// The client certificate the test CA issued Core, and its key, PEM.
+    pub core_chain_pem: String,
+    pub core_key_pem: String,
 }
 
 /// The light client's rule: its peer's p2p port and `wss`, at most two connections.
@@ -466,6 +431,7 @@ impl Readers {
         let mut configs = BTreeMap::new();
         let mut listings = BTreeMap::new();
         let mut peers = BTreeMap::new();
+        let mut servers = Vec::new();
         for public in listed {
             let network = public.network.as_str().to_owned();
             let listing = public.listing.clone().expect("a listing");
@@ -486,10 +452,9 @@ impl Readers {
                 let served = endpoints
                     .endpoint(&host)
                     .expect("the world serves its peer");
-                peers.insert(
-                    served.address,
-                    PeerServer::serve(endpoints.clone(), host).address,
-                );
+                let server = PeerServer::serve(endpoints.clone(), host);
+                peers.insert(served.address, server.address);
+                servers.push(server);
             }
             if plan.ties {
                 args.extend(["--match".to_owned(), "destination".to_owned()]);
@@ -535,6 +500,7 @@ impl Readers {
         });
         let dialer = Arc::new(SimDialer {
             peers,
+            servers,
             dialled: Mutex::default(),
         });
         let host = Host::start(
@@ -579,21 +545,22 @@ impl Readers {
         )
         .expect("the link");
         let core_leaf = ca.issue(CORE_NAME, ExtendedKeyUsagePurpose::ClientAuth);
-        let mut roots = RootCertStore::empty();
-        roots
-            .add(CertificateDer::from(ca.der()))
-            .expect("the test CA as Core's one anchor");
-        let client = Arc::new(
-            ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-                .with_safe_default_protocol_versions()
-                .expect("a TLS version")
-                .with_root_certificates(roots)
-                .with_client_auth_cert(
-                    core_leaf.chain.clone(),
-                    PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(core_leaf.key_der.clone())),
-                )
-                .expect("Core's client certificate"),
+        let tls = rutent_core_orch::closing::readers::ReaderTls::new(
+            ca.pem().as_bytes(),
+            core_leaf.chain_pem.as_bytes(),
+            core_leaf.key_pem.as_bytes(),
+        )
+        .expect("Core's side of the link");
+        let mut core = rutent_core_orch::closing::Readers::new(
+            tls,
+            context.deployment.clone(),
+            context.protocol_versions(),
+            Box::new(rutent_core_orch::snapshot::SystemClock),
         );
+        core.set_host(readers::HOST_SETTING, link.address());
+        for public in listed {
+            core.list(public);
+        }
         Readers {
             link,
             host,
@@ -603,8 +570,22 @@ impl Readers {
             endpoints,
             listings,
             configs,
-            client,
+            core,
+            others: Vec::new(),
+            ca_pem: ca.pem(),
+            core_chain_pem: core_leaf.chain_pem.clone(),
+            core_key_pem: core_leaf.key_pem.clone(),
         }
+    }
+
+    /// Where the link listens.
+    pub fn address(&self) -> SocketAddr {
+        self.link.address()
+    }
+
+    /// How many times the reader host started `network`'s reader's process.
+    pub fn starts(&self, network: &str) -> usize {
+        self.host.starts(&self.configs[network].name)
     }
 
     /// The reader host's configuration of `network`'s reader.
@@ -617,69 +598,87 @@ impl Readers {
         self.records.all()
     }
 
-    /// Asks `network`'s reader `asked` over the link, as Core does: the question, and what Core reads of the answer.
-    pub fn ask(&self, network: &str, asked: Asked) -> (ReaderQuestion, Read) {
-        let listing = &self.listings[network];
-        let question = ReaderQuestion {
-            request: request_id(),
-            reader: listing.endpoint.reader.clone(),
-            network: Id::new(network).expect("a network"),
-            deadline: Timestamp::new("2099-01-01T00:00:00Z").expect("a time"),
-            asked,
-        };
-        let bytes = self
-            .over_link(&serde_json::to_vec(&question).expect("a question"), listing)
-            .unwrap_or_default();
-        if bytes.is_empty() {
-            return (question, Read::Nothing);
-        }
-        if verify(&bytes).is_err() {
-            return (question, Read::Refused(Vec::new()));
-        }
-        let Ok(statement) = serde_json::from_slice::<Statement<ReaderAnswer>>(&bytes) else {
-            return (question, Read::Refused(Vec::new()));
-        };
+    /// Core's adapter over the link.
+    pub fn core(&self) -> &rutent_core_orch::closing::Readers {
+        &self.core
+    }
+
+    /// Core's adapter over the link, to point at another of the host's links.
+    pub fn core_mut(&mut self) -> &mut rutent_core_orch::closing::Readers {
+        &mut self.core
+    }
+
+    /// A fresh adapter of Core's over the link, as the deployment would hand Core one: the test CA, Core's client
+    /// certificate and the host's address, the listings taken in and not yet checked.
+    pub fn core_adapter(&self) -> rutent_core_orch::closing::Readers {
+        let tls = rutent_core_orch::closing::readers::ReaderTls::new(
+            self.ca_pem.as_bytes(),
+            self.core_chain_pem.as_bytes(),
+            self.core_key_pem.as_bytes(),
+        )
+        .expect("Core's side of the link");
         let context = rutent_scenarios::assembly::context();
-        let versions = context.protocol_versions();
-        let expected = Expected {
-            deployment: &context.deployment,
-            versions: &versions,
-            key: &listing.reader.statement_key,
-            version: &listing.version,
-        };
-        let now = Timestamp::new("2026-11-27T10:00:00Z").expect("a time");
-        let read = match check_reader_answer(&question, &statement, &expected, &now) {
-            Ok(()) => Read::Answered(statement.statement),
-            Err(mismatches) => Read::Refused(mismatches),
-        };
-        (question, read)
+        let mut core = rutent_core_orch::closing::Readers::new(
+            tls,
+            context.deployment.clone(),
+            context.protocol_versions(),
+            Box::new(rutent_core_orch::snapshot::SystemClock),
+        );
+        core.set_host(readers::HOST_SETTING, self.link.address());
+        for (network, listing) in &self.listings {
+            core.list(&PublicNetwork {
+                network: rutent_contracts::router_api::Id::new(network.as_str())
+                    .expect("a network"),
+                listing: Some(listing.clone()),
+            });
+        }
+        core
     }
 
-    /// One question over the mTLS link, the host held to the test CA and the listed subject name.
-    fn over_link(&self, question: &[u8], listing: &NetworkListing) -> io::Result<Vec<u8>> {
-        let tcp = TcpStream::connect_timeout(&self.link.address(), Duration::from_secs(5))?;
-        tcp.set_read_timeout(Some(Duration::from_secs(60)))?;
-        let name = ServerName::try_from(listing.reader.subject_name.as_str().to_owned())
-            .map_err(io::Error::other)?;
-        let connection =
-            ClientConnection::new(self.client.clone(), name).map_err(io::Error::other)?;
-        let mut stream = StreamOwned::new(connection, tcp);
-        write_question(&mut stream, question)?;
-        Ok(read_answer(&mut stream)?.unwrap_or_default())
+    /// The same host served on another link, under a leaf `ca` issues for `name` with a fresh key: a rotated
+    /// certificate, where `ca` is the operator's and `name` the listed one. Where it listens.
+    pub fn serve_leaf(&mut self, ca: &TestCa, name: &str) -> SocketAddr {
+        let leaf = ca.issue(name, ExtendedKeyUsagePurpose::ServerAuth);
+        let tls = LinkTls::new(
+            self.ca_pem.as_bytes(),
+            leaf.chain_pem.as_bytes(),
+            leaf.key_pem.as_bytes(),
+            CORE_NAME,
+        )
+        .expect("the link's TLS");
+        let link = Link::serve(
+            TcpListener::bind("127.0.0.1:0").expect("a loopback port"),
+            tls,
+            self.host.clone(),
+        )
+        .expect("the link");
+        let address = link.address();
+        self.others.push(link);
+        address
     }
-}
 
-/// A request id drawn at random, as Core draws it.
-pub fn request_id() -> RequestId {
-    loop {
-        let mut bytes = [0u8; 16];
-        for half in bytes.chunks_mut(8) {
-            let mut hasher = RandomState::new().build_hasher();
-            hasher.write_u64(0x5eed);
-            half.copy_from_slice(&hasher.finish().to_le_bytes());
-        }
-        if let Some(id) = RequestId::from_random(bytes) {
-            return id;
-        }
+    /// Asks `network`'s reader `asked` over the link, through Core's own adapter at Core's clock (the host's system
+    /// clock, which a deployment hands Core: `rutent_core_orch::snapshot::SystemClock`), whatever its standing: the
+    /// question as Core put it, and what Core reads of the answer.
+    pub fn ask(&self, network: &str, asked: Asked) -> (Put, Read) {
+        self.ask_at(network, asked, &rutent_core_orch::snapshot::SystemClock)
+    }
+
+    /// The same, at `clock`.
+    pub fn ask_at(
+        &self,
+        network: &str,
+        asked: Asked,
+        clock: &dyn rutent_core_orch::snapshot::Clock,
+    ) -> (Put, Read) {
+        let answered = self.core.question(network, asked, clock);
+        let put = self.core.put().pop().expect("a question put");
+        let read = match answered {
+            Ok(answered) => Read::Answered(answered),
+            Err(CoreUnreadable::Reader(why)) => Read::Answered(Answered::Unreadable { why }),
+            Err(CoreUnreadable::Refused(mismatches)) => Read::Refused(mismatches),
+            Err(other) => Read::Unreadable(other),
+        };
+        (put, read)
     }
 }

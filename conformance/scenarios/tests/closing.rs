@@ -20,11 +20,11 @@ use rutent_contracts::module_interface::{Identifier, PlatformRefusal};
 use rutent_contracts::provider_role::{EvidenceGrade, Operation as ProviderOperation, Statement};
 use rutent_contracts::router_api::{Amount, DecisionRecord, Id};
 use rutent_contracts::state_machine::{Observed, OrderState};
-use rutent_core_orch::closing::{Books, Closing, Evidenced, Moved, PublicRecords, Recorded};
+use rutent_core_orch::closing::{Books, Closing, Evidenced, Readers, Recorded};
 use rutent_core_orch::segments::{Answered, Modules, NoProxy, Ran, SegmentOutcome, Short};
-use rutent_core_orch::snapshot::RouteRefusal;
+use rutent_core_orch::snapshot::{RouteRefusal, SystemClock};
+use rutent_evidence::MovementId;
 use rutent_evidence::replay::RecordedSegment;
-use rutent_evidence::{MovementId, NetworkRules, PublicNetwork, SimulatedNetwork, Status};
 use rutent_prov::catalogue::{
     Bond, Catalogue, Category, Grant, GrantTerms, Instant, ReversalCapacity, tuples_of,
 };
@@ -33,50 +33,61 @@ use rutent_prov::module::platform::Platform;
 use rutent_prov::module::types::Events;
 use rutent_prov::proxy::RouteNotNamed;
 use rutent_scenarios::sim::SimWorld;
+use rutent_scenarios::sim::reader_service::ReaderService;
+use rutent_scenarios::sim::readers::Plan;
 use rutent_scenarios::sim::world::WORLD_AT;
 use segments_support::*;
 
 // What Core reads of the simulated world ----------------------------------------------------------------------------
 
-/// The simulated public networks and the reserves' books, as they stood after the last operation carried out.
+/// The reserves' books, as they stood after the last operation carried out.
 #[derive(Default)]
 struct Seen {
-    networks: BTreeMap<String, SimulatedNetwork>,
     books: BTreeMap<String, Vec<BookEntry>>,
 }
 
-/// The public networks, as Core reads them: each simulated network's movements, a movement tied to a segment by its
-/// transaction, which the simulated providers give it as its identifier (`rutent_conformance::sim::movements_of`).
+/// The reserves' books, as Core reads them. The public networks are no part of it: Core reads them through its own
+/// adapter, each listed network's reader service (`T-020-60`, [`readers_of`]).
 #[derive(Clone, Default)]
 struct World_(Rc<RefCell<Seen>>);
 
-impl PublicRecords for World_ {
-    fn rules(&self, network: &str) -> Option<NetworkRules> {
-        self.0
-            .borrow()
-            .networks
-            .get(network)
-            .map(PublicNetwork::rules)
+/// The world's reader host, run beside Core as the deployment runs it, for each network the world's providers are on
+/// (or none, where `listed` is false), and Core's adapter over it, each reader checked at start-up (`T-020-60`).
+fn readers_of(world: &World, listed: bool) -> (ReaderService, Readers) {
+    let networks = if listed {
+        world.fleet.public_networks()
+    } else {
+        Vec::new()
+    };
+    let service = ReaderService::start(
+        &networks,
+        &world.fleet.platform.world.reader_endpoints(),
+        &Plan::default(),
+    )
+    .expect("the reader host");
+    let context = rutent_scenarios::assembly::context();
+    // Core's adapter as the deployment hands it (its certificate, the CA, its clock and the host setting), each network
+    // taken in and checked through the test hooks, since no log lists them here.
+    let mut readers = Readers::new(
+        rutent_core_orch::closing::readers::ReaderTls::new(
+            service.ca_pem().as_bytes(),
+            service.chain_pem().as_bytes(),
+            service.key_pem().as_bytes(),
+        )
+        .expect("Core's side of the link"),
+        context.deployment.clone(),
+        context.protocol_versions(),
+        Box::new(SystemClock),
+    );
+    readers.set_host(
+        rutent_scenarios::sim::readers::HOST_SETTING,
+        service.address(),
+    );
+    for network in &networks {
+        readers.list(network);
+        readers.check_at(network.network.as_str(), &SystemClock);
     }
-
-    fn status(&self, network: &str, id: &MovementId) -> Status {
-        self.0
-            .borrow()
-            .networks
-            .get(network)
-            .map_or(Status::Unknown, |net| net.status(id))
-    }
-
-    fn movement(&self, network: &str, transaction: &Id) -> Option<Moved> {
-        let id = MovementId::new(transaction.as_str())?;
-        match self.status(network, &id) {
-            Status::Pending(m) | Status::Final(m) => Some(Moved {
-                id,
-                destination: m.destination,
-            }),
-            Status::Unknown | Status::ReorgedOut => None,
-        }
-    }
+    (service, readers)
 }
 
 /// Each reserve's ledger, as its publisher records the segments inside it: its book's entries for the transactions
@@ -124,11 +135,7 @@ impl Recording<'_> {
     fn refresh(&mut self) {
         let world = &self.platform.world;
         let mut seen = self.seen.0.borrow_mut();
-        // The kit's one reserve: its bank network, and its book.
-        let bank = format!("{RESERVE}-bank");
-        if let Some(net) = world.network(&bank) {
-            seen.networks.insert(bank, net.clone());
-        }
+        // The kit's one reserve's book.
         seen.books
             .insert(RESERVE.to_owned(), world.journal(RESERVE).to_vec());
     }
@@ -193,6 +200,18 @@ impl Modules for Recording<'_> {
 
 /// Runs `core`'s order over `world`'s platform, graded through `CMP-EVIDENCE` with `closing`, against `catalogue`.
 fn run(core: &mut Core, world: &mut World, catalogue: &Catalogue, closing: &mut Closing) -> Ran {
+    run_reading(core, world, catalogue, closing, true)
+}
+
+/// [`run`], Core's adapter listing the world's networks only where `listed` says.
+fn run_reading(
+    core: &mut Core,
+    world: &mut World,
+    catalogue: &Catalogue,
+    closing: &mut Closing,
+    listed: bool,
+) -> Ran {
+    let (_service, readers) = readers_of(world, listed);
     let seen = World_::default();
     let session = world.context().session;
     let mut modules = Recording {
@@ -202,7 +221,7 @@ fn run(core: &mut Core, world: &mut World, catalogue: &Catalogue, closing: &mut 
     modules.refresh();
     let mut grading = Evidenced {
         catalogue,
-        records: &seen,
+        records: rutent_core_orch::closing::Public::of(&readers),
         books: &seen,
         closing,
     };
@@ -443,6 +462,7 @@ fn deposit_waiting_for_its_public_record_closes_once_it_is_recorded() {
                 .push_back((on, Fault::Unavailable));
         }
         let session = world.context().session;
+        let (_service, readers) = readers_of(&world, true);
         let seen = World_::default();
         let mut modules = Recording {
             platform: &mut world.fleet.platform,
@@ -451,7 +471,7 @@ fn deposit_waiting_for_its_public_record_closes_once_it_is_recorded() {
         modules.refresh();
         let mut grading = Evidenced {
             catalogue: &catalogue,
-            records: &seen,
+            records: rutent_core_orch::closing::Public::of(&readers),
             books: &seen,
             closing: &mut closing,
         };
@@ -623,6 +643,42 @@ fn refusal_mid_route_is_recorded_once_and_leaves_the_order_to_be_recalculated() 
 
 /// A route ending in a deposit to a destination Core reads no public record of, which no publisher declares a private
 /// rail, could never close: it isn't routed, and nothing is handed over.
+/// A route over a network no listing names settles nothing on its provider's word (the review of `T-020-60`'s round 1,
+/// M2, reversing the round's departure): Core's own pass reads the network as unreadable (`Unreadable::NotListed`),
+/// never as "no record", so the route's deposit can't close and the route isn't run: nothing is handed over, nothing is
+/// graded and nothing settles, the withdrawal included, which with its network listed settles on the reserve's word.
+// verifies: REQ-ORD-39, INV-3
+#[test]
+fn unlisted_networks_segment_doesnt_settle_on_its_providers_word() {
+    use rutent_core_orch::closing::PublicRecords as _;
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::over(&mut world);
+    let mut closing = Closing::new();
+    let catalogue = world.catalogue.clone();
+    {
+        let (_service, readers) = readers_of(&world, false);
+        let pass = readers.pass();
+        assert_eq!(
+            pass.movement(&bank(), &id("any-transaction")).map(|_| ()),
+            Err(rutent_core_orch::closing::Unreadable::NotListed)
+        );
+        assert_eq!(
+            pass.rules(&bank()).map(|_| ()),
+            Err(rutent_core_orch::closing::Unreadable::NotListed)
+        );
+    }
+    let ran = run_reading(&mut core, &mut world, &catalogue, &mut closing, false);
+    let Ran::Refused { refused, .. } = &ran else {
+        panic!("{ran:?}");
+    };
+    assert_eq!(refused.reason, RouteRefusal::NoPublicRecord(1));
+    assert!(settled_inputs(&core).is_empty(), "nothing settles");
+    assert_eq!(evidence_of(&core, WITHDRAWAL), [], "nothing is graded");
+    assert_eq!(core.log.borrow().count(is_effect), 0, "nothing handed over");
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
 // verifies: REQ-ORD-33
 #[test]
 fn reserve_that_cant_give_a_public_record_is_not_routed_to() {
@@ -631,16 +687,17 @@ fn reserve_that_cant_give_a_public_record_is_not_routed_to() {
     let mut closing = Closing::new();
     let catalogue = world.catalogue.clone();
     let session = world.context().session;
-    // Core reads no network at all.
-    let unread = World_::default();
+    // Core reads no network at all: no listing names one.
+    let (_service, readers) = readers_of(&world, false);
+    let books = World_::default();
     let mut modules = Recording {
         platform: &mut world.fleet.platform,
         seen: World_::default(),
     };
     let mut grading = Evidenced {
         catalogue: &catalogue,
-        records: &unread,
-        books: &unread,
+        records: rutent_core_orch::closing::Public::of(&readers),
+        books: &books,
         closing: &mut closing,
     };
     let ran = core.run_with(

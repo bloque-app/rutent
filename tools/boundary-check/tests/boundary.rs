@@ -3,7 +3,8 @@
 use rutent_boundary_check::{
     Dep, Graph, OUTER, PROV_CONFINE, PROV_KEYS, PROV_KEYS_FACADE, PROV_KEYS_WITHHELD, READER_HOST,
     SourceFinding, Why, defined_in, holds_its_reexports, load, members, parse_manifest,
-    public_items_naming_any, sources_naming_core_internal, violations,
+    public_items_naming_any, sources_naming_core_internal, test_only_features_enabled,
+    test_only_features_outside_tests, violations,
 };
 use std::path::{Path, PathBuf};
 
@@ -234,6 +235,24 @@ fn a_table_header_inside_a_string_hides_no_dependency() {
     );
     // A dependencies table spelled otherwise, and one inherited from the workspace, fail closed.
     assert!(parse_manifest(&router_with("[dev_dependencies]\nrutent-stm = \"1\"")).is_err());
+    // So does one nested under another table, however spelled (the review of T-024-25 at 64309ac3, Low 4).
+    for nested in [
+        "[package.dependencies]\nrutent-stm = \"1\"",
+        "[features.x.dev-dependencies]\nrutent-stm = \"1\"",
+        "[dependencies.rutent-contracts.build_dependencies]\nrutent-stm = \"1\"",
+    ] {
+        assert!(
+            parse_manifest(&router_with(nested))
+                .is_err_and(|e| e.contains("unrecognised dependency table")),
+            "{nested}"
+        );
+    }
+    assert!(
+        parse_manifest(&router_with(
+            "[dependencies.rutent-contracts]\npath = \"x\""
+        ))
+        .is_ok()
+    );
     assert!(
         parse_manifest(&router_with(
             "[dependencies]\nrutent-stm = { workspace = true }"
@@ -1488,4 +1507,51 @@ fn scenario_assembly_takes_the_reader_host_for_its_tests_only() {
             .collect();
         assert_eq!(pairs, ["rutent-scenarios"]);
     }
+}
+
+/// Core's reader test hooks (`reader-test-hooks`) are turned on only by tests: a dev-dependency, Core's own tests
+/// through its self dev-dependency among them, never a normal or build dependency, another feature's list, or Core's
+/// own default (`T-020-60`, the review of #356's round 2, Low 1; `DEC-28`). The real workspace holds to it.
+// verifies: DEC-28, REQ-MOD-3
+#[test]
+fn reader_test_hooks_are_enabled_only_from_dev_dependencies() {
+    let root: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    assert_eq!(
+        test_only_features_outside_tests(&root).expect("the manifests read"),
+        Vec::<(String, String)>::new(),
+        "the workspace turns the hooks on only from dev-dependencies"
+    );
+    let hooks = r#"rutent-core-orch = { path = "../core-orch", features = ["reader-test-hooks"] }"#;
+    let found = |text: &str| test_only_features_enabled(text).expect("a manifest");
+    assert_eq!(
+        found(&manifest("rutent-x", "", hooks)),
+        Vec::<String>::new(),
+        "a dev-dependency may"
+    );
+    assert_eq!(
+        found(&manifest("rutent-x", hooks, "")),
+        vec!["dependencies.rutent-core-orch".to_owned()],
+        "a normal dependency may not"
+    );
+    assert_eq!(
+        found(&format!(
+            "[package]\nname = \"rutent-x\"\n\n[build-dependencies]\n{hooks}\n"
+        )),
+        vec!["build-dependencies.rutent-core-orch".to_owned()],
+        "nor a build dependency"
+    );
+    assert_eq!(
+        found(
+            "[package]\nname = \"rutent-x\"\n\n[features]\nhooks = [\"rutent-core-orch/reader-test-hooks\"]\n\n[dependencies]\nrutent-core-orch = { path = \"../core-orch\" }\n"
+        ),
+        vec!["features.hooks".to_owned()],
+        "nor another feature's list, which a normal dependency could turn on"
+    );
+    assert_eq!(
+        found(
+            "[package]\nname = \"rutent-core-orch\"\n\n[features]\ndefault = [\"reader-test-hooks\"]\nreader-test-hooks = []\n"
+        ),
+        vec!["features.default".to_owned()],
+        "nor Core's own default"
+    );
 }

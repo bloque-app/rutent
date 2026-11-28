@@ -13,12 +13,11 @@ use std::collections::BTreeMap;
 use rutent_contracts::core_internal::calls::Operator as _;
 use rutent_contracts::core_internal::{Actor, Entry};
 use rutent_contracts::provider_role::{Operation, Statement};
-use rutent_contracts::router_api::{DecisionRecord, Id};
+use rutent_contracts::router_api::Id;
 use rutent_core_orch::notice::{About, Channel, Notice, NoticeError, Receiver};
-use rutent_core_orch::recalc::{Recalculation, Recalculations};
+use rutent_core_orch::recalc::Recalculations;
 use rutent_core_orch::reversal::{self, Afterward, Asked, Confirmation, Owing, Reversals};
 use rutent_core_orch::segments::StatusError;
-use rutent_core_orch::stuck::{NoRouteLeft, NoRouteRecorded, Watch, Watching};
 use serde_json::Value;
 
 use super::{Core, StepError};
@@ -50,47 +49,10 @@ impl Lifecycle {
 }
 
 impl Core {
-    /// What `order` runs under now, as Core's own record holds it: the record of the route its one part runs on and that
-    /// route's segments, the last recalculated (`Segments::routes_ran`, its record held by intake) or the first.
-    fn current_route(&self, order: &Id) -> Result<(DecisionRecord, Vec<Id>), StepError> {
-        let started = self
-            .intake
-            .started(order)
-            .ok_or(StepError::NotNow("the order started"))?;
-        let first = started
-            .first()
-            .ok_or(StepError::NotNow("an order has a part"))?;
-        let last = self
-            .segments
-            .routes_ran(order)
-            .and_then(|(_, later)| later.iter().rev().find(|r| r.part == first.part).cloned());
-        let Some(last) = last else {
-            return Ok((started.record.clone(), first.segments.clone()));
-        };
-        let record =
-            self.intake
-                .decision_record(&last.record)
-                .cloned()
-                .ok_or(StepError::NotNow(
-                    "Core holds the recalculated route's record",
-                ))?;
-        let segments = self
-            .segments
-            .order(order)
-            .and_then(|o| {
-                o.parts
-                    .iter()
-                    .find(|p| p.part_id.as_str() == first.part.as_str())
-            })
-            .map(|p| {
-                p.segments
-                    .iter()
-                    .skip(last.settled_before)
-                    .map(|s| kit::id(s.segment_id.as_str()))
-                    .collect()
-            })
-            .ok_or(StepError::NotNow("Core follows the order's part"))?;
-        Ok((record, segments))
+    /// A fault the scenarios plant (`T-020-60` item (8)): the statement kept under `commitment` can't be read back by a
+    /// Core reopened on this disk from now on; the evidence store keeps it, so the log opens.
+    pub fn unreadable_on_reopen(&self, commitment: &rutent_contracts::module_interface::Digest) {
+        self.disk.unreadable_on_reopen(commitment);
     }
 
     /// From now on Core holds no decision record `id` of a recalculated route: a fault a scenario plants (#316's round-3 L7),
@@ -152,89 +114,6 @@ impl Core {
     }
 
     // Stuck orders -----------------------------------------------------------------------------------------------
-
-    /// Times `order`'s part: raises a material change of a p99 to the operator, and declares the part stuck once
-    /// funds it handed over are held past twice their p99 or advertised time.
-    ///
-    /// # Errors
-    ///
-    /// As `Stuck::watch`.
-    pub fn watch(&mut self, order: &Id) -> Result<Watch, StepError> {
-        let part = self.part_of(order)?;
-        let (record, segments) = self.current_route(order)?;
-        let core = kit::core();
-        let mut channel = Channel {
-            notices: &mut self.notices,
-            key: &mut self.notice_signer,
-            transport: &mut self.wire,
-        };
-        let mut parts = rutent_core_orch::stuck::Parts {
-            clock: &self.clock,
-            log: &mut self.general,
-            fresh: &mut self.fresh,
-            issued: &self.issued,
-            segments: &mut self.segments,
-            exposures: &mut self.exposures,
-        };
-        let watched = self
-            .stuck
-            .watch(
-                &mut parts,
-                &mut channel,
-                Watching {
-                    order,
-                    part: &part,
-                    segments: &segments,
-                    record: &record,
-                    at: 0,
-                    core: &core,
-                },
-            )
-            .map_err(StepError::Stuck);
-        self.feed()?;
-        watched
-    }
-
-    /// Records the outcome of a recalculation that left `order`'s part no route: the order is stuck, or waits for the
-    /// customer where its value sits at the node a failed final deposit left it.
-    ///
-    /// # Errors
-    ///
-    /// As `Stuck::no_route`.
-    pub fn record_no_route(
-        &mut self,
-        order: &Id,
-        outcome: &Recalculation,
-    ) -> Result<NoRouteRecorded, StepError> {
-        let part = self.part_of(order)?;
-        let (record, _) = self.current_route(order)?;
-        let core = kit::core();
-        let mut parts = rutent_core_orch::stuck::Parts {
-            clock: &self.clock,
-            log: &mut self.general,
-            fresh: &mut self.fresh,
-            issued: &self.issued,
-            segments: &mut self.segments,
-            exposures: &mut self.exposures,
-        };
-        let recorded = self
-            .stuck
-            .no_route(
-                &mut parts,
-                NoRouteLeft {
-                    order,
-                    part: &part,
-                    outcome,
-                    last_record: record.record_id(),
-                    core: &core,
-                },
-            )
-            .map_err(StepError::Stuck);
-        self.feed()?;
-        let recorded = recorded?;
-        self.follow_stuck(order)?;
-        Ok(recorded)
-    }
 
     /// Has Core's stuck record follow `order`, from the log's own record of its authorisation.
     ///
@@ -572,8 +451,8 @@ impl Core {
     }
 
     /// Hands Core's entry point `bytes`, a provider's result about `segment` arriving after its answer was taken, with who
-    /// the deployment's transport says handed it over: the maker its envelope names
-    /// (`rutent_core_orch::reversal::command::report_late`).
+    /// the deployment's transport says handed it over: the provider of the segment, whose module the platform carried
+    /// it from, never the maker the bytes claim (`rutent_core_orch::reversal::command::report_late`).
     ///
     /// # Errors
     ///
@@ -584,7 +463,18 @@ impl Core {
         segment: &Id,
         bytes: &[u8],
     ) -> Result<rutent_contracts::core_internal::Receipt, StepError> {
-        let presented_by = super::handed_over_by(&self.catalogue, bytes);
+        let provider = self
+            .segments
+            .order(order)
+            .and_then(|o| {
+                o.parts
+                    .iter()
+                    .flat_map(|p| p.segments.iter())
+                    .find(|s| s.segment_id.as_str() == segment.as_str())
+                    .and_then(|s| Id::new(s.provider.as_str()))
+            })
+            .ok_or(StepError::NotNow("Core follows the segment"))?;
+        let presented_by = super::handed_over_by(&self.catalogue, provider);
         reversal::command::report_late(&mut self.ports(), order, segment, bytes, &presented_by)
             .map_err(StepError::Reversal)
     }

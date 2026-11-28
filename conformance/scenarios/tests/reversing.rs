@@ -227,7 +227,7 @@ fn failed_segments_reversal_is_owed_asked_and_confirmed_by_cores_run() {
 /// once and answers that it can't tell, which may mean it paid the value back. Core carries that ask on once, under
 /// its own transaction (the exchange declares neither a status query nor a safe repeat, so the answer the platform
 /// recorded is read back), and asks the origin reserve to confirm on the retry cadence, up to its cap; however many
-/// ticks pass, and across a restart of Core, the exchange is handed one reversal operation of the conversion and Core's
+/// ticks pass, and across a restart of Core and its platform, the exchange is handed one reversal operation of the conversion and Core's
 /// log holds one ask. A second ask, the log refuses (`reversal-is-asked-again-only-after-a-refusal`).
 // verifies: REQ-ORD-3, INV-8, NFR-6
 #[test]
@@ -298,10 +298,10 @@ fn reversal_whose_outcome_is_unknown_is_never_asked_again_under_a_new_transactio
         (1..=MAX_REVERSAL_TRIES).contains(&confirmations),
         "{confirmations}"
     );
-    // Across a restart: the reopened Core rebuilds the ask, its carrying-on and the confirmations from the log, and
-    // asks nothing again.
+    // Across a restart of Core and its platform both (#355's round 4, Low 3): the reopened Core rebuilds the ask, its
+    // carrying-on and the confirmations from the log, and asks nothing again.
     let given = execution_support::given(&[IN, EXCHANGE, QUICK, OUT]);
-    let mut core = rutent_scenarios::harness::Scenario::new("execution", "AC-4", given).reopen(
+    let mut core = rutent_scenarios::harness::Scenario::new("execution", "AC-4", given).restart(
         core,
         1,
         &mut rutent_scenarios::assembly::machine::Reference,

@@ -21,6 +21,17 @@ pub trait Providers {
     /// Hands `question`, a provider-role operation in its envelope signed with the operator key, exactly as signed,
     /// to `provider`, and answers what came back, as received: `None` where nothing did.
     fn ask(&mut self, provider: &Id, question: &[u8]) -> Option<Vec<u8>>;
+
+    /// Hands `provider`, the holding account of a public node, Core's reading of a movement into it, which Core read
+    /// from the node's network through the network's reader (`T-020-60` (6)): `text` under the provider's own state
+    /// key `key`, which the deployment keeps among the account's statement, for the account's module to read when
+    /// Core asks it whether a reversed segment's credit came back (the plain wallet's `wallet.credit`). Whether the
+    /// deployment kept it. A deployment that keeps none (the default) is never asked such a question: the reversal
+    /// stays owed, failing closed.
+    fn keep_reading(&mut self, provider: &Id, key: &str, text: &str) -> bool {
+        let _ = (provider, key, text);
+        false
+    }
 }
 
 /// A source of identifiers no one can read anything from: each transaction a question is asked under, and each

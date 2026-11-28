@@ -516,7 +516,7 @@ fn public_node_unlisted_by_the_operator_is_no_longer_on_the_catalogues_public_li
     let mut settings = Settings::new();
     // Core's segments, nothing of them at the node: an unlist is held to them (`T-020-65`), and refused where they
     // aren't read.
-    let segments = rutent_core_orch::segments::Segments::new();
+    let mut segments = rutent_core_orch::segments::Segments::new();
     set(
         &mut settings,
         &mut log,
@@ -534,7 +534,7 @@ fn public_node_unlisted_by_the_operator_is_no_longer_on_the_catalogues_public_li
         &mut policy,
         &mut Targets {
             catalogue: Some(&mut catalogue),
-            segments: Some(&segments),
+            segments: Some(&mut segments),
             ..Targets::default()
         },
         &listing(false),

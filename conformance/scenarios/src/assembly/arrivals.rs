@@ -95,19 +95,7 @@ impl Core {
         let filed = self.with_arrivals(|arrivals, desk| {
             arrivals.file::<RouteFinder>(desk, &mut filed_on, filing.clone())
         });
-        // A filed order that waits for its customer is started later, by `accept_filed`, from this filing.
-        // A filing stated again, as a reopened Core's wait is restated (`T-020-51`), replaces what the log held of it.
-        if let Ok(Filed::Waiting {
-            order: Some(order), ..
-        }) = &filed
-        {
-            self.filings
-                .insert(order.as_str().to_owned(), filing.clone());
-        }
-        if let Ok(Filed::Started { order, .. }) = &filed {
-            self.filings
-                .entry(order.as_str().to_owned())
-                .or_insert_with(|| filing.clone());
+        if let Ok(Filed::Started { .. }) = &filed {
             // What the filed order runs on is built by Core from the log, its filing's inputs among it (`T-020-61`).
             rutent_core_orch::schedule::resume(&mut super::schedule::Due(self));
         }

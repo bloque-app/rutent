@@ -45,6 +45,20 @@ pub struct Disk {
     seen: Rc<RefCell<Vec<(String, usize)>>>,
     /// Records of a call the store can't take now: its name and how many more appends it turns away.
     refusing: Rc<Cell<Option<(&'static str, usize)>>>,
+    /// The result the store turns away once, of the next effect of an action kind: the kind, and, once that effect is
+    /// taken, its place in the log.
+    refusing_result_of: Rc<RefCell<Option<ResultRefusal>>>,
+    /// The statements kept that a Core reopened on this disk can't read back: the shelf keeps them, and the store
+    /// answers nothing under them to Core's reopening.
+    unreadable: Rc<RefCell<Vec<Digest>>>,
+}
+
+/// A refusal of one effect's result ([`Disk::refuse_result_of`]): the effect's action kind, and, once that effect is
+/// taken, how many more tries of its result's append are turned away.
+#[derive(Debug, Clone)]
+struct ResultRefusal {
+    kind: String,
+    left: Option<usize>,
 }
 
 impl std::fmt::Debug for Disk {
@@ -66,6 +80,17 @@ impl Disk {
         self.crash.set(Some(crash));
     }
 
+    /// A fault the scenarios plant: the statement kept under `commitment` can't be read back by a Core reopened on
+    /// this disk, as `Core::intake_reopened_without` plants it for intake alone. The shelf keeps it, so the log opens.
+    pub fn unreadable_on_reopen(&self, commitment: &Digest) {
+        self.unreadable.borrow_mut().push(commitment.clone());
+    }
+
+    /// Whether the statement kept under `commitment` is one a reopened Core can't read back.
+    pub(crate) fn is_unreadable(&self, commitment: &Digest) -> bool {
+        self.unreadable.borrow().contains(commitment)
+    }
+
     /// Takes back a planted crash that hasn't fallen, if one is planted: the process stops nowhere from now on
     /// (`T-024-21`, a run that restarts where its crash never fell).
     pub fn unplant(&self) {
@@ -77,6 +102,48 @@ impl Disk {
     /// log may try again (`AppendFailure::Unavailable`).
     pub fn refuse(&self, call: &'static str, times: usize) {
         self.refusing.set(Some((call, times)));
+    }
+
+    /// Makes the log's store turn away the result of the next effect whose action is of `kind` (such as
+    /// `ask_status`): the effect is taken, and its result can't be now (`T-020-60` item (8)).
+    pub fn refuse_result_of(&self, kind: &str) {
+        *self.refusing_result_of.borrow_mut() = Some(ResultRefusal {
+            kind: kind.to_owned(),
+            left: None,
+        });
+    }
+
+    /// Whether `record` is the result [`Disk::refuse_result_of`] turns away: the first result after an effect of its
+    /// kind, which Core appends right after carrying the effect out, each of the tries of that one append.
+    fn result_refused(&self, record: &[u8]) -> bool {
+        let mut armed = self.refusing_result_of.borrow_mut();
+        let Some(ResultRefusal { kind, left: effect }) = armed.as_mut() else {
+            return false;
+        };
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(record) else {
+            return false;
+        };
+        match (*effect, value["what"]["call"].as_str()) {
+            (None, Some("effect")) if value["what"]["action"]["kind"].as_str() == Some(kind) => {
+                *effect = Some(SEGMENT_APPEND_TRIES);
+                false
+            }
+            // Core appends an effect's result right after it carries the effect out, with no other result between, and
+            // tries one append that many times: each try of that one append is turned away, and no later one.
+            (Some(left), Some("result")) => {
+                if left <= 1 {
+                    *armed = None;
+                } else {
+                    *effect = Some(left - 1);
+                }
+                true
+            }
+            (Some(_), _) => {
+                *armed = None;
+                false
+            }
+            _ => false,
+        }
     }
 
     fn refused(&self, record: &[u8]) -> bool {
@@ -153,8 +220,13 @@ impl Disk {
         {
             return;
         }
-        // A read of a private node's record is an effect too (`T-020-58`), but no move: the plans count the moves.
-        if value["what"]["action"]["kind"].as_str() == Some("read_node_record") {
+        // A read of a private node's record is an effect too (`T-020-58`), and so is a read of a holding account's balance
+        // (`T-020-63`, which the test worlds' stand-in holder now answers for every node, `T-020-60`), but neither is a
+        // move: the plans count the moves.
+        if matches!(
+            value["what"]["action"]["kind"].as_str(),
+            Some("read_node_record" | "read_holding_balance")
+        ) {
             return;
         }
         let mut seen = self.seen.borrow_mut();
@@ -169,12 +241,15 @@ impl Disk {
     }
 }
 
+/// How many times Core's segments try one append to the log (`core-orch`'s `segments::journal::APPEND_TRIES`).
+const SEGMENT_APPEND_TRIES: usize = 3;
+
 /// The log's store, on a [`Disk`].
 pub struct LogDisk(Disk);
 
 impl Store for LogDisk {
     fn append(&mut self, record: &[u8]) -> Result<(), StoreError> {
-        if self.0.refused(record) {
+        if self.0.refused(record) || self.0.result_refused(record) {
             return Err(StoreError::Unavailable(
                 "the store can't take it now (a planted fault)".to_owned(),
             ));

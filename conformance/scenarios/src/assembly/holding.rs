@@ -25,9 +25,7 @@ use rutent_core_authz::roles::Permission;
 use rutent_core_orch::hand_on::HandOnError;
 use rutent_core_orch::segments::{Answered, Landed, Landings, Modules};
 use rutent_core_orch::snapshot::Clock;
-use rutent_core_orch::stuck::{
-    AcceptedRoute, LinkedRoutes, LogRead, OperatorSigns, Show, Wallets, Withdrawals,
-};
+use rutent_core_orch::stuck::{AcceptedRoute, LogRead, OperatorSigns, Show, Wallets, Withdrawals};
 use rutent_prov::catalogue::Instant;
 use rutent_prov::holding::wallet::{HandedOnStart, Holdings, Operator, StartError, WalletError};
 use rutent_prov::module::lifecycle::{LifecycleRefusal, SegmentRecord};
@@ -50,15 +48,6 @@ impl LogRead for LogHandle {
             .iter()
             .map(|(_, entry)| entry.clone())
             .collect()
-    }
-}
-
-/// The routes the linked orders were accepted on, as the assembly keeps them.
-pub(super) struct Accepted<'a>(pub(super) &'a BTreeMap<String, AcceptedRoute>);
-
-impl LinkedRoutes for Accepted<'_> {
-    fn accepted(&self, linked: &Id) -> Option<AcceptedRoute> {
-        self.0.get(linked.as_str()).cloned()
     }
 }
 
@@ -414,8 +403,7 @@ impl Core {
         if let Some(total) = rutent_contracts::router_api::Amount::new(resting) {
             held.insert((node, order.to_owned()), total);
         }
-        let readings = self.readings.clone();
-        readings.refresh(&self.fleet.platform.world);
+        let booked = self.booked.clone();
         let running = RefCell::new(super::Running {
             platform: &mut self.fleet.platform,
             clock: &self.clock,
@@ -423,7 +411,7 @@ impl Core {
             feed: &mut self.feed,
             log: &self.log,
             swap_to: self.swap_to.as_deref_mut(),
-            readings: &readings,
+            booked: &booked,
         });
         let mut wallets = HeldWallets {
             holdings: &mut self.holdings,
@@ -437,7 +425,7 @@ impl Core {
     /// Records the route a linked order was accepted on, which the mover holds a hand-on's route to before the
     /// holding account is asked anything (`T-020-17`). The acceptance and the decision record it names are the log's.
     pub fn accepted_linked(&mut self, route: AcceptedRoute) {
-        self.linked.insert(route.order.as_str().to_owned(), route);
+        self.linked.keep_route(route);
     }
 
     /// Installs the operator's plain wallet as the holding account of the public node `node`, holding `asset`
@@ -470,6 +458,12 @@ impl Core {
             .map_err(|e| AssemblyError::Listing(format!("the wallet's registration: {e:?}")))?;
         // The deployment's register of holding accounts names the wallet as the node's holder (`T-020-55`): policy reads
         // it there, never from the host's holdings.
+        // A wallet installed takes the place of the test world's stand-in holder there for good (`kit::LEDGER_HOLDER`).
+        self.deployed
+            .registers
+            .borrow_mut()
+            .stand_in_public
+            .remove(node);
         self.deployed
             .registers
             .borrow_mut()
@@ -485,8 +479,15 @@ impl Core {
             .borrow_mut()
             .holding_decimals
             .insert(node.to_owned(), super::schedule::DECIMALS);
-        // The node listed for its wallet gives way to the operator's own setting of it (L2 of #337's review).
-        self.reapply_catalogue_settings();
+        // The node the deployment listed for its wallet gives way to the operator's own setting of it (L2 of #337's
+        // review): the deployment's own catalogue edit, kept to what Core's settings hold of that node.
+        if self
+            .settings
+            .public_node(node)
+            .is_some_and(|set| !set.listed)
+        {
+            self.catalogue.remove_public_node(node);
+        }
         Ok(wallet)
     }
 
@@ -570,26 +571,6 @@ impl Core {
             })
     }
 
-    /// What a reopened Core finds of the landings its segments owed (`Segments::reconcile_landings`, `T-020-46`): each
-    /// value the log settled at a node a holding account holds, still resting there, restored in the account where
-    /// the wallet lacks it, never landed blind. Answers how many it found placed.
-    pub(super) fn reconcile_landings(&mut self) -> usize {
-        let at = self.clock.instant();
-        self.fleet.platform.world.set_clock(at);
-        let Some(made_at) = self.clock.now().timestamp() else {
-            return 0;
-        };
-        let mut key = RealKey::assembly();
-        let operator = OperatorSigns::new(&mut key, &self.bounds, kit::operator().acts, made_at);
-        let mut holdings = self.holdings.borrow_mut();
-        let mut landing = Landing {
-            holdings: &mut holdings,
-            platform: &mut self.fleet.platform,
-            operator: &operator,
-        };
-        self.segments.reconcile_landings(&mut landing)
-    }
-
     /// Value arrives at the holding account of `node` for `order`, as the operator lands it by hand
     /// (`REQ-CAT-23`): the wallet is asked, in a statement signed with the operator's key, to place it in the account.
     /// For a scenario that lands value where no segment settles (`AC-39`'s account checks, `private_nodes.rs`); where a segment settles
@@ -644,11 +625,48 @@ impl Core {
             .map_err(listing)
     }
 
-    /// The world's account at the wallet `provider`'s node takes a credit back for the reversal of the segment that ran
-    /// under `segment` ([`crate::sim::fleet::Fleet::credit_wallet`], `T-020-57`): the world's, never Core's. It stands
-    /// in for the network reader's confirmation, owned by `T-020-60`.
-    pub fn credit_wallet(&mut self, provider: &str, segment: &str, asset: &str, amount: &str) {
-        self.fleet.credit_wallet(provider, segment, asset, amount);
+    /// The node `network`'s network records the movement that brings the value of the reversed segment that ran under
+    /// `segment` back into the holding account `holder`: `amount` of `asset` ([`crate::sim::fleet::Fleet::return_on_network`],
+    /// `T-020-60` (6)), under the reversal's own transaction, the one Core asked its failed provider to reverse under, as
+    /// a real network records the provider's movement back (the review of round 1, L3). The world's, never Core's: Core
+    /// reads it through the node's reader.
+    ///
+    /// # Panics
+    ///
+    /// Where Core asked no reversal of the segment, or the network refuses to record it.
+    pub fn return_on_network(
+        &mut self,
+        network: &str,
+        segment: &str,
+        holder: &str,
+        asset: &str,
+        amount: &str,
+    ) {
+        // The provider moves the value back only once Core asked it to: the deployment's timer ticks Core until it has
+        // (one tick asks a reversal recorded owed).
+        for _ in 0..3 {
+            if self.life.reversals.asked_under(&kit::id(segment)).is_some() {
+                break;
+            }
+            self.tick();
+        }
+        let under = self
+            .life
+            .reversals
+            .asked_under(&kit::id(segment))
+            .expect("Core asked the segment's provider to reverse it");
+        if let Some(refused) =
+            self.fleet
+                .return_on_network(network, under.as_str(), holder, asset, amount)
+        {
+            panic!("{network} refused the movement back: {refused:?}");
+        }
+    }
+
+    /// The transaction Core asked the failed provider of the segment run under `segment` to reverse it under: what the
+    /// network records the value's movement back under (`rutent_core_orch::reversal::Reversals::asked_under`).
+    pub fn reversal_asked_under(&self, segment: &str) -> Option<Id> {
+        self.life.reversals.asked_under(&kit::id(segment))
     }
 
     /// Asks the wallet of `provider` `operation`, in a statement the operator signs, and gives the statement and the

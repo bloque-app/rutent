@@ -1935,7 +1935,8 @@
       "additionalProperties": false,
       "required": [
         "network",
-        "id"
+        "id",
+        "read_by"
       ],
       "properties": {
         "network": {
@@ -1949,6 +1950,29 @@
         "node": {
           "description": "The private node it moved the value into or out of, where it evidences that node's segments rather than one segment alone: a part's final deposit to a rail declared private, or a segment inside a private node (REQ-ORD-33).",
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "read_by": {
+          "description": "The reader that read it, and its version, as the network's listing names them (REQ-AUD-4, DEC-28, T-020-60).",
+          "$ref": "#/$defs/movement_reader"
+        }
+      }
+    },
+    "movement_reader": {
+      "description": "The reader service that read a public movement, as its network's listing names it: the reader, by its name on its host, and the version that answered (REQ-AUD-4, DEC-28).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reader",
+        "version"
+      ],
+      "properties": {
+        "reader": {
+          "description": "The reader, by its name on its host: its answers' maker.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "version": {
+          "description": "The reader's version that answered, which Core held to the listing's.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/version"
         }
       }
     },

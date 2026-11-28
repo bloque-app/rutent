@@ -479,11 +479,16 @@ fn charge_above_the_formulas_maximum_on_a_gross_segment_is_flagged_by_core() {
     assert_eq!(handed_on(&segments[0]), amount("994993"));
 }
 
-/// The charges raised to the operator. Core's tick also runs its holding check, which raises the stand-in reserve's
-/// ledger node, a holder the scenario's register of holding accounts doesn't name (`T-020-63`): that is not a charge.
+/// The charges raised to the operator: every raise, since Core's tick also runs its holding check, which reads the
+/// stand-in reserve's ledger node through the test world's stand-in holder and finds nothing to raise
+/// (`kit::LEDGER_HOLDER`, `T-020-60`).
 fn charges_raised(core: &Core) -> Vec<rutent_contracts::core_internal::Raise> {
-    core.raised()
-        .into_iter()
-        .filter(|r| matches!(r.difference, Difference::Charge { .. }))
-        .collect()
+    let raised = core.raised();
+    assert!(
+        raised
+            .iter()
+            .all(|r| matches!(r.difference, Difference::Charge { .. })),
+        "only charges are raised: {raised:?}"
+    );
+    raised
 }

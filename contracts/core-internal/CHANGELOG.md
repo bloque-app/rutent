@@ -1,6 +1,17 @@
 # core-internal changelog
 
 ## 1.0.0
+- `T-020-60` (item 2, `REQ-CAT-22`, `DEC-28`): `Difference::ReaderNotStarted {network, why}` (`reader_not_started`), the
+  raise Core makes when a listed public network's reader doesn't pass its start-up check, so the network doesn't start:
+  why, one of `listing_breaks_its_rules`, `no_host`, `other_ca`, `unreachable`, `no_answer`, `malformed`, `not_signed`,
+  `refused`, `reader_unreadable`, `other_identity` and `other_trust` (`ReaderNotStarted`). It moves nothing, and cites at
+  least one entry, as every raise but `pair_not_built` and `holding_not_read` does. Its relation
+  `raise-of-a-reader-not-started-cites-its-listing` holds each receipt it cites to a decided `list_public_network` effect
+  naming its own network, so the relation count is one more. Folded into this unreleased version: no log was kept under
+  the old shape. Fixtures: valid `raise-of-a-network-whose-reader-did-not-start`; invalid `…-citing-nothing` and
+  `…-for-a-reason-it-has-no-name-for` (two schema rules more); admission cases `--its-listing`, `--missing`, `--network`.
+  Ignorable: no, a reader that ignored it would not tell the operator why a network is held off its routes.
+  (DEC-4, DEC-20, T-020-60)
 - `T-020-61` (the coordinator's ruling on round 3 of #355; `REQ-ORD-3`, `NFR-6`): `REVERSAL_RETRIES_JOB`
   (`reversal_retries`), the name a `cadence` setting gives how often Core asks a failed segment's reversal again (its
   confirmation of the origin reserve, and an ask its provider refused), named for no provider; the `job` field's
@@ -20,6 +31,16 @@
   (refused), and the repeat row's `--a-read-of-a-reversal-whose-outcome-is-unknown`, `--a-repeat-of-a-reversal-whose-outcome-is-unknown`
   (admitted), `--a-read-of-a-reversal-the-provider-carried-out` (refused). One relation more. Folded into this unreleased
   version. Ignorable: no, a reader that ignored it would admit a second reversal of one move. (DEC-4, DEC-20, T-020-61)
+- `T-020-60` (`DEC-28`, `REQ-AUD-4`; ADR-0007 as amended): `PublicMovement` gains `read_by` (`MovementReader {reader,
+  version}`), required: the reader service that read the movement, by its name on its host, and the version that
+  answered, which Core holds to the network's listing. Every `evidence`, `replay` and `public_mismatch` entry that names a
+  movement names its reader, and a movement that names none doesn't read as one, so the log refuses it. Folded into this
+  unreleased version: no log was kept under the old shape, so `read_by` has no default. Every fixture naming a movement
+  names its reader; invalid `verified-entry-of-graded-evidence-whose-movement-names-no-reader` (one schema rule more). No
+  relation of its own, so the relation count is unmoved. Ignorable: no. (DEC-4, DEC-20, T-020-60)
+- `T-020-67`, a note (the milestone reviewer's check of `T-020-67` at `605a6c92`, routed to `T-020-60`): `ReadNodeRecord`'s
+  `by` has no default because no log was kept under the shape before it, which is why it is required rather than defaulting
+  to `grading`. (DEC-4, T-020-67)
 - `T-020-61` (item 10, the coordinator's ruling on #355's round 1; `REQ-ORD-12`, `REQ-ORD-11`, `REQ-AUZ-1`):
   `Action::EndOrder {order}` (`end_order`) and `Action::DisputeFault {order, segment}` (`dispute_fault`), the customer's
   request to end an order without completing and the named party's dispute of a provider's showing of fault, each a

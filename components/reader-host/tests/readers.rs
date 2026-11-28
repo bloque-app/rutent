@@ -592,7 +592,12 @@ fn restarted_reader_host_answers_nothing_until_each_readers_checks_pass_again() 
 // verifies: DEC-28
 #[test]
 fn question_past_its_deadline_is_dropped_by_the_reader_host() {
-    // A pool whose movement answers take 400 ms from each endpoint, so a question waits behind another.
+    // Every question here is sent with a deadline already past when it is sent, so nothing races the host's clock (the
+    // milestone reviewer's check of `T-015-05` at `3a53de34`, Low 3, and `T-020-60`'s round 1, L7): one while the
+    // reader is idle, one while it is busy with another. A question alive on arrival and dead by its turn is dropped at
+    // its turn by the same rule, which the worker's own test holds without a race (`worker::tests`, questions queued
+    // with a deadline already past). A pool whose movement answers take 1 000 ms from each endpoint, the pool asked in
+    // turn, keeps the reader busy some 3 s with the first question; it is given 6 s before it counts as hung.
     let connector = Arc::new(StubConnector::default());
     for endpoint in pool() {
         let honest = evm_node(false);
@@ -600,13 +605,14 @@ fn question_past_its_deadline_is_dropped_by_the_reader_host() {
             endpoint.trim_start_matches("https://"),
             Box::new(move |body: &str| {
                 if body.contains("rutent_movementStatus") {
-                    std::thread::sleep(Duration::from_millis(400));
+                    std::thread::sleep(Duration::from_millis(1_000));
                 }
                 honest(body)
             }),
         );
     }
-    let reader = rpc_reader("base", &["inspect"]);
+    let mut reader = rpc_reader("base", &["inspect"]);
+    reader.limits.hang_after_ms = 6_000;
     let rig = Rig::start(vec![reader.clone()], connector, &[]);
     assert!(rig.host.wait_ready(&reader.name, READY));
     let asked = |question: &rutent_contracts::reader::ReaderQuestion| {
@@ -630,27 +636,18 @@ fn question_past_its_deadline_is_dropped_by_the_reader_host() {
         "a dead question is answered with nothing"
     );
 
-    // Alive on arrival, but past its deadline by the time its turn comes: dropped when its turn comes.
+    // Dead when sent while the reader is busy with another: dropped on arrival, not queued behind it.
     let first = question("base", "base", status_of("0xmove"));
-    let mut late = question("base", "base", status_of("0xmove"));
-    late.deadline = timestamp_after(Duration::from_millis(400));
     let mut dead_while_busy = question("base", "base", status_of("0xmove"));
     dead_while_busy.deadline = timestamp_after(Duration::ZERO);
-    let (first_answer, late_answer, dead_answer, dead_took) = std::thread::scope(|scope| {
+    let (first_answer, dead_answer, dead_took) = std::thread::scope(|scope| {
         let first_answer = scope.spawn(|| asked(&first));
-        std::thread::sleep(Duration::from_millis(100));
-        let late_answer = scope.spawn(|| asked(&late));
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(150));
         // Dead on arrival while the reader is busy: not queued behind the first, so answered with nothing at once.
         let started = Instant::now();
         let dead_answer = asked(&dead_while_busy);
         let dead_took = started.elapsed();
-        (
-            first_answer.join().unwrap(),
-            late_answer.join().unwrap(),
-            dead_answer,
-            dead_took,
-        )
+        (first_answer.join().unwrap(), dead_answer, dead_took)
     });
     assert_eq!(dead_answer, None);
     assert!(
@@ -666,14 +663,9 @@ fn question_past_its_deadline_is_dropped_by_the_reader_host() {
         is_final_to(&first_answer.statement, "dest-1"),
         "{first_answer:?}"
     );
-    assert_eq!(
-        late_answer, None,
-        "a question that waited past its deadline is dropped"
-    );
 
     assert!(seen(&first), "the reader was handed the first question");
     assert!(!seen(&dead), "the dead question never reached the reader");
-    assert!(!seen(&late), "the late question never reached the reader");
     assert!(
         !seen(&dead_while_busy),
         "the question dead on arrival never reached the reader"

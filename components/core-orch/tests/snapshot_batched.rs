@@ -41,6 +41,7 @@ fn two_reserves() -> Catalogue {
             .unwrap();
         catalogue.set_module_version(provider, Version::new("1.0.0").unwrap());
         for key in tuples_of(&ad) {
+            list_networks_of(&mut catalogue, &key);
             catalogue.set_evidence_floor(key, EvidenceGrade::Statement);
         }
     }

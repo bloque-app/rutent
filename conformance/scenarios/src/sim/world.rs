@@ -10,7 +10,7 @@ use rutent_conformance::sim::{
 };
 use rutent_contracts::module_interface::Identifier;
 use rutent_contracts::module_interface::{SecretRefusalReason, SecretValue, Time};
-use rutent_evidence::{MovementId, NetworkRules, SimulatedNetwork};
+use rutent_evidence::{NetworkRules, SimulatedNetwork};
 use rutent_prov::catalogue::Instant;
 use rutent_prov::module::platform::{ClockError, World};
 use rutent_prov::module::types::Endpoint;
@@ -67,7 +67,6 @@ pub struct Delivered {
 pub struct SimWorld {
     scripts: BTreeMap<String, Script>,
     journals: BTreeMap<String, Vec<Entry>>,
-    networks: BTreeMap<String, SimulatedNetwork>,
     addresses: BTreeMap<String, IpAddr>,
     rails: BTreeMap<String, String>,
     chains: BTreeMap<String, String>,
@@ -78,14 +77,25 @@ pub struct SimWorld {
     /// The state keys the platform asked this world for, in order.
     pub state_asked: Vec<String>,
     seeded: HashMap<(String, String), String>,
+    /// What the deployment keeps among a holding account's statement for its module, by provider and key: Core's
+    /// readings of movements into a held public node's account, read through the node's reader (`T-020-60` (6)).
+    /// Never a scenario's: only Core's [`rutent_core_orch::rounds::Providers::keep_reading`] writes it.
+    kept: BTreeMap<(String, String), String>,
+    /// What Core's orders rest at each simulated provider's private node now, by node and asset, in whole units: what the
+    /// test worlds' stand-in holder ([`crate::kit::LEDGER_HOLDER`]) answers as the node's balance. The deployment sets it
+    /// before the holding check reads the accounts.
+    ledger: std::cell::RefCell<BTreeMap<(String, String), u128>>,
     /// Each provider's secrets, by name (`T-024-07`), which only that provider's own declared lookup is answered from.
     secrets: BTreeMap<(String, String), String>,
     /// Every secret value the world handed a provider, by provider (`T-024-07`).
     secrets_delivered: Vec<(String, String)>,
     clock: Option<Instant>,
     keys_down: Vec<String>,
-    /// The endpoints the world serves each network's reader, and the networks as it last published them to them
-    /// (`T-024-25`).
+    /// The providers that refuse every dry run while the switch is on, ahead of anything queued for them
+    /// ([`SimWorld::refuse_dry_runs`]).
+    refusing_dry_runs: std::collections::BTreeSet<String>,
+    /// The endpoints the world serves each network's reader, and the networks themselves, which they answer from as
+    /// they stand (`T-024-25`, `T-020-60`).
     readers: super::readers::Endpoints,
     /// The flag of the fleet's operation clock: raised when a script holds a behaviour that waits out a real
     /// deadline (silent, late), which is real time's to judge (`T-013-08`).
@@ -131,9 +141,7 @@ impl SimWorld {
         let host = chain_host(network);
         self.serve(&host);
         self.chains.insert(host, network.to_owned());
-        self.networks
-            .insert(network.to_owned(), SimulatedNetwork::new(network, rules));
-        self.readers.serve(network);
+        self.readers.serve(network, rules);
     }
 
     /// The endpoints the world serves the networks' readers (`T-024-25`): a handle on them, shared, which the reader
@@ -142,25 +150,15 @@ impl SimWorld {
         self.readers.clone()
     }
 
-    /// Publishes every network as it stands now, and the movements delivered to them, to the endpoints the readers
-    /// read (`T-024-25`): what they answer from until the next publication.
-    pub fn publish_to_readers(&self) {
-        let delivered: Vec<Movement> = self
-            .delivered
-            .iter()
-            .filter_map(|d| serde_json::from_str(&d.body).ok())
-            .collect();
-        self.readers.publish(&self.networks, &delivered);
+    /// A simulated public network as it stands now, a copy.
+    pub fn network(&self, network: &str) -> Option<SimulatedNetwork> {
+        self.readers.network(network)
     }
 
-    /// A simulated public network.
-    pub fn network(&self, network: &str) -> Option<&SimulatedNetwork> {
-        self.networks.get(network)
-    }
-
-    /// A simulated public network, to drive: blocks, reorgs and checkpoints are the scenario's to cause.
-    pub fn network_mut(&mut self, network: &str) -> Option<&mut SimulatedNetwork> {
-        self.networks.get_mut(network)
+    /// A simulated public network, to drive: blocks, reorgs and checkpoints are the scenario's to cause. Its readers
+    /// read what the scenario did as soon as the hold is let go.
+    pub fn network_mut(&mut self, network: &str) -> Option<super::readers::NetworkMut<'_>> {
+        self.readers.network_mut(network)
     }
 
     /// Queues `behaviour` for `provider`'s next operation that isn't a dry run and names a transaction, of whatever
@@ -223,6 +221,37 @@ impl SimWorld {
     pub fn seed_state(&mut self, provider: &str, key: &str, value: &str) {
         self.seeded
             .insert((provider.to_owned(), key.to_owned()), value.to_owned());
+    }
+
+    /// Keeps `text` under `provider`'s own state `key`, as the deployment keeps Core's reading of a movement into a held
+    /// public node's holding account for the account's module (`T-020-60` (6)): the assembly's answer to Core's
+    /// [`rutent_core_orch::rounds::Providers::keep_reading`], and nothing else's.
+    pub fn keep_reading(&mut self, provider: &str, key: &str, text: &str) {
+        self.kept
+            .insert((provider.to_owned(), key.to_owned()), text.to_owned());
+    }
+
+    /// Sets what Core's orders rest at the simulated providers' private nodes now, for the stand-in holder to answer.
+    pub fn set_ledger(&self, resting: BTreeMap<(String, String), u128>) {
+        *self.ledger.borrow_mut() = resting;
+    }
+
+    /// The stand-in holder's balance at `node` in `asset`: what Core's orders rest there now.
+    pub fn ledger_balance(&self, node: &str, asset: &str) -> u128 {
+        self.ledger
+            .borrow()
+            .get(&(node.to_owned(), asset.to_owned()))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Records `movement` on its network, as the network itself records a movement no provider's module made through
+    /// the platform: what a scenario drives, as it drives blocks and reorgs. Why the network refused it, where it did.
+    pub fn record_movement(
+        &mut self,
+        movement: &Movement,
+    ) -> Option<rutent_evidence::RecordRefused> {
+        self.readers.record(&movement.network, movement)
     }
 
     /// Seeds `provider`'s own secret `name`, which only a lookup of that provider's, for a secret its release
@@ -302,7 +331,20 @@ impl SimWorld {
         self.keys_down.retain(|p| p != provider);
     }
 
+    /// Has `provider` refuse every dry run from now on, ahead of what is queued for it, while `on`; off, it answers as
+    /// its script says again, nothing queued taken meanwhile (`T-020-60` item (8)).
+    pub fn refuse_dry_runs(&mut self, provider: &str, on: bool) {
+        if on {
+            self.refusing_dry_runs.insert(provider.to_owned());
+        } else {
+            self.refusing_dry_runs.remove(provider);
+        }
+    }
+
     fn next_behaviour(&mut self, provider: &str, kind: &str, dry_run: bool) -> Option<Behaviour> {
+        if dry_run && self.refusing_dry_runs.contains(provider) {
+            return Some(Behaviour::act(rutent_conformance::sim::Act::Refuse));
+        }
         let script = self.scripts.get_mut(provider)?;
         let at = script
             .queue
@@ -345,8 +387,10 @@ impl World for SimWorld {
             let behaviour = self.next_behaviour(provider, kind, mode == "dry")?;
             return Some(serde_json::to_string(&behaviour).expect("a behaviour"));
         }
-        self.seeded
-            .get(&(provider.to_owned(), key.to_owned()))
+        let key = (provider.to_owned(), key.to_owned());
+        self.kept
+            .get(&key)
+            .or_else(|| self.seeded.get(&key))
             .cloned()
     }
 
@@ -373,22 +417,9 @@ impl World for SimWorld {
                 .push(entry);
         } else if let Some(network) = self.chains.get(&endpoint.host)
             && let Ok(movement) = serde_json::from_str::<Movement>(&body)
+            && let Some(why) = self.readers.record(network, &movement)
         {
-            let recorded = MovementId::new(movement.id.clone()).map(|id| {
-                self.networks.get_mut(network).map(|net| {
-                    net.record(
-                        id,
-                        rutent_evidence::Movement {
-                            destination: movement.destination.clone(),
-                            asset: movement.asset.clone(),
-                            amount: movement.amount.clone(),
-                        },
-                    )
-                })
-            });
-            if let Some(Some(Err(why))) = recorded {
-                self.refused_movements.push((movement, format!("{why:?}")));
-            }
+            self.refused_movements.push((movement, format!("{why:?}")));
         }
     }
 

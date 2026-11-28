@@ -13,6 +13,7 @@ pub mod disk;
 pub mod fleet;
 pub mod orders;
 pub mod probes;
+pub mod reader_service;
 pub mod readers;
 pub mod world;
 

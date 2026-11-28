@@ -124,6 +124,12 @@ pub enum Fault {
     /// From now on, the destination's network ties each deposit to the first movement to its account of its amount:
     /// a reserve paying two orders with one payment (`T-020-09`, `REQ-ORD-38`).
     OnePaymentForTwo,
+    /// The log's store turns away the result of the next effect whose action is of `kind`, each try of it, such as
+    /// `ask_status`, as a store that can't take it now does (`T-020-60` item (8)).
+    RefuseResultOf {
+        /// The effect's action kind.
+        kind: &'static str,
+    },
 }
 
 /// One step of a scenario's when.
@@ -625,6 +631,7 @@ pub fn plant(core: &mut Core, fault: &Fault) {
             );
         }
         Fault::OnePaymentForTwo => core.tie_payments_by_destination(),
+        Fault::RefuseResultOf { kind } => core.disk.refuse_result_of(kind),
     }
 }
 

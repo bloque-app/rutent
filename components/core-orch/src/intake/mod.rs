@@ -937,6 +937,18 @@ impl Intake {
             .or_else(|| self.others.get(order.as_str()))
     }
 
+    /// Whether an order quoted and neither started nor ended has a node of its quoted route that `names` (`T-020-60`:
+    /// a network's standing doesn't change under a quoted order that uses it, as a node's doesn't).
+    pub fn quoted_over(&self, names: &mut dyn FnMut(&NodeRef) -> bool) -> bool {
+        self.requests.values().any(|kept| {
+            !kept.ended
+                && kept.started.is_none()
+                && kept.offered.as_ref().is_some_and(|offered| {
+                    route_of(&offered.candidate).any(|(_, node)| names(node))
+                })
+        })
+    }
+
     /// Every order Core started that runs on something, by id, in order.
     pub fn started_orders(&self) -> Vec<Id> {
         let mut orders: Vec<Id> = self

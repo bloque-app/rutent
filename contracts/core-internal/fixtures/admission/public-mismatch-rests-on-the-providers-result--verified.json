@@ -5695,7 +5695,11 @@
       },
       "movement": {
         "network": "polygon",
-        "id": "0xmove-p1s2"
+        "id": "0xmove-p1s2",
+        "read_by": {
+          "reader": "polygon-reader",
+          "version": "0.1.0"
+        }
       },
       "found": "wrong_amount",
       "moved": {

@@ -50,6 +50,35 @@ use rutent_prov::module::types::Events;
 use rutent_prov::proxy::RouteNotNamed;
 use serde_json::{Value, json};
 
+/// No public records: none of these reversals leaves a held public node, so none is read (`T-020-60` (6)).
+struct NoRecords;
+
+impl rutent_core_orch::closing::PublicRecords for NoRecords {
+    fn rules(
+        &self,
+        _: &str,
+    ) -> Result<Option<rutent_evidence::NetworkRules>, rutent_core_orch::closing::Unreadable> {
+        Ok(None)
+    }
+
+    fn status(
+        &self,
+        _: &str,
+        _: &rutent_evidence::MovementId,
+    ) -> Result<rutent_evidence::Status, rutent_core_orch::closing::Unreadable> {
+        Ok(rutent_evidence::Status::Unknown)
+    }
+
+    fn movement(
+        &self,
+        _: &str,
+        _: &Id,
+    ) -> Result<Option<rutent_core_orch::closing::Moved>, rutent_core_orch::closing::Unreadable>
+    {
+        Ok(None)
+    }
+}
+
 const ORDER: &str = "ord-1";
 const PART: &str = "p1";
 const SEGMENTS: [&str; 3] = ["p1-s1", "p1-s2", "p1-s3"];
@@ -589,7 +618,7 @@ impl Grading for PublicDeposit {
                 "what": { "call": "evidence", "evidence": settled.evidence, "order": settled.order,
                     "segment": settled.segment, "grade": 1, "whose": "co-ach", "rests_on": [settled.result],
                     "movement": { "network": "co-ach", "id": format!("mv-{}", settled.transaction.as_str()),
-                        "node": "ledger-in" } },
+                        "node": "ledger-in", "read_by": { "reader": "co-ach-reader", "version": "0.1.0" } } },
                 "when": { "at": settled.at, "source": "core_clock" },
                 "outcome": { "status": "observed" },
             }))
@@ -607,7 +636,8 @@ impl Grading for PublicDeposit {
             "who": settled.core,
             "what": { "call": "evidence", "evidence": settled.evidence, "order": settled.order,
                 "segment": settled.segment, "grade": 1, "whose": "polygon", "rests_on": [settled.result],
-                "movement": { "network": "polygon", "id": format!("mv-{}", settled.transaction.as_str()) } },
+                "movement": { "network": "polygon", "id": format!("mv-{}", settled.transaction.as_str()),
+                    "read_by": { "reader": "polygon-reader", "version": "0.1.0" } } },
             "when": { "at": settled.at, "source": "core_clock" },
             "outcome": { "status": "observed" },
         }))
@@ -1305,6 +1335,8 @@ impl World {
             bounds: &bounds,
             key: &mut self.key,
             providers: answering,
+            records: &rutent_core_orch::closing::Public::stand_in(&NoRecords),
+            closing: &rutent_core_orch::closing::Closing::new(),
         };
         self.reversals.confirm_reversal(&mut parts, &mut asking, at)
     }
@@ -1433,6 +1465,8 @@ impl World {
             bounds: &bounds,
             key: &mut self.key,
             providers: &mut no_one,
+            records: &rutent_core_orch::closing::Public::stand_in(&NoRecords),
+            closing: &rutent_core_orch::closing::Closing::new(),
         };
         let mut moving = Moving {
             decisions: &mut self.policy,
