@@ -373,7 +373,7 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 161] = [
+const SCHEMA_RULES: [SchemaRule; 162] = [
     (
         "verified-entry-of-graded-evidence-whose-movement-names-no-reader",
         &[("/what/movement", "required")],
@@ -990,6 +990,11 @@ const SCHEMA_RULES: [SchemaRule; 161] = [
         "raise-of-a-pair-not-built-citing-one-receipt-twice",
         &[("/cites", "uniqueItems")],
         "a raise cites the entries it rests on, each once",
+    ),
+    (
+        "raise-of-a-holding-difference-naming-its-figure",
+        &[("/difference", "additionalProperties")],
+        "unknown field `by`",
     ),
     (
         "raise-of-a-holding-not-read-naming-a-balance",
@@ -3746,6 +3751,9 @@ fn raise_of_a_holding_not_read_carries_no_balance_and_cites_only_its_accounts_ch
     assert_accepted_by_both("raise-of-a-holding-account-not-read-citing-its-last-check");
     assert_rejected("raise-of-a-holding-not-read-naming-a-balance");
     assert_rejected("raise-of-a-holding-not-read-for-a-reason-it-has-no-name-for");
+    // Nor does a holding difference name its figure: by how much would state the balance (`T-020-68`).
+    assert_accepted_by_both("raise-of-a-holding-account-short");
+    assert_rejected("raise-of-a-holding-difference-naming-its-figure");
     // It may cite nothing, as a pair never built may, and no other kind may.
     let mut unread = fixture("valid", "raise-of-a-holding-account-not-read");
     assert!(validator("raise").is_valid(&unread));

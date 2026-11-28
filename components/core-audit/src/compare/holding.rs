@@ -8,7 +8,7 @@ use rutent_contracts::core_internal::{
     Difference, Direction, HoldingIncomparable, HoldingReading, Word,
 };
 use rutent_contracts::provider_role::Denomination;
-use rutent_contracts::router_api::{Amount, Id, PositiveAmount};
+use rutent_contracts::router_api::{Amount, Id};
 
 /// What checking a holding account finds.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,9 +38,10 @@ pub fn not_comparable(
 
 /// Compares `balance` with the sum of `held` for `account`, in `asset`, the balance being `word`'s: the one
 /// comparison every check of a holding account makes. It walks the amounts against the balance and never forms the
-/// sum, so a sum past what an amount states (78 digits) still gives its short where the short is one an amount
-/// states; only a short past that bound can't be stated, and it is raised as not comparable. An over is never past
-/// it, being at most the balance.
+/// sum, so a sum past what an amount states (78 digits) is still compared where its short is one an amount states;
+/// only a short past that bound can't be, and it is raised as not comparable. An over is never past it, being at
+/// most the balance. A difference says which way and never by how much (`REQ-AUD-6`, `T-020-68`): where nothing is
+/// held the figure would be the balance, and elsewhere the balance would be what is held plus it.
 pub fn judge<'a>(
     account: &Id,
     asset: &Denomination,
@@ -71,17 +72,17 @@ pub fn judge<'a>(
             }
         }
     }
-    let (direction, by) = if !past.is_zero() {
-        (Direction::Short, past)
+    // Which way, and never by how much: the figure, with what the log holds, would state the balance (`REQ-AUD-6`).
+    let direction = if !past.is_zero() {
+        Direction::Short
     } else if !left.is_zero() {
-        (Direction::Over, left)
+        Direction::Over
     } else {
         return HoldingVerdict::Match;
     };
     HoldingVerdict::Differs(Difference::Holding {
         account: account.clone(),
         direction,
-        by: PositiveAmount::new(by.as_str()).expect("a short or an over is above zero"),
         asset: asset.clone(),
         word,
     })
@@ -89,7 +90,7 @@ pub fn judge<'a>(
 
 /// Checks a holding account's balance against the sum of what each order holds there. The balance keeps the word it
 /// was read under: a private node's is its publisher's, and a difference says so (`REQ-AUD-15`). A short past what
-/// an amount can state is raised as not comparable, so it fails closed and states no `by` it can't know.
+/// an amount can state is raised as not comparable, so it fails closed.
 pub fn check_holding(reading: &HoldingReading) -> HoldingVerdict {
     judge(
         &reading.account,

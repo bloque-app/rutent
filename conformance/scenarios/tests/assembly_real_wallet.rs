@@ -688,14 +688,18 @@ fn public_nodes_balance_is_checked_against_what_cores_segments_rest_there() {
     assert!(
         matches!(
             &raised[0].difference,
-            Difference::Holding { direction: Direction::Over, by, word: Word::Checked, .. } if by.amount().as_str() == "100"
+            Difference::Holding {
+                direction: Direction::Over,
+                word: Word::Checked,
+                ..
+            }
         ),
         "the wallet holds more than Core attributes: {:?}",
         raised[0].difference
     );
 
-    // The wallet then gives five hundred out that neither record knows of: short of both, each comparison says so, by
-    // what it is short of.
+    // The wallet then gives five hundred out that neither record knows of: short of both, and each comparison says so,
+    // by no figure (`REQ-AUD-6`, `T-020-68`).
     let statement = serde_json::json!({
         "kind": "withdrawal", "transaction": "direct-withdrawal-1", "provider": wallet.provider,
         "origin": { "network": wallet.provider }, "destination": NODE, "asset": "USDC",
@@ -705,22 +709,22 @@ fn public_nodes_balance_is_checked_against_what_cores_segments_rest_there() {
     core.ask_wallet(&wallet.provider, operation)
         .expect("the wallet answers the operator");
     core.tick();
-    let shorts: Vec<String> = core
+    let shorts = core
         .raised()
         .iter()
-        .filter_map(|r| match &r.difference {
-            Difference::Holding {
-                direction: Direction::Short,
-                by,
-                ..
-            } => Some(by.amount().as_str().to_owned()),
-            _ => None,
+        .filter(|r| {
+            matches!(
+                &r.difference,
+                Difference::Holding {
+                    direction: Direction::Short,
+                    ..
+                }
+            )
         })
-        .collect();
+        .count();
     assert_eq!(
-        shorts,
-        ["400", "500"],
-        "short of what Core attributes by 400, of what the host's record says by 500"
+        shorts, 2,
+        "short of what Core attributes, and of what the host's record says"
     );
 }
 

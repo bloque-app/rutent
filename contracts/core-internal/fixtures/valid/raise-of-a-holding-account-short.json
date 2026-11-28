@@ -4,7 +4,6 @@
     "kind": "holding",
     "account": "hold-7",
     "direction": "short",
-    "by": "5000000",
     "asset": {
       "id": "USDC",
       "decimals": 6

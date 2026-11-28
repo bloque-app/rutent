@@ -2101,9 +2101,9 @@ pub enum HoldingIncomparable {
     EvidencedInAnotherAsset,
     /// Value is evidenced at an account no reading of its balance was given for (`INV-1`).
     NoReading,
-    /// The value held or evidenced there is past the balance by more than an amount can state (78 digits): a short
-    /// no `by` can state. A sum past the bound whose difference from the balance an amount states is a `holding`
-    /// difference instead (`REQ-AUD-15`, `INV-1`).
+    /// The value held or evidenced there is past the balance by more than an amount can state (78 digits), so the
+    /// two can't be set against each other as amounts. A sum past the bound whose difference from the balance an
+    /// amount states is a `holding` difference instead (`REQ-AUD-15`, `INV-1`).
     SumPastTheBound,
 }
 
@@ -2124,14 +2124,15 @@ pub enum Difference {
         /// The asset.
         asset: Denomination,
     },
-    /// A holding account's balance and the value held there for orders disagree (`REQ-AUD-15`).
+    /// A holding account's balance and the value held there for orders disagree (`REQ-AUD-15`): which way, and no
+    /// figure. By how much would state the balance, since the value held is the log's own, and where nothing is held
+    /// it would be the balance itself; so the operator reads the amount through the decided `read_holding_balance`,
+    /// whose answer reaches it outside the log (`REQ-AUD-6`, `T-020-68`).
     Holding {
         /// The holding account.
         account: Id,
-        /// Which way it is off.
+        /// Which way it is off: short of the value held, or over it.
         direction: Direction,
-        /// By how much, in the asset's unit.
-        by: PositiveAmount,
         /// The asset.
         asset: Denomination,
         /// Whose word the balance was.

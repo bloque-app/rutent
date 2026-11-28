@@ -1,6 +1,16 @@
 # core-internal changelog
 
 ## 1.0.0
+- `T-020-68` (item 1, `T-025-05`'s third pass, M2; `REQ-AUD-6`, `REQ-AUD-15`): `Difference::Holding` loses `by`, the
+  figure an account was over or short by. With the value held, which the log holds, it stated the balance, and where
+  nothing is held it was the balance itself. The raise carries the difference's direction alone, with the account, the
+  asset and whose word the balance was: no figure and no bucket, since a bucket bounds the balance where nothing is held.
+  The operator reads the amount through the decided `read_holding_balance`, whose answer reaches it outside the log
+  (Core's schedule hands it back with each check). `holding_not_comparable` (`sum_past_the_bound`) is unchanged. Folded into this unreleased version: no
+  log was kept under the old shape. Fixtures: valid `raise-of-a-holding-account-short` and invalid `raise-citing-nothing`
+  without `by`; invalid `raise-of-a-holding-difference-naming-its-figure` (one schema rule more). No relation of its
+  own, so the relation count is unmoved. Ignorable: no, a reader that took `by` would read a balance. (DEC-4, DEC-20,
+  T-020-68)
 - `T-020-60` (item 2, `REQ-CAT-22`, `DEC-28`): `Difference::ReaderNotStarted {network, why}` (`reader_not_started`), the
   raise Core makes when a listed public network's reader doesn't pass its start-up check, so the network doesn't start:
   why, one of `listing_breaks_its_rules`, `no_host`, `other_ca`, `unreachable`, `no_answer`, `malformed`, `not_signed`,

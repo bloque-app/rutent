@@ -387,7 +387,10 @@ Every request carries its own id, which its answer names, and an `at`: Core's cl
   so a relay's copy of another party's statement is detected and stays that party's (`REQ-AUD-2`, `T-022-02`).
 - **The log holds no balance** (`REQ-AUD-6`). A `HoldingReading` goes to the check, not to the log; its entry is
   `holding_check`, which names the account, its node, whose word the balance was and the orders, without the
-  balance. A raise carries the difference, not the balance. A stated entry holds no statement's content.
+  balance. A raise carries the difference, not the balance: a holding difference says which way the account is off,
+  and never by how much, which with the value held would state the balance (`T-020-68`). The operator reads the amount
+  through the decided `read_holding_balance`, whose answer reaches it outside the log. A stated entry holds no
+  statement's content.
 
 ### Where each record Core writes lives
 
