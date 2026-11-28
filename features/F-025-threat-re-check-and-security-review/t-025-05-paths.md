@@ -1573,3 +1573,951 @@ The paths `git diff --name-only e63afbeb..2caa6f55` lists under a `DEC-20` prefi
 | `contracts/router-api/fixtures/patches/decision-record-batched-payout-naming-an-operation-before-the-last.json` | 10 | 0 | data; checked by `contracts/tests/`; no key material |
 | `contracts/router-api/fixtures/patches/decision-record-batching-deposit-ending-a-kept-candidate.json` | 9 | 0 | data; checked by `contracts/tests/`; no key material |
 | `contracts/router-api/fixtures/valid/decision-record-shortlist-dropping-a-route-ending-at-a-batching-reserve.json` | 745 | 0 | data; checked by `contracts/tests/`; no key material |
+
+## Third pass (`dcefd125..47a2b2a0`, 2026-11-28)
+
+The paths `git diff --name-only dcefd125 47a2b2a0` lists under a `DEC-20` prefix (`HOUSE-RULES.md`, `.github/CODEOWNERS`,
+now with `components/reader-host/` and the provider system's paths it reaches), with `components/prov/src/module/` whole,
+`conformance/evidence/v0-scope` and `HOUSE-RULES.md`, whose `DEC-20` list changed: 935 paths, 152 of them code, schemas,
+docs, tests and workflows, and 783 contract fixtures (291 new, 492 changed). Ids are the findings, informational notes and residuals of `notes.md`, section
+"T-025-05, third pass". Counts are lines added and removed. "data" is a fixture: JSON that `contracts/tests/` reads valid
+or refused; none holds a private key, a seed or a token (searched; a declaration's `secrets` field names secrets and
+holds none).
+
+| Path | + | - | Verdict |
+|---|---|---|---|
+| `.github/CODEOWNERS` | 8 | 0 | sound (the reader host, boundary-check and the prov paths the host reaches added, matching `HOUSE-RULES.md`'s list) |
+| `.github/workflows/ci.yml` | 25 | 0 | sound (T-024-24's doc steps for the module guests and the plain wallet: no permission, secret or untrusted input added) |
+| `.github/workflows/jail-probes.yml` | 19 | 1 | sound (T-015-04 and T-015-05's probes; each exact `... ok` line grepped, so a skipped probe fails the step) |
+| `.github/workflows/stm-vos.yml` | 34 | 0 | sound (T-024-24's doc steps; VOS sources as the lint step reads them) |
+| `HOUSE-RULES.md` | 9 | 1 | sound (the `DEC-20` list gains the reader host, the provider system's paths it reaches and `tools/boundary-check/`; it matches `.github/CODEOWNERS` entry for entry, and its last line says a path added to the list is added there in the same change) |
+| `components/core-audit/src/compare/detect.rs` | 45 | 3 | sound |
+| `components/core-audit/src/compare/mod.rs` | 20 | 0 | sound |
+| `components/core-audit/src/log/keys.rs` | 351 | 18 | sound (a revocation counts from its admitted effect, closing L5, `T-022-11`; a cutover from its admitted effect, an advertisement judged at its received time); informational I4 |
+| `components/core-audit/src/log/mod.rs` | 30 | 0 | sound |
+| `components/core-audit/src/measures/mod.rs` | 1 | 1 | sound |
+| `components/core-audit/src/measures/trail.rs` | 49 | 0 | sound |
+| `components/core-audit/src/receipts/receipt.rs` | 3 | 0 | sound |
+| `components/core-audit/src/receipts/store.rs` | 16 | 4 | sound |
+| `components/core-audit/tests/checkpoints.rs` | 2 | 0 | test; sound (named test `rewrite with full operator access is detected by the checker` passes at `47a2b2a0`) |
+| `components/core-audit/tests/log.rs` | 175 | 0 | test; sound |
+| `components/core-audit/tests/receipts.rs` | 90 | 5 | test; sound |
+| `components/core-audit/tests/reopen.rs` | 62 | 15 | test; sound |
+| `components/core-authz/src/core_sources/mod.rs` | 472 | 0 | sound (answers derived from the log, configuration left to the deployment, `T-020-55`) |
+| `components/core-authz/src/core_sources/tests.rs` | 368 | 0 | test; sound |
+| `components/core-authz/src/cpl/tests.rs` | 3 | 1 | test; sound |
+| `components/core-authz/src/engine/entry_points.rs` | 586 | 1 | sound (the new carriers `repeat_operation` and `recorded_answer` listed; `status`, `late_kept`, `late_answers` listed as moving nothing, with why) |
+| `components/core-authz/src/engine/mod.rs` | 177 | 18 | sound (31 decided actions in the named test, which passes at `47a2b2a0`) |
+| `components/core-authz/src/funds/mod.rs` | 8 | 0 | sound |
+| `components/core-authz/src/funds/tests.rs` | 39 | 0 | test; sound |
+| `components/core-authz/src/lib.rs` | 1 | 0 | sound |
+| `components/core-authz/src/parties/mod.rs` | 29 | 0 | sound |
+| `components/core-authz/src/parties/tests.rs` | 143 | 10 | test; sound |
+| `components/core-authz/src/roles/mod.rs` | 252 | 9 | sound (read grants and revocations each a permission, operator's by the register, the grantee never the operator's, the role bound to its login: the milestone review's finding 1, `T-021-14`; each new action held to its role and permission); low L8 (an operator's fault acceptance has no permission of its own, `core-orch`) |
+| `components/core-authz/src/roles/tests.rs` | 2578 | 107 | test; sound (the sweep's match over every `Permission` is exhaustive, so a new one breaks the build until it is swept) |
+| `components/core-authz/src/session/mod.rs` | 248 | 41 | sound (a read by a permission held to the grantee's party, login and role; ids never reused; the register rebuilt from the log on reopen, unread refusing as missing, `T-021-14`, `T-021-17`) |
+| `components/core-authz/src/session/tests.rs` | 637 | 21 | test; sound |
+| `components/core-authz/src/stuck/mod.rs` | 70 | 6 | sound (the mover held to a holder the order involves, `T-021-16`) |
+| `components/core-authz/src/stuck/tests.rs` | 423 | 2 | test; sound |
+| `components/prov/Cargo.toml` | 4 | 0 | sound (no target path, no feature that turns a jail layer off) |
+| `components/prov/src/confine.rs` | 11 | 0 | sound (re-exports the sandbox's items only; pinned by boundary-check) |
+| `components/prov/src/keys.rs` | 15 | 0 | sound (a facade over a role's statement keys, `T-015-05`; pinned by boundary-check) |
+| `components/prov/src/lib.rs` | 4 | 0 | sound |
+| `components/prov/src/module/admission.rs` | 27 | 6 | sound (the version judged at its admission time, `T-020-45`) |
+| `components/prov/src/module/children.rs` | 31 | 0 | sound |
+| `components/prov/src/module/lifecycle.rs` | 258 | 38 | sound (releases and confirmations survive a restart, `T-013-11`, `T-020-49`) |
+| `components/prov/src/module/mod.rs` | 3 | 0 | sound |
+| `components/prov/src/module/output.rs` | 4 | 1 | sound |
+| `components/prov/src/module/platform.rs` | 1410 | 92 | sound (the record written before each hand-over and read back on opening; a repeat refused unless the catalogue's accepted advertisement declares a safe retry; the recorded answer read moves nothing; the status question held to the platform's own record, `T-013-10`, `T-013-11`, `T-020-61`, `T-020-63`); informational I5; residual R-REPEAT |
+| `components/prov/src/module/record.rs` | 1024 | 0 | sound (append-only, synced, one holder, a failed write refuses every later one; `Ended` kept for good, so a freed transaction never runs again, `T-013-10`) |
+| `components/prov/src/module/types.rs` | 5 | 0 | sound |
+| `components/prov/src/proxy/calls.rs` | 15 | 3 | sound |
+| `components/prov/src/proxy/mod.rs` | 10 | 6 | sound |
+| `components/prov/src/proxy/signing.rs` | 838 | 10 | sound (a nested result, hold, terms or record signed only for what was asked; a status answer never rewrites a final answer the platform holds) |
+| `components/prov/src/proxy/statement_keys.rs` | 139 | 0 | sound (one resolver for one keys path; a `secrets` field refused) |
+| `components/prov/src/proxy/tests/calls.rs` | 85 | 0 | test; sound |
+| `components/reader-host/Cargo.toml` | 31 | 0 | sound (rustls over ring, no aws-lc, no built-in roots; rcgen dev only) |
+| `components/reader-host/examples/standin_reader.rs` | 538 | 0 | test stand-in; sound (an example, never the shipped binary) |
+| `components/reader-host/src/config.rs` | 251 | 0 | sound (a zero restart delay refused, `T-015-05`) |
+| `components/reader-host/src/egress.rs` | 525 | 0 | sound (the declaration the host's config, never the reader's; each address checked against the special-purpose ranges and the checked one dialled) |
+| `components/reader-host/src/host.rs` | 262 | 0 | sound (signs only an answer held to the question; a past deadline dropped); residuals R-READER-HOST, R-READER-CONTENT |
+| `components/reader-host/src/jail.rs` | 398 | 0 | sound (`RLIMIT_AS` set before exec and read back, the empty root checked, `T-015-05`) |
+| `components/reader-host/src/keys.rs` | 218 | 0 | sound (key resolved at signing, refused if the operator's or not the listed key's private half; one spelling of a seed) |
+| `components/reader-host/src/lib.rs` | 69 | 0 | sound |
+| `components/reader-host/src/link.rs` | 573 | 0 | sound (mTLS, the operator's CA the one anchor, client auth mandatory and held to Core's name; no resumption or early data; Core's slot only after Core authenticated); residual R-SLOT |
+| `components/reader-host/src/main.rs` | 105 | 0 | sound (the key store's token read then removed from the environment before any thread) |
+| `components/reader-host/src/records.rs` | 141 | 0 | sound |
+| `components/reader-host/src/time.rs` | 66 | 0 | sound |
+| `components/reader-host/src/wire.rs` | 195 | 0 | sound (frames bounded) |
+| `components/reader-host/src/worker.rs` | 905 | 0 | sound (nothing but a log line taken from an unconfined reader; an answer held to request, network, question, version, shape and configured rules; the pool's quorum gates the transport) |
+| `components/reader-host/tests/common/mod.rs` | 587 | 0 | test; sound |
+| `components/reader-host/tests/egress.rs` | 287 | 0 | test; sound |
+| `components/reader-host/tests/jail.rs` | 275 | 0 | test; sound (Linux only; its `ok` lines are grepped by `jail-probes`) |
+| `components/reader-host/tests/keys.rs` | 178 | 0 | test; sound |
+| `components/reader-host/tests/link.rs` | 403 | 0 | test; sound |
+| `components/reader-host/tests/readers.rs` | 700 | 0 | test; sound |
+| `conformance/evidence/v0-scope` | 2 | 2 | sound (`REQ-PRT-2` and `REQ-PRT-4` from `m4` to `m3`, as `T-020-54` built the cutover rule into Core and the log; one `strict:` line; no other row moves) |
+| `contracts/CHANGELOG.md` | 18 | 0 | sound |
+| `contracts/CONTRACTS` | 1 | 0 | sound (`reader` 1.0.0 on a line of its own) |
+| `contracts/Cargo.toml` | 4 | 0 | sound |
+| `contracts/README.md` | 10 | 4 | sound |
+| `contracts/core-internal/CHANGELOG.md` | 263 | 0 | sound (folded into unreleased 1.0.0, each entry with its row) |
+| `contracts/core-internal/README.md` | 121 | 24 | sound |
+| `contracts/core-internal/fixtures/admission/acceptance-is-asked-in-the-users-session--given-on-a-deposit-in-no-session.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/acceptance-is-of-the-quote-shown--given-on-a-deposit-of-a-quote-not-shown.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/afterwards-rests-on-a-statement--about.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/afterwards-rests-on-a-statement--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/answer-follows-its-question--an-arrival-answer-after-an-operation.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/answer-follows-its-question--an-arrival-answer-after-its-question.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/answer-follows-its-question--an-arrival-answer-with-no-question-before-it.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/arrival-names-its-earlier-arrival--deposit.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/arrival-names-its-earlier-arrival--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/arrival-names-its-earlier-arrival--reserve.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/automatic-deposit-rests-on-its-arrival--arrived.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/automatic-deposit-rests-on-its-arrival--destination-in-another-asset.json` | 3866 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/automatic-deposit-rests-on-its-arrival--destination-with-no-authorisation.json` | 3811 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/automatic-deposit-rests-on-its-arrival--destination.json` | 3866 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/automatic-deposit-rests-on-its-arrival--given-on-a-deposit-with-no-arrival.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/automatic-deposit-rests-on-its-arrival--given-on-a-deposit.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/automatic-deposit-rests-on-its-arrival--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/automatic-deposit-rests-on-its-arrival--naming-its-destination.json` | 3866 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/automatic-deposit-rests-on-its-arrival--naming-its-holder.json` | 3853 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/automatic-deposit-rests-on-its-arrival--requester.json` | 3853 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/automatic-deposit-rests-on-its-arrival--reserve.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/automatic-deposit-rests-on-its-arrival--second-acceptance-claiming-a-deposit.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/automatic-deposit-rests-on-its-arrival--set_for.json` | 3866 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/automatic-deposit-takes-a-firm-quote--a-firm-quote.json` | 3796 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/automatic-deposit-takes-a-firm-quote--conflict-a-firm-quote-awaiting-its-customer.json` | 3801 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/automatic-deposit-takes-a-firm-quote--conflict.json` | 3797 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/changed-destination-rests-on-its-acceptance--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/changed-destination-rests-on-its-acceptance--order.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/customer-read-is-of-its-own-order--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/customer-read-is-of-its-own-order--order-state-of-an-order-not-its-own.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/customer-read-is-of-its-own-order--order-state-of-another-order.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/customer-read-is-of-its-own-order--order-state-of-its-order.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/customer-read-is-of-its-own-order--party.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/customer-read-is-of-its-own-order--segment-of-its-order.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/customer-read-is-of-its-own-order--segment.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/decision-through-the-general-handle--charge.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/decision-through-the-general-handle--decide_erase.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/decision-through-the-general-handle--grant.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/decision-through-the-general-handle--grant2.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/decision-through-the-general-handle--post.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/decision-through-the-general-handle--read.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/decision-through-the-general-handle--read2.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/decision-through-the-general-handle--read_c.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/decision-through-the-general-handle--read_own.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/decision-through-the-general-handle--read_p.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/decision-through-the-general-handle--report_es.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/decision-through-the-general-handle--revoke.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/decision-through-the-general-handle--sd.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/decision-through-the-general-handle--sdh.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/decision-through-the-general-handle--settled_es.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/decision-through-the-general-handle--sm.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/decision-through-the-general-handle--smh.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/delivery-goes-to-the-parts-ends--another-account.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/delivery-goes-to-the-parts-ends--another-origin-account.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/delivery-goes-to-the-parts-ends--another-origin-node.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/delivery-goes-to-the-parts-ends--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/delivery-goes-to-the-parts-ends--moved.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/delivery-goes-to-the-parts-ends--origin.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/delivery-goes-to-the-parts-ends--to.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/effect-has-one-result--after-the-settled-one.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/effect-has-one-result--after-the-settlement.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/effect-permits-a-decided-action--erase-without-a-decision.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/ended-part-takes-no-more--conflict.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/ended-wait-takes-no-acceptance--an-end-before-any-acceptance.json` | 3791 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/ended-wait-takes-no-acceptance--conflict-a-second-end.json` | 3823 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/ended-wait-takes-no-acceptance--conflict-an-end-after-its-acceptance.json` | 3836 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/ended-wait-takes-no-acceptance--conflict.json` | 3837 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/erasure-is-carried-out-on-its-decision--done.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/erasure-is-carried-out-on-its-decision--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/erasure-is-carried-out-on-its-decision--outcome.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/erasure-names-a-kept-statement--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/erasure-waits-while-anything-rests-on-the-statement--a-decision-overriding-the-citations.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/erasure-waits-while-anything-rests-on-the-statement--an-effect-on-a-decision-overriding-the-citations.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/erasure-waits-while-anything-rests-on-the-statement--an-effect-overriding-on-a-decision-that-does-not.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/erasure-waits-while-anything-rests-on-the-statement--an-erasure-on-a-decision-overriding-the-citations.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/erasure-waits-while-anything-rests-on-the-statement--conflict.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/erasure-waits-while-anything-rests-on-the-statement--decided-while-cited.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/erasure-waits-while-anything-rests-on-the-statement--effect.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/filed-orders-inputs-are-a-kept-statement--about.json` | 2472 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/filed-orders-inputs-are-a-kept-statement--inputs.json` | 2469 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/filed-orders-inputs-are-a-kept-statement--maker.json` | 2469 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/filed-orders-inputs-are-a-kept-statement--missing.json` | 2469 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/filed-orders-inputs-are-a-kept-statement--the-operators-statement.json` | 2469 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/filed-orders-inputs-are-a-kept-statement--verified.json` | 2469 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/final-deposit-closes-on-a-public-record--conflict-naming-another-node.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/final-deposit-closes-on-a-public-record--conflict-on-another-network.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/final-deposit-closes-on-a-public-record--conflict-resting-on-another-statement.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/hand-on-input-rests-on-the-linked-orders-acceptance--a-waiting-part-on-the-customers-acceptance.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/hand-on-input-rests-on-the-linked-orders-acceptance--given.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/hand-on-input-rests-on-the-linked-orders-acceptance--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/hand-on-input-rests-on-the-linked-orders-acceptance--order.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/hand-on-input-rests-on-the-linked-orders-acceptance--recorded-by-the-operator.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/hand-on-input-rests-on-the-linked-orders-acceptance--requester.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/hand-on-links-an-unopened-order--a-second-part-to-the-same-order.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/hand-on-links-an-unopened-order--after-a-hand-on-to-it-was-taken-back.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/hand-on-links-an-unopened-order--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/hand-on-rests-on-the-linked-orders-acceptance--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/hand-on-rests-on-the-linked-orders-acceptance--requester.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/hand-on-taken-back-rests-on-the-linked-orders-refusal--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/hand-on-taken-back-rests-on-the-linked-orders-refusal--on-the-linked-orders-refusal.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/hand-on-taken-back-rests-on-the-linked-orders-refusal--unopened.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/handed-on-route-points-back--linked_order.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/handed-on-route-points-back--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/handed-on-route-starts-on-its-holding-record--a-customers-hand-on-held-by-another-than-its-first-provider.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/handed-on-route-starts-on-its-holding-record--a-customers-hand-on-held-by-its-first-provider.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/handed-on-route-starts-on-its-holding-record--a-first-move-from-another-node.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/handed-on-route-starts-on-its-holding-record--a-holder-the-hand-on-did-not-name.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/handed-on-route-starts-on-its-holding-record--a-wallet-holds-and-the-plans-provider-runs-the-first-move.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/handed-on-route-starts-on-its-holding-record--holder.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/handed-on-route-starts-on-its-holding-record--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/handed-on-route-starts-on-its-holding-record--node.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/handed-on-route-starts-on-its-holding-record--provider.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/held-part-takes-no-move--conflict.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/held-part-takes-no-move--stuck.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/held-quote-rests-on-the-reserves-hold--hold.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/held-quote-rests-on-the-reserves-hold--maker.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/held-quote-rests-on-the-reserves-hold--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/held-quote-rests-on-the-reserves-hold--the-reserves-hold.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/held-quote-rests-on-the-reserves-hold--transaction.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/held-quote-rests-on-the-reserves-hold--verified.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/hold-is-redeemed-by-one-order--conflict.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/hold-is-redeemed-by-one-order--the-same-acceptance-again.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/hold-is-redeemed-by-one-order--the-same-hold-kept-again-for-its-own-order.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/hold-is-redeemed-by-one-order--the-same-hold-kept-again.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/holding-withdrawal-rests-on-its-record--labelled-its-publishers-word.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/holding-withdrawal-rests-on-its-record--maker.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/holding-withdrawal-rests-on-its-record--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/holding-withdrawal-rests-on-its-record--order.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/holding-withdrawal-rests-on-its-record--publisher.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/holding-withdrawal-rests-on-its-record--result.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/holding-withdrawal-rests-on-its-record--transaction.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/holding-withdrawal-rests-on-its-record--verified.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/holding-withdrawal-starts-a-handed-on-route--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/holding-withdrawal-starts-a-handed-on-route--node.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/input-cites-its-decision-record--no-route-on-a-shortlist-keeping-none.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/input-cites-its-decision-record--no-route-on-another-orders-empty-shortlist.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/input-is-one-the-state-machine-takes--a-customers-hand-on-without-a-failed-final-deposit.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/input-is-one-the-state-machine-takes--a-new-destination-without-a-failed-final-deposit.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/input-is-one-the-state-machine-takes--a-refused-input-again-after-the-order-moved-on.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/input-is-one-the-state-machine-takes--another-input-under-a-refused-inputs-record-id.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/input-is-one-the-state-machine-takes--handed-on-while-not-held.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/input-is-one-the-state-machine-takes--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/input-not-taken-is-one-refused--another-input-under-a-refused-inputs-record-id.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/input-not-taken-is-one-refused--another-input-under-it-as-the-host-refuses.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/input-not-taken-is-one-refused--another-reason.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/input-not-taken-is-one-refused--the-same-input-again-for-another-reason.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/input-not-taken-is-one-refused--the-same-trace-after-the-order-moved-on.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/input-not-taken-is-one-refused--the-same-trace-again.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/linked-order-opens-on-its-hand-on--after-the-hand-on-was-taken-back.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/linked-order-opens-on-its-hand-on--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/measure-cites-entries-of-the-log--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/movement-evidences-one-segment--conflict.json` | 10 | 2 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/movement-evidences-one-segment--retried.json` | 10 | 2 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/nothing-cites-an-erased-statement--a-failed-erasure.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/nothing-cites-an-erased-statement--another-statement.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/nothing-cites-an-erased-statement--between-effect-and-result.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/nothing-cites-an-erased-statement--conflict.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/nothing-cites-an-erased-statement--done-before-its-record.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/notice-summary-names-its-raise--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/one-confirmation-per-effect--conflict.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/one-confirmation-per-effect--the-same-confirmation-again.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/one-order-per-deposit--a-deposit-whose-wait-ended-unaccepted.json` | 2418 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/one-question-per-resolution-transaction--conflict.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/one-question-per-resolution-transaction--the-same-question-again.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/one-report-per-effect--a-new-report-after-a-decline.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/one-report-per-effect--conflict.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/one-report-per-effect--the-same-report-again.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/one-start-per-holding-record--conflict.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/one-start-per-holding-record--the-same-record-again.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/one-start-per-linked-order--conflict.json` | 4774 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/one-start-per-linked-order--the-same-start-again.json` | 4729 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/one-summary-per-notice--another-receivers.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/one-summary-per-notice--conflict.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/one-summary-per-notice--the-same-summary-again.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/only-a-declared-stuck-part-is-resolved--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/only-a-declared-stuck-part-is-resolved--no-plan-and-no-acceptance.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/only-a-declared-stuck-part-is-resolved--no-plan-with-its-acceptance.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/only-a-declared-stuck-part-is-resolved--stuck.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/only-a-declared-stuck-part-is-resolved--unresolved.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/only-a-declared-stuck-part-is-resolved--value-came-back.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/only-a-declared-stuck-part-is-resolved--value-moved-on.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/opened-orders-inputs-are-a-kept-statement--about.json` | 123 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/opened-orders-inputs-are-a-kept-statement--inputs.json` | 120 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/opened-orders-inputs-are-a-kept-statement--maker.json` | 120 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/opened-orders-inputs-are-a-kept-statement--missing.json` | 120 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/opened-orders-inputs-are-a-kept-statement--the-operators-statement.json` | 120 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/opened-orders-inputs-are-a-kept-statement--verified.json` | 120 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/operator-command-is-the-deployment-operators--a-party-named-as-the-operators-maker.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/operator-command-is-the-deployment-operators--a-provider.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/operator-command-is-the-deployment-operators--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/order-holds-one-acceptance-basis--conflict.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-a-mover-its-decide-step-held-at-a-node.json` | 4305 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-a-provider-a-holding-check-names.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-a-provider-of-a-route-handed-on-from-the-order.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-a-provider-of-an-order-a-hand-on-input-joins.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-a-provider-of-an-order-a-holding-withdrawal-joins.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-a-provider-of-an-order-a-permitted-decide-hands-on-to.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-a-provider-of-an-order-a-refused-decide-hands-on-to.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-a-provider-of-an-order-a-resolve-effect-hands-on-to.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-a-provider-of-an-order-no-hand-on-joins.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-a-provider-only-a-recalculated-route-names.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-another-provider-of-its-route.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-the-holder-a-holding-withdrawal-names.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-the-mover-a-permitted-decide-names.json` | 68 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-the-mover-a-refused-decide-names.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-the-mover-its-resolve-effect-names.json` | 68 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-the-publisher-a-holding-withdrawal-names.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-the-reserve-its-arrival-came-to.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-decline-on-an-outside-providers-statement.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-decline-on-cores-question.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-deliver-reported-on-an-unrelated-makers-statement.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-hand-on-reported-on-another-makers-statement.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-hand-on-through-a-question-after-its-result.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-hand-on-through-a-segment-of-its-linked-order.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-hand-on-through-a-statement-naming-no-order.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-hand-on-through-a-transaction-bound-by-no-operator-question.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-hand-on-through-a-transaction-bound-to-another-order.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-hand-on-through-another-effects-transaction.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-hand-on-through-another-order.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-hand-ons-confirmation-on-another-makers-statement.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-hand-ons-report-on-the-holding-accounts-own-answer.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-move-values-report-on-an-outside-providers-statement.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-planless-part-through-an-arrival-of-an-order-of-two-parts.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-planless-part-through-another-parts-arrival.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-planless-part-through-another-transaction.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-planless-part-through-its-acceptance.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-planless-part-through-its-arrival.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-planless-part-through-its-own-arrival.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-planless-part-through-its-resolutions-transaction.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-stuck-resolution-through-a-segment-of-its-part.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--about-another-part.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--about-another-segment-of-its-part.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--about.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--before-its-move.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--cores-question-re-appended.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--made-before-its-move.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--party.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--the-operators-own-result.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--the-providers-before-its-move.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--verified.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-rests-on-its-move--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-rests-on-its-move--unknown.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-rests-on-its-report--another-outcome.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-rests-on-its-report--declined.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-rests-on-its-report--evidence-by-the-same-maker.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-rests-on-its-report--evidence.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-rests-on-its-report--login.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-rests-on-its-report--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-rests-on-its-report--on-one-actors-word.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-rests-on-its-report--party.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-decline-rests-on-its-report--a-second-decline-of-the-same-report.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-decline-rests-on-its-report--evidence.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-decline-rests-on-its-report--login.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-decline-rests-on-its-report--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-decline-rests-on-its-report--open.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-decline-rests-on-its-report--party.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-decline-rests-on-its-report--the-same-decline-again.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-report-rests-on-its-move--a-move-value-reported-by-another.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-report-rests-on-its-move--a-move-value-reported-by-its-mover.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-report-rests-on-its-move--after-the-final-result.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-report-rests-on-its-move--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-report-rests-on-its-move--mover.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-report-rests-on-its-move--open.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-report-rests-on-its-move--unknown.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/own-evidence-read-is-of-the-readers-statement--maker.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/own-evidence-read-is-of-the-readers-statement--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/own-evidence-read-is-of-the-readers-statement--operator-login-of-another-party.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/own-evidence-read-is-of-the-readers-statement--operator-login.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/own-evidence-read-is-of-the-readers-statement--verified.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/owner-change-rests-on-its-destination-check--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/owner-change-rests-on-its-destination-check--no-check.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/part-evidence-rests-on-statements--a-part-with-no-resolution.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/part-evidence-rests-on-statements--about.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/part-evidence-rests-on-statements--another-part.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/part-evidence-rests-on-statements--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/part-evidence-rests-on-statements--party.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/part-evidence-rests-on-statements--provider.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/part-evidence-rests-on-statements--the-moving-providers-word.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/part-evidence-rests-on-statements--verified.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/part-waits-for-value-in-motion--a-resolution-moved-while-another-moves.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/part-waits-for-value-in-motion--a-second-resolution-while-one-moves.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/part-waits-for-value-in-motion--a-silent-move-settled-on-two-actors.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/part-waits-for-value-in-motion--a-silent-move.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/part-waits-for-value-in-motion--a-start-undone-with-a-move-in-motion.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/part-waits-for-value-in-motion--a-start-undone-with-nothing-moving.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/part-waits-for-value-in-motion--an-end-requested-while-a-part-past-its-start-moves.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/part-waits-for-value-in-motion--an-end-requested-with-nothing-moving.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/part-waits-for-value-in-motion--an-end-requested-with-p2s-start-in-motion.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/part-waits-for-value-in-motion--another-part.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/part-waits-for-value-in-motion--changed-destination.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/part-waits-for-value-in-motion--conflict.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/part-waits-for-value-in-motion--done.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/part-waits-for-value-in-motion--failed-exchange.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/part-waits-for-value-in-motion--failed.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/part-waits-for-value-in-motion--floor-wait.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/part-waits-for-value-in-motion--handed-on-with-a-move-in-motion.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/part-waits-for-value-in-motion--recalculated-around-a-resolution.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/permitted-read-is-not-revoked--conflict.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/permitted-read-rests-on-its-grant--grantee.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/permitted-read-rests-on-its-grant--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/permitted-read-rests-on-its-grant--order-state-under-another-order.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/permitted-read-rests-on-its-grant--order-state-under-its-order.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/permitted-read-rests-on-its-grant--order-state-under-the-trail.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/permitted-read-rests-on-its-grant--scope-of-another-order.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/permitted-read-rests-on-its-grant--scope.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/posted-route-cites-its-decision-record--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/posted-route-cites-its-decision-record--order.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/provider-read-is-of-its-own-segment--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/provider-read-is-of-its-own-segment--provider.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/public-mismatch-rests-on-the-providers-result--about.json` | 72 | 2 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/public-mismatch-rests-on-the-providers-result--maker.json` | 72 | 2 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/public-mismatch-rests-on-the-providers-result--missing.json` | 72 | 2 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/public-mismatch-rests-on-the-providers-result--non_final.json` | 10 | 2 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/public-mismatch-rests-on-the-providers-result--result.json` | 72 | 2 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/public-mismatch-rests-on-the-providers-result--verified.json` | 72 | 2 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/raise-cites-entries-of-the-log--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/raise-of-a-holding-not-read-cites-its-accounts-check--account.json` | 2065 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/raise-of-a-holding-not-read-cites-its-accounts-check--its-accounts-check.json` | 2064 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/raise-of-a-holding-not-read-cites-its-accounts-check--missing.json` | 2065 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/raise-of-a-holding-not-read-cites-its-accounts-check--never-read.json` | 2055 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/raise-of-a-holding-not-read-cites-its-accounts-check--node.json` | 2065 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/raise-of-a-holding-not-read-cites-its-accounts-check--provider.json` | 2065 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/raise-of-a-pair-not-built-names-a-segment-its-plan-lists--its-plan-lists.json` | 2018 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/raise-of-a-pair-not-built-names-a-segment-its-plan-lists--missing.json` | 2019 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/raise-of-a-reader-not-started-cites-its-listing--its-listing.json` | 115 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/raise-of-a-reader-not-started-cites-its-listing--missing.json` | 90 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/raise-of-a-reader-not-started-cites-its-listing--network.json` | 116 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/recalculation-starts-from-evidenced-value--a-handed-on-routes-first-move-still-owed.json` | 504 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/recalculation-starts-from-evidenced-value--a-handed-on-routes-reversal-from-another-node.json` | 552 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/recalculation-starts-from-evidenced-value--a-handed-on-routes-reversed-first-move.json` | 552 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/recalculation-starts-from-evidenced-value--node.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/recalculation-starts-from-evidenced-value--part.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/refiling-files-an-arrival-anew--a-party-named-as-the-operators-maker.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/refiling-files-an-arrival-anew--a-stated-operator.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/refiling-files-an-arrival-anew--another-operator.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/refiling-files-an-arrival-anew--filer.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/refiling-files-an-arrival-anew--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/refiling-files-an-arrival-anew--order.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/refiling-files-an-arrival-anew--the-operator.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/refiling-files-an-arrival-anew--the-operators-party-not-its-maker.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/refiling-rests-on-policys-permit--action.json` | 2395 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/refiling-rests-on-policys-permit--arrival.json` | 2395 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/refiling-rests-on-policys-permit--filer.json` | 2395 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/refiling-rests-on-policys-permit--missing.json` | 2395 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/refiling-rests-on-policys-permit--the-operators-permit.json` | 2395 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/refiling-rests-on-policys-permit--yes.json` | 2396 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/reliance-names-its-judges-statement--about.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/reliance-names-its-judges-statement--maker.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/reliance-names-its-judges-statement--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/reliance-names-its-judges-statement--verified.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/repeat-is-of-an-unsettled-segment-at-its-provider--a-read-at-another-provider.json` | 5721 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/repeat-is-of-an-unsettled-segment-at-its-provider--a-read-of-a-reversal-the-provider-carried-out.json` | 2383 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/repeat-is-of-an-unsettled-segment-at-its-provider--a-read-of-a-reversal-whose-outcome-is-unknown.json` | 2383 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/repeat-is-of-an-unsettled-segment-at-its-provider--a-read-of-a-settled-segment.json` | 5758 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/repeat-is-of-an-unsettled-segment-at-its-provider--a-read-under-another-segments-transaction.json` | 5721 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/repeat-is-of-an-unsettled-segment-at-its-provider--a-repeat-of-a-reversal-whose-outcome-is-unknown.json` | 2383 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/repeat-is-of-an-unsettled-segment-at-its-provider--a-settled-segment.json` | 5758 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/repeat-is-of-an-unsettled-segment-at-its-provider--another-segments-transaction.json` | 5721 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/repeat-is-of-an-unsettled-segment-at-its-provider--missing.json` | 5721 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/replay-cites-its-nodes-records--a-node-that-recorded-nothing.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/replay-cites-its-nodes-records--a-sibling-of-the-exits-provider.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/replay-cites-its-nodes-records--about.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/replay-cites-its-nodes-records--another-provider-of-another-publisher.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/replay-cites-its-nodes-records--its-nodes-record.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/replay-cites-its-nodes-records--missing.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/replay-cites-its-nodes-records--node.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/replay-cites-its-nodes-records--once.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/replay-cites-its-nodes-records--one-record-of-each-of-two-nodes.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/replay-cites-its-nodes-records--publisher.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/replay-cites-its-nodes-records--record.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/replay-cites-its-nodes-records--verified.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/replay-rests-on-its-exit--missing.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/replay-rests-on-its-exit--order.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/replay-rests-on-its-exit--segment.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/retired-segment-takes-no-move--changed-destination.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/retired-segment-takes-no-move--conflict.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/retired-segment-takes-no-move--double-deposit.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/retired-segment-takes-no-move--settled-segment.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/reversal-is-asked-again-only-after-a-refusal--after-a-refusal.json` | 2298 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/reversal-is-asked-again-only-after-a-refusal--after-an-ask-the-provider-carried-out.json` | 2298 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/reversal-is-asked-again-only-after-a-refusal--after-an-ask-whose-outcome-is-unknown.json` | 2298 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/reversal-is-asked-again-only-after-a-refusal--after-an-ask-with-no-result.json` | 2261 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/reversal-rests-on-its-evidence--a-handed-on-route-with-no-holding-record.json` | 386 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/reversal-rests-on-its-evidence--a-handed-on-routes-failed-providers-own-word.json` | 427 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/reversal-rests-on-its-evidence--a-handed-on-routes-holding-account-confirms-its-first-move.json` | 427 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/reversal-rests-on-its-evidence--a-publishers-word-on-a-node-its-record-binds.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/reversal-rests-on-its-evidence--a-publishers-word-on-another-nodes-record.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/revocation-revokes-a-grant--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/revocation-revokes-a-grant--refused.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/split-deposit-arrival-names-its-part--each-part.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/split-deposit-arrival-names-its-part--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/status-is-asked-of-the-segments-provider--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/status-is-asked-under-a-fresh-transaction--a-copy-of-its-own-decision-at-another-receipt.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/status-is-asked-under-a-fresh-transaction--a-decision-copying-its-own-ids-for-another-action.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/status-is-asked-under-a-fresh-transaction--a-stuck-resolutions-transaction.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/status-is-asked-under-a-fresh-transaction--a-transaction-a-hand-over-names.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/status-is-asked-under-a-fresh-transaction--a-transaction-an-accepted-showing-names.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/status-is-asked-under-a-fresh-transaction--a-transaction-another-late-status-decision-names.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/status-is-asked-under-a-fresh-transaction--a-transaction-only-a-resolve-stuck-effect-names.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/status-is-asked-under-a-fresh-transaction--a-transaction-only-a-stuck-decide-step-names.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/status-is-asked-under-a-fresh-transaction--another-late-status-under-its-own.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/status-is-asked-under-a-fresh-transaction--conflict.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/status-is-asked-under-a-fresh-transaction--the-transaction-of-another-late-status.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-decide-held-at-is-a-held-node--a-wallet-held-at-a-node-of-its-route.json` | 4336 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-decide-held-at-is-a-held-node--a-wallet-held-at-its-routes-first-node.json` | 3977 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-decide-held-at-is-a-held-node--at.json` | 4337 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-decide-held-at-is-a-held-node--by.json` | 4337 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-decide-held-at-is-a-held-node--missing.json` | 4337 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-decision-is-of-a-stuck-order--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-decision-is-of-a-stuck-order--observed.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-effect-moves-the-decided-resolution--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-effect-moves-the-decided-resolution--order.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-effect-moves-the-decided-resolution--resolution.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-effect-moves-the-decided-resolution--transaction.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-effect-permits-a-stuck-move--carries_out.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-effect-permits-a-stuck-move--decision.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-effect-permits-a-stuck-move--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-effect-permits-a-stuck-move--order.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-effect-permits-a-stuck-move--request.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-move-carries-out-its-decide-step--login.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-move-carries-out-its-decide-step--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-move-carries-out-its-decide-step--mover.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-move-carries-out-its-decide-step--order.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-resolution-transaction-is-its-own--a-decide-step-under-the-deliverys.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-resolution-transaction-is-its-own--another-questions-transaction.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-resolution-transaction-is-its-own--its-own-question-and-answer.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-resolution-transaction-is-its-own--p1-s1s-move.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-resolution-transaction-is-its-own--p3s-yes.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-resolution-transaction-is-its-own--the-deliverys.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-resolution-transaction-is-its-own--the-deposits-notice.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-resolution-transaction-is-unbound-or-its-orders--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-resolved-cites-its-parts-evidence--a-segments-evidence.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-resolved-cites-its-parts-evidence--its-parts-evidence.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-resolved-cites-its-parts-evidence--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-resolved-cites-its-parts-evidence--order.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-resolved-cites-its-parts-evidence--part.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-resolved-follows-a-done-resolution--another-part.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-resolved-follows-a-done-resolution--delivered.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-resolved-follows-a-done-resolution--done.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-resolved-follows-a-done-resolution--handed-on-before-its-move-is-done.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-resolved-follows-a-done-resolution--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/stuck-resolved-follows-a-done-resolution--to.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/unknown-outcome-settles-on-its-confirmation--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/unknown-outcome-settles-on-its-confirmation--outcome.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/wait-ends-a-wait--a-quote-awaiting-its-customer.json` | 3791 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/wait-ends-a-wait--missing.json` | 3784 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/waiting-at-floor-rests-on-the-customers-floor--floor.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/waiting-at-floor-rests-on-the-customers-floor--missing.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/waiting-at-floor-rests-on-the-customers-floor--order.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/waiting-quote-is-for-its-arrivals-holder--holder-the-arrival-names-none.json` | 3761 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/waiting-quote-is-for-its-arrivals-holder--holder.json` | 3762 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/waiting-quote-is-for-its-arrivals-holder--missing.json` | 3709 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/waiting-quote-is-for-its-arrivals-holder--the-arrivals-holder.json` | 3761 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--acc2.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--acc3.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--after.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--arrival_earlier.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--command.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--decide_erase.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--decide_read_recorded.json` | 5672 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--decide_repeat.json` | 5672 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--decide_status.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--decline.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--dest_owner.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--dr10.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--dr41.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--effect_erase.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--effect_read_recorded.json` | 5721 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--effect_repeat.json` | 5721 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--effect_status.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--eh.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--erasure.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--es.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--ev16.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--ev31.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--evidence_movement.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--evidence_movement_of_a_node.json` | 10 | 2 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--final_deposit.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--final_deposit_into_a_private_node.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--grant.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--grant2.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--hold2.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--in_bound16.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--in_bound17.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--in_bound31.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--in_dest.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--in_failed17.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--in_floor.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--in_handed.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--in_recalc.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--in_route2.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--in_settled16.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--in_settled31.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--in_stuck.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--in_wait.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--measure.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--not_taken.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--notice_summary.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--part_evidence.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--post.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--public_mismatch.json` | 72 | 2 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--q_hold2.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--q_out3.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--q_us3.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--q_x16.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--raise.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--read.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--read2.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--read_c.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--read_own.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--read_p.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--refiling.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--refusal_owner.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--reliance.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--replay.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--report_es.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--result_eh.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--result_erase.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--result_es.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--result_es2.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--revoke.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--s_hold2.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--s_out3.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--s_out3c.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--s_relied.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--s_spare.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--s_us3.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--s_x16.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--sd.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--sdh.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--settled_es.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--shown2.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--shown3.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--sm.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/world--smh.json` | 67 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/attribution/unverified--a-statement-received-between-its-grants-revocation-effect-and-result.json` | 197 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/attribution/verified--a-statement-received-after-a-revocation-whose-result-failed.json` | 234 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-confirm-releases-naming-a-version-twice.json` | 16 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-confirm-releases-naming-no-versions.json` | 15 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-delist-a-public-network-naming-a-listing.json` | 40 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-dispute-a-fault-without-its-segment.json` | 14 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-end-an-order-without-its-order.json` | 13 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-list-a-public-network-from-an-rpc-pool-naming-one-host-twice.json` | 46 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-list-a-public-network-from-an-rpc-pool-with-a-quorum-of-one.json` | 46 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-list-a-public-network-from-an-rpc-pool-with-fewer-endpoints-than-its-quorum.json` | 45 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-list-a-public-network-naming-no-listing.json` | 18 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-list-a-public-network-of-a-chain-id-read-by-a-light-client.json` | 40 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-list-a-public-network-of-a-genesis-hash-read-from-an-rpc-pool.json` | 46 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-list-a-public-network-pinning-a-leaf-certificate-in-place-of-its-ca.json` | 40 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-list-a-public-network-pinning-the-hosts-leaf-certificate.json` | 44 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-list-a-public-network-under-a-hexadecimal-ip-subject-name.json` | 40 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-list-a-public-network-under-a-wildcard-subject-name.json` | 40 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-list-a-public-network-under-an-ip-literal-subject-name.json` | 40 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-list-a-public-network-without-its-host-setting.json` | 39 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-list-a-public-network-without-its-identity.json` | 36 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-list-a-public-network-without-its-readers-statement-key.json` | 39 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-list-a-public-network-without-its-readers-version.json` | 39 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-list-a-public-network-without-its-trust-rule.json` | 37 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-list-naming-no-public-network.json` | 15 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-mark-a-release-stale-naming-a-setting.json` | 21 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-promote-naming-a-public-network.json` | 19 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-promote-naming-versions-to-confirm.json` | 17 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-read-a-holding-balance-without-its-asset.json` | 16 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-read-a-holding-balance-without-its-node.json` | 16 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-read-a-private-nodes-record-naming-a-transaction-twice.json` | 23 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-read-a-private-nodes-record-naming-another-asker.json` | 22 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-read-a-private-nodes-record-naming-no-transactions.json` | 20 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-read-a-private-nodes-record-without-its-node.json` | 21 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-read-a-private-nodes-record-without-the-transactions-it-is-about.json` | 19 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-read-a-private-nodes-record-without-who-asked.json` | 21 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-read-a-recorded-answer-without-its-transaction.json` | 16 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-refile-an-arrival-without-its-filer.json` | 22 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-repeat-an-operation-without-its-segment.json` | 16 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-repeat-an-operation-without-its-transaction.json` | 16 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-set-a-cadence-of-no-seconds.json` | 19 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-set-a-providers-cadence-of-another-job.json` | 21 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-set-a-providers-ceiling-naming-another-provider.json` | 26 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-set-a-setting-naming-none.json` | 15 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-set-slippage-naming-a-verifiers-class.json` | 16 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-set-the-deposit-wait-of-no-seconds.json` | 18 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/effect-granting-without-a-tuple.json` | 4 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/filing-inputs-without-its-objective.json` | 4 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/order-inputs-naming-no-input.json` | 4 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/order-inputs-without-its-order.json` | 5 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/raise-of-a-holding-not-read-for-a-reason-it-has-no-name-for.json` | 14 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/raise-of-a-holding-not-read-naming-a-balance.json` | 15 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/raise-of-a-network-whose-reader-did-not-start-citing-nothing.json` | 10 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/raise-of-a-network-whose-reader-did-not-start-for-a-reason-it-has-no-name-for.json` | 19 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/raise-of-a-pair-not-built-citing-one-receipt-twice.json` | 30 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/raise-of-a-pair-not-built-for-a-reason-it-has-no-name-for.json` | 13 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/raise-of-a-pair-not-built-without-the-segment-it-misses.json` | 13 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/read-check-of-a-filed-order-without-its-requester.json` | 14 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/verified-entry-of-a-public-mismatch-at-another-network.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/verified-entry-of-a-public-mismatch-whose-figures-agree.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/verified-entry-of-a-public-mismatch-without-its-segment.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/verified-entry-of-a-refiling-without-its-decision.json` | 28 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/verified-entry-of-a-replay-naming-more-records-than-nodes.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/verified-entry-of-a-replay-resting-on-no-receipt.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/verified-entry-of-a-replay-resting-on-nothing.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/verified-entry-of-a-wait-ended-as-done.json` | 21 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/verified-entry-of-a-wait-ended-without-why.json` | 20 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/verified-entry-of-an-order-opened-without-its-destination.json` | 62 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/verified-entry-of-graded-evidence-whose-movement-names-no-reader.json` | 38 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/decision-request-to-confirm-a-providers-releases.json` | 16 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/decision-request-to-declare-a-release-exploited.json` | 16 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/decision-request-to-delist-a-public-network.json` | 18 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/decision-request-to-dispute-a-fault.json` | 15 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/decision-request-to-end-an-order.json` | 14 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/decision-request-to-list-a-public-network-read-by-a-light-client.json` | 40 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/decision-request-to-list-a-public-network-read-from-an-rpc-pool.json` | 46 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/decision-request-to-read-a-holding-balance.json` | 17 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/decision-request-to-read-a-private-nodes-record-by-the-tick.json` | 22 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/decision-request-to-read-a-private-nodes-record.json` | 22 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/decision-request-to-read-a-recorded-answer.json` | 17 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/decision-request-to-refile-an-arrival.json` | 28 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/decision-request-to-repeat-an-operation.json` | 17 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/decision-request-to-revoke-a-release.json` | 16 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/decision-request-to-set-a-jobs-cadence.json` | 20 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/decision-request-to-set-a-protocol-versions-cutover.json` | 20 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/decision-request-to-set-a-providers-ceiling.json` | 26 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/decision-request-to-set-a-providers-status-cadence.json` | 21 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/decision-request-to-set-a-public-nodes-settings.json` | 23 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/decision-request-to-set-a-publishers-ceiling.json` | 26 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/decision-request-to-set-a-tuples-evidence-floor.json` | 38 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/decision-request-to-set-a-tuples-slippage-limit.json` | 38 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/decision-request-to-set-the-deposit-wait.json` | 19 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/decision-request-to-set-the-operators-fee.json` | 26 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/decision-request-to-set-the-reversal-retry-cadence.json` | 20 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/decision-request-to-withdraw-a-release-awaiting-acceptance.json` | 16 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/filing-inputs-of-a-filed-order.json` | 36 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/order-inputs-of-an-order.json` | 7 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/raise-of-a-holding-account-not-read-citing-its-last-check.json` | 23 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/raise-of-a-holding-account-not-read-for-want-of-a-permit.json` | 14 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/raise-of-a-holding-account-not-read-for-want-of-a-time.json` | 14 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/raise-of-a-holding-account-not-read.json` | 14 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/raise-of-a-holding-account-the-register-does-not-name.json` | 14 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/raise-of-a-network-whose-reader-did-not-start.json` | 19 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/raise-of-a-pair-a-restart-dropped.json` | 14 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/raise-of-a-pair-the-contract-refused.json` | 22 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/read-check-by-an-agent-of-a-filed-orders-status.json` | 15 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/verified-entry-of-a-notice-summary-of-a-waits-end-delivered.json` | 29 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/verified-entry-of-a-public-mismatch-of-a-wrong-amount.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/verified-entry-of-a-public-mismatch-of-a-wrong-destination.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/verified-entry-of-a-refusal-for-an-input-policy-could-not-read.json` | 21 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/verified-entry-of-a-replay-consistent-with-its-exit.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/verified-entry-of-a-replay-resting-on-its-nodes-records.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/verified-entry-of-a-wait-that-ended-past-its-lifetime.json` | 21 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/verified-entry-of-an-arrival-filed-anew-by-its-reserve.json` | 9 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/verified-entry-of-an-arrival-holding-a-deposit-with-its-filings-inputs.json` | 48 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/verified-entry-of-an-arrival-naming-its-holder.json` | 43 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/verified-entry-of-an-order-as-intake-opened-it.json` | 69 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/verified-entry-of-an-order-opened-with-its-inputs.json` | 73 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/verified-entry-of-graded-evidence-naming-its-public-movement.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/verified-entry-of-reliance-naming-the-inputs-resting-on-it.json` | 34 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/verified-entry-of-signed-evidence-naming-the-movement-core-checked.json` | 5 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/verified-entry-of-the-figures-behind-a-stuck-call-at-the-floor.json` | 25 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/schemas/common.schema.json` | 912 | 63 | sound |
+| `contracts/core-internal/schemas/filing-inputs.schema.json` | 70 | 0 | sound |
+| `contracts/core-internal/schemas/order-inputs.schema.json` | 27 | 0 | sound |
+| `contracts/core-internal/schemas/raise.schema.json` | 264 | 4 | medium M2 (`difference_holding.by` puts a balance, or what a balance is derived from, in the log, `REQ-AUD-6`) |
+| `contracts/core-internal/schemas/read-check.schema.json` | 39 | 1 | sound (the filed order's read) |
+| `contracts/core-internal/schemas/verified-entry.schema.json` | 211 | 8 | sound (the new actions; the holding check carries no balance) |
+| `contracts/module-interface/CHANGELOG.md` | 18 | 0 | sound |
+| `contracts/module-interface/README.md` | 4 | 1 | sound |
+| `contracts/module-interface/fixtures/invalid/declaration-call-of-hold.json` | 45 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/module-interface/fixtures/invalid/declaration-call-of-inner-segments-query.json` | 45 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/module-interface/fixtures/invalid/declaration-call-of-status-query.json` | 45 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/CHANGELOG.md` | 125 | 14 | sound (4.0.0; every entry says whether it is ignorable, `REQ-PRT-2`) |
+| `contracts/provider-role/README.md` | 68 | 43 | sound |
+| `contracts/provider-role/fixtures/invalid/advertisement-reserve-declaring-hold-requests-as-null.json` | 95 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/invalid/answered-hold-by-another-reserve.json` | 88 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/invalid/answered-hold-of-another-candidate.json` | 88 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/invalid/answered-hold-past-the-validity-asked.json` | 88 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/invalid/answered-hold-under-another-transaction.json` | 88 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/invalid/answered-inner-segments-query-about-another-node.json` | 88 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/invalid/answered-inner-segments-query-by-an-answer-to-another-question.json` | 50 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/invalid/answered-inner-segments-query-by-another-provider.json` | 88 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/invalid/answered-inner-segments-query-carrying-a-record-of-another-node.json` | 88 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/invalid/answered-inner-segments-query-carrying-a-segment-not-asked.json` | 87 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/invalid/answered-inner-segments-query-under-another-transaction.json` | 88 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/invalid/answered-status-query-about-another-transaction.json` | 46 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/invalid/answered-status-query-by-another-provider.json` | 81 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/invalid/answered-status-query-carrying-a-status-answer.json` | 69 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/invalid/answered-status-query-carrying-another-transactions-result.json` | 81 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/invalid/answered-status-query-under-another-transaction.json` | 81 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/invalid/arrival-notice-naming-a-destination-without-who-set-it.json` | 40 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/invalid/operation-hold-without-its-validity.json` | 32 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/invalid/operation-inner-segments-query-without-the-node-asked-about.json` | 24 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/invalid/operation-inner-segments-query-without-the-transactions-asked-about.json` | 21 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/invalid/operation-status-query-without-the-transaction-asked-about.json` | 20 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/invalid/result-hold-carrying-another-reserves-hold.json` | 53 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/invalid/result-hold-held-without-its-hold.json` | 22 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/invalid/result-inner-segments-query-carrying-another-makers-record.json` | 61 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/invalid/result-inner-segments-query-without-the-node-asked-about.json` | 60 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/invalid/result-status-query-carrying-another-makers-result.json` | 58 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/invalid/result-status-query-without-the-transaction-asked-about.json` | 22 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/invalid/result-withdrawal-handing-back-another-makers-terms.json` | 77 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/valid/advertisement-reserve-answering-hold-requests.json` | 95 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/valid/answered-hold-by-the-reserves-hold.json` | 88 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/valid/answered-inner-segments-query-by-the-providers-record.json` | 88 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/valid/answered-inner-segments-query-not-known.json` | 50 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/valid/answered-status-query-by-the-providers-result.json` | 81 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/valid/answered-status-query-not-known.json` | 46 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/valid/arrival-notice-naming-its-automatic-deposits-destination.json` | 41 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/valid/operation-hold-of-a-chosen-quote.json` | 33 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/valid/operation-inner-segments-query.json` | 25 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/valid/operation-status-query.json` | 21 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/valid/result-hold-held.json` | 53 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/valid/result-inner-segments-query-answered-with-the-providers-record.json` | 61 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/valid/result-inner-segments-query-not-known.json` | 23 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/valid/result-status-query-answered-with-the-providers-result.json` | 58 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/valid/result-status-query-not-known.json` | 23 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/valid/result-withdrawal-handing-back-its-terms.json` | 77 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/schemas/arrival-answer.schema.json` | 1 | 1 | sound |
+| `contracts/provider-role/schemas/arrival-notice.schema.json` | 43 | 1 | sound |
+| `contracts/provider-role/schemas/arrival-question.schema.json` | 1 | 1 | sound |
+| `contracts/provider-role/schemas/hold.schema.json` | 3 | 3 | sound |
+| `contracts/provider-role/schemas/inner-segments.schema.json` | 1 | 1 | sound |
+| `contracts/provider-role/schemas/operation.schema.json` | 157 | 2 | sound (the status query names the transaction it asks about) |
+| `contracts/provider-role/schemas/reserve-declaration.schema.json` | 6 | 2 | sound |
+| `contracts/provider-role/schemas/result.schema.json` | 387 | 1 | sound |
+| `contracts/provider-role/schemas/terms.schema.json` | 1 | 1 | sound |
+| `contracts/reader/CHANGELOG.md` | 32 | 0 | sound |
+| `contracts/reader/README.md` | 76 | 0 | sound |
+| `contracts/reader/fixtures/invalid/answer-of-a-chain-id-read-by-a-light-client.json` | 41 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/answer-of-a-chain-id-with-a-leading-zero.json` | 49 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/answer-of-a-final-movement-without-its-amount.json` | 32 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/answer-of-a-finality-of-zero-confirmations.json` | 42 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/answer-of-a-genesis-hash-in-upper-case.json` | 41 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/answer-of-a-genesis-hash-read-from-an-rpc-pool.json` | 49 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/answer-of-a-light-client-naming-endpoints.json` | 44 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/answer-of-a-movements-status-to-a-network-rules-question.json` | 29 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/answer-of-a-network-without-its-trust-rule.json` | 38 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/answer-of-an-rpc-pool-endpoint-at-a-hexadecimal-ip-literal.json` | 49 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/answer-of-an-rpc-pool-endpoint-at-a-single-label-host.json` | 49 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/answer-of-an-rpc-pool-endpoint-at-an-ip-literal.json` | 49 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/answer-of-an-rpc-pool-endpoint-naming-a-key-in-its-path.json` | 49 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/answer-of-an-rpc-pool-endpoint-naming-a-user.json` | 49 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/answer-of-an-rpc-pool-endpoint-with-a-fragment.json` | 49 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/answer-of-an-rpc-pool-endpoint-with-a-path.json` | 49 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/answer-of-an-rpc-pool-endpoint-with-a-query.json` | 49 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/answer-of-an-rpc-pool-naming-an-endpoint-twice.json` | 49 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/answer-of-an-rpc-pool-naming-one-host-by-two-schemes.json` | 49 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/answer-of-an-rpc-pool-naming-one-host-with-and-without-a-trailing-slash.json` | 49 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/answer-of-an-rpc-pool-naming-one-host-with-its-default-port.json` | 49 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/answer-of-an-rpc-pool-of-one-endpoint.json` | 47 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/answer-of-an-rpc-pool-over-plain-http.json` | 49 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/answer-of-an-rpc-pool-with-a-quorum-of-one.json` | 49 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/answer-of-an-rpc-pool-with-fewer-endpoints-than-its-quorum.json` | 49 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/answer-of-an-rpc-pool-without-its-quorum.json` | 48 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/answer-of-no-movement-tied-written-as-null.json` | 28 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/answer-under-another-shape.json` | 33 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/answer-unreadable-without-why.json` | 27 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/answer-without-the-readers-version.json` | 32 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/question-of-an-unknown-kind.json` | 10 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/question-under-a-counter-request-id.json` | 10 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/question-under-a-request-id-of-64-bits.json` | 10 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/question-under-a-request-id-that-is-not-hex.json` | 10 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/question-with-an-extra-field.json` | 11 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/question-without-a-deadline.json` | 9 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/invalid/question-without-a-request-id.json` | 9 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/valid/answer-of-a-final-movement.json` | 33 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/valid/answer-of-a-light-client-networks-rules.json` | 41 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/valid/answer-of-a-movement-reorged-out.json` | 30 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/valid/answer-of-a-pending-movement.json` | 33 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/valid/answer-of-an-rpc-pool-networks-rules.json` | 49 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/valid/answer-of-an-unknown-movement.json` | 30 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/valid/answer-of-no-movement-tied-to-a-transaction.json` | 27 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/valid/answer-of-the-movement-tied-to-a-transaction.json` | 31 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/valid/answer-unreadable-to-a-movements-status.json` | 28 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/valid/question-for-a-movements-status.json` | 10 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/valid/question-for-a-networks-rules.json` | 9 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/fixtures/valid/question-for-the-movement-of-a-transaction.json` | 10 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/reader/schemas/answer.schema.json` | 274 | 0 | sound |
+| `contracts/reader/schemas/common.schema.json` | 251 | 0 | sound (a listing names the CA by digest; wildcard, IP-literal and hexadecimal subject names refused) |
+| `contracts/reader/schemas/question.schema.json` | 35 | 0 | sound |
+| `contracts/router-api/CHANGELOG.md` | 26 | 0 | sound |
+| `contracts/router-api/README.md` | 5 | 4 | sound |
+| `contracts/router-api/fixtures/invalid/catalogue-snapshot-calls-figure-asking-for-a-hold.json` | 1640 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/invalid/catalogue-snapshot-quote-made-after-the-snapshot.json` | 524 | 524 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/invalid/decision-record-candidate-id-twice.json` | 1367 | 1283 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/invalid/decision-record-choosing-an-unconfirmed-candidate.json` | 1308 | 1308 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/invalid/decision-record-chosen-candidate-with-a-drop-reason.json` | 1309 | 1308 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/invalid/decision-record-chosen-not-a-candidate.json` | 1309 | 1305 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/invalid/decision-record-citing-a-calls-figure-and-naming-no-call.json` | 9 | 9 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/invalid/decision-record-naming-a-call-to-a-provider-off-its-part.json` | 9 | 9 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/invalid/decision-record-naming-a-call-without-its-calls-figure.json` | 9 | 9 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/invalid/decision-record-naming-an-undeclared-call.json` | 9 | 9 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/invalid/decision-record-naming-calls-of-another-release.json` | 9 | 9 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/invalid/decision-record-operation-citing-a-missing-figure.json` | 1264 | 1264 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/invalid/operation-naming-a-call-for-a-status-question.json` | 38 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/invalid/operation-naming-a-call-for-an-inner-segments-query.json` | 38 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/invalid/policy-bounds-naming-an-older-protocol-version-twice.json` | 50 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/invalid/policy-bounds-whose-older-protocol-version-is-the-current-one.json` | 46 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/patches/catalogue-snapshot-calls-figure-asking-for-a-hold.json` | 10 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/patches/catalogue-snapshot-quote-made-after-the-snapshot.json` | 5 | 0 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/patches/decision-record-candidate-id-twice.json` | 48 | 28 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/patches/decision-record-choosing-an-unconfirmed-candidate.json` | 2 | 2 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/patches/decision-record-chosen-candidate-with-a-drop-reason.json` | 2 | 1 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/patches/decision-record-chosen-not-a-candidate.json` | 8 | 0 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/patches/decision-record-citing-a-calls-figure-and-naming-no-call.json` | 5 | 0 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/patches/decision-record-naming-a-call-to-a-provider-off-its-part.json` | 5 | 0 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/patches/decision-record-naming-a-call-without-its-calls-figure.json` | 5 | 0 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/patches/decision-record-naming-an-undeclared-call.json` | 5 | 0 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/patches/decision-record-naming-calls-of-another-release.json` | 5 | 0 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/patches/decision-record-operation-citing-a-missing-figure.json` | 2 | 2 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/valid/decision-record-naming-the-calls-each-segment-makes.json` | 2 | 2 | data, changed; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/valid/policy-bounds-with-an-older-protocol-version-in-force.json` | 46 | 0 | data, new; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/schemas/common.schema.json` | 7 | 2 | sound (no module may call for the operator's own questions: `status_query`, `hold`, `inner_segments_query` beside `holding_balance`) |
+| `contracts/router-api/schemas/policy-bounds.schema.json` | 23 | 1 | sound (the older protocol versions in force with their cutovers, `REQ-PRT-4`) |
+| `contracts/src/core_internal/attribution.rs` | 80 | 27 | sound (a revocation counted from its admitted effect, L5) |
+| `contracts/src/core_internal/calls.rs` | 22 | 0 | sound (the handles unchanged in kind; residual R-HANDLES stands) |
+| `contracts/src/core_internal/check.rs` | 209 | 143 | sound |
+| `contracts/src/core_internal/mod.rs` | 3 | 1 | sound |
+| `contracts/src/core_internal/relations.rs` | 878 | 46 | sound (a repeat or recorded read only of an unsettled segment at its provider, under its question's transaction; a reversal asked again only after every earlier ask failed); low L10 (no relation binds `end_requested` or a dispute's stuck declaration to its permit) |
+| `contracts/src/core_internal/standing.rs` | 67 | 4 | sound |
+| `contracts/src/core_internal/types.rs` | 747 | 2 | sound but for M2 (`Difference::Holding::by`) |
+| `contracts/src/lib.rs` | 2 | 0 | sound |
+| `contracts/src/module_interface/mod.rs` | 1 | 1 | sound |
+| `contracts/src/module_interface/types.rs` | 18 | 0 | sound |
+| `contracts/src/module_interface/validate.rs` | 18 | 0 | sound |
+| `contracts/src/provider_role/arrival.rs` | 42 | 7 | sound |
+| `contracts/src/provider_role/envelope.rs` | 108 | 21 | sound (`check_context` judges at the reader's time, never the maker's `made_at`) |
+| `contracts/src/provider_role/mod.rs` | 13 | 7 | sound |
+| `contracts/src/provider_role/operation.rs` | 88 | 0 | sound |
+| `contracts/src/provider_role/outcome.rs` | 398 | 7 | sound |
+| `contracts/src/provider_role/types.rs` | 19 | 2 | sound |
+| `contracts/src/provider_role/validate.rs` | 1 | 1 | sound |
+| `contracts/src/reader/check.rs` | 119 | 0 | sound (an answer held to the question, the listed maker, key and version, its deployment and protocol version at Core's clock, and the deadline on Core's clock) |
+| `contracts/src/reader/mod.rs` | 55 | 0 | sound |
+| `contracts/src/reader/types.rs` | 571 | 0 | sound (a request id from 16 random bytes, top half non-zero; distinct hosts at least the quorum) |
+| `contracts/src/router_api/check.rs` | 203 | 245 | sound |
+| `contracts/src/router_api/types.rs` | 15 | 0 | sound |
+| `contracts/src/rule_switch.rs` | 33 | 0 | sound (a test hook behind a feature no shipped build turns on) |
+| `contracts/state-machine/CHANGELOG.md` | 4 | 0 | sound |
+| `contracts/tests/core-internal.rs` | 1344 | 15 | test; sound |
+| `contracts/tests/module-interface.rs` | 24 | 2 | test; sound |
+| `contracts/tests/provider-role.rs` | 698 | 20 | test; sound |
+| `contracts/tests/reader.rs` | 742 | 0 | test; sound |
+| `contracts/tests/router-api.rs` | 183 | 2 | test; sound |
+| `licences/RECORD` | 111 | 2 | sound (`rutent-reader-host` `@core`, MIT; per-artifact lines, `T-001-06`) |
+| `tools/boundary-check/Cargo.toml` | 5 | 0 | sound |
+| `tools/boundary-check/src/lib.rs` | 684 | 89 | sound (the reader host held to contracts and prov's three admitted paths; the test-only feature pin, ruled on in the notes: a probe shows a renamed, inherited or target-table dependency refused by the manifest parser, and cargo refuses a key that isn't the package's name) |
+| `tools/boundary-check/tests/boundary.rs` | 960 | 7 | test; sound |
+| `tools/boundary-check/tests/docs.rs` | 2 | 0 | test; sound |
+| `tools/boundary-check/tests/graph.rs` | 69 | 5 | test; sound |
+| `tools/contract-guard/Cargo.toml` | 1 | 0 | sound |
+| `tools/contract-guard/src/lib.rs` | 236 | 2 | sound (the ignorable marker and its schema check; the fold rule only against a base that is no release line, failing closed where `develop` is unknown) |
+| `tools/contract-guard/src/main.rs` | 66 | 1 | sound |
+| `tools/contract-guard/tests/guard.rs` | 447 | 2 | test; sound |
+| `tools/licence-check/src/artifact.rs` | 616 | 0 | sound |
+| `tools/licence-check/src/json.rs` | 217 | 0 | sound |
+| `tools/licence-check/src/lib.rs` | 324 | 24 | sound (locks read from git's list, so an ignored lock is never read and a tracked one always is) |
+| `tools/licence-check/src/main.rs` | 57 | 10 | sound |
+| `tools/licence-check/src/spdx.rs` | 107 | 0 | sound |
+| `tools/licence-check/tests/artifact.rs` | 827 | 0 | test; sound |
+| `tools/licence-check/tests/licence.rs` | 177 | 17 | test; sound |
