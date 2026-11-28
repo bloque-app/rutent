@@ -391,6 +391,55 @@ fn outer_node_is_named_for_its_network_and_the_reserve_behind_it() {
     );
 }
 
+// verifies: REQ-CAT-22, DEC-28
+#[test]
+fn withheld_tuple_stays_withheld_after_its_network_is_delisted_and_an_unlisted_network_is_never_routed()
+ {
+    // `T-020-60`'s round 1, M2: an outer end needs a started network, so a network that failed its start-up check
+    // and was then delisted isn't routed again, and one no listing ever named is routed over by no tuple.
+    let mut catalogue = acme_catalogue(&[reserve_advertisement()]);
+    let routes_polygon = |c: &Catalogue| {
+        c.snapshot("snap-1", NOW)
+            .unwrap()
+            .snapshot
+            .figures
+            .iter()
+            .any(|f| {
+                matches!(&f.value, FigureValue::ReserveTuple { tuple }
+                if matches!(&tuple.origin, NodeRef::Outer(o) if o.network == "polygon"))
+            })
+    };
+    assert!(routes_polygon(&catalogue), "listed and started: routed");
+    catalogue
+        .list_public_network("polygon", true, false)
+        .unwrap();
+    assert!(!routes_polygon(&catalogue), "listed, not started: withheld");
+    assert!(catalogue.drop_public_network("polygon"));
+    assert!(
+        !routes_polygon(&catalogue),
+        "delisted after failing its check: still withheld"
+    );
+    assert!(
+        left_out_reasons(&catalogue).contains(&LeftOutReason::NetworkNotListed("polygon".into())),
+        "left out as on no list"
+    );
+    assert!(
+        !catalogue.drop_public_network("polygon"),
+        "nothing left to drop"
+    );
+    assert!(
+        !routes_polygon(&catalogue),
+        "never listed again: never routed"
+    );
+    catalogue
+        .list_public_network("polygon", true, true)
+        .unwrap();
+    assert!(
+        routes_polygon(&catalogue),
+        "listed again and started: routed"
+    );
+}
+
 // verifies: REQ-QTE-4
 #[test]
 fn every_figure_carries_its_age_and_origin() {
