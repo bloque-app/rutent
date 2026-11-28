@@ -3578,6 +3578,24 @@ fn repeat_of_a_segment_that_already_has_an_outcome_is_refused_by_the_log() {
     );
 }
 
+// verifies: INV-8, NFR-6
+#[test]
+fn read_of_a_recorded_answer_is_held_to_the_segments_unsettled_move_at_its_provider() {
+    // The read of the platform's recorded answer is of the same move as a repeat (`T-020-61`, item 10): decided, then
+    // taken as an effect, at the segment's own provider, under its own transaction, while its move has no outcome.
+    assert_case("world--decide_read_recorded");
+    assert_case("world--effect_read_recorded");
+    for breaks in [
+        "a-read-at-another-provider",
+        "a-read-of-a-settled-segment",
+        "a-read-under-another-segments-transaction",
+    ] {
+        assert_case_refused(&format!(
+            "repeat-is-of-an-unsettled-segment-at-its-provider--{breaks}"
+        ));
+    }
+}
+
 // verifies: REQ-ORD-1, INV-8
 #[test]
 fn repeat_under_another_segments_transaction_is_refused_by_the_log() {
