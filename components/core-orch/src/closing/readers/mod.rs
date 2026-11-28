@@ -1,6 +1,6 @@
 //! Core's adapter for each public network's reader service (`T-020-60`, `DEC-28`, ADR-0007 as amended).
 //!
-//! [`PublicRecords`](super::PublicRecords) stays Core's seam (`REQ-MOD-3`), and Core implements it itself, here: a
+//! [`PublicRecords`] stays Core's seam (`REQ-MOD-3`), and Core implements it itself, here: a
 //! [`Pass`] over [`Readers`] asks each listed network's reader, run by a reader host apart from Core, over an mTLS client
 //! of Core's own ([`ReaderTls`]), under the operator's CA, on `rustls` with its `ring` provider. The deployment hands Core
 //! its certificate and key, the operator's CA, the addresses its host settings hold, and its clock, when it builds
