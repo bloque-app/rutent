@@ -46,7 +46,7 @@ use crate::intake::{
     Begun, DESTINATION_INPUT, Placed, Started, accepted_authorisation, held_record, started_on,
 };
 use crate::recalc::{Ask, Recalculation, route_end};
-use crate::reversal::{Asked, At, Carrier, Confirmation, Owing, ReversalError};
+use crate::reversal::{Asked, At, CarriedReversal, Carrier, Confirmation, Owing, ReversalError};
 use crate::rounds::{self, Presence};
 use crate::segments::{CarriedOn, CarryOn, Live, Ran};
 use crate::stuck::NoRouteLeft;
@@ -85,6 +85,9 @@ pub struct ReversalRan {
     pub owed: Result<Owing, ReversalError>,
     /// The failed provider asked to reverse it, where Core asked this tick.
     pub asked: Option<Result<Asked, ReversalError>>,
+    /// The last ask's unknown outcome carried on, where Core carried it on this tick: its status asked, its operation
+    /// repeated or its recorded answer read, under the ask's own transaction.
+    pub carried_on: Option<Result<CarriedReversal, ReversalError>>,
     /// The confirmation asked this tick, where Core asked one.
     pub confirmed: Option<Result<Confirmation, ReversalError>>,
 }
@@ -93,6 +96,7 @@ impl ReversalRan {
     /// Whether the reversal completed on this step: the failed provider's answer counted, or the confirmation did.
     pub fn completed(&self) -> bool {
         matches!(&self.asked, Some(Ok(asked)) if asked.completed.is_some())
+            || matches!(&self.carried_on, Some(Ok(carried)) if carried.completed.is_some())
             || matches!(&self.confirmed, Some(Ok(Confirmation::Completed(_))))
     }
 }
@@ -563,14 +567,19 @@ impl Jobs<'_> {
     }
 
     /// Takes a step on the reversal of each segment of `part` that failed owing it (`REQ-ORD-3`, `REQ-ORD-11`,
-    /// `REQ-ORD-30`; `T-020-61`, item 10), one step a tick: recorded owed in the catalogue's list; on the next tick, while
-    /// the failed provider carries it, asked of that provider, or carried on where the asking stopped; on the tick after,
-    /// confirmed with the origin reserve, or the node's holder; and so in turn, the provider asked again and the
-    /// confirmation asked again, until it completes. A Core that reopens confirms first where the log holds an ask
-    /// already. One the customer or the operator carries, on the provider's showing they accepted, is theirs: Core asks
-    /// no one. A stuck part's reversal still runs: the provider carries it while a dispute over its fault stands, and the
-    /// value it returns goes back where it came from, which the part's resolution may then cite. A deposit owes none.
+    /// `REQ-ORD-30`; `T-020-61`, item 10), one step a tick: recorded owed in the catalogue's list; then, while the failed
+    /// provider carries it, the step [`Reversals::next_step`](crate::reversal::Reversals::next_step) names. The provider
+    /// is asked once, under one transaction, and again only where every earlier ask failed, moving nothing, on the
+    /// retry cadence and up to the cap; an ask whose outcome is unknown is carried on once under its own transaction
+    /// (its status, a safe repeat, or the answer the platform recorded), never asked again (the review of #355's round
+    /// 2, H1); and the origin reserve, or the node's holder, is asked to confirm on the cadence and up to the cap, past
+    /// which the part is the stuck check's. Where the provider can't be asked (no reserve at the node, policy's
+    /// refusal), the confirmation is asked on the same tick. A Core that reopens rebuilds all of it from the log. One
+    /// the customer or the operator carries, on the provider's showing they accepted, is theirs: Core asks no one. A
+    /// stuck part's reversal still runs: the provider carries it while a dispute over its fault stands, and the value it
+    /// returns goes back where it came from, which the part's resolution may then cite. A deposit owes none.
     fn reverse_owed(&mut self, order: &Id, part: &Id, route: &Route) -> Vec<ReversalRan> {
+        use crate::reversal::ReversalStep;
         let segments = self.ports().segments();
         let owed: Vec<Id> = segments
             .order(order)
@@ -588,20 +597,12 @@ impl Jobs<'_> {
         let mut done = Vec::new();
         for segment in owed {
             let history = self.ports().history();
-            let asked_before = history.iter().any(|(_, e)| {
-                matches!(e, Entry::Verified(VerifiedEntry {
-                    what: What::Effect {
-                        action: Action::AskReversal { order: o, segment: s, .. },
-                        ..
-                    },
-                    ..
-                }) if o == order && s == &segment)
-            });
             let bounds = route.record.bounds.clone();
             let mut step = ReversalRan {
                 segment: segment.clone(),
                 owed: Err(ReversalError::Unknown),
                 asked: None,
+                carried_on: None,
                 confirmed: None,
             };
             self.ports_mut()
@@ -612,7 +613,7 @@ impl Jobs<'_> {
                         part,
                         segment: &segment,
                     };
-                    // Recorded owed on the first tick it is seen, its own step; asked or confirmed on the ticks after.
+                    // Recorded owed on the first tick it is seen, its own step; taken on from the tick after.
                     let first = reversals.owing(order, &segment).is_none();
                     step.owed = reversals.owe(parts, at);
                     if first || step.owed.is_err() {
@@ -624,37 +625,49 @@ impl Jobs<'_> {
                     if !carried_by_provider {
                         return;
                     }
-                    // Asked first, then confirmed, in turn: a confirmation that completes nothing is followed by the
-                    // provider asked again on the next tick.
-                    if !asked_before
-                        || reversals.asking(order, &segment)
-                        || !reversals.asked_last(order, &segment)
-                    {
-                        struct Nobody;
-                        impl crate::rounds::Providers for Nobody {
-                            fn ask(&mut self, _: &Id, _: &[u8]) -> Option<Vec<u8>> {
-                                None
+                    let now = parts.clock.now().timestamp().map_or(0, |t| {
+                        u64::try_from(t.unix_nanos() / 1_000_000_000).unwrap_or(0)
+                    });
+                    let mut moving = crate::reversal::Moving {
+                        decisions: &mut *desk.decisions,
+                        modules: desk.platform.modules(),
+                    };
+                    match reversals.next_step(order, &segment, now) {
+                        ReversalStep::Ask => {
+                            struct Nobody;
+                            impl crate::rounds::Providers for Nobody {
+                                fn ask(&mut self, _: &Id, _: &[u8]) -> Option<Vec<u8>> {
+                                    None
+                                }
+                            }
+                            let mut asking = crate::reversal::Asking {
+                                bounds: &bounds,
+                                key: &mut *desk.key,
+                                providers: &mut Nobody,
+                                records: desk.records,
+                            };
+                            let before = reversals.asks_sent(order, &segment);
+                            let asked = reversals.ask(parts, &mut asking, &mut moving, at);
+                            // Asked, its answer the provider's to give: taken on from the next tick. Where the provider
+                            // couldn't be asked and nothing went (no reserve at the node, policy's refusal), the
+                            // confirmation is asked now.
+                            let sent_nothing =
+                                asked.is_err() && reversals.asks_sent(order, &segment) == before;
+                            step.asked = Some(asked);
+                            if !sent_nothing {
+                                return;
                             }
                         }
-                        let mut asking = crate::reversal::Asking {
-                            bounds: &bounds,
-                            key: &mut *desk.key,
-                            providers: &mut Nobody,
-                            records: desk.records,
-                        };
-                        let mut moving = crate::reversal::Moving {
-                            decisions: &mut *desk.decisions,
-                            modules: desk.platform.modules(),
-                        };
-                        let asked = reversals.ask(parts, &mut asking, &mut moving, at);
-                        let failed = asked.is_err();
-                        reversals.took_step(order, &segment, true);
-                        step.asked = Some(asked);
-                        // Asked, its answer the provider's to give: confirmed from the next tick. Where the provider
-                        // couldn't be asked (no reserve at the node, policy's refusal), the confirmation is asked now.
-                        if !failed {
+                        ReversalStep::CarryOn => {
+                            step.carried_on =
+                                Some(reversals.carry_on_reversal(parts, &mut moving, at));
                             return;
                         }
+                        ReversalStep::Confirm => {}
+                        ReversalStep::Wait => return,
+                    }
+                    if !reversals.confirm_due(order, &segment, now) {
+                        return;
                     }
                     let mut asking = crate::reversal::Asking {
                         bounds: &bounds,
@@ -663,7 +676,6 @@ impl Jobs<'_> {
                         records: desk.records,
                     };
                     step.confirmed = Some(reversals.confirm_reversal(parts, &mut asking, at));
-                    reversals.took_step(order, &segment, false);
                 });
             self.ports_mut().fed();
             done.push(step);

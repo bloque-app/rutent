@@ -379,10 +379,19 @@ impl Core {
         segment: &Id,
     ) -> Result<Confirmation, StepError> {
         let at = (order.as_str().to_owned(), segment.as_str().to_owned());
-        // Recorded owed on one tick, asked on the next, confirmed from the one after: as many ticks as it takes.
+        // Recorded owed on one tick, asked on the next, confirmed from the one after: as many ticks as it takes. Core
+        // asks a confirmation again only on its retry cadence (the review of #355's round 2, H1): the deployment's timer
+        // ticks again once it has passed.
         for _ in 0..3 {
             if self.life.confirms_told.contains_key(&at) {
                 break;
+            }
+            // Core's clock, as its entries stamp it: rounded up to the second.
+            let now = u64::try_from(self.clock.peek().div_ceil(1_000_000_000)).unwrap_or(u64::MAX);
+            if self.life.reversals.confirmations_asked(order, segment) > 0
+                && !self.life.reversals.confirm_due(order, segment, now)
+            {
+                self.clock.advance(self.life.reversals.retry_seconds());
             }
             self.tick();
         }
@@ -498,6 +507,12 @@ impl Core {
     /// Whether `segment` of `order` is a move whose outcome Core holds unknown.
     pub fn is_unknown(&self, order: &Id, segment: &Id) -> bool {
         self.segments.unknown_move(order, segment).is_some()
+    }
+
+    /// How many confirmations of the reversal of `segment` of `order` Core asked, as the log holds them (the review of
+    /// #355's round 2, H1).
+    pub fn confirmations_asked(&self, order: &Id, segment: &Id) -> u32 {
+        self.life.reversals.confirmations_asked(order, segment)
     }
 
     /// The transactions of the reversals Core carried out for `order`, in the order it did (`REQ-ORD-41`).

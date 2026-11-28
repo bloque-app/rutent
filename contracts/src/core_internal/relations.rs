@@ -322,6 +322,19 @@ fn move_without_outcome(order: &Id, segment: &Id, history: &History) -> bool {
     })
 }
 
+/// Whether `history` holds an `ask_reversal` effect of `segment` of `order` with no final result: its outcome unknown, so
+/// it is resolved under its own transaction, never asked again (`T-020-61`, the review of #355's round 2, H1).
+fn reversal_ask_without_outcome(order: &Id, segment: &Id, history: &History) -> bool {
+    history.iter().any(|(_, e)| {
+        verified(e)
+            .and_then(effect_action)
+            .is_some_and(|(action, _)| {
+                matches!(action, Action::AskReversal { order: o, segment: s, .. } if o == order && s == segment)
+            })
+            && !settled(e, history)
+    })
+}
+
 /// Whether `transaction` is one Core's own question about `segment` of `order` names: a stated `operation` about that order
 /// and segment under it. A repeat names the segment's own transaction, never another segment's (`T-020-63`).
 fn is_segments_transaction(order: &Id, segment: &Id, transaction: &Id, history: &History) -> bool {
@@ -517,7 +530,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 122] = [
+pub static RELATIONS: [Relation; 123] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -2571,7 +2584,7 @@ pub static RELATIONS: [Relation; 122] = [
         name: "repeat-is-of-an-unsettled-segment-at-its-provider",
         spec: &["REQ-ORD-1", "INV-8"],
         quantifier: Quantifier::Exists,
-        refusal: "a segment's operation is carried out again, or its recorded answer read back, only at the provider its move went to, under the transaction its question named, and only while that move has no final outcome",
+        refusal: "a segment's operation is carried out again, or its recorded answer read back, only at the provider its move went to, under the transaction its question named, and only while that move, or the ask of its reversal, has no final outcome",
         fields: &[],
         // None to point to: a `repeat_operation` effect is refused unless its provider is the one the segment's move
         // went to, its transaction one Core's question of that segment (`operation`, stated about it) named, and that move has no final result nor a permitted confirmation of its outcome (`T-020-63`). That the
@@ -2579,6 +2592,9 @@ pub static RELATIONS: [Relation; 122] = [
         // commitment alone: the platform refuses the repeat of a provider that doesn't declare it (`REQ-CAT-10`).
         // A read of the platform's recorded answer to the segment's operation is held to the same: it is of the same
         // move, the same provider and the same transaction, while the move has no final outcome (`T-020-61`, item 10).
+        // A failed segment's reversal is resolved the same way (the review of #355's round 2, H1): its ask's own
+        // transaction, stated about the segment, repeated or read back while that ask has no final outcome, never asked
+        // again under a fresh one (`reversal-is-asked-again-only-after-a-refusal`).
         cites: |e, h| match effect_action(e) {
             Some((
                 Action::RepeatOperation {
@@ -2595,14 +2611,45 @@ pub static RELATIONS: [Relation; 122] = [
                 },
                 _,
             )) if !(segment_provider(order, segment, h) == Some(provider)
-                && move_without_outcome(order, segment, h)
-                && is_segments_transaction(order, segment, transaction, h)) =>
+                && is_segments_transaction(order, segment, transaction, h)
+                && (move_without_outcome(order, segment, h)
+                    || reversal_ask_without_outcome(order, segment, h))) =>
             {
                 by_fields(0)
             }
             _ => none(),
         },
         answers: |_, _, _, _| Match::NotTarget,
+    },
+    Relation {
+        name: "reversal-is-asked-again-only-after-a-refusal",
+        spec: &["REQ-ORD-3", "INV-8"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "a reversal is asked of its failed provider again only where every earlier ask of it failed, moving nothing",
+        fields: &[],
+        // Each ask of a reversal goes under a transaction of its own, so a provider can't tell a second ask from a new
+        // reversal of the same move: one whose outcome is unknown (no result, or `unanswered`), or one the provider said
+        // it carried out (`done`), is resolved by its own transaction, its status asked, its operation repeated or its
+        // recorded answer read, never asked again (`T-020-61`, the review of #355's round 2, H1). Only an ask that failed,
+        // which moved nothing, may be followed by another. The same effect retried is no other.
+        cites: |e, _| match effect_action(e) {
+            Some((Action::AskReversal { .. }, _)) => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, h| match (effect_action(e), verified(t).and_then(effect_action)) {
+            (
+                Some((Action::AskReversal { order, segment, .. }, _)),
+                Some((
+                    Action::AskReversal {
+                        order: o,
+                        segment: s,
+                        ..
+                    },
+                    _,
+                )),
+            ) => judge(o == order && s == segment && !failed(t, h), &[]),
+            _ => Match::NotTarget,
+        },
     },
     Relation {
         name: "status-is-asked-under-a-fresh-transaction",
@@ -6028,6 +6075,19 @@ fn unanswered(entry: &Entry, history: &History) -> bool {
             verified(x).is_some_and(|r| {
                 matches!(&r.what, What::Result { effect } if effect == at)
                     && r.outcome == (Outcome::Unanswered {})
+            })
+        })
+    })
+}
+
+/// Whether the effect `entry` of `history` has a `failed` result: it moved nothing.
+fn failed(entry: &Entry, history: &History) -> bool {
+    position(entry, history).is_some_and(|at| {
+        let at = &history[at].0;
+        history.iter().any(|(_, x)| {
+            verified(x).is_some_and(|r| {
+                matches!(&r.what, What::Result { effect } if effect == at)
+                    && r.outcome == (Outcome::Failed {})
             })
         })
     })

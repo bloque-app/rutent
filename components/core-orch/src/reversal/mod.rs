@@ -79,6 +79,7 @@
 //! provider's reversal can't carry the label the log takes only on a statement, so it completes nothing. Each is named
 //! in `F-020`'s notes.
 
+mod asks;
 pub mod command;
 mod journal;
 mod judge;
@@ -112,6 +113,7 @@ use crate::segments::{Segments, StatusError};
 use crate::snapshot::{Clock, Exposures, OrchestrationLog};
 use crate::stuck::{self, Stuck, StuckError};
 
+pub use asks::{CarriedReversal, DEFAULT_REVERSAL_RETRY_SECONDS, MAX_REVERSAL_TRIES, ReversalStep};
 use journal::Step;
 pub use judge::NotCounted;
 use judge::{Reversed, Whose};
@@ -365,6 +367,13 @@ pub enum ReversalError {
     NotPermitted(Answer),
     /// The effect was acted on already (`INV-8`).
     AlreadyActed(Receipt),
+    /// The reversal was asked already, under this transaction, and that ask may have moved value: it is carried on under
+    /// its own transaction or confirmed, never asked again under a fresh one (`reversal-is-asked-again-only-after-a-refusal`).
+    AskedAlready(Id),
+    /// Not due: the retry cadence hasn't passed since the last ask or confirmation.
+    NotDue,
+    /// Asked as many times as Core asks ([`MAX_REVERSAL_TRIES`]): the part is the stuck check's.
+    TriedEnough,
     /// A dispute of the showing waits on the log, kept by the stuck orders to append: the showing is answered by it
     /// once it is retried to completion, and accepted by no one before.
     DisputePending,
@@ -456,6 +465,18 @@ struct Reversal {
     /// Core's asking the failed provider to reverse, kept from its permit until its answer is judged.
     asking: Option<AskState>,
     showing: Option<Showing>,
+    /// Each ask Core sent the failed provider, oldest first, each under its own transaction, as the log holds them
+    /// (`asks`, the review of #355's round 2, H1): what decides whether it may be asked again, and how an unknown one
+    /// is carried on.
+    sent: Vec<asks::Sent>,
+    /// The carrying-on of the last ask's unknown outcome, from its decision on: its status asked, its operation repeated
+    /// or its recorded answer read, once.
+    resolving: Option<asks::Resolving>,
+    /// Whether the last ask's unknown outcome was carried on, as the log holds it.
+    carried_on: bool,
+    /// The confirmations Core asked of the origin reserve, or the node's holder, as the log holds them: bounded by the
+    /// cadence and a cap ([`asks::MAX_REVERSAL_TRIES`]).
+    confirms: asks::Tries,
     /// The movement back into a held public node's holding account Core read from the node's network, kept from the
     /// question it was read for until the completion that names it (`T-020-60` (6)).
     returned: Option<Returned>,
@@ -521,6 +542,8 @@ struct AskState {
     answer_step: Option<Step>,
     refused: bool,
     result: Option<Step>,
+    /// The outcome its result records, once built.
+    outcome: Option<Outcome>,
 }
 
 /// Core's asking a segment's provider for its late status, from the decision on.
@@ -572,9 +595,13 @@ pub struct Reversals {
     /// verified `holding_withdrawal`, the route's starting reserve, which is the one party the log takes as the reserve
     /// at that node (core-internal's `reserve_at_from`, `T-020-57`).
     holders: BTreeMap<String, (String, Id)>,
-    /// The segments whose last step Core's run took on their reversal was its ask of the failed provider, not a
-    /// confirmation (`T-020-61`, item 10): the run asks and confirms in turn ([`Reversals::took_step`]).
-    asked_last: std::collections::BTreeSet<(String, String)>,
+    /// How often a reversal's confirmation, or a refused ask, is tried again, in seconds: the deployment's setting,
+    /// else [`DEFAULT_REVERSAL_RETRY_SECONDS`].
+    retry: Option<u64>,
+    /// The confirmations the log holds of a reversal Core doesn't follow yet ([`Reversals::rebuild_asks`]).
+    pending_confirms: BTreeMap<(String, String), asks::Tries>,
+    /// The carriers the log records of a reversal Core doesn't follow yet ([`Reversals::rebuild_asks`]).
+    pending_carriers: BTreeMap<(String, String), Carries>,
 }
 
 impl Reversals {
@@ -675,6 +702,9 @@ impl Reversals {
                 ));
             }
         }
+        // Each reversal's asks, their outcomes and answers, its carrying-on, its confirmations and its carrier
+        // (`asks`, the review of #355's round 2, H1).
+        reversals.rebuild_asks(history, kept);
         reversals
     }
 
@@ -851,6 +881,11 @@ impl Reversals {
             .get(&at_key)
             .is_none_or(|r| r.asking.is_none())
         {
+            // Sent once under one transaction: asked again only where every earlier ask failed, moving nothing, and
+            // then on the cadence and up to the cap (`asks`; the log refuses the rest,
+            // `reversal-is-asked-again-only-after-a-refusal`).
+            let now = asks::seconds(&journal::now(parts.clock)?);
+            self.ask_allowed(at.order, at.segment, now)?;
             let action = Action::AskReversal {
                 order: at.order.clone(),
                 segment: at.segment.clone(),
@@ -918,6 +953,7 @@ impl Reversals {
                 answer_step: None,
                 refused: false,
                 result: None,
+                outcome: None,
             });
         }
         let bound = self
@@ -938,6 +974,20 @@ impl Reversals {
             decision: state.permit.clone(),
             receipt: effect_receipt.clone(),
         };
+        // Sent, as the log holds it: once its effect is in the log, this reversal is never asked again under a fresh
+        // transaction unless this ask fails.
+        if !reversal.sent.iter().any(|s| s.effect == effect_receipt) {
+            let at_seconds = asks::seconds(&journal::now(parts.clock)?);
+            reversal.sent.push(asks::Sent {
+                transaction: state.transaction.clone(),
+                statement: state.statement.clone(),
+                effect: effect_receipt.clone(),
+                at: at_seconds,
+                outcome: None,
+                answer: None,
+            });
+            reversal.carried_on = false;
+        }
         if !state.carried {
             if !parts.segments.act_on(&effect_receipt) {
                 return Err(ReversalError::AlreadyActed(effect_receipt));
@@ -1013,6 +1063,7 @@ impl Reversals {
                 _ if state.refused => Outcome::Failed {},
                 _ => Outcome::Unanswered {},
             };
+            state.outcome = Some(outcome);
             state.result = Some(Step::new(journal::recorded(
                 parts.clock,
                 parts.core,
@@ -1027,6 +1078,14 @@ impl Reversals {
             .as_mut()
             .ok_or(ReversalError::Unknown)?
             .append(parts.log)?;
+        if let Some(sent) = reversal
+            .sent
+            .iter_mut()
+            .find(|s| s.effect == effect_receipt)
+        {
+            sent.outcome = state.outcome;
+            sent.answer = state.answer.clone().zip(answer_receipt.clone());
+        }
         let operation = state.statement.clone();
         reversal.asking = None;
         let (completed, why) = match judged {
@@ -1316,22 +1375,6 @@ impl Reversals {
             .and_then(|r| r.owing.as_ref())
     }
 
-    /// Notes the step Core's run took on the reversal of `segment` of `order`: its ask of the failed provider where
-    /// `asked`, else a confirmation. Core's run asks and confirms in turn, so a confirmation that completes nothing is
-    /// followed by the provider asked again, and a re-asked reversal moves nothing twice: the provider's own rule.
-    pub fn took_step(&mut self, order: &Id, segment: &Id, asked: bool) {
-        if asked {
-            self.asked_last.insert(key(order, segment));
-        } else {
-            self.asked_last.remove(&key(order, segment));
-        }
-    }
-
-    /// Whether the last step Core's run took on the reversal of `segment` of `order` was its ask ([`Reversals::took_step`]).
-    pub fn asked_last(&self, order: &Id, segment: &Id) -> bool {
-        self.asked_last.contains(&key(order, segment))
-    }
-
     /// The party the log's acceptance of `order` names as its requester, as Core followed it ([`Reversals::follow`]).
     pub fn requester(&self, order: &Id) -> Option<&Id> {
         self.requesters.get(order.as_str())
@@ -1437,11 +1480,22 @@ impl Reversals {
         {
             return self.complete(parts, at).map(Confirmation::Completed);
         }
+        let now = asks::seconds(&journal::now(parts.clock)?);
         if self
             .reversals
             .get(&at_key)
             .is_none_or(|r| r.question.is_none())
         {
+            // On the cadence and up to the cap, counted from the log (`asks`): never pressed on every tick.
+            if !self.confirm_due(at.order, at.segment, now) {
+                return Err(
+                    if self.confirmations_asked(at.order, at.segment) >= MAX_REVERSAL_TRIES {
+                        ReversalError::TriedEnough
+                    } else {
+                        ReversalError::NotDue
+                    },
+                );
+            }
             // A reversal back into a held public node is asked only on its network's record of the value back in the
             // holding account, read through the network's reader in this pass and handed to the account by the
             // deployment: the account confirms on that reading, never on a record of its own (`T-020-60` (6)).
@@ -1485,6 +1539,7 @@ impl Reversals {
         if !question.sent {
             question.answer = asking.providers.ask(&question.origin, &question.bytes);
             question.sent = true;
+            reversal.confirms.note(now);
         }
         let Some(answer) = question.answer.clone() else {
             reversal.question = None;
@@ -2108,22 +2163,36 @@ impl Reversals {
 
     /// The reversal of `at`, made if it isn't kept yet, its provider carrying it.
     fn reversal(&mut self, at: At<'_>, provider: &Id) -> &mut Reversal {
-        self.reversals
-            .entry(key(at.order, at.segment))
-            .or_insert_with(|| Reversal {
-                provider: provider.clone(),
-                owing: None,
-                carrier: Carrier::Provider(provider.clone()),
-                question: None,
-                completion: None,
-                completed: None,
-                reports: Vec::new(),
-                showings: Vec::new(),
-                accepting: None,
-                asking: None,
-                showing: None,
-                returned: None,
-            })
+        self.reversal_of(at.order, at.segment, provider)
+    }
+
+    /// The reversal of `segment` of `order`, which `provider` failed: followed from here on, with what the log held of
+    /// it before Core followed it (its confirmations and its carrier, [`Reversals::rebuild_asks`]).
+    fn reversal_of(&mut self, order: &Id, segment: &Id, provider: &Id) -> &mut Reversal {
+        let at_key = key(order, segment);
+        let confirms = self.pending_confirms.remove(&at_key).unwrap_or_default();
+        let carrier = self.pending_carriers.remove(&at_key).map_or_else(
+            || Carrier::Provider(provider.clone()),
+            |c| asks::carried_by(&c, provider),
+        );
+        self.reversals.entry(at_key).or_insert_with(|| Reversal {
+            provider: provider.clone(),
+            owing: None,
+            carrier,
+            question: None,
+            completion: None,
+            completed: None,
+            reports: Vec::new(),
+            showings: Vec::new(),
+            accepting: None,
+            asking: None,
+            showing: None,
+            sent: Vec::new(),
+            resolving: None,
+            carried_on: false,
+            confirms,
+            returned: None,
+        })
     }
 
     /// What `at` reverses, from Core's records: a segment that owes its reversal, recorded owed first, or the settled

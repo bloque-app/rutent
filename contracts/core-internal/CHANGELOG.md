@@ -12,6 +12,18 @@
   `…-for-a-reason-it-has-no-name-for` (two schema rules more); admission cases `--its-listing`, `--missing`, `--network`.
   Ignorable: no, a reader that ignored it would not tell the operator why a network is held off its routes.
   (DEC-4, DEC-20, T-020-60)
+- `T-020-61` (the review of #355's round 2, H1; `REQ-ORD-3`, `INV-8`): the row `reversal-is-asked-again-only-after-a-refusal`
+  (none other): an `ask_reversal` effect is refused where an earlier `ask_reversal` effect of the same order and segment
+  has a result other than `failed`, or none. Each ask goes under a transaction of its own, so a provider can't tell a second
+  ask from a new reversal of the same move: an ask whose outcome is unknown, or one the provider said it carried out, is
+  never followed by another; only one that failed, moving nothing, may be. And `repeat-is-of-an-unsettled-segment-at-its-provider`
+  also admits a `repeat_operation` or `read_recorded_answer` of a failed segment whose `ask_reversal` has no final result,
+  under a transaction a stated `operation` about the segment names (the reversal's own), so a reversal whose outcome is
+  unknown is resolved as a segment's is (item (8)), never asked again. Admission cases: `--after-a-refusal` (admitted),
+  `--after-an-ask-whose-outcome-is-unknown`, `--after-an-ask-with-no-result`, `--after-an-ask-the-provider-carried-out`
+  (refused), and the repeat row's `--a-read-of-a-reversal-whose-outcome-is-unknown`, `--a-repeat-of-a-reversal-whose-outcome-is-unknown`
+  (admitted), `--a-read-of-a-reversal-the-provider-carried-out` (refused). One relation more. Folded into this unreleased
+  version. Ignorable: no, a reader that ignored it would admit a second reversal of one move. (DEC-4, DEC-20, T-020-61)
 - `T-020-60` (`DEC-28`, `REQ-AUD-4`; ADR-0007 as amended): `PublicMovement` gains `read_by` (`MovementReader {reader,
   version}`), required: the reader service that read the movement, by its name on its host, and the version that
   answered, which Core holds to the network's listing. Every `evidence`, `replay` and `public_mismatch` entry that names a
@@ -38,8 +50,11 @@
   runs no module and moves nothing. It names the segment's own transaction, and `repeat-is-of-an-unsettled-segment-at-its-provider`
   holds it as it does a repeat (its provider the move's, its transaction the segment's, the move with no final outcome), so
   the relation count is unmoved. Folded into this unreleased version. Fixtures: valid `decision-request-to-read-a-recorded-answer`;
-  invalid `decision-request-to-read-a-recorded-answer-without-its-transaction` (one schema rule more). Ignorable: no, it is
-  a decided action a reader that ignored would carry out undecided. (DEC-4, DEC-20, T-020-61)
+  invalid `decision-request-to-read-a-recorded-answer-without-its-transaction` (one schema rule more); admission cases
+  (review round 2 of #355, M1) `world--decide_read_recorded`, `world--effect_read_recorded`, and refused
+  `--a-read-at-another-provider`, `--a-read-of-a-settled-segment`, `--a-read-under-another-segments-transaction`, so the
+  relation's arm for the read is held by cases of its own. Ignorable: no, it is a decided action a reader that ignored
+  would carry out undecided. (DEC-4, DEC-20, T-020-61)
 - `T-020-67` (the milestone reviewer's check of `T-020-58`, review round 2 of #351; `REQ-ORD-41`, `NFR-5`):
   `Action::ReadNodeRecord` gains `by` (`grading` or `tick`, `ReadBy`), who asked: a segment's grading, or the tick's read of the
   publishers' records, so a reopened Core counts each one's reads from the log and a restart after many tick reads leaves

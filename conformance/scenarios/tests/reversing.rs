@@ -74,6 +74,25 @@ fn exchange_failed(accepts: &'static str) -> (Core, Id, Id, Id) {
     )
 }
 
+/// Every entry of Core's log is admitted on what came before it.
+fn admitted_log(core: &Core) {
+    use rutent_contracts::core_internal::{DeploymentOperator, Through, admit_entry, calls};
+    let history: Vec<_> = core.log().entries().to_vec();
+    let operator = DeploymentOperator {
+        maker: kit::operator().acts,
+        party: kit::operator().party,
+    };
+    for (i, (_, entry)) in history.iter().enumerate() {
+        let through = match entry {
+            Entry::Verified(v) if calls::is_decision(&v.what) => Through::Policy,
+            _ => Through::General,
+        };
+        if let Err(violation) = admit_entry(&history[..i], entry, through, &operator) {
+            panic!("entry {i} isn't admitted: {violation:?}");
+        }
+    }
+}
+
 /// The state of `segment` as Core follows it.
 fn segment_state(core: &Core, order: &Id, segment: &Id) -> SegmentState {
     core.followed(order).expect("Core follows the order").parts[0]
@@ -86,16 +105,18 @@ fn segment_state(core: &Core, order: &Id, segment: &Id) -> SegmentState {
 
 /// A failed middle segment's reversal is Core's run's, on ticks alone (`T-020-61`, item 10; the review of #355, H1): on
 /// the tick after the exchange failed, Core records it owed and refuses to recalculate the part, its value in flight; on
-/// the next it asks the exchange, whose silence completes nothing; on the next it asks the origin reserve, whose word
-/// about its own publisher's provider completes nothing either; on the next it asks the exchange again, whose answer
-/// inside its publisher's node completes it; then the part is recalculated from the node the value is shown back at, and
-/// the recalculated route runs, and the order completes. No test calls a step: each is a tick of the deployment's timer.
+/// the next it asks the exchange, which refuses, moving nothing; on the next it asks the origin reserve, whose word
+/// about its own publisher's provider completes nothing either; once the retry cadence has passed it asks the exchange
+/// again, which it may since the first ask moved nothing, and the answer inside its publisher's node completes it; then
+/// the part is recalculated from the node the value is shown back at, and the recalculated route runs, and the order
+/// completes. No test calls a step: each is a tick of the deployment's timer.
 // verifies: REQ-ORD-3, REQ-ORD-30
 #[test]
 fn failed_segments_reversal_is_owed_asked_and_confirmed_by_cores_run() {
+    use rutent_contracts::core_internal::Outcome;
     let (mut core, order, _, exchange) = exchange_failed("AC-4");
     core.world()
-        .script_for(EXCHANGE, "reversal", Behaviour::silent());
+        .script_for(EXCHANGE, "reversal", Behaviour::act(Act::Refuse));
     core.world().script(IN, Behaviour::crediting_a_reversal());
 
     // Owed: its own step, and the recalculation refused while the reversal holds the value in flight (R12).
@@ -120,14 +141,15 @@ fn failed_segments_reversal_is_owed_asked_and_confirmed_by_cores_run() {
         round.runs.recalculated(&order)
     );
 
-    // Asked of the failed exchange, which says nothing.
+    // Asked of the failed exchange, which refuses: nothing moved.
     let round = core.tick();
     let reversed = round.runs.reversed(&order);
     let asked = reversed[0].asked.clone().expect("asked").expect("asked");
-    assert!(asked.completed.is_none(), "{asked:?}");
+    assert_eq!(asked.why, Some(NotCounted::Refused), "{asked:?}");
     assert!(reversed[0].confirmed.is_none());
 
-    // Confirmed with the origin reserve, whose word about its own publisher's provider completes nothing.
+    // Confirmed with the origin reserve, whose word about its own publisher's provider completes nothing; the exchange
+    // isn't asked again before the retry cadence has passed.
     let round = core.tick();
     let reversed = round.runs.reversed(&order);
     assert!(reversed[0].asked.is_none());
@@ -145,10 +167,20 @@ fn failed_segments_reversal_is_owed_asked_and_confirmed_by_cores_run() {
         segment_state(&core, &order, &exchange),
         SegmentState::FailedReversalOwed
     );
+    let round = core.tick();
+    assert!(
+        round.runs.reversed(&order)[0].asked.is_none()
+            && round.runs.reversed(&order)[0].confirmed.is_none(),
+        "nothing is pressed on every tick: {:?}",
+        round.runs.reversed(&order)
+    );
 
-    // Asked again, the exchange answers inside its publisher's node: complete, and the part waits for the next tick.
+    // Past the cadence, asked again, since the first ask moved nothing: the exchange answers inside its publisher's
+    // node, complete, and the part waits for the next tick.
     core.world()
         .script_for(EXCHANGE, "reversal", Behaviour::default());
+    core.clock
+        .advance(rutent_core_orch::reversal::DEFAULT_REVERSAL_RETRY_SECONDS);
     let round = core.tick();
     let reversed = round.runs.reversed(&order);
     assert!(reversed[0].completed(), "{reversed:?}");
@@ -157,13 +189,25 @@ fn failed_segments_reversal_is_owed_asked_and_confirmed_by_cores_run() {
         segment_state(&core, &order, &exchange),
         SegmentState::ReversalComplete
     );
-    let asks = entries(&core)
+    let asks: Vec<_> = core
+        .log()
+        .entries()
         .iter()
-        .filter(|v| {
-            matches!(&v.what, What::Effect { action: Action::AskReversal { order: o, .. }, .. } if o == &order)
+        .filter_map(|(receipt, e)| match e {
+            Entry::Verified(v) if matches!(&v.what, What::Effect { action: Action::AskReversal { order: o, .. }, .. } if o == &order) => {
+                Some(receipt.clone())
+            }
+            _ => None,
         })
-        .count();
-    assert_eq!(asks, 2, "asked twice, in turn with the confirmation");
+        .collect();
+    assert_eq!(asks.len(), 2, "asked twice, the first refused");
+    assert!(
+        entries(&core).iter().any(
+            |v| matches!(&v.what, What::Result { effect } if effect == &asks[0])
+                && v.outcome == Outcome::Failed {}
+        ),
+        "the first ask failed, moving nothing"
+    );
 
     // Recalculated from where the value is shown back, then run: the order completes on ticks alone.
     let round = core.tick();
@@ -177,6 +221,122 @@ fn failed_segments_reversal_is_owed_asked_and_confirmed_by_cores_run() {
     );
     core.tick();
     assert_eq!(state(&mut core, &order), OrderState::Complete);
+}
+
+/// A reversal whose outcome is unknown is never asked again (the review of #355's round 2, H1): the exchange is asked
+/// once and answers that it can't tell, which may mean it paid the value back. Core carries that ask on once, under
+/// its own transaction (the exchange declares neither a status query nor a safe repeat, so the answer the platform
+/// recorded is read back), and asks the origin reserve to confirm on the retry cadence, up to its cap; however many
+/// ticks pass, and across a restart of Core, the exchange is handed one reversal operation of the conversion and Core's
+/// log holds one ask. A second ask, the log refuses (`reversal-is-asked-again-only-after-a-refusal`).
+// verifies: REQ-ORD-3, INV-8, NFR-6
+#[test]
+fn reversal_whose_outcome_is_unknown_is_never_asked_again_under_a_new_transaction() {
+    use rutent_contracts::provider_role::Operation;
+    use rutent_core_orch::reversal::{DEFAULT_REVERSAL_RETRY_SECONDS, MAX_REVERSAL_TRIES};
+    let (mut core, order, _, exchange) = exchange_failed("AC-4");
+    core.world()
+        .script_for(EXCHANGE, "reversal", Behaviour::act(Act::Unknown));
+    let asks = |core: &Core| {
+        entries(core)
+            .iter()
+            .filter(|v| {
+                matches!(&v.what, What::Effect { action: Action::AskReversal { order: o, .. }, .. } if o == &order)
+            })
+            .count()
+    };
+    let read_back = |core: &Core| {
+        entries(core)
+            .iter()
+            .filter(|v| {
+                matches!(&v.what, What::Effect { action: Action::ReadRecordedAnswer { order: o, .. }, .. } if o == &order)
+            })
+            .count()
+    };
+    let handed = |core: &mut Core| {
+        core.world()
+            .journal(EXCHANGE)
+            .iter()
+            .filter(|e| matches!(e.operation.statement, Operation::Reversal(_)))
+            .count()
+    };
+    // Owed, then asked: the exchange can't tell.
+    core.tick();
+    let round = core.tick();
+    let asked = round.runs.reversed(&order)[0]
+        .asked
+        .clone()
+        .expect("asked")
+        .expect("asked");
+    assert!(asked.completed.is_none(), "{asked:?}");
+    assert_eq!(handed(&mut core), 1);
+    // Carried on once under its own transaction: the recorded answer read back, moving nothing.
+    let round = core.tick();
+    let carried = round.runs.reversed(&order)[0]
+        .carried_on
+        .clone()
+        .expect("carried on")
+        .expect("carried on");
+    assert!(carried.completed.is_none(), "{carried:?}");
+    assert_eq!(read_back(&core), 1);
+    // Then only confirmed, on the cadence, however many ticks pass.
+    for _ in 0..6 {
+        core.clock.advance(DEFAULT_REVERSAL_RETRY_SECONDS);
+        let round = core.tick();
+        let reversed = round.runs.reversed(&order);
+        assert!(
+            reversed
+                .iter()
+                .all(|r| r.asked.is_none() && r.carried_on.is_none()),
+            "{reversed:?}"
+        );
+    }
+    assert_eq!(asks(&core), 1, "asked once");
+    assert_eq!(handed(&mut core), 1, "one reversal operation handed over");
+    let confirmations = core.confirmations_asked(&order, &exchange);
+    assert!(
+        (1..=MAX_REVERSAL_TRIES).contains(&confirmations),
+        "{confirmations}"
+    );
+    // Across a restart: the reopened Core rebuilds the ask, its carrying-on and the confirmations from the log, and
+    // asks nothing again.
+    let given = execution_support::given(&[IN, EXCHANGE, QUICK, OUT]);
+    let mut core = rutent_scenarios::harness::Scenario::new("execution", "AC-4", given).reopen(
+        core,
+        1,
+        &mut rutent_scenarios::assembly::machine::Reference,
+    );
+    assert_eq!(core.confirmations_asked(&order, &exchange), confirmations);
+    for _ in 0..4 {
+        core.clock.advance(DEFAULT_REVERSAL_RETRY_SECONDS);
+        let round = core.tick();
+        let reversed = round.runs.reversed(&order);
+        assert!(
+            reversed
+                .iter()
+                .all(|r| r.asked.is_none() && r.carried_on.is_none()),
+            "{reversed:?}"
+        );
+    }
+    assert_eq!(asks(&core), 1, "asked once, a restart included");
+    assert_eq!(read_back(&core), 1, "carried on once, a restart included");
+    assert_eq!(
+        handed(&mut core),
+        1,
+        "one reversal operation, a restart included"
+    );
+    // Past the cap Core confirms no more: the stuck check times the part.
+    for _ in 0..(2 * MAX_REVERSAL_TRIES) {
+        core.clock.advance(DEFAULT_REVERSAL_RETRY_SECONDS);
+        core.tick();
+    }
+    assert_eq!(
+        core.confirmations_asked(&order, &exchange),
+        MAX_REVERSAL_TRIES
+    );
+    assert_eq!(asks(&core), 1);
+    assert_eq!(state(&mut core, &order), OrderState::Stuck);
+    admitted_log(&core);
 }
 
 // verifies: AC-4
