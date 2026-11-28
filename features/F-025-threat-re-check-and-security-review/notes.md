@@ -1129,3 +1129,235 @@ record is the security review for.
   (`core-orch`, the assembly) was read for the areas named, not whole.
 - The contract's 59 new fixtures were read as data, not one by one; the walk in `stuck::party` and `contracts/tests/`
   are their evidence.
+
+## T-025-05, third pass (2026-11-28)
+
+The third pass the row asks for ("It runs a third time…"), over what the response to `M3`'s milestone review of
+2026-11-24 (PR #143) changed on `DEC-20`'s paths, by a reviewer that wrote none of it and none of the earlier passes.
+Branch `f-025/t-025-05-third-pass`, cut from `m3` at `47a2b2a0` (every row before the exits merged). The diff is
+`dcefd125..47a2b2a0`: `dcefd125` is the second pass's merge into `m3`. It holds wave 38 (`T-021-14`, `T-020-44`),
+`T-020-45`'s round, `T-013-10`, `T-013-11`, `T-021-15` to `T-021-17`, `T-022-11`, `T-024-21`, `T-024-24`, `T-020-54`'s
+scope rows and waves 44 to 46 (`T-020-59`, `T-015-04`, `T-015-05`, `T-020-60`, `T-024-25`, `T-020-61`, `T-020-62`,
+`T-020-63`, `T-020-67`), with the rows between (`T-020-46` to `T-020-58`, `T-020-64` to `T-020-66`, `T-001-06`,
+`T-001-07`, `T-016-05`, `T-023-04`, `T-024-22`, `T-024-23`). The milestone reviewer's checks of each row on #143's
+channel were read for what each verified; this pass read the code itself and did not take a check's word.
+
+**The paths.** `DEC-20`'s prefixes as `HOUSE-RULES.md` and `.github/CODEOWNERS` list them, now with
+`components/reader-host/` and the provider system's paths the reader host reaches (`confine.rs`, `keys.rs`, `lib.rs`,
+`module/sandbox.rs`, `module/mod.rs`, `Cargo.toml`), with `components/prov/src/module/` whole and
+`conformance/evidence/v0-scope`, as the earlier passes took them: 934 paths, 151 of them code, schemas, docs, tests and
+workflows, and 783 contract fixtures (291 new, 492 changed). Each is in `t-025-05-paths.md`, section "Third pass",
+with its verdict. No `experiments/…-binding/`, `catalogue/signature.rs`, `module/engine.rs`, `module/sandbox.rs` or
+`module/bin/compiler.rs` path changed.
+
+**How far it was read.** Read whole: the reader host's `link.rs`, `keys.rs`, `host.rs` and `worker.rs`'s answer
+handling; Core's adapter (`core-orch/src/closing/readers/mod.rs`'s `ask_listed`, `exchange`, `draw` and `start`, and
+`tls.rs`); `contracts/src/reader/check.rs`; policy's `session/mod.rs` and `roles/mod.rs` hunks, the named test's 31
+actions and the permission sweep; `core-audit/src/log/keys.rs`'s register and received-time hunks; the platform's
+`open`, `read_back`, `handle_in`, `repeated`, `repeat_operation`, `recorded_answer` and `status`
+(`prov/src/module/platform.rs`) and `record.rs`'s entries; the relations `repeat-is-of-an-unsettled-segment-at-its-provider`,
+`reversal-is-asked-again-only-after-a-refusal` and `reliance-names-its-judges-statement`; the reversal commands
+(`core-orch/src/reversal/command.rs`), `Reversals::confirm_reversal`, `accept_fault` and `end`; `stuck/reopen.rs`'s
+rule on moves in motion; `segments/judge.rs`'s `Began`; the boundary check's `parse_manifest`,
+`test_only_features_enabled` and `lines_beyond_admitted`; the contract guard's ignorable rule and fold rule; every
+workflow hunk. Read by purpose and spot checks: the reader host's `egress.rs`, `jail.rs` and `config.rs`, which the
+milestone reviewer and a separate security reader each read twice (`T-015-04`, `T-015-05`); the proxy's nested-statement
+signing (`proxy/signing.rs`); `core_sources`; the licence check; the contract schemas and changelogs. Fixtures: grouped,
+searched for key material (none: the `secrets` fields are a declaration's secret names, no values), and taken as
+`contracts/tests/` reads them; most changed admission fixtures gain `T-020-52`'s `refile_arrival` decision in their
+shared history.
+
+### Named tests and probes, at `47a2b2a0`
+
+Run through the lock on the reference host (arm64 macOS), each under a 1500 s alarm, after `touch contracts/src/lib.rs`.
+
+| Test | Crate, binary | Result |
+|---|---|---|
+| `every value moving action is refused when policy denies` [`REQ-AUZ-1`] (31 decided actions) | `rutent-core-authz --lib` | 1 passed |
+| `rewrite with full operator access is detected by the checker` [`REQ-AUD-9`] | `rutent-core-audit --test checkpoints` | 1 passed |
+| `statement signed by a key not current at its making is refused before the record` [`THR-3`] | `rutent-core-orch --test snapshot_statements` | 1 passed |
+
+Probes, written for this pass and removed:
+
+- **The test-only feature pin, by name** (the routed question): `test_only_features_enabled` and `parse_manifest` over
+  five manifests that turn `reader-test-hooks` on. A target table, a `package =` rename and a `workspace = true`
+  dependency are each refused by `parse_manifest`, which `load` runs over every member. A dotted
+  `[dependencies.rutent-core-orch]` table is found by the pin. A key spelled `rutent_core_orch` is missed by both, and
+  `cargo metadata` refuses it ("no matching package named `rutent_contracts`", tried on a scratch crate), so it can't
+  build. The pin holds.
+- **A balance in the log** (M2): no new probe was needed. `components/core-audit/tests/compare.rs:1238-1244` already
+  asserts a raise of `{"kind": "holding", "direction": "over", "by": "42", …}` for an account read at 42 with nothing
+  held there.
+
+A real attack was tried on each area the brief names:
+
+- **A forged or replayed reader answer.** Refused. Core signs nothing it reads, verifies the answer's signature
+  against the listing's statement key over the bytes it received (`closing/readers/mod.rs:556`), and holds it to the
+  question by `check_reader_answer`: maker, key and version as listed, deployment and protocol version in force at
+  Core's clock, the request id, network, question and movement or transaction, and the deadline on Core's clock. Each
+  request id is 16 bytes of `ring`'s secure random, top half non-zero, never a counter, and a scan test pins that the
+  crate builds none otherwise (`core_makes_a_request_id_only_from_its_random_source`). An old answer replayed names
+  another request, and one copied to another network or movement breaks the binding.
+- **A hostile reader host.** Within `DEC-28`'s trust. The host holds no log handle and makes no decision. It signs
+  with each reader's key, which it resolves at signing from the key store, so a compromised host can sign any reading
+  for the readers it runs. Core then takes it as that reader's word, bound to the request Core drew. Residual
+  R-READER-HOST. A hostile reader in a sound host can sign only an answer to the question it was asked, under its own
+  configured version, rules and trust (`worker.rs:688-720`). Its content stays the operator's to trust (R-READER-CONTENT).
+  The host's server certificate is no client to it, and Core's client certificate is no server to Core (each verifier
+  holds the web PKI's key usage, and Core's names the listed subject name).
+- **A backdated statement past a cutover.** Refused. The log judges an advertisement at its received time, which it
+  holds to its own clock, never at the maker's `made_at` (`keys.rs:614-626`). A result is judged by the versions in
+  force when its segment began, which is the `made_at` Core stamped on its own operation (`segments/judge.rs`,
+  `Began`), so a provider dating its result back gains nothing. A reader's answer is judged at Core's clock when it
+  arrives. The platform judges an assertion at its admission time (`admission.rs:244`). A revocation now counts from its
+  admitted effect (`T-022-11`), which closes the second pass's L5.
+- **A decided resolution that moves value twice across a restart.** Refused, twice over. A `resolve_stuck` effect with
+  no final result is never acted on again after a reopen (`stuck/reopen.rs`, "the moves in motion"), and its
+  transaction is the decide step's own. Beneath that, the platform's record (`T-013-10`) is written before each
+  hand-over and read back on opening. So a second hand-over under the same transaction is refused as
+  `DuplicateTransaction`, unless the provider's accepted advertisement declares a safe retry
+  (`platform.rs:3293-3330`), and an `Ended` transaction never runs again. A reversal is asked again only where every
+  earlier ask failed, which the log holds (`reversal-is-asked-again-only-after-a-refusal`, four fixtures). Each test
+  restarts a real platform and a real Core: `a_repeat_after_the_platform_restarts_moves_nothing_twice` and
+  `restart_after_the_provider_moved_and_before_its_answer_was_logged_moves_nothing_twice`.
+- **A policy bypass through a new entry point.** No value moves without a decision. Every new value-moving or
+  carrying-out action is decided: `repeat_operation`, `read_recorded_answer`, `read_node_record`,
+  `read_holding_balance`, `ask_status` and the settings. The entry-point scan lists the new carriers (`entry_points.rs`).
+  Two lows where a consequence that moves no value goes undecided or unbound: an operator's fault acceptance (L8), and
+  `end_requested` or a dispute's declaration, which no relation binds to its permit (L10).
+- **A boundary-check bypass.** None found for the reader host. The path scan finds `rutent_prov` anywhere in the code,
+  comments and literals blanked, so a raw identifier or a fully qualified path is caught. The facade's re-exports are
+  pinned. One gap was found and fixed: the contracts' `rule-switches` feature, which turns a shape rule off on a thread,
+  was pinned to tests by nothing (L11).
+
+### Findings
+
+None high or critical. Numbered on from the first two passes (M1, L1 to L7). L11 is fixed here, and the rest are routed.
+
+| # | Severity | Area | Where | Scenario | Owner, item |
+|---|---|---|---|---|---|
+| M2 | Medium | `REQ-AUD-6`: a holding difference's figure | `contracts/core-internal/schemas/raise.schema.json:376-418` (`by`, `:403`); `contracts/src/core_internal/types.rs:2128-2139`; `components/core-audit/src/compare/holding.rs:73-86`; the scan's exclusion `conformance/scenarios/src/secrets.rs:629-630`, `:659-668`, `:692` | A `holding` raise in the log carries `by`, the amount the account is over or short. Where Core holds nothing at the account, `T-020-63` makes that routine: `by` is the account's whole balance (`compare.rs:1238-1244`, balance 42 raised `by: 42`). Elsewhere, balance = held + `by`, and the held amounts are the log's own. So anyone who reads the trail reads the balance, a private node's publisher's included. That is what `REQ-AUD-6` keeps out of the log ("never in the log or a record"), and what the log's own holding check leaves out by design (`verified-entry.schema.json:1181`). The secrets scan nulls `by` before it looks, so the scan can't see it | `F-020` (a `core-internal` item, folded into unreleased 1.0.0: `difference_holding` carries `direction`, `asset` and `word` only), with `F-022` (`judge` stops forming `by`) and `F-024` (the scan drops `without_the_difference`, and the tests that assert `by` assert the direction). Before the release into `main`, by the owner's pre-production rule; `M3` at the lead's call |
+| L8 | Low | An operator's fault acceptance (`REQ-ORD-11`, `REQ-AUZ-6`) | `components/core-orch/src/reversal/command.rs:147-200` (no decision for the operator); `components/core-orch/src/reversal/mod.rs:1796-1803`, `:1856`; `components/core-authz/src/roles/mod.rs:452-457` | The customer's acceptance of a showing of fault is policy's decision. The operator's is a command, held only to the register's binding of the login to the operator's party and role. So any login of the operator, even one listed for nothing, can accept a fault for the operator, and the operator then carries the reversal. An operator's dispute of the same showing needs `Permission::DisputeFault`. Bounded: it harms only the operator's own party, and the command is recorded | `F-021` with `F-020`: a `Permission::AcceptFault` for the operator's login, decided as `dispute_fault` is. `M4`, or `M3` at the lead's call |
+| L9 | Low | `REQ-CPL-12`'s reserve half: `Segments::rests_on` | `components/core-orch/src/segments/mod.rs:869-880`; callers only `conformance/scenarios/tests/reliance.rs:81` and unit tests | The by-hand declaration that an input rests on a judgement has no production caller. Core's own path is `Segments::declare_cited` (`segments/mod.rs:890-941`, called by `schedule/run.rs:555`). It declares reliance on whatever stated judgement an operation's eligibility figure cites, a reserve's included, and `F-020`'s R14 rule-off holds it. So no v0 behaviour rests on the by-hand port, but its tests are some of `REQ-CPL-12`'s evidence | `F-020`: narrow `rests_on` to the crate's tests or name it a seam; `F-024` (`T-024-10`): `REQ-CPL-12`'s evidence names the `declare_cited` tests |
+| L10 | Low | `end_order` and `dispute_fault` bound to their permits (`REQ-ORD-12`, `REQ-ORD-11`, `REQ-AUZ-1`'s spirit) | `contracts/core-internal/CHANGELOG.md:44-52` ("No relation of their own"); `components/core-orch/src/reversal/mod.rs:1986` (`Reversals::end`), `:1938` (`Reversals::dispute`), both `pub` and lent to the deployment through `Ports::with_reversal_desk` (`schedule/jobs.rs:247`) | Policy decides both, but the log admits an `end_requested` input, or a dispute's stuck declaration, with no permitted decision behind it. A caller holding the lent `Reversals` reaches `end` and `dispute` without asking policy, and a checker can't tell such an input from a decided one. Bounded: an end moves nothing (only before a part's first segment moves value), and a dispute only declares the part stuck, whose resolution is decided in two steps. The stale module doc that said `end` has no decided action is fixed here | `F-020`: a `core-internal` item (`end_requested`, and a dispute's declaration, cite their permitting decision) and both methods narrowed to the crate. `M4` |
+| L11 | Low, **fixed** | The contracts' rule switches (`rule-switches`, `without_rule`) | `contracts/Cargo.toml:18`; `contracts/src/rule_switch.rs`; `tools/boundary-check/src/lib.rs:261-270` | `without_rule` turns a shape rule's refusal off on the calling thread, the log's checks of an entry among them (`core_internal/check.rs:30-34`). The feature is built only by the contracts' own tests today, but nothing held it there, as `reader-test-hooks` and `jail-layers` are held. Turned on in Core's build, it would let orchestration append through `without_rule` and take an entry past a shape rule the log holds it to | Fixed in this branch: `TEST_ONLY_FEATURES` holds `rule-switches` to dev-dependencies, with the test `contracts_rule_switches_are_enabled_only_from_dev_dependencies` [`DEC-20`, `REQ-MOD-3`], seen red before the fix (a normal dependency turning it on went unreported) |
+
+Informational, no severity:
+
+- **I4.** An operator's cutover counts from its admitted effect (`keys.rs:438-460`). A later cutover date keeps an older
+  protocol version in force from the effect on, before its result. It is the operator's permitted setting, and a
+  `failed` result undoes it.
+- **I5.** `Platform::status` builds the status question from the operation asked about by swapping its statement and
+  keeping its signature (`platform.rs:3089-3100`). The signature then signs other content, so a module that verifies
+  the operator's signature refuses the question. Its doc says a caller that signs its own questions hands them through
+  `Platform::handle`, which refuses every status query. The question moves nothing, and a refused one falls back to the
+  repeat or the recorded answer. `F-013`: let Core sign the question, or fix the doc.
+
+### Rulings on the questions routed to this pass
+
+1. **`REQ-AUD-6`: a holding raise's `by` equal to the balance** (#347's review). A raise may not carry the figure. It
+   carries a flag: the direction, with the asset and whose word the balance was. A bucket is no answer either: where
+   nothing is held, a bucket bounds the balance. The operator who must act on a difference reads the amount through
+   the decided `read_holding_balance`, as evidence kept outside the log, which `REQ-AUD-6` allows. Finding M2.
+2. **`without_the_difference` hiding a balance from the secrets scan** (the check of `T-020-63` at `be306133`). Not
+   accepted as a standing exclusion: it exempts the one field that equals a balance where nothing is held. It goes
+   with M2's fix, and the scan then reads every raise whole. Until then it stands only as M2's, on the record.
+3. **The log alone can't show that a `repeat_operation` was declared safe** (#347, round 2). Accepted for v0 as
+   residual R-REPEAT. The guard needs nothing from Core: the platform reads `safe_retry` from the catalogue's accepted
+   advertisement (`admission.rs:186`, `platform.rs:2864`, `:2910`) and refuses `DuplicateTransaction` otherwise
+   (`platform.rs:3301-3303`), and the log admits a repeat only of an unsettled segment at its provider under its
+   question's transaction. A checker with the evidence store can read the declaration from the advertisement's kept
+   bytes, which the log holds by commitment. Were an outside checker that holds only the log named (`F-033`), the
+   effect should cite the advertisement's commitment (`F-022`).
+4. **`confirm_undone`'s confirmation question is not a decided action** (from `T-020-61`). It needs no decision.
+   Like an arrival or a balance question, it moves nothing. The log binds it to the order and segment before it is sent
+   (`append_question`, `reversal/mod.rs:1559`), and its answer counts only as the origin reserve's attributed word.
+   What follows that moves value is decided on its own. The entry point is unauthenticated, but asking is bounded by the
+   cadence and `MAX_REVERSAL_TRIES` (`reversal/mod.rs:1500-1508`), and a caller can't make the answer. Residual
+   R-CONFIRM, accepted.
+5. **`REQ-CPL-8`: a reserve's judgement, which no operation's figure carries** (from `T-020-61`, round 2). v0 needs no
+   further caller. `REQ-CPL-8` is met by the reserve's own signed answer to its own segment: attributed to it, and
+   counting for nothing when presented in another's name (`conformance/scenarios/tests/person_records.rs:33`). It runs on
+   Core's production path. Reliance on a reserve's judgement, where an eligibility figure cites one, is declared by
+   `declare_cited`. `Segments::rests_on` is a by-hand port with test callers only (L9). `T-024-10` keeps `REQ-CPL-8` as
+   `m3` on `person_records`.
+6. **boundary-check's `reader-test-hooks` pin looks a dependency up by its own name only** (#356, round 3, a Low).
+   Sound, and accepted. `parse_manifest`, which `load` runs over every member, refuses every other way a manifest can
+   name a dependency: a rename, a workspace inheritance, a target table, a nested dependency table. Cargo refuses a key
+   that isn't the package's name (probe above). The pin now holds `rule-switches` too (L11). Moving both pins to the
+   resolved feature graph (`cargo metadata`, as `jail-layers`' check does) would need no list of spellings at all
+   (`F-024`, when the tools are next touched).
+
+### Why neither earlier pass found the milestone review's finding 1
+
+Finding 1 of the review of 2026-11-24 was High. No fixed rule decided who may grant or revoke a read permission. A
+grant was checked for its shape and for `ActsFor`, which bound an actor's party and kind but not its role. So a
+customer's login stating the operator's role granted itself trail read as a regulator. Neither pass found it, for
+three reasons, each a method gap:
+
+1. **Depth went by value.** Both passes read whole what moves or frees value: `decide`, the effect rows, the stuck
+   rules and `held`. Policy's other calls were read by purpose and spot checks, and the first pass's "how far" names
+   "the session, roles, parties" among them. A read grant moves no value, so its rule sat in the shallow tier, though it
+   decides who reads the whole trail (`REQ-AUZ-7`, `REQ-AUD-12`).
+2. **The passes took the tests' coverage as the surface.** The named test, the permission sweep
+   (`each_permission_alone_allows_only_its_own_action`) and the entry-point scan all enumerate decided actions: what a
+   `DecisionRequest` carries, and the state-changing methods of `core-orch` and the platform. `grant_permission` and
+   `revoke_permission` are methods of policy's `Reads` trait, not actions of `decide`, so none of the three reached them.
+   Both passes cited the sweep as evidence for the rules it didn't sweep.
+3. **A binding was read as its name.** The passes read `ActsFor` as the register's binding of an actor, which they took
+   to cover every field the request states. It bound the party and the kind, as its doc said, and a stated role was
+   taken on its word.
+
+This pass changes the method on each count. It listed policy's whole call surface from `core-internal`'s traits
+(`decide`, `authorise`, `open_session`, `check_read`, `grant_permission`, `revoke_permission`, `charge`, the four stuck
+calls, `decline_outcome` and `ask_about_person`), not only what `decide` carries, and checked that each has a fixed
+rule and that each actor it names is bound in all four fields (`acts_for`, `roles/mod.rs:676-684`, with `role` since
+`T-021-14`). It found no other call left out. The sweep's match over `Permission` is exhaustive since `T-021-14`
+(`roles/tests.rs:900-920`), so a new permission breaks the build until it is swept. A reviewer of a later pass should
+start from the trait list, not the tests' lists.
+
+### Residuals, after the third pass
+
+New, or changed by this pass's diff. Every other residual of the two earlier tables stands as recorded there.
+
+| Id | Change | Residual now | Evidence | Owner | v0 |
+|---|---|---|---|---|---|
+| R-BACKDATE | (b) closed by `T-022-11` | The effect-to-result window (L5) is closed: a revocation counts from its admitted effect until a `failed` result undoes it. (a), the skew window, is the owner's item `thr3-skew-window`. The milestone reviewer's note of 2026-11-25 records it as answered, and the repository doesn't hold the answer yet | `keys.rs:330-352`, `attribution.rs` | `F-022` | (a) the owner's |
+| R-HANDLES | Re-confirmed | The reader host is a second process, but it holds no log handle and makes no decision. It signs statements Core verifies, so no decision entry crosses a process boundary. The residual stands as the first pass recorded it | `calls.rs`, `reader-host/src/host.rs` | `F-021` with `F-022` | form (as before) |
+| R-REPEAT | New (routed question 3) | The log alone can't show that a repeated operation's provider declares a safe retry. The platform holds it from the catalogue, and the evidence store's kept advertisement shows it | `platform.rs:3301`, `relations.rs:2583-2620` | `F-022` | accepted |
+| R-CONFIRM | New (routed question 4) | A reversal's confirmation question is asked on an undecided, unauthenticated trigger. It moves nothing, and it is bounded by the cadence and a cap | `reversal/command.rs:316`, `reversal/mod.rs:1500-1563` | `F-020` | accepted |
+| R-READER-HOST | New (`DEC-28`) | The reader host holds each reader's signing key, resolved per answer. A compromised host signs any reading for its readers, and Core takes it as that reader's word for the request Core drew. Bounded by the host's isolation as a task of its own, the key store's token scoped to the readers' keys, and Core's checks of key, request, deadline and listing | `reader-host/src/keys.rs`, `host.rs:150-180`, `closing/readers/mod.rs:511-575` | `F-030` (the deployment's isolation and the token's scope) | accepted (`DEC-28`) |
+| R-READER-CONTENT | New (`DEC-28`, the milestone reviewer's Low on `T-015-04`) | A reader's content is the operator's to trust. An RPC pool's quorum binds which endpoints agreed on what the host fetched, not what the reader says they said | `reader-host/src/lib.rs` part 5, `worker.rs:650-678` | `F-015` | accepted (`DEC-28`) |
+| R-SLOT | New (`T-015-05`'s Low) | Core's reserved handshake slot is keyed by source address, so a peer sharing Core's address (NAT, a proxy) can take it for the handshake window | `reader-host/src/link.rs:9-17`, `CoreSlots` | `F-030` (the deployment notes) | accepted |
+
+Closed since the second pass, each by its row, verified in the code here: M1 (the platform's record survives a restart,
+`T-013-10`); L5 (`T-022-11`); L6 and the informational note on `carry_out_roll_back` (`T-020-49`, the scan's rule 4);
+L7 and R-AWAITING (`T-020-45`); R-MOVER (`T-021-16`).
+
+### Verdict for `M3`'s exit
+
+No high or critical finding is open, from any of the three passes. The third pass adds one medium (M2), four lows (L8
+to L11, L11 fixed here) and two informational notes, each routed with an owner. From this review's side, `M3` may exit.
+M2 changes a contract shape, so by the owner's pre-production rule it is best built before the release into `main`.
+That is the lead's call. What the exit still needs is `T-024-10`'s third run at the tip, and the owner's `DEC-20` click
+at the release into `main`, which this record is the security review for.
+
+### Defaults taken
+
+- **The base** is `dcefd125`, the second pass's merge into `m3`, as the brief gives it. The row says "against the commit
+  of its second pass". `dcefd125` holds the second pass's record, which changed no `DEC-20` path, so nothing is left out.
+- **The path set** is the earlier passes' prefixes plus the reader host and the prov paths it reaches. `HOUSE-RULES.md`
+  and `CODEOWNERS` added these in this diff.
+- **M2 rated medium, not high:** a `MUST` of `REQ-AUD-6` broken in the log, readable by those who read the trail, but
+  moving no value and taking no control.
+- **L11 fixed here** because it is small and sits in a `DEC-20` path this row may change. M2 and L8 to L10 change
+  contracts or policy's tables, so they are routed.
+
+### Gaps
+
+- A reading at `47a2b2a0`, the three named tests, two probes and L11's test. The orchestration side outside the areas
+  named (`core-orch`'s 38 thousand added lines, the assembly) was read for those areas, not whole. Its rows each had a
+  fresh reviewer and the milestone reviewer's check.
+- The Linux-only paths (the reader host's jail probes, `stm-vos.yml`) were read, not run here. Their CI runs on this
+  pull request and on `m3` are the evidence.
+- The 783 fixtures were read as data, grouped, not one by one.
