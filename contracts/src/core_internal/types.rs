@@ -896,11 +896,12 @@ pub enum Action {
         /// The failed segment whose showing is disputed.
         segment: Id,
     },
-    /// The customer accepting a provider's showing that a failed segment's failure was its fault (`REQ-ORD-11`): a
-    /// decision of policy's on the policy handle, as an order's authorisation is, asked by the order's requester in its
-    /// open session and naming the showing it accepts, so it can't be read as accepting another. It takes no effect:
-    /// the `reversal_carrier` that rests on it records who carries the reversal. The operator accepts a showing by its
-    /// `accept_fault` command instead.
+    /// The party a provider's showing names accepting that a failed segment's failure was its fault (`REQ-ORD-11`): a
+    /// decision of policy's on the policy handle, as an order's authorisation is, naming the showing it accepts, so it
+    /// can't be read as accepting another. The customer asks it as the order's requester in its open session; an
+    /// operator's login asks it under a permission of its own, beside `dispute_fault`, naming no session, and then
+    /// records its `accept_fault` command (`T-020-68`). It takes no effect: the `reversal_carrier` that rests on it
+    /// records who carries the reversal.
     AcceptFault {
         /// The order.
         order: Id,
@@ -908,8 +909,13 @@ pub enum Action {
         segment: Id,
         /// The showing accepted.
         showing: ShowingNamed,
-        /// The customer's session it is asked in (`REQ-ORD-32`).
-        session: Id,
+        /// The customer's session it is asked in (`REQ-ORD-32`): present exactly where the customer asks it.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        session: Option<Id>,
     },
     /// Erasing a kept statement's bytes from the evidence store, a decided action like any other (`REQ-AUD-13`): the
     /// operator asks it of policy, the log admits its effect on the permit, and the store erases only on the effect's
@@ -2670,7 +2676,9 @@ pub enum OperatorCommand {
     /// Appoint the checker outside the operator (`REQ-AUD-10`).
     AppointChecker,
     /// Accept a provider's showing that a failed segment's failure was the operator's, so the operator carries its
-    /// reversal (`REQ-ORD-11`): about the order, its subject the segment.
+    /// reversal (`REQ-ORD-11`): about the order, its subject the segment. Since `T-020-68` it is no act alone: a carrier
+    /// resting on it rests also on policy's permitted decision of the same login's `accept_fault`
+    /// (`reversal-carrier-rests-on-its-acceptance`).
     AcceptFault,
 }
 
@@ -3236,7 +3244,8 @@ pub enum What {
         accepted_by: Option<Actor>,
         /// The act the acceptance rests on, by receipt: for the customer, policy's permitted `decide` of its
         /// `accept_fault` (`Action::AcceptFault`), asked in its open session and naming the showing; for the operator,
-        /// its `accept_fault` command. Present exactly where the carrier isn't the provider.
+        /// its `accept_fault` command, which itself rests on policy's permitted `decide` of that login's `accept_fault`
+        /// (`T-020-68`). Present exactly where the carrier isn't the provider.
         #[serde(
             default,
             deserialize_with = "some",

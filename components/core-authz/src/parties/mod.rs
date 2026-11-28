@@ -113,7 +113,7 @@ pub enum Scope {
     RepeatOperation,
     /// Filing an arrival anew against its order (`decide`, `refile_arrival`, `T-020-52`).
     RefileArrival,
-    /// The customer accepting a showing of its fault (`decide`, `accept_fault`).
+    /// Accepting a showing of fault: the customer's, and since `T-020-68` an operator's login's (`decide`, `accept_fault`).
     AcceptFault,
     /// Ending an order without completing (`decide`, `end_order`, `T-020-61`).
     EndOrder,

@@ -866,6 +866,14 @@ impl Segments {
     /// (`REQ-CPL-12`, `T-020-23`). To be declared before the segment that carries the input is handed over: one
     /// already handed over is [`Rests::TooLate`], since its reliance would be written after the send. The declaration
     /// stands for the segments after it.
+    ///
+    /// **What it is kept for** (`T-020-68`, the third security pass's L9). No production path calls it: Core declares
+    /// its own reliances with [`Segments::declare_cited`], on whatever stated judgement an operation's eligibility
+    /// figure cites, a reserve's included, and `REQ-CPL-8` is met by the reserve's own attributed answer to its own
+    /// segment. It is the by-hand seam for a deployment whose inputs rest on a judgement no figure cites, which v0 has
+    /// none of, and the one the reliance write path's own tests drive (`conformance/scenarios/tests/reliance.rs`,
+    /// `stuck_mover.rs`): what a declaration does once made is the same whoever made it. A declaration moves nothing and
+    /// decides nothing; it only adds a `reliance` entry before a send, which the log holds to the judgement it names.
     pub fn rests_on(&mut self, order: &Id, input: &str, judgement: Judgement) -> Result<(), Rests> {
         let carried = self.flights.iter().any(|((o, _), flight)| {
             o == order.as_str() && flight.carries.iter().any(|name| name == input)

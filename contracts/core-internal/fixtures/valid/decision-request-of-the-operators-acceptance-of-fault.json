@@ -1,0 +1,22 @@
+{
+  "request": "req-accept-fault-op",
+  "caller": {
+    "party": "operator",
+    "acts": "op-login-2",
+    "role": "operator",
+    "kind": "person"
+  },
+  "action": {
+    "kind": "accept_fault",
+    "order": "ord-1",
+    "segment": "p1-s2",
+    "showing": {
+      "transaction": "tx-f2",
+      "commitment": {
+        "algorithm": "sha-256",
+        "value": "3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c"
+      }
+    }
+  },
+  "at": "2026-11-10T09:00:00Z"
+}

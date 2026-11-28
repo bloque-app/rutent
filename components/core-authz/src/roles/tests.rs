@@ -890,6 +890,7 @@ fn every_permission_held() -> Vec<Permission> {
         Permission::RepeatOperation,
         Permission::EndOrder,
         Permission::DisputeFault,
+        Permission::AcceptFault,
         Permission::RefileArrival,
         Permission::DeclineOutcome,
         Permission::EraseStatement,
@@ -915,6 +916,7 @@ fn every_permission_held() -> Vec<Permission> {
             | Permission::RepeatOperation
             | Permission::EndOrder
             | Permission::DisputeFault
+            | Permission::AcceptFault
             | Permission::RefileArrival
             | Permission::DeclineOutcome
             | Permission::EraseStatement
@@ -1082,6 +1084,30 @@ fn every_call() -> Vec<Call> {
         erasure_asked(&operator()),
         true,
     ));
+    // The operator's acceptance of a showing of its fault, decided under a permission of its own and never an effect
+    // (`T-020-68`): no effect is tried on its permit or its refusal.
+    let accepted = operators_acceptance(&operator());
+    calls.push(Call {
+        name: "accept a fault by the operator".into(),
+        owner: Permission::AcceptFault,
+        caller: accepted.caller.clone(),
+        run: Box::new(move |holders| {
+            let register =
+                swept(holders).showing("ord-1", "p1-s2", the_showing(), SHOWING_RECEIVED);
+            let mut policy = engine(Kept::with_a_decision_record(), register);
+            let decision = policy.decide(&accepted).unwrap();
+            let entry = policy.log().entry_of(&decision).clone();
+            assert!(
+                matches!(&entry.what, What::Decide { request: r, .. } if r == &accepted),
+                "recorded with its action"
+            );
+            Ran {
+                answer: decision.outcome,
+                who: Some(entry.who),
+                ruled: policy.policy.1.ruled == 1,
+            }
+        }),
+    });
     // Filing an arrival anew, decided and never an effect (`T-020-52`): no effect is tried on its permit or its refusal.
     let refiling = refiling_asked(&operator(), "ord-17");
     calls.push(Call {
@@ -1396,9 +1422,9 @@ fn every_call() -> Vec<Call> {
 #[test]
 fn each_permission_alone_allows_only_its_own_action() {
     let all = every_permission_held();
-    assert_eq!(all.len(), 43, "every permission of the register's");
+    assert_eq!(all.len(), 44, "every permission of the register's");
     let calls = every_call();
-    assert_eq!(calls.len(), 46, "every call a permission lets through");
+    assert_eq!(calls.len(), 47, "every call a permission lets through");
     for permission in &all {
         assert!(
             calls.iter().any(|c| &c.owner == permission),
@@ -3050,9 +3076,99 @@ fn acceptance(caller: &Actor, session: &str, at: &str) -> DecisionRequest {
         order: id("ord-1"),
         segment: id("p1-s2"),
         showing: the_showing(),
-        session: id(session),
+        session: Some(id(session)),
     };
     request
+}
+
+/// The operator's acceptance of the showing, asked by `caller` naming no session (`T-020-68`).
+fn operators_acceptance(caller: &Actor) -> DecisionRequest {
+    let mut request = acceptance(caller, "none", "2026-11-10T09:00:00Z");
+    request.request = id(&format!("req-accept-{}", caller.acts.as_str()));
+    if let Action::AcceptFault { session, .. } = &mut request.action {
+        *session = None;
+    }
+    request
+}
+
+/// An operator's acceptance of a showing of its fault is policy's decision (`T-025-05`'s third pass, L8): a login of the
+/// deployment operator's the register lists for `AcceptFault`, naming no session, is permitted and recorded as who
+/// accepted; the same login without the permission, a login of another party holding it, one naming a session, and the
+/// customer naming none are each refused and recorded so. None of it is an effect.
+// verifies: REQ-AUZ-1
+#[test]
+fn operators_acceptance_of_a_fault_is_decided_by_policy() {
+    let decided = |holding: &[Permission], request: &DecisionRequest| {
+        let register = Register::default()
+            .with_order("ord-1", "cust-1", "us-bank")
+            .showing("ord-1", "p1-s2", the_showing(), SHOWING_RECEIVED)
+            .acting("op-login-2", "operator")
+            .acting("op-other", "another-party")
+            .and_holding(&operator(), holding)
+            .and_holding(
+                &actor(
+                    "another-party",
+                    "op-other",
+                    Role::Operator,
+                    ActorKind::Person,
+                ),
+                &[Permission::AcceptFault],
+            );
+        let mut policy = engine(Kept::world(), register);
+        policy.set_clock(crate::session::Stopped::at(
+            &Timestamp::new("2026-11-10T09:00:00Z").unwrap(),
+        ));
+        let decision = policy.decide(request).unwrap();
+        assert_eq!(policy.log().entry_of(&decision).who, request.caller);
+        decision.outcome
+    };
+    // Permitted: the operator's login holding its own permission.
+    assert_eq!(
+        decided(
+            &[Permission::AcceptFault],
+            &operators_acceptance(&operator())
+        ),
+        Answer::Permit {}
+    );
+    // Refused: no permission of its own, though it holds the dispute's.
+    assert_eq!(
+        decided(
+            &[Permission::DisputeFault],
+            &operators_acceptance(&operator())
+        ),
+        NOT_PERMITTED
+    );
+    assert_eq!(
+        decided(&[], &operators_acceptance(&operator())),
+        NOT_PERMITTED
+    );
+    // Refused: a login of another party holding it, which is no login of the deployment operator's.
+    let other = actor(
+        "another-party",
+        "op-other",
+        Role::Operator,
+        ActorKind::Person,
+    );
+    assert_eq!(
+        decided(&[Permission::AcceptFault], &operators_acceptance(&other)),
+        NOT_PERMITTED
+    );
+    // Refused: the operator naming a session, and the customer naming none.
+    let mut in_a_session = operators_acceptance(&operator());
+    if let Action::AcceptFault { session, .. } = &mut in_a_session.action {
+        *session = Some(id("sess-op"));
+    }
+    assert_eq!(
+        decided(&[Permission::AcceptFault], &in_a_session),
+        NOT_PERMITTED
+    );
+    assert_eq!(
+        decided(
+            &[Permission::AcceptFault],
+            &operators_acceptance(&customer("cust-1"))
+        ),
+        NOT_PERMITTED
+    );
 }
 
 /// An engine over the world, whose order `ord-1` is `cust-1`'s and holds fx-desk's showing of `p1-s2`, by Core's clock

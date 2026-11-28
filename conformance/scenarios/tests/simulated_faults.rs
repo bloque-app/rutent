@@ -279,6 +279,24 @@ fn failed_segments_provider_carries_the_reversal_unless_it_shows_the_fault_was_t
         ),
         "the signed result names the operator's fault, not the customer's"
     );
+    // A login of the operator's the register lists, holding no permission to accept a fault, is refused by policy, and
+    // nothing is carried (`T-020-68`, the third security pass's L8).
+    let unpermitted = rutent_contracts::core_internal::Actor {
+        acts: id("op-desk-unpermitted"),
+        ..kit::operator()
+    };
+    core.registers().list(&unpermitted);
+    assert!(
+        matches!(
+            core.accept_fault(order, ramp, &unpermitted, session),
+            Err(StepError::Reversal(ReversalError::NotPermitted(_)))
+        ),
+        "policy decides the operator's acceptance"
+    );
+    assert_eq!(
+        core.reversal_carrier(order, ramp),
+        Some(Carrier::Provider(id(QUICK)))
+    );
     assert_eq!(
         core.accept_fault(order, ramp, &kit::operator(), session)
             .expect("the operator accepts its fault"),

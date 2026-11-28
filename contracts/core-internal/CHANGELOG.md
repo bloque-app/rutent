@@ -1,6 +1,26 @@
 # core-internal changelog
 
 ## 1.0.0
+- `T-020-68` (item 2, `T-025-05`'s third pass, L10; `REQ-ORD-12`, `REQ-ORD-11`, `REQ-AUZ-1`, `REQ-AUZ-4`): two rows, so
+  `end_order` and `dispute_fault` are tied to their permits by the log (`T-020-61` left them "no relation of their own").
+  `end-requested-rests-on-a-permitted-end`: an `end_requested` input rests on policy's permitted `decide` of `end_order`
+  naming its order. `dispute-rests-on-a-permitted-dispute`: a `stuck_declared` input of `dispute` rests on policy's
+  permitted `decide` of `dispute_fault` about its order, naming a segment of the part it declares stuck. Two relations
+  more. The admitted `part-waits-for-value-in-motion--an-end-requested-*` cases gain the end's decision in their history.
+  Admission cases: `--the-customers-end`, `--missing`, `--another-orders-end`, `--yes`; `--the-customers-dispute`,
+  `--missing`, `--part`, `--yes`. Folded into this unreleased version. Ignorable: no, a reader that ignored them would
+  take an end or a dispute no one decided. (DEC-4, DEC-20, T-020-68)
+- `T-020-68` (item 2, `T-025-05`'s third pass, L8; `REQ-ORD-11`, `REQ-AUZ-1`, `REQ-AUZ-6`): an operator's acceptance
+  of a fault is decided by policy, as the customer's is. `Action::AcceptFault.session` is present exactly where the
+  customer asks it; an operator's login asks `accept_fault` naming no session, under a permission of its own. Then the
+  login records its `accept_fault` command as before. `reversal-carrier-rests-on-its-acceptance` holds an operator's
+  carrier also to that login's permitted decision, naming the showing and no session, decided before the command:
+  field `decided`, one more. Every admission history holding the world's operator command gains the decision before it.
+  Fixtures: valid `decision-request-of-the-operators-acceptance-of-fault`; admission cases
+  `--an-operators-command-policy-never-decided`, `--an-operators-command-policy-refused`,
+  `--an-operators-command-decided-for-another-login`, `--an-operators-command-decided-in-a-session` and
+  `--an-operators-command-decided-after-it`. Folded into this unreleased version. Ignorable: no. (DEC-4, DEC-20,
+  T-020-68)
 - `T-020-68` (item 1, `T-025-05`'s third pass, M2; `REQ-AUD-6`, `REQ-AUD-15`): `Difference::Holding` loses `by`, the
   figure an account was over or short by. With the value held, which the log holds, it stated the balance, and where
   nothing is held it was the balance itself. The raise carries the difference's direction alone, with the account, the

@@ -3291,6 +3291,65 @@ fn the_log_refuses_an_authorisation_naming_no_part_or_one_part_twice() {
     }
 }
 
+// --- T-020-68: what the third security pass left -------------------------------------------------------------
+
+/// An order's end on request, and a part's stuck declaration in a dispute, are each refused by the log unless policy
+/// permitted them (`T-025-05`'s third pass, L10): with no decision in the log, with a refused one, or with one about
+/// another order or another part, the entry is refused; with the permitted decision before it, it is admitted. The rows
+/// are `end-requested-rests-on-a-permitted-end` and `dispute-rests-on-a-permitted-dispute`.
+// verifies: REQ-AUZ-4
+#[test]
+fn end_or_dispute_without_a_permitted_decision_is_refused_by_the_log() {
+    for row in [
+        "end-requested-rests-on-a-permitted-end",
+        "dispute-rests-on-a-permitted-dispute",
+    ] {
+        let admitted = if row.starts_with("end") {
+            "the-customers-end"
+        } else {
+            "the-customers-dispute"
+        };
+        assert_case(&format!("{row}--{admitted}"));
+        let mut refused = vec!["missing", "yes"];
+        refused.push(if row.starts_with("end") {
+            "another-orders-end"
+        } else {
+            "part"
+        });
+        for case in refused {
+            let name = format!("{row}--{case}");
+            assert_case_refused(&name);
+            assert_case(&name);
+        }
+    }
+    // The end the in-motion row admits rests on its decision too: without it, the log refuses it.
+    let case = read_json(
+        &contract_dir()
+            .join("fixtures/admission")
+            .join("part-waits-for-value-in-motion--an-end-requested-with-nothing-moving.json"),
+    );
+    let history: Vec<(Receipt, Entry)> = case["history"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| {
+            (
+                serde_json::from_value(item["receipt"].clone()).unwrap(),
+                serde_json::from_value(item["entry"].clone()).unwrap(),
+            )
+        })
+        .filter(|(_, entry): &(Receipt, Entry)| {
+            !matches!(entry, Entry::Verified(v) if matches!(&v.what, What::Decide { request, .. }
+                if matches!(request.action, Action::EndOrder { .. })))
+        })
+        .collect();
+    let entry: Entry = serde_json::from_value(case["entry"].clone()).unwrap();
+    assert!(
+        admit_entry(&history, &entry, Through::General, &deployment_operator()).is_err(),
+        "an end with no decision is refused"
+    );
+}
+
 // --- T-020-21: core-internal's next round ---------------------------------------------------------------------
 
 /// Runs one admission case through [`admit_entry`] and holds it to what the case expects.

@@ -1398,10 +1398,62 @@ impl World {
                     transaction,
                     commitment: commitment.unwrap_or(showing.commitment),
                 },
-                session: id(SESSION),
+                session: Some(id(SESSION)),
             },
             at: Timestamp::new(Instant(self.clock.0.get().floor().0).rfc3339().unwrap()).unwrap(),
         }
+    }
+
+    /// The operator's login `by` asking policy to accept the last showing for `p1-s2`, naming no session, as Core's
+    /// entry point asks it before the operator's command (`T-020-68`).
+    fn operator_decides_its_acceptance(&mut self, by: &Actor) {
+        let mut request = self.acceptance_request(by, None);
+        if let Action::AcceptFault { session, .. } = &mut request.action {
+            *session = None;
+        }
+        self.policy.decide(&request).expect("policy decides");
+    }
+
+    /// `by` ending `order`, as policy decides its `end_order`, which Core's reversals ask themselves (`T-020-68`).
+    fn end(&mut self, order: &Id, by: &Actor) -> Result<Receipt, ReversalError> {
+        let mut parts = ReversalParts {
+            clock: &self.clock,
+            catalogue: &mut self.catalogue,
+            log: &mut self.log,
+            evidence: &mut self.store,
+            fresh: &mut self.ids,
+            issued: &self.issued,
+            segments: &mut self.segments,
+            exposures: &mut self.exposures,
+            core: &self.core,
+            operator: &self.operator,
+        };
+        self.reversals.end(&mut parts, &mut self.policy, order, by)
+    }
+
+    /// `by` disputing the showing of `segment`, as policy decides its `dispute_fault`, which Core's reversals ask
+    /// themselves (`T-020-68`).
+    fn dispute(&mut self, segment: &str, by: &Actor) -> Result<Receipt, ReversalError> {
+        let (order, part, segment) = (id(ORDER), id(PART), id(segment));
+        let mut parts = ReversalParts {
+            clock: &self.clock,
+            catalogue: &mut self.catalogue,
+            log: &mut self.log,
+            evidence: &mut self.store,
+            fresh: &mut self.ids,
+            issued: &self.issued,
+            segments: &mut self.segments,
+            exposures: &mut self.exposures,
+            core: &self.core,
+            operator: &self.operator,
+        };
+        self.reversals.dispute(
+            &mut parts,
+            &mut self.policy,
+            &mut self.stuck,
+            at(&order, &part, &segment),
+            by,
+        )
     }
 
     /// The exchange's failed result naming the customer at fault, shown to Core for `p1-s2`.
@@ -2126,9 +2178,7 @@ fn dispute_over_a_fault_makes_the_order_stuck() {
         Err(ReversalError::NotTheParty),
         "the signed bytes name the customer's fault, not the operator's"
     );
-    world
-        .with(|r, p, s| r.dispute(p, s, at(&order, &part, &s2), &customer()))
-        .unwrap();
+    world.dispute("p1-s2", &customer()).unwrap();
     assert_eq!(world.followed().parts[0].state, OrderState::Stuck);
     assert_eq!(world.followed().state, OrderState::Stuck);
     assert!(world.stuck.is_stuck(&order, &part));
@@ -2194,6 +2244,9 @@ fn dispute_over_a_fault_makes_the_order_stuck() {
         "an operator login the register doesn't list cannot accept a fault"
     );
     assert_eq!(world.log.len(), len);
+    // The login's own acceptance, decided by policy under the operator's permission and naming no session, which Core's
+    // entry point asks before the command; the log holds the carrier to it (`T-020-68`).
+    world.operator_decides_its_acceptance(&operator());
     assert_eq!(
         world.with(|r, p, _| r.accept_fault(
             p,
@@ -2243,7 +2296,7 @@ fn dispute_over_a_fault_makes_the_order_stuck() {
         .unwrap();
     world.log.down = true;
     assert_eq!(
-        world.with(|r, p, s| r.dispute(p, s, at(&order, &part, &s2), &customer())),
+        world.dispute("p1-s2", &customer()),
         Err(ReversalError::Stuck(StuckError::Append(
             AppendFailure::Unavailable
         )))
@@ -2257,9 +2310,7 @@ fn dispute_over_a_fault_makes_the_order_stuck() {
         world.reversals.carrier(&order, &s2),
         Some(&Carrier::Provider(id(EXCHANGE)))
     );
-    world
-        .with(|r, p, s| r.dispute(p, s, at(&order, &part, &s2), &customer()))
-        .unwrap();
+    world.dispute("p1-s2", &customer()).unwrap();
     assert_eq!(world.followed().parts[0].state, OrderState::Stuck);
     assert!(
         world.accept_as_customer(&customer()).is_err(),
@@ -2273,7 +2324,7 @@ fn dispute_over_a_fault_makes_the_order_stuck() {
         .unwrap();
     world.log.refusing = true;
     assert!(matches!(
-        world.with(|r, p, s| r.dispute(p, s, at(&order, &part, &s2), &customer())),
+        world.dispute("p1-s2", &customer()),
         Err(ReversalError::Stuck(StuckError::Append(
             AppendFailure::Refused(_)
         )))
@@ -2516,6 +2567,15 @@ fn partial_evidence_of_an_undone_start_is_kept() {
     assert_eq!(world.admitted_from(mark), Ok(world.log.len() - mark));
 }
 
+/// Whether the log holds nothing from `from` on but policy's decisions: an end asks policy first (`T-020-68`), and a
+/// refused end records nothing of Core's.
+fn only_decided(world: &World, from: usize) -> bool {
+    world
+        .whats_from(from)
+        .iter()
+        .all(|w| matches!(w, What::Decide { .. }))
+}
+
 /// An order whose first segment hasn't settled ends without completing on request, and nothing of it is handed over
 /// after. While its withdrawal is in motion, it doesn't end, even where the request was kept from before the
 /// withdrawal was handed over; once its withdrawal settled, it doesn't either.
@@ -2525,7 +2585,7 @@ fn order_ends_without_completing_only_before_its_first_segment_settles() {
     let order = id(ORDER);
     let mut world = World::over(Platform::settling());
     let mark = world.log.len();
-    world.with(|r, p, _| r.end(p, &order)).unwrap();
+    world.end(&order, &customer()).unwrap();
     assert_eq!(world.followed().state, OrderState::EndedWithoutCompleting);
     assert_eq!(world.run(), Err(SegmentsError::Ended(id(PART))));
     assert!(
@@ -2542,27 +2602,30 @@ fn order_ends_without_completing_only_before_its_first_segment_settles() {
     assert!(matches!(world.ran()[0], SegmentOutcome::Unknown(_)));
     let appended = world.log.len();
     assert_eq!(
-        world.with(|r, p, _| r.end(p, &order)),
+        world.end(&order, &customer()),
         Err(ReversalError::InMotion(id("p1-s1")))
     );
-    assert_eq!(world.log.len(), appended);
+    assert!(
+        only_decided(&world, appended),
+        "only policy's decision is recorded"
+    );
 
     // The reviewer's sequence: the log down for the first request, which is kept; the withdrawal handed over
     // meanwhile, its outcome unknown; the request again is refused, in motion.
     let mut world = World::over(Platform::settling().with(RESERVE, Act::Unknown));
     world.log.down = true;
     assert_eq!(
-        world.with(|r, p, _| r.end(p, &order)),
+        world.end(&order, &customer()),
         Err(ReversalError::Append(AppendFailure::Unavailable))
     );
     world.log.down = false;
     assert!(matches!(world.ran()[0], SegmentOutcome::Unknown(_)));
     let appended = world.log.len();
     assert_eq!(
-        world.with(|r, p, _| r.end(p, &order)),
+        world.end(&order, &customer()),
         Err(ReversalError::InMotion(id("p1-s1")))
     );
-    assert_eq!(world.log.len(), appended, "no end is recorded");
+    assert!(only_decided(&world, appended), "no end is recorded");
     assert_eq!(world.followed().state, OrderState::NotPastFirstSegment);
 
     // Past its first segment: the withdrawal settled, the exchange failed. The part goes on: an end ends only parts
@@ -2570,10 +2633,10 @@ fn order_ends_without_completing_only_before_its_first_segment_settles() {
     let mut world = exchange_failed();
     let appended = world.log.len();
     assert!(matches!(
-        world.with(|r, p, _| r.end(p, &order)),
+        world.end(&order, &customer()),
         Err(ReversalError::NotApplicable(_))
     ));
-    assert_eq!(world.log.len(), appended, "nothing is recorded");
+    assert!(only_decided(&world, appended), "nothing is recorded");
     assert_eq!(world.followed().state, OrderState::FirstSegmentSettled);
 }
 
@@ -2737,7 +2800,7 @@ fn late_origin_approval_starts_nothing_and_is_visible() {
         world.with(|r, p, _| r.late_approval(p, &order, &approval)),
         Err(ReversalError::NotEnded)
     );
-    world.with(|r, p, _| r.end(p, &order)).unwrap();
+    world.end(&order, &customer()).unwrap();
     let mark = world.log.len();
     let after = world
         .with(|r, p, _| r.late_approval(p, &order, &approval))
@@ -2778,7 +2841,7 @@ fn late_origin_approval_starts_nothing_and_is_visible() {
 #[test]
 fn a_refused_reader_of_what_came_after_is_told_the_same_whether_the_order_exists() {
     let mut world = World::over(Platform::settling());
-    world.with(|r, p, _| r.end(p, &id(ORDER))).unwrap();
+    world.end(&id(ORDER), &customer()).unwrap();
     let stranger = Actor {
         party: id("stranger"),
         ..customer()
