@@ -1,7 +1,21 @@
-//! The host's wall time, written as the contracts write a time: for an answer's `made_at` and a record's start. Never
-//! for a deadline: an answer's deadline is Core's, checked on Core's clock.
+//! The host's wall time, written as the contracts write a time: for an answer's `made_at` and a record's start; and
+//! read against a question's deadline only to drop a question already past it (`T-015-05`). Whether an answer is in
+//! time is Core's to say, on Core's clock.
 
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use rutent_contracts::router_api::Timestamp;
+
+/// Whether `deadline` has passed on the host's wall clock. Only to drop a question that is already dead: the host
+/// never holds an answer to the deadline, which Core does on its own clock. A host clock that runs ahead of Core's
+/// drops questions Core would still have taken, and one that runs behind hands over questions Core will refuse: the
+/// operator keeps the host's clock synchronised as Core's.
+pub(crate) fn past(deadline: &Timestamp) -> bool {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| i128::try_from(d.as_nanos()).unwrap_or(i128::MAX));
+    now > deadline.unix_nanos()
+}
 
 /// The time now, as RFC 3339 UTC to the second (`YYYY-MM-DDTHH:MM:SSZ`).
 pub(crate) fn now_rfc3339() -> String {

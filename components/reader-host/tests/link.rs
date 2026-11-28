@@ -297,3 +297,107 @@ fn link_closes_a_handshake_past_its_deadline_and_keeps_room_for_core() {
         .is_ok()
     );
 }
+
+// verifies: DEC-28
+#[test]
+fn hosts_own_server_certificate_presented_as_a_client_is_refused() {
+    let operator = Authority::new();
+    let reader = rpc_reader("base", &[]);
+    let rig = Rig::start(vec![reader.clone()], honest_pool(), &[]);
+    assert!(rig.host.wait_ready(&reader.name, Duration::from_secs(30)));
+    let host_leaf = operator.issue(HOST_NAME, ExtendedKeyUsagePurpose::ServerAuth);
+    let link = serve(&operator, &host_leaf, rig);
+    let question = serde_json::to_vec(&question("base", "base", network_rules())).unwrap();
+    let ask_as = |certificate: &Leaf| {
+        over_link(
+            client(&operator, Some(certificate)),
+            link.address(),
+            HOST_NAME,
+            &question,
+        )
+    };
+
+    // The host's own leaf, chain and key, from the operator's CA, presented back to it as a client: refused.
+    assert!(
+        ask_as(&host_leaf).is_err(),
+        "the host's own server certificate is no client"
+    );
+    // A server certificate under Core's own name from the operator's CA: refused for its purpose alone.
+    let core_named_server = operator.issue(CORE_NAME, ExtendedKeyUsagePurpose::ServerAuth);
+    assert!(
+        ask_as(&core_named_server).is_err(),
+        "a server certificate is no client, even under Core's name"
+    );
+    // Core's client certificate is answered beside them.
+    let core = operator.issue(CORE_NAME, ExtendedKeyUsagePurpose::ClientAuth);
+    assert!(ask_as(&core).is_ok());
+}
+
+// verifies: DEC-28
+#[test]
+fn link_keeps_a_handshake_slot_for_core_that_peers_from_other_sources_cant_fill() {
+    use std::io::Read;
+    let operator = Authority::new();
+    let reader = rpc_reader("base", &[]);
+    let rig = Rig::start(vec![reader.clone()], honest_pool(), &[]);
+    assert!(rig.host.wait_ready(&reader.name, Duration::from_secs(30)));
+    let leaf = operator.issue(HOST_NAME, ExtendedKeyUsagePurpose::ServerAuth);
+    let tls = LinkTls::new(
+        operator.pem().as_bytes(),
+        leaf.chain_pem.as_bytes(),
+        leaf.key_pem.as_bytes(),
+        CORE_NAME,
+    )
+    .unwrap();
+    // One handshake at a time overall and from one source, and one slot kept for Core.
+    let limits = LinkLimits {
+        handshake: Duration::from_secs(5),
+        handshaking: 1,
+        handshaking_per_source: 1,
+        reserved_for_core: 1,
+        ..LinkLimits::default()
+    };
+    let link = Link::serve_with(
+        TcpListener::bind("127.0.0.1:0").unwrap(),
+        tls,
+        Arc::new(rig.host),
+        limits,
+    )
+    .unwrap();
+    let core = operator.issue(CORE_NAME, ExtendedKeyUsagePurpose::ClientAuth);
+    let question = serde_json::to_vec(&question("base", "base", network_rules())).unwrap();
+    let ask = || {
+        over_link(
+            client(&operator, Some(&core)),
+            link.address(),
+            HOST_NAME,
+            &question,
+        )
+    };
+
+    // Before Core has authenticated, a peer that never does holds the one slot, and Core is closed at once.
+    let held = TcpStream::connect(link.address()).unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(
+        ask().is_err(),
+        "no slot is kept for a source not yet Core's"
+    );
+    drop(held);
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Core authenticates once: its source is remembered.
+    assert!(ask().is_ok());
+
+    // A peer holds the one slot again; Core takes the slot kept for it, and is answered.
+    let mut held = TcpStream::connect(link.address()).unwrap();
+    held.set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(ask().is_ok(), "Core is answered past the bounds");
+    // The kept slot was given back: Core is answered again while the peer still holds its slot.
+    assert!(ask().is_ok());
+    // And the peer is still held, not closed for Core's sake.
+    let mut byte = [0u8; 1];
+    held.set_nonblocking(true).unwrap();
+    assert!(matches!(held.read(&mut byte), Err(e) if e.kind() == io::ErrorKind::WouldBlock));
+}

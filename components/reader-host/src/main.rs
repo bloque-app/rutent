@@ -2,14 +2,15 @@
 //!
 //! ```text
 //! rutent-reader-host <config.json> --listen <address:port> --operator-ca <ca.pem> --cert <chain.pem>
-//!     --key <key.pem> --core-name <Core's subject name> --rpc-roots <roots.pem> --key-store <role.json>
+//!     --key <key.pem> --core-name <Core's subject name> --rpc-roots <roots.pem> --key-store <keys.json>
 //! ```
 //!
 //! It reads its configuration ([`rutent_reader_host::HostConfig::read`]) at each start, resolves the readers' keys as
-//! the platform resolves a provider's, from the keys of the vault bucket `--key-store` describes (a process role's
-//! settings, [`rutent_prov::keys::RoleSettings`], read with the token the deployment delivers in
-//! `RUTENT_READER_KEY_STORE_TOKEN`), writes each call's record to its standard error as a JSON
-//! line, and serves Core over mTLS until it is stopped.
+//! the platform resolves a provider's, from the key store `--key-store` describes
+//! ([`rutent_prov::keys::KeyStoreSettings`]: the store and its keys' path, and no `secrets` path, which is refused),
+//! through [`rutent_prov::keys::StatementKeys`], read with the token the deployment delivers in
+//! `RUTENT_READER_KEY_STORE_TOKEN`; writes each call's record to its standard error as a JSON line; and serves Core
+//! over mTLS until it is stopped.
 
 use std::collections::BTreeMap;
 use std::net::TcpListener;
@@ -17,7 +18,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use rutent_prov::keys::{HttpsTransport, RoleSettings, Token, kv_bucket};
+use rutent_prov::keys::{KeyStoreSettings, StatementKeys};
 use rutent_reader_host::egress::Network;
 use rutent_reader_host::link::{Link, LinkTls};
 use rutent_reader_host::records::StderrRecords;
@@ -77,18 +78,16 @@ fn run() -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
     let network = Network::production(&read("--rpc-roots")?).map_err(|e| e.to_string())?;
-    let role: RoleSettings = serde_json::from_slice(&read("--key-store")?)
-        .map_err(|_| "--key-store is not a process role's settings".to_owned())?;
+    let store: KeyStoreSettings = serde_json::from_slice(&read("--key-store")?).map_err(|_| {
+        "--key-store is not a key store's settings (its keys' path, and no secrets path)".to_owned()
+    })?;
     let token = std::env::var("RUTENT_READER_KEY_STORE_TOKEN")
-        .ok()
-        .and_then(Token::new)
-        .ok_or("RUTENT_READER_KEY_STORE_TOKEN holds no token")?;
+        .map_err(|_| "RUTENT_READER_KEY_STORE_TOKEN holds no token")?;
     // SAFETY: still one thread: no reader, worker or link has started.
     unsafe { std::env::remove_var("RUTENT_READER_KEY_STORE_TOKEN") };
-    let transport = HttpsTransport::for_role(&role).map_err(|e| e.to_string())?;
-    let keys = kv_bucket(&role, token, transport)
-        .map_err(|e| e.to_string())?
-        .keys;
+    // The readers' statement keys alone (`T-015-05`): the settings name no path but the keys', and the token and the
+    // transport stay inside the facade. Which paths the token may read is the store's policy, the deployment's.
+    let keys = StatementKeys::new(&store, token).map_err(|e| e.to_string())?;
     let host = Host::start(
         config,
         Services {

@@ -29,6 +29,7 @@ use crate::egress::{ReaderEgress, Serving};
 use crate::host::ReaderState;
 use crate::jail;
 use crate::records::START_UP;
+use crate::time::past;
 use crate::wire::{FromReader, RpcResult, ToReader, read_frame, write_frame};
 
 /// The most lines the host keeps of a reader's log.
@@ -42,6 +43,10 @@ const CHAIN_ID: &str = r#"{"jsonrpc":"2.0","id":1,"method":"eth_chainId"}"#;
 
 /// What the worker gives back for a question: the answer's body to sign, or why it is unreadable.
 pub(crate) type Reply = Result<ReaderAnswer, &'static str>;
+
+/// Why a question is dropped: its deadline passed, on the host's clock, before the reader was handed it. The host
+/// answers it with nothing (`T-015-05`).
+pub(crate) const PAST_DEADLINE: &str = "question_past_deadline";
 
 /// What reaches a worker.
 pub(crate) enum Event {
@@ -327,14 +332,23 @@ impl Worker {
         self.generation += 1;
         let generation = self.generation;
         self.shared.starts.fetch_add(1, Ordering::SeqCst);
-        let workdir = std::env::temp_dir().join(format!(
-            "rutent-reader-{}-{}-{generation}",
-            self.config.name,
-            std::process::id()
-        ));
-        let started = std::fs::create_dir_all(&workdir)
-            .and_then(|()| jail::command(&self.config, &workdir))
-            .and_then(|mut command| command.spawn());
+        // A directory of its own, new, mode 0700: one already there is refused, and left as it is (`T-015-05`).
+        let workdir =
+            match jail::workdir(&std::env::temp_dir(), self.config.name.as_str(), generation) {
+                Ok(workdir) => workdir,
+                Err(e) => {
+                    self.log(format!(
+                        "host: the reader's working directory wasn't made: {e}"
+                    ));
+                    self.phase = Phase::Down {
+                        restart_at: Instant::now() + self.config.limits.restart_after(),
+                        why: "reader_did_not_start",
+                    };
+                    self.set_state(ReaderState::Down);
+                    return;
+                }
+            };
+        let started = jail::command(&self.config, &workdir).and_then(|mut command| command.spawn());
         let mut child = match started {
             Ok(child) => child,
             Err(e) => {
@@ -463,11 +477,21 @@ impl Worker {
                 self.reply(&reply, Err(why))
             }
             Phase::Asking { .. } => self.queue.push_back((question, reply)),
-            Phase::Ready => self.ask(question, reply),
+            Phase::Ready => {
+                let _ = self.ask(question, reply);
+            }
         }
     }
 
-    fn ask(&mut self, question: ReaderQuestion, reply: Sender<Reply>) {
+    /// Hands `question` to the reader, or drops it, unasked, if its deadline has passed: whether it was handed over.
+    /// A dropped question leaves the phase as it was: the caller takes the next.
+    fn ask(&mut self, question: ReaderQuestion, reply: Sender<Reply>) -> bool {
+        // A question that waited past its deadline is dropped, never handed over: Core would refuse its answer
+        // (`T-015-05`).
+        if past(&question.deadline) {
+            self.reply(&reply, Err(PAST_DEADLINE));
+            return false;
+        }
         if let Some(running) = &mut self.running {
             running.calls = 0;
         }
@@ -479,13 +503,18 @@ impl Worker {
             agreed: false,
         };
         self.send(&ToReader::Question { question });
+        true
     }
 
+    /// Takes the next question waiting, dropping each one past its deadline on the way, in a loop and never by
+    /// recursion: however many dead questions wait, the worker's stack holds one frame (`T-015-05`'s review, L2).
     fn next(&mut self) {
         self.phase = Phase::Ready;
         self.set_state(ReaderState::Ready);
-        if let Some((question, reply)) = self.queue.pop_front() {
-            self.ask(question, reply);
+        while let Some((question, reply)) = self.queue.pop_front() {
+            if self.ask(question, reply) {
+                return;
+            }
         }
     }
 
@@ -686,9 +715,156 @@ pub(crate) fn holds(
 
 #[cfg(test)]
 mod tests {
-    use super::{Event, Gauge, forward_frames};
-    use crate::config::READ_FRAMES;
+    use super::{Event, Gauge, PAST_DEADLINE, Phase, Shared, Worker, forward_frames};
+    use crate::config::{MAX_PENDING, READ_FRAMES, ReaderConfig, ReaderLimits};
+    use crate::egress::{Network, ReaderEgress};
+    use crate::records::MemoryRecords;
     use crate::wire::{FromReader, write_frame};
+
+    use std::net::{IpAddr, SocketAddr, TcpStream};
+    use std::num::NonZeroU16;
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+
+    use ed25519_dalek::SigningKey;
+    use rutent_contracts::module_interface::Host as HostName;
+    use rutent_contracts::reader::{
+        Answered, Asked, ChainId, NetworkIdentity, ReaderAnswer, ReaderQuestion, Reason, RequestId,
+        RpcEndpoint, TrustRule,
+    };
+    use rutent_contracts::router_api::{Id, Timestamp, Version};
+    use rutent_prov::egress::{
+        ConnectError, Connector, Dial, Dialer, NameResolver, Request, Response,
+    };
+
+    /// A network that reaches nothing: the worker under test asks it nothing.
+    struct Nowhere;
+
+    impl NameResolver for Nowhere {
+        fn resolve(&self, _host: &HostName, _port: NonZeroU16) -> Vec<IpAddr> {
+            Vec::new()
+        }
+    }
+
+    impl Connector for Nowhere {
+        fn exchange(&self, _dial: &Dial<'_>, _request: &Request) -> Result<Response, ConnectError> {
+            Err(ConnectError::Unreachable)
+        }
+    }
+
+    impl Dialer for Nowhere {
+        fn connect(&self, _to: SocketAddr, _timeout: Duration) -> std::io::Result<TcpStream> {
+            Err(std::io::Error::other("nowhere"))
+        }
+    }
+
+    fn question(n: u8, deadline: &str) -> ReaderQuestion {
+        let mut bytes = [0x5au8; 16];
+        bytes[0] = n;
+        ReaderQuestion {
+            request: RequestId::from_random(bytes).expect("a request id"),
+            reader: Id::new("base").unwrap(),
+            network: Id::new("base").unwrap(),
+            deadline: Timestamp::new(deadline).unwrap(),
+            asked: Asked::MovementStatus {
+                movement: Id::new("0xmove").unwrap(),
+            },
+        }
+    }
+
+    // verifies: REQ-MDL-11
+    #[test]
+    fn thousands_of_expired_questions_behind_a_slow_one_are_dropped_without_growing_the_workers_stack()
+     {
+        let config = Arc::new(ReaderConfig {
+            name: Id::new("base").unwrap(),
+            network: Id::new("base").unwrap(),
+            version: Version::new("0.1.0").unwrap(),
+            identity: NetworkIdentity::ChainId {
+                id: ChainId::new("8453").unwrap(),
+            },
+            trust: TrustRule::RpcPool {
+                endpoints: vec![RpcEndpoint::new("https://rpc-a.base.example").unwrap()],
+                quorum: 1,
+            },
+            program: "/nonexistent".into(),
+            args: Vec::new(),
+            statement_key: rutent_conformance::signing::public_key(&SigningKey::from_bytes(
+                &[3u8; 32],
+            )),
+            light_client: None,
+            limits: ReaderLimits {
+                pending: MAX_PENDING,
+                ..ReaderLimits::default()
+            },
+        });
+        let network = Network {
+            resolver: Arc::new(Nowhere),
+            connector: Arc::new(Nowhere),
+            dialer: Arc::new(Nowhere),
+        };
+        let egress =
+            ReaderEgress::new(config.clone(), network, Arc::new(MemoryRecords::new())).unwrap();
+        let (events, receiver) = std::sync::mpsc::channel();
+        let mut worker = Worker::new(config, egress, Arc::new(Shared::new()), receiver, events);
+
+        // The slow question is with the reader; behind it wait as many questions as the bound lets, each of them
+        // already past its deadline.
+        let slow = question(0, "2099-01-01T00:00:00Z");
+        let (slow_reply, slow_replied) = std::sync::mpsc::channel();
+        worker.phase = Phase::Asking {
+            question: slow.clone(),
+            reply: slow_reply,
+            until: Instant::now() + Duration::from_secs(60),
+            tainted: false,
+            agreed: false,
+        };
+        let dead = question(1, "2000-01-01T00:00:00Z");
+        let (dead_reply, dead_replied) = std::sync::mpsc::channel();
+        let waiting = MAX_PENDING as usize - 1;
+        for _ in 0..waiting {
+            worker.queue.push_back((dead.clone(), dead_reply.clone()));
+        }
+        worker.shared.pending.store(waiting + 1, Ordering::SeqCst);
+
+        // The slow one's answer arrives, and the worker takes the next: on a thread whose stack holds a few frames,
+        // so one frame per dead question would overflow it and abort the test.
+        let answer = serde_json::to_value(ReaderAnswer {
+            request: slow.request.clone(),
+            network: slow.network.clone(),
+            version: Version::new("0.1.0").unwrap(),
+            asked: slow.asked.clone(),
+            answer: Answered::Unreadable {
+                why: Reason::new("slow").unwrap(),
+            },
+        })
+        .unwrap();
+        let worker = std::thread::Builder::new()
+            .stack_size(256 << 10)
+            .spawn(move || {
+                worker.on_frame(FromReader::Answer { answer });
+                worker
+            })
+            .unwrap()
+            .join()
+            .expect("the worker's thread ended without overflowing its stack");
+
+        assert!(
+            slow_replied.try_recv().unwrap().is_ok(),
+            "the slow one answered"
+        );
+        let dropped: Vec<_> = dead_replied.try_iter().collect();
+        assert_eq!(dropped.len(), waiting, "every dead question was replied to");
+        assert!(
+            dropped
+                .iter()
+                .all(|r| matches!(r, Err(why) if *why == PAST_DEADLINE))
+        );
+        assert!(worker.queue.is_empty());
+        assert!(matches!(worker.phase, Phase::Ready));
+        assert_eq!(worker.shared.pending.load(Ordering::SeqCst), 0);
+    }
 
     // verifies: REQ-MDL-11
     #[test]

@@ -98,7 +98,8 @@ impl Protocol {
 
 /// The host's bounds on one reader's process (`REQ-MDL-11`). Each is the host's own, on its own monotonic clock;
 /// none is the answer's deadline, which is Core's and carried in the question. The reader's memory is bounded by the
-/// jail, as a provider's process's is ([`rutent_prov::confine::PROVIDER_ADDRESS_SPACE`]), and the operator's task.
+/// host's launcher, at a provider's process's bound ([`rutent_prov::confine::PROVIDER_ADDRESS_SPACE`], which the host
+/// checks the reader holds, [`crate::jail`]), and by the operator's task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ReaderLimits {
@@ -109,9 +110,10 @@ pub struct ReaderLimits {
     /// milliseconds.
     pub start_within_ms: u64,
     /// The most questions waiting for the reader, the one it is on included; one more is answered unreadable at once.
+    /// At most [`MAX_PENDING`].
     pub pending: u32,
     /// How long the host waits before it starts a reader again after a crash, a hang, a limit hit or failed checks,
-    /// in milliseconds.
+    /// in milliseconds. Above zero, as every bound is, so a reader that fails at once isn't restarted in a hot loop.
     pub restart_after_ms: u64,
     /// How long one egress call may take, every hop included, before the host gives up on it, in milliseconds.
     pub egress_give_up_after_ms: u64,
@@ -123,6 +125,10 @@ pub struct ReaderLimits {
     /// question, or over its start-up checks; one more is a limit hit.
     pub calls_per_question: u32,
 }
+
+/// The most questions a reader's configuration may let wait for it ([`ReaderLimits::pending`]): each holds an asker,
+/// and the worker drops the dead ones among them in turn (`T-015-05`).
+pub const MAX_PENDING: u32 = 4096;
 
 /// The most frames from one reader waiting for the host to read them.
 pub const READ_FRAMES: usize = 64;
@@ -222,14 +228,22 @@ impl HostConfig {
                 _ => {}
             }
             let l = &reader.limits;
+            // A zero restart delay too (`T-015-05`): a reader that fails at once would be started again without end.
             if l.hang_after_ms == 0
                 || l.start_within_ms == 0
+                || l.restart_after_ms == 0
                 || l.pending == 0
                 || l.egress_give_up_after_ms == 0
                 || l.max_frame == 0
                 || l.calls_per_question == 0
             {
                 return bad(&reader.name, "every bound is above zero");
+            }
+            if l.pending > MAX_PENDING {
+                return bad(
+                    &reader.name,
+                    "at most MAX_PENDING (4096) questions wait for a reader",
+                );
             }
         }
         Ok(())

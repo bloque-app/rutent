@@ -113,6 +113,32 @@ pub fn question(reader: &str, network: &str, asked: Asked) -> ReaderQuestion {
     }
 }
 
+/// The time `after` from now on this machine's clock, to the millisecond, as the contracts write a time.
+pub fn timestamp_after(after: Duration) -> Timestamp {
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("after the epoch")
+        + after;
+    let (seconds, millis) = (at.as_secs(), at.subsec_millis());
+    // H. Hinnant's `civil_from_days`.
+    let z = (seconds / 86_400) as i64 + 719_468;
+    let (era, doe) = (z.div_euclid(146_097), z.rem_euclid(146_097));
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    let rest = seconds % 86_400;
+    Timestamp::new(format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{millis:03}Z",
+        rest / 3600,
+        rest / 60 % 60,
+        rest % 60
+    ))
+    .expect("a time")
+}
+
 pub fn network_rules() -> Asked {
     Asked::NetworkRules(NoDetail {})
 }
