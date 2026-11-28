@@ -2113,21 +2113,33 @@ fn reversal_back_into_a_held_public_node_is_confirmed_from_the_networks_reader()
         "the reversal stays owed"
     );
 
-    // The reader reads the movement as not yet final: Core hands the wallet the reading as the reader gave it, pending,
-    // and the wallet, which confirms only a final one, doesn't confirm: the reversal stays owed (the review of round 1,
-    // L2: the reading carries the reader's own standing, so the wallet's check is the one that holds).
+    // The reader reads the movement as not yet final: Core judges finality itself, so a pending movement back is no
+    // movement back yet. The holding account isn't asked, and the reversal stays owed (the review of #356's round 2,
+    // M2: no holding account's own finality check is the gate).
     let mut pending = Plan::default();
     pending
         .hostile
         .insert(NODE.to_owned(), vec!["pending".to_owned()]);
     stuck.core.plant_readers(&pending);
+    let asked_before = stuck.core.confirmations_asked(&linked.order, &segment);
     let answer = stuck
         .core
         .confirmed_on_tick(&linked.order, &segment)
-        .expect("the wallet is asked");
+        .expect("the reversal is judged");
     assert!(
-        !matches!(answer, Confirmation::Completed(_)),
-        "a pending movement confirms nothing: {answer:?}"
+        matches!(
+            answer,
+            Confirmation::NotCompleted {
+                statement: None,
+                why: NotCounted::NotFinal,
+            }
+        ),
+        "a pending movement back asks nothing: {answer:?}"
+    );
+    assert_eq!(
+        stuck.core.confirmations_asked(&linked.order, &segment),
+        asked_before,
+        "the holding account isn't asked"
     );
     assert!(
         stuck.core.owed_reversal(&linked.order, &segment).is_ok(),

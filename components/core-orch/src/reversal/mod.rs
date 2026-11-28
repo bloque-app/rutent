@@ -487,8 +487,8 @@ struct Reversal {
 
 /// A movement into a held public node's holding account, as Core read it from the node's network through the
 /// network's reader: the one the network ties to the reversal's own transaction, into the `holder` of the order's
-/// `holding_withdrawal`, of the reversed segment's asset and amount in full, taken by no segment's evidence, final or
-/// pending there as the reader says, which the reading carries for the account to hold (`T-020-60` (6)). The reversal's question is asked only on it, and its completion's `evidence`
+/// `holding_withdrawal`, of the reversed segment's asset and amount in full, taken by no segment's evidence, final there
+/// as the reader says, which the reading records (`T-020-60` (6); a pending one is no movement back yet). The reversal's question is asked only on it, and its completion's `evidence`
 /// names it and the reader that read it (`REQ-AUD-4`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Returned {
@@ -498,8 +498,9 @@ struct Returned {
     moved: crate::closing::Moved,
     /// Its figures, as the network records it now: where it went, its asset and amount.
     figures: rutent_evidence::Movement,
-    /// Where it stands on the network as its reader says now: `final` or `pending`. The holding account confirms only a
-    /// final one (the review of round 1, L2).
+    /// Where it stands on the network as its reader says now, recorded in the reading: always `final`, since Core asks
+    /// nothing on a pending one (the review of #356's round 2, M2); the holding account's own check of it is a second
+    /// one, never the gate.
     standing: &'static str,
 }
 
@@ -2880,19 +2881,18 @@ fn read_return(
             figures: m,
             standing: "final",
         }),
-        rutent_evidence::Status::Pending(m) if in_full(&m) => Ok(Returned {
-            network: network.to_owned(),
-            moved,
-            figures: m,
-            standing: "pending",
-        }),
+        // Core judges finality itself (the review of #356's round 2, M2): a movement back its reader reads as pending
+        // hasn't come back yet, so nothing is asked of the holding account and the reversal stays owed until a pass
+        // reads it final. No holding account's own finality check stands in for Core's.
+        rutent_evidence::Status::Pending(m) if in_full(&m) => Err(NotCounted::NotFinal),
         _ => Err(NotCounted::NotReturned),
     }
 }
 
 /// The reading the deployment hands the holding account for `target`'s reversal, as its module reads it: the reversed
 /// segment's transaction, the network and the movement on it, where it went, its asset and amount as the network
-/// records them, where it stands as the reader says (`final` or `pending`), and the reader and version that read it
+/// records them, where it stands as the reader says (`final`: Core asks nothing on a pending one), and the reader and
+/// version that read it
 /// (`T-020-60` (6)).
 fn reading_text(target: &Target, returned: &Returned) -> String {
     serde_json::json!({

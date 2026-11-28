@@ -72,6 +72,10 @@ pub enum NotCounted {
     /// The reversed segment left a held public node, and its network records no movement back into the holding account
     /// of the segment's asset and amount in full, final: nothing is asked (`T-020-60` (6)).
     NotReturned,
+    /// The reversed segment left a held public node, and its network records the movement back into the holding
+    /// account in full, but its reader reads it as pending, not final: Core judges finality itself, so nothing is asked,
+    /// and the next pass reads again (the review of #356's round 2, M2).
+    NotFinal,
     /// The deployment didn't keep Core's reading for the holding account to confirm on: nothing is asked (`T-020-60`
     /// (6)).
     ReadingNotKept,
