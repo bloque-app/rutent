@@ -58,6 +58,7 @@
 
 mod class;
 mod hold;
+pub mod linked;
 mod record;
 mod started;
 

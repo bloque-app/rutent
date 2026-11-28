@@ -219,6 +219,7 @@ fn linked_order(stuck: &Stuck) -> LinkedOrder {
             ("payer.bank_account".to_owned(), "acct-1".to_owned()),
             ("beneficiary.address".to_owned(), ADDRESS.to_owned()),
         ]),
+        floor: None,
     }
 }
 
@@ -1456,8 +1457,8 @@ fn pending_hand_on_is_rebuilt_from_the_log_through_the_assembly() {
 /// A stuck order whose value rests in the wallet's account, its linked order accepted, when Core reopens: the
 /// reopened Core holds the account's attribution of the order as the log has it, and the linked order's accepted
 /// route rebuilt from the log (its acceptance and the record its route was chosen by), so the operator's hand-on goes
-/// ahead on it. Then the linked order, stopped right after policy registered its authorisation, is started again from
-/// the log by a second reopening and runs its first move (`NFR-6`, `REQ-ORD-43`).
+/// ahead on it. Then the linked order, stopped right after policy decided its first move, is started again from the log
+/// by a second reopening and runs its first move (`NFR-6`, `REQ-ORD-43`).
 // verifies: NFR-6
 #[test]
 fn holdings_and_accepted_routes_of_a_reopened_order_are_rebuilt_from_the_log() {
@@ -1489,8 +1490,10 @@ fn holdings_and_accepted_routes_of_a_reopened_order_are_rebuilt_from_the_log() {
     handed_on_once(&mut stuck, &linked, &bob, &decided);
     rutent_scenarios::harness::plant(
         &mut stuck.core,
+        // The linked order's authorisation is the customer's, registered at its acceptance (`T-020-61`, H2): the run
+        // stops right after policy decided its first move, before the effect is recorded.
         &rutent_scenarios::harness::Fault::CrashAfterRecord {
-            call: "authorise",
+            call: "decide",
             nth: 0,
         },
     );
@@ -2364,6 +2367,62 @@ fn linked_order_and_its_hand_on_run_on_cores_ticks() {
     assert!(inputs.iter().any(|i| i.subject.order.as_str() == linked.order.as_str()
         && matches!(&i.observed, rutent_contracts::state_machine::Observed::RouteChosen { handed_on_from: Some(from), .. }
             if from.as_str() == stuck.order.as_str())));
+}
+
+/// A linked order is accepted by Core itself (`T-020-61`, item 10; the review of #355, H2): routed from the node by the
+/// rounds, planned, the quote shown and the customer's acceptance taken on the starting provider's yes; the customer's
+/// inputs kept as the operator's statement of them, the log holding its commitment, and read back when Core starts the
+/// order; and the authorisation the acceptance names given by the customer under its own floor, as policy holds it in force.
+// verifies: REQ-ORD-43
+#[test]
+fn linked_order_is_accepted_by_core_with_the_customers_inputs_logged() {
+    use rutent_contracts::core_internal::ORDER_INPUTS_SHAPE;
+    use rutent_contracts::router_api::PositiveAmount as Floor;
+    use rutent_core_orch::schedule::Ports as _;
+    let mut stuck = stuck_at_the_public_node();
+    let wallet = stuck.wallet.clone();
+    stuck
+        .core
+        .accept_release(&wallet)
+        .expect("the release is accepted");
+    let mut asked = linked_order(&stuck);
+    let floor = Floor::new("900000".to_owned()).expect("a floor");
+    asked.floor = Some(floor.clone());
+    let linked = stuck
+        .core
+        .accept_linked(&asked)
+        .expect("Core accepts the linked order");
+    // The customer's inputs, kept: the log holds the commitment of the operator's statement of them, and Core reads them back.
+    let commitment = linked.inputs.clone().expect("the inputs were kept");
+    assert!(
+        stuck.core.log().entries().iter().any(|(_, e)| matches!(e,
+            Entry::Stated(s) if s.what.statement.as_str() == ORDER_INPUTS_SHAPE && s.commitment == commitment)),
+        "the log holds the inputs' commitment"
+    );
+    let history = stuck.core.log().entries().to_vec();
+    let mut ports = stuck.core.ports();
+    let read = rutent_core_orch::intake::linked::linked_inputs(
+        &history,
+        &mut |c| ports.kept(c),
+        &linked.order,
+    );
+    assert_eq!(read, asked.inputs, "read back as the customer gave them");
+    // The authorisation the acceptance names: the customer's, under its own floor, in force.
+    let authorised = ports
+        .in_force(&linked.order, &linked.authorisation)
+        .expect("policy holds it in force");
+    assert_eq!(authorised.given_by, kit::customer());
+    assert_eq!(authorised.floor, Some(floor));
+    // The quote shown and the customer's acceptance, by the customer, naming that authorisation.
+    assert!(stuck.core.verified_whats().iter().any(|w| matches!(w,
+        What::Shown { order, .. } if *order == linked.order)));
+    assert!(stuck.core.verified_whats().iter().any(|w| matches!(w,
+        What::Acceptance { order, authorisation, .. } if *order == linked.order && *authorisation == linked.authorisation)));
+    assert_eq!(
+        linked.route.plan.len(),
+        1,
+        "one part, planned from the node"
+    );
 }
 
 /// A restart between a return's landing and its recalculation lands nothing twice (`T-020-61`, the review Lows of

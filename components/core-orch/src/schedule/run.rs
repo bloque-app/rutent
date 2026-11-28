@@ -33,8 +33,7 @@
 //! **Fails closed.** A port that can't answer leaves the order's work for the next tick, and the round says why.
 
 use rutent_contracts::core_internal::{
-    Action, Actor, Authorisation, Entry, Outcome, Receipt, Resolution, RouteEnd, VerifiedEntry,
-    What,
+    Action, Actor, Entry, Outcome, Receipt, Resolution, RouteEnd, VerifiedEntry, What,
 };
 use rutent_contracts::router_api::{DecisionRecord, Id};
 use rutent_contracts::state_machine::{Observed, RecordedInput, SegmentState};
@@ -336,10 +335,10 @@ fn started_plain(
     })
 }
 
-/// What a linked order a hand-on started runs on (`REQ-ORD-43`): its acceptance's authorisation, registered with policy
-/// as the acceptance names it where policy holds none in force for it yet (the first order's destination and to asset,
-/// the holding account the value was withdrawn from as its origin reserve, given by the customer who accepted), the
-/// first order's route end, the acceptance's session, and the destination's account as the deposit's input.
+/// What a linked order a hand-on started runs on (`REQ-ORD-43`): its acceptance's authorisation, as policy holds it in
+/// force since the customer gave it at the acceptance under its own floor ([`crate::intake::linked::accept_linked`]), the
+/// first order's route end, the acceptance's session, and the customer's inputs as Core kept them, with the destination's
+/// account as the deposit's input.
 fn started_linked(
     ports: &mut dyn Ports,
     history: &[(Receipt, Entry)],
@@ -347,7 +346,7 @@ fn started_linked(
     from: &Id,
     start: &RecordedInput,
 ) -> Option<Started> {
-    let (authorisation, session, given_by) = history.iter().find_map(|(_, e)| match e {
+    let (authorisation, session) = history.iter().find_map(|(_, e)| match e {
         Entry::Verified(VerifiedEntry {
             what:
                 What::Acceptance {
@@ -356,9 +355,8 @@ fn started_linked(
                     session,
                     ..
                 },
-            who,
             ..
-        }) if o == order => Some((authorisation.clone(), session.clone(), who.clone())),
+        }) if o == order => Some((authorisation.clone(), session.clone())),
         _ => None,
     })?;
     let original = ports.intake().started(from)?.route.clone();
@@ -366,49 +364,11 @@ fn started_linked(
         return None;
     };
     let first = Id::new(parts.first()?.segments.first()?.provider.as_str())?;
-    let authorised = match ports.in_force(order, &authorisation) {
-        Some(authorised) => authorised,
-        None => {
-            // The holding account the linked order's start was withdrawn from, as the log's `holding_withdrawal` names it.
-            let holder = history
-                .iter()
-                .find_map(|(_, e)| match e {
-                    Entry::Verified(VerifiedEntry {
-                        what:
-                            What::HoldingWithdrawal {
-                                order: o, holder, ..
-                            },
-                        ..
-                    }) if o == order => Some(holder.clone()),
-                    _ => None,
-                })
-                .unwrap_or_else(|| first.clone());
-            let asked = Authorisation {
-                authorisation: authorisation.clone(),
-                order: order.clone(),
-                origin_reserve: holder,
-                origin_account: None,
-                destination: original.destination.clone(),
-                to_asset: original.to_asset.clone(),
-                floor: None,
-                parts: None,
-                given_by,
-                at: ports.clock().now().timestamp()?,
-            };
-            let mut permitted = false;
-            ports.with_authorisations(&mut |authorisations| {
-                permitted = authorisations
-                    .authorise(&asked)
-                    .ok()
-                    .is_some_and(|decision| decision.permit().is_some());
-            });
-            if !permitted {
-                return None;
-            }
-            ports.in_force(order, &authorisation).unwrap_or(asked)
-        }
-    };
-    let mut inputs = std::collections::BTreeMap::new();
+    // The authorisation the customer gave at its acceptance, under its own floor, as policy holds it in force: Core
+    // composes none in the customer's name (the review of #355, H2). With none in force, the linked order never starts.
+    let authorised = ports.in_force(order, &authorisation)?;
+    // The customer's inputs, as Core kept them at its acceptance, and the destination's account as the deposit's.
+    let mut inputs = crate::intake::linked::linked_inputs(history, &mut |c| ports.kept(c), order);
     inputs.insert(
         DESTINATION_INPUT.to_owned(),
         authorised.destination.account.as_str().to_owned(),
