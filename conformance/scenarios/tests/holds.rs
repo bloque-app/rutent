@@ -397,4 +397,11 @@ fn quote_held_before_a_restart_is_accepted_after_core_reopens_while_its_validity
         "a quote past its validity isn't accepted"
     );
     assert_eq!(acceptances(&core).len(), recorded, "nothing was recorded");
+    // Its hold lapsed with it: Core holds it no more, and nothing redeems it (the review of #355, L2).
+    let (lapsed_hold, _) = held[1].clone();
+    assert!(
+        core.holds().held(&lapsed_hold).is_none(),
+        "the lapsed quote's hold is released"
+    );
+    assert_eq!(core.holds().redeemed_by(&lapsed_hold), None);
 }

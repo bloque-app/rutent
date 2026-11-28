@@ -1674,14 +1674,35 @@ fn shown_in_the_log(
     if digest_of(&quote).as_ref() != Some(digest) {
         return None;
     }
-    // Each part's yes: the last verified statement its origin reserve made about the order before the quote was shown.
+    // Each part's yes, by its shape and transaction, never guessed (the review of #355, L3): the last verified result its
+    // origin reserve stated about the order before the quote was shown, answering a question Core stated about the
+    // order under that transaction (its dry run). A hold, or any other statement of the reserve's, is no yes.
+    let asked: Vec<&Id> = history[..shown_at]
+        .iter()
+        .filter_map(|(_, e)| match e {
+            Entry::Stated(s)
+                if s.what.statement.as_str()
+                    == rutent_contracts::provider_role::OPERATION_SHAPE
+                    && s.about.as_ref().and_then(|a| a.order.as_ref()) == Some(order) =>
+            {
+                s.about.as_ref().and_then(|a| a.transaction.as_ref())
+            }
+            _ => None,
+        })
+        .collect();
     let mut reserve_yes = Vec::new();
     for part in candidate.parts.iter() {
         let reserve = &part.operations.first().provider;
         let yes = history[..shown_at].iter().rev().find_map(|(receipt, e)| match e {
             Entry::Stated(s)
-                if matches!(&s.attribution, Attribution::Verified { who } if &who.acts == reserve)
-                    && s.about.as_ref().and_then(|a| a.order.as_ref()) == Some(order) =>
+                if s.what.statement.as_str() == rutent_contracts::provider_role::RESULT_SHAPE
+                    && matches!(&s.attribution, Attribution::Verified { who } if &who.acts == reserve)
+                    && s.about.as_ref().and_then(|a| a.order.as_ref()) == Some(order)
+                    && s
+                        .about
+                        .as_ref()
+                        .and_then(|a| a.transaction.as_ref())
+                        .is_some_and(|t| asked.contains(&t)) =>
             {
                 Some(receipt.clone())
             }
@@ -1714,6 +1735,10 @@ fn shown_in_the_log(
         .as_ref()
         .is_some_and(|until| until.unix_nanos() <= now.unix_nanos())
     {
+        // Past its validity the quote is gone, and the hold it named lapses with it: Core holds it no more (item 7).
+        if let Some(lapsed) = &hold {
+            desk.holds.drop_hold(lapsed);
+        }
         return None;
     }
     Some((
