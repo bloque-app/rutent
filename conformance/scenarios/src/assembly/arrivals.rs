@@ -6,14 +6,8 @@
 //! What it doesn't do: build a reserve's [`Report`] from what a simulated reserve's module reports. No simulated
 //! provider reports value arriving yet, so a scenario hands the report in (`T-024-04`, `AC-10`, `AC-11`, `AC-26`).
 
-use std::collections::BTreeSet;
-
-use rutent_contracts::provider_role::NodeRef;
 use rutent_contracts::router_api::Id;
-use rutent_contracts::state_machine::Observed;
-use rutent_core_orch::arrival::{
-    Arrivals, Arrived, Filed, FiledOrders, Filing, OpenOrder, OpenOrders, Report,
-};
+use rutent_core_orch::arrival::{Arrivals, Arrived, Filed, FiledOrders, Filing, OpenOrder, Report};
 use rutent_core_orch::intake::{Desk, OrderRecord};
 use rutent_router::RouteFinder;
 
@@ -49,18 +43,6 @@ pub struct Awaited {
 }
 
 /// The orders open, as read before the call.
-struct Open(Vec<OpenOrder>);
-
-impl OpenOrders for Open {
-    fn open_at(&mut self, reserve: &Id, account: &Id) -> Vec<OpenOrder> {
-        self.0
-            .iter()
-            .filter(|o| &o.reserve == reserve && &o.account == account)
-            .cloned()
-            .collect()
-    }
-}
-
 impl Core {
     /// Runs `call` on arrivals with the desk intake reaches. `Arrivals` is held beside intake, so it is taken out for
     /// the call, which the desk's closure can't otherwise reach.
@@ -74,66 +56,22 @@ impl Core {
         out
     }
 
-    /// The orders open at a reserve: each order a customer requested through intake that started, one for each part
-    /// whose first segment hasn't settled, with its payer as the holder of the account the value leaves and its session.
-    /// A split order names each part, at that part's amount; an order of one part names none. Every session the
-    /// assembly opens speaks for the conformance account, so that is each order's account.
+    /// The orders open at a reserve, as Core derives them (`rutent_core_orch::arrival::open::OpenAt`): the assembly
+    /// answers only which account a session speaks for, and every session it opens speaks for the conformance account.
     fn open_orders(&self) -> Vec<OpenOrder> {
-        let settled: BTreeSet<String> = self
-            .inputs()
-            .into_iter()
-            .filter(|i| matches!(i.observed, Observed::SegmentSettled { .. }))
-            .filter_map(|i| i.subject.segment.map(|s| s.as_str().to_owned()))
-            .collect();
+        let history = self.log.borrow().entries().to_vec();
         let account = kit::id(&context().account);
-        let mut open = Vec::new();
-        for order in self.intake.started_orders() {
-            let Some(started) = self.intake.started(&order) else {
-                continue;
-            };
-            let order = order.as_str();
-            let Some(request) = self.requests.get(order) else {
-                continue;
-            };
-            let NodeRef::Outer(node) = &request.route.from.node else {
-                continue;
-            };
-            let split = started.plan.len() > 1;
-            let chosen = started.record.chosen();
-            for (at, part) in started.plan.iter().enumerate() {
-                let Some(first) = part.segments.first() else {
-                    continue;
-                };
-                if settled.contains(first.segment_id.as_str()) {
-                    continue;
-                }
-                let amount = if split {
-                    match chosen.and_then(|c| c.parts.get(at)) {
-                        Some(p) => p.operations.first().amount_in.clone(),
-                        None => continue,
-                    }
-                } else {
-                    request.route.amount.clone()
-                };
-                open.push(OpenOrder {
-                    order: kit::id(order),
-                    reserve: request.origin_reserve.clone(),
-                    node: node.clone(),
-                    asset: request.route.from.asset.clone(),
-                    account: account.clone(),
-                    holder: request.parties.payer.clone(),
-                    amount,
-                    session: request.session.clone(),
-                    part: split.then(|| kit::id(part.part_id.as_str())),
-                });
-            }
+        rutent_core_orch::arrival::open::OpenAt {
+            intake: &self.intake,
+            history: &history,
+            account_of: &|_| Some(account.clone()),
         }
-        open
+        .all()
     }
 
     /// Takes value arriving at a reserve, as the reserve's `report` tells it.
     pub fn arrive(&mut self, report: &Report) -> Result<Arrived, StepError> {
-        let mut open = Open(self.open_orders());
+        let mut open = rutent_core_orch::arrival::open::Listed(self.open_orders());
         let arrived =
             self.with_arrivals(|arrivals, desk| arrivals.arrive(desk, &mut open, report))?;
         self.feed()?;

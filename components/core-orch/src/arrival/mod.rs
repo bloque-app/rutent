@@ -51,6 +51,7 @@
 mod confirm;
 mod filing;
 mod journal;
+pub mod open;
 mod reopen;
 
 use std::collections::{BTreeMap, BTreeSet};
