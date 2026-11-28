@@ -596,8 +596,10 @@ fn question_past_its_deadline_is_dropped_by_the_reader_host() {
     // milestone reviewer's check of `T-015-05` at `3a53de34`, Low 3, and `T-020-60`'s round 1, L7): one while the
     // reader is idle, one while it is busy with another. A question alive on arrival and dead by its turn is dropped at
     // its turn by the same rule, which the worker's own test holds without a race (`worker::tests`, questions queued
-    // with a deadline already past). A pool whose movement answers take 1 000 ms from each endpoint, the pool asked in
-    // turn, keeps the reader busy some 3 s with the first question; it is given 6 s before it counts as hung.
+    // with a deadline already past). Each dead question's deadline is a second before it is sent, so no wait makes it
+    // past (`T-020-68`, the check of `T-020-60`). A pool whose movement answers take 400 ms from each endpoint, the
+    // three asked in turn, keeps the reader busy some 1.2 s with the first question, which the dead one arrives 150 ms
+    // into; the reader is given 6 s before it counts as hung, and a dead question must be dropped within 300 ms.
     let connector = Arc::new(StubConnector::default());
     for endpoint in pool() {
         let honest = evm_node(false);
@@ -605,7 +607,7 @@ fn question_past_its_deadline_is_dropped_by_the_reader_host() {
             endpoint.trim_start_matches("https://"),
             Box::new(move |body: &str| {
                 if body.contains("rutent_movementStatus") {
-                    std::thread::sleep(Duration::from_millis(1_000));
+                    std::thread::sleep(Duration::from_millis(400));
                 }
                 honest(body)
             }),
@@ -628,8 +630,7 @@ fn question_past_its_deadline_is_dropped_by_the_reader_host() {
 
     // Already past on arrival: dropped, answered with nothing, and never handed to the reader.
     let mut dead = question("base", "base", status_of("0xmove"));
-    dead.deadline = timestamp_after(Duration::ZERO);
-    std::thread::sleep(Duration::from_millis(5));
+    dead.deadline = timestamp_before(Duration::from_secs(1));
     assert_eq!(
         asked(&dead),
         None,
@@ -639,7 +640,7 @@ fn question_past_its_deadline_is_dropped_by_the_reader_host() {
     // Dead when sent while the reader is busy with another: dropped on arrival, not queued behind it.
     let first = question("base", "base", status_of("0xmove"));
     let mut dead_while_busy = question("base", "base", status_of("0xmove"));
-    dead_while_busy.deadline = timestamp_after(Duration::ZERO);
+    dead_while_busy.deadline = timestamp_before(Duration::from_secs(1));
     let (first_answer, dead_answer, dead_took) = std::thread::scope(|scope| {
         let first_answer = scope.spawn(|| asked(&first));
         std::thread::sleep(Duration::from_millis(150));

@@ -33,15 +33,15 @@ use rutent_contracts::core_internal::calls::{
     AppendFailure, Authorisations, Comparisons, Measures, Operator, StuckOrders,
 };
 use rutent_contracts::core_internal::{
-    Actor, ActorKind, Authorisation, Difference, Entry, HoldingNotRead, HoldingReading, Receipt,
-    Role, What, Word,
+    Actor, Authorisation, Difference, Entry, HoldingNotRead, HoldingReading, Receipt, Role, What,
+    Word,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{
     Denomination, HoldingBalanceOutcome, ResultBody, Statement, Tracking,
 };
 use rutent_contracts::router_api::{Amount, DecisionRecord, Id, PolicyBounds, PositiveAmount};
-use rutent_prov::catalogue::{Catalogue, Publisher};
+use rutent_prov::catalogue::Catalogue;
 use rutent_prov::holding::HeldForOrder;
 
 use super::{
@@ -228,6 +228,10 @@ pub trait Ports {
     fn with_intake(&mut self, with: &mut dyn FnMut(&mut Intake));
     /// Lends policy's authorisations, to register a linked order's authorisation as its acceptance names it.
     fn with_authorisations(&mut self, with: &mut dyn FnMut(&mut dyn Authorisations));
+    /// Lends Core's own register of the routes linked orders were accepted on, for Core to keep one in as it accepts
+    /// the order ([`crate::intake::linked::accept_linked`], `T-020-68`): the register the mover holds a hand-on's route
+    /// to. A deployment that lends none accepts no linked order.
+    fn with_linked(&mut self, with: &mut dyn FnMut(&mut crate::stuck::Linked));
     /// Lends the recalculations, with what a recalculation reaches and the prices Core holds (`REQ-ORD-22`).
     fn with_recalculations(&mut self, with: &mut RecalculationsLent<'_>);
     /// Lends the hand-ons, with what a hand-on reaches (`REQ-ORD-43`).
@@ -401,24 +405,11 @@ pub(super) fn record_entry(
     })
 }
 
-/// Who handed `bytes` to Core: the maker its envelope names, as the provider of the publisher the catalogue lists for
-/// it (the operator's for a module it publishes).
-fn handed_over_by(catalogue: &Catalogue, bytes: &[u8]) -> Option<Actor> {
-    let acts = serde_json::from_slice::<serde_json::Value>(bytes)
-        .ok()
-        .and_then(|v| v["maker"].as_str().and_then(id))?;
-    let party = match catalogue.publishers().publisher(acts.as_str()) {
-        Some(Publisher::Operator) => id("operator"),
-        Some(Publisher::Party(publisher)) => id(&publisher),
-        None => None,
-    }
-    .unwrap_or_else(|| acts.clone());
-    Some(Actor {
-        party,
-        acts,
-        role: Role::Provider,
-        kind: ActorKind::Component,
-    })
+/// Who handed Core a statement the platform carried from `provider`'s module: that provider, acting for the publisher
+/// the catalogue lists for it (the operator's for a module it publishes), never the maker the statement's envelope
+/// claims. The one way Core and the deployment name it (`T-020-68`, the check of `T-020-60`).
+pub fn handed_over_by(catalogue: &Catalogue, provider: &Id) -> Actor {
+    crate::relay::presenter(catalogue, provider, Role::Provider)
 }
 
 /// Whether the log holds a spell of `account` not read: a raise of it since its last check, so it is not raised again
@@ -992,14 +983,25 @@ impl Duties for Jobs<'_> {
                 // Whether it is worth handing over again: nothing was recorded for want of the reversals, the log or the
                 // segment's own answer, none of which is the answer's fault.
                 let mut again = true;
+                // The platform hands over the late answer of the provider the segment was handed to: that provider
+                // presents it, as the transport knows, never the maker the answer's own envelope claims (`T-020-68`, the
+                // check of `T-020-60`; the deployment's paths name it the same way).
+                let provider = self.ports.segments().order(&order).and_then(|followed| {
+                    followed
+                        .parts
+                        .iter()
+                        .flat_map(|p| p.segments.iter())
+                        .find(|s| s.segment_id.as_str() == segment.as_str())
+                        .and_then(|s| id(s.provider.as_str()))
+                });
                 self.ports.with_reversals(&mut |reversals, parts, _| {
                     reversals.follow(&order, &history);
-                    // The platform hands over its provider's own late answer: the maker its envelope names presents it.
-                    let Some(presented_by) = handed_over_by(parts.catalogue, &bytes) else {
-                        kept = Err("the answer names no maker".to_owned());
+                    let Some(provider) = provider.as_ref() else {
+                        kept = Err("Core follows no provider for the segment".to_owned());
                         again = false;
                         return;
                     };
+                    let presented_by = handed_over_by(parts.catalogue, provider);
                     kept = reversals
                         .later(
                             parts,
@@ -1475,6 +1477,7 @@ mod tests {
     use super::*;
     use crate::schedule::{Job, Schedule};
     use crate::snapshot::Reading;
+    use rutent_contracts::core_internal::ActorKind;
     use rutent_contracts::core_internal::calls::AppendFailure;
     use rutent_contracts::core_internal::{MeasureRecord, PairNotBuilt, ReportPair};
     use rutent_prov::holding::HeldForOrder;
@@ -1591,6 +1594,7 @@ mod tests {
         }
         fn with_intake(&mut self, _: &mut dyn FnMut(&mut Intake)) {}
         fn with_authorisations(&mut self, _: &mut dyn FnMut(&mut dyn Authorisations)) {}
+        fn with_linked(&mut self, _: &mut dyn FnMut(&mut crate::stuck::Linked)) {}
         fn with_recalculations(&mut self, _: &mut RecalculationsLent<'_>) {}
         fn with_hand_on(&mut self, _: &mut dyn FnMut(&mut HandOn, &mut HandParts<'_>)) {}
         fn with_mover(&mut self, _: &mut MoverLent<'_>) {}

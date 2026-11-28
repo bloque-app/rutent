@@ -107,20 +107,10 @@ use rutent_core_orch::schedule::Started;
 
 /// Who the deployment's transport says handed a statement to Core: the provider `acts`, whose module the platform
 /// carried it from, acting for its publisher (`T-020-28`). Never the maker the statement's own envelope claims: a
-/// scenario's transport knows which module answered (`T-020-60` item (8), from the check of `T-020-61`).
+/// scenario's transport knows which module answered (`T-020-60` item (8), from the check of `T-020-61`). Core's own
+/// [`rutent_core_orch::schedule::jobs::handed_over_by`], so the tick and the deployment name it one way (`T-020-68`).
 fn handed_over_by(catalogue: &Catalogue, acts: Id) -> Actor {
-    let party = match catalogue.publishers().publisher(acts.as_str()) {
-        Some(rutent_prov::catalogue::Publisher::Operator) => Id::new("operator"),
-        Some(rutent_prov::catalogue::Publisher::Party(publisher)) => Id::new(publisher),
-        None => None,
-    }
-    .unwrap_or_else(|| acts.clone());
-    Actor {
-        party,
-        acts,
-        role: Role::Provider,
-        kind: ActorKind::Component,
-    }
+    rutent_core_orch::schedule::jobs::handed_over_by(catalogue, &acts)
 }
 use crate::{GeneralHandle, PolicyHandle};
 use durable::{Disk, LogDisk};
@@ -2217,6 +2207,7 @@ impl Core {
                 core: &core,
                 intake: &self.intake,
                 exposures: &self.exposures,
+                segments: &self.segments,
             },
             &NetworkAsked {
                 change,

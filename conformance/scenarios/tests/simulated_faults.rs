@@ -306,6 +306,91 @@ fn failed_segments_provider_carries_the_reversal_unless_it_shows_the_fault_was_t
     admitted(core);
 }
 
+/// A public network keeps its standing while anything of Core's is at it (the milestone reviewer's check of `T-020-60`,
+/// Low-Medium 1; `T-020-68`): a delisting is held to `Segments::touches_node`, and to the open-order rule, not only to
+/// the value in flight. With the quick ramp onto `sim-join-chain` failed and its reversal owed; then with that reversal
+/// complete, nothing held in flight and the value waiting on the order's route; and, in a second run, with the ramp
+/// settled there and the reserve out of it failing its deposit, the delisting is refused and the network stays listed.
+/// Policy decides it first: the log holds its permitted decision, and no effect.
+// verifies: REQ-CAT-22
+#[test]
+fn public_network_cannot_be_delisted_while_value_rests_there_or_a_reversal_is_owed_there() {
+    const CHAIN: &str = "sim-join-chain";
+    let refused_after_its_decision = |core: &mut Core, why: &str| {
+        let before = entries(core).len();
+        let refused = core
+            .delist_public_network(&id(CHAIN))
+            .expect_err("the delisting is refused");
+        assert!(
+            format!("{refused:?}").contains("InUse"),
+            "{why}: {refused:?}"
+        );
+        let after = entries(core);
+        let delisting = |action: &Action| {
+            matches!(
+                action,
+                Action::ChangeCatalogue {
+                    change: rutent_contracts::core_internal::CatalogueChange::DelistPublicNetwork,
+                    ..
+                }
+            )
+        };
+        // Policy decided it before anything was checked. Asked again at the same instant under the operator's same
+        // request id, the decision is the same entry, which the log holds once.
+        assert!(
+            after.iter().any(|v| matches!(&v.what,
+                What::Decide { request, .. } if delisting(&request.action))
+                && v.outcome == rutent_contracts::core_internal::Outcome::Permitted {}),
+            "{why}: policy decided it before anything was checked"
+        );
+        assert!(
+            !after[before..].iter().any(|v| matches!(&v.what,
+                What::Effect { action, .. } if delisting(action))),
+            "{why}: no effect is recorded"
+        );
+        assert!(
+            core.public_networks()
+                .iter()
+                .any(|n| n.network.as_str() == CHAIN),
+            "{why}: still listed"
+        );
+    };
+
+    // A reversal owed there: the ramp onto the chain failed.
+    let mut failed = ramp_failing("AC-4", Behaviour::act(Act::Fail));
+    let Failed {
+        core, order, ramp, ..
+    } = &mut failed;
+    core.owed_reversal(order, ramp).expect("owed");
+    refused_after_its_decision(core, "a reversal owed there");
+    // The ramp's reversal completes: nothing of the order is held in flight any more, and its value waits, back at the
+    // node it left, on the route that names the chain until the part is recalculated. That is not in flight, and still
+    // Core's at the network.
+    let asked = core.asked_on_tick(order, ramp).expect("asked");
+    assert!(asked.completed.is_some(), "{:?}", asked.why);
+    assert_ne!(state(core, order), OrderState::Complete);
+    refused_after_its_decision(core, "value back on the route after its reversal");
+    admitted(core);
+
+    // Value waiting there: the ramp settled onto the chain, and the reserve out of it failed its deposit, which owes
+    // no reversal. Nothing is in flight.
+    let (mut core, session) = core_with("AC-4", &[IN, EXCHANGE, QUICK, OUT]);
+    core.world()
+        .script_for(OUT, "deposit", Behaviour::act(Act::Fail));
+    let (order, ran) = run(&mut core, across("req-rests", &session));
+    let segments = segments_of(&ran);
+    assert!(
+        matches!(
+            segments.last().map(|s| &s.outcome),
+            Some(SegmentOutcome::Failed)
+        ),
+        "the deposit failed: {segments:?}"
+    );
+    assert_ne!(state(&mut core, &order), OrderState::Complete);
+    refused_after_its_decision(&mut core, "value waiting there");
+    admitted(&core);
+}
+
 /// A provider's showing of fault, kept before Core restarts, is rebuilt from the log as Core reopens (the coordinator's
 /// ruling on round 3 of #355, under #143's second blocker): the party it names accepts it after the restart with no new
 /// showing, and carries the reversal from then, recorded with the showing the log took before the restart.
