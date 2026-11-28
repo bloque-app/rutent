@@ -18,6 +18,20 @@
 //!   touches every contract, since they ship as one crate.
 //! - A change that only adds or drops dependency edges of such packages (a feature another crate turns on) needs the
 //!   shared changelog's entry naming a `DEC-<n>`, like a shared file, and no contract's bump.
+//! - A contract whose major version moves changes every shape that references it: a contract whose head schemas
+//!   name its URNs (`urn:rutent:<name>:`), or whose Rust module uses its module (`crate::<module>`, re-exports
+//!   included), needs a major bump too, though none of its own paths changed. A contract new at the base needs none.
+//!   Only direct references count: a chain of them moves one major at a time. A changelog whose first heading isn't
+//!   a version is refused, touched or not, so it never hides a major.
+//! - The protocol's contract (`provider-role`, whose version a statement names, `REQ-PRT-1`) says of each change
+//!   whether a party may ignore it (`REQ-PRT-2`): every new bullet of its changelog under a version from 4.0.0 on
+//!   says `Ignorable: yes` or `Ignorable: no`, exactly one of them, and one that says `Adds a protection` says
+//!   `Ignorable: no`, since a change adding a protection is never ignorable. An entry that says `Ignorable: yes` does
+//!   not name, in backticks, a field its change adds to an object the schema's older text closes with
+//!   `additionalProperties: false`: an older reader refuses that field, so the schema and the entry must agree.
+//! - A contract version that `develop` holds no heading for is unreleased. Against a base that is no release line (a
+//!   milestone branch such as `m3`), a change to an unreleased version needs no bump, and a README-only change to it
+//!   needs no new bullet. Against `develop` and `main`, and for a version `develop` holds, both rules stand.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -26,6 +40,11 @@ const SHARED: &str = "shared";
 const SHARED_CHANGELOG: &str = "contracts/CHANGELOG.md";
 const PLAN_PATH: &str = "PLAN.md";
 const LOCK_PATH: &str = "Cargo.lock";
+/// The protocol's contract: the one whose version a party's statement names (`REQ-PRT-1`), and whose changelog says
+/// of each change whether a party may ignore it (`REQ-PRT-2`).
+const PROTOCOL_CONTRACT: &str = "provider-role";
+/// The first version of the protocol's contract whose entries say whether a party may ignore them.
+const IGNORABLE_SINCE: (u64, u64, u64) = (4, 0, 0);
 /// The package whose dependencies the lockfile rule follows.
 const CONTRACTS_CRATE: &str = "rutent-contracts";
 
@@ -48,6 +67,18 @@ pub trait Files {
     fn head(&self, path: &str) -> Option<String>;
     /// Every file path at the base ref. An error means the base cannot be listed, and the guard then fails.
     fn base_files(&self) -> Result<Vec<String>, String>;
+    /// Whether the base is itself on a release line (`develop` or `main`), where a version that has shipped never
+    /// changes. A base that is not (a milestone branch, a branch's earlier commit) holds versions no release has seen.
+    /// A guard that can't tell says yes, which keeps every rule: the default.
+    fn base_is_release(&self) -> bool {
+        true
+    }
+    /// The file's text on the release line (`develop`'s tip), or `None` if it does not exist there. Only read where
+    /// [`Files::base_is_release`] is false; a contract version whose heading the release line's changelog lacks is
+    /// unreleased.
+    fn released(&self, _path: &str) -> Option<String> {
+        None
+    }
 }
 
 /// One rule broken. `subject` is a contract's name, or `shared` for the files no contract owns.
@@ -408,6 +439,167 @@ fn lock_moves(base: Option<&str>, head: Option<&str>) -> LockMoves {
     moves
 }
 
+/// Whether a base is a release base: it is where it is on a release line (`develop` or `main`), and it is where `develop`
+/// is not known at all, since without it nothing says which versions are released, so every rule applies (fail closed).
+pub fn is_release_base(develop_known: bool, on_a_release_line: bool) -> bool {
+    !develop_known || on_a_release_line
+}
+
+/// A protocol change says whether a party may ignore it (`REQ-PRT-2`): the marker `Ignorable:` followed by the whole
+/// word `yes` or `no`, exactly once, so `Ignorable: none` or `Ignorable: not sure` says neither; and `Ignorable: no`
+/// wherever it says it adds a protection, read whatever its case. `Err` is the sentence that says why not.
+fn check_ignorable(bullet: &str) -> Result<(), String> {
+    let first = bullet.lines().next().unwrap_or(bullet);
+    let words: Vec<&str> = bullet.split_whitespace().collect();
+    let said: Vec<&str> = words
+        .windows(2)
+        .filter(|pair| pair[0] == "Ignorable:")
+        .map(|pair| pair[1].trim_end_matches(['.', ',', ';', ')']))
+        .collect();
+    let yes = said.iter().filter(|w| **w == "yes").count();
+    let no = said.iter().filter(|w| **w == "no").count();
+    if yes + no != 1 || said.len() != 1 {
+        return Err(format!(
+            "protocol changelog entry says neither or both of `Ignorable: yes` and `Ignorable: no` (REQ-PRT-2): {first}"
+        ));
+    }
+    let flat = words.join(" ").to_lowercase();
+    if yes == 1 && flat.contains("adds a protection") {
+        return Err(format!(
+            "protocol changelog entry adds a protection but says a party may ignore it (REQ-PRT-2): {first}"
+        ));
+    }
+    Ok(())
+}
+
+/// A property a schema adds to an object its older text closes: the file, the object's JSON pointer, the property.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Refused {
+    file: String,
+    pointer: String,
+    property: String,
+}
+
+/// Walks two parsed schemas in step: each object the older one has, that it closes (`additionalProperties: false`),
+/// and whose `properties` the newer one adds a name to, is a [`Refused`] addition. An object only the newer one has is
+/// new, and no older reader read it. Objects are matched by their pointer.
+fn closed_additions(
+    file: &str,
+    pointer: &str,
+    older: &serde_json::Value,
+    newer: &serde_json::Value,
+    out: &mut Vec<Refused>,
+) {
+    use serde_json::Value;
+    match (older, newer) {
+        (Value::Object(before), Value::Object(after)) => {
+            // A closed object with no `properties` key admits nothing, so every property the newer one names is added.
+            let empty = serde_json::Map::new();
+            let was = match before.get("properties") {
+                Some(Value::Object(was)) => Some(was),
+                None => Some(&empty),
+                Some(_) => None,
+            };
+            if before.get("additionalProperties") == Some(&Value::Bool(false))
+                && let (Some(was), Some(Value::Object(is))) = (was, after.get("properties"))
+            {
+                for name in is.keys().filter(|name| !was.contains_key(*name)) {
+                    out.push(Refused {
+                        file: file.to_string(),
+                        pointer: pointer.to_string(),
+                        property: name.clone(),
+                    });
+                }
+            }
+            for (key, was) in before {
+                if let Some(is) = after.get(key) {
+                    let escaped = key.replace('~', "~0").replace('/', "~1");
+                    closed_additions(file, &format!("{pointer}/{escaped}"), was, is, out);
+                }
+            }
+        }
+        (Value::Array(before), Value::Array(after)) => {
+            for (index, (was, is)) in before.iter().zip(after).enumerate() {
+                closed_additions(file, &format!("{pointer}/{index}"), was, is, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The additions each changed schema of the protocol's contract makes to an object its older text closes. A schema
+/// either side of which is not JSON, or that has no older text, says nothing: the entry's own marker stands.
+fn refused_additions(changed: &[String], schemas: &str, files: &dyn Files) -> Vec<Refused> {
+    let mut out = Vec::new();
+    for path in changed {
+        if !(within(path, schemas) && path.ends_with(".json")) {
+            continue;
+        }
+        let parse = |text: Option<String>| {
+            text.and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        };
+        if let (Some(older), Some(newer)) = (parse(files.base(path)), parse(files.head(path))) {
+            let file = path.rsplit('/').next().unwrap_or(path);
+            closed_additions(file, "", &older, &newer, &mut out);
+        }
+    }
+    out
+}
+
+/// The backticked words of a bullet.
+fn code_words(bullet: &str) -> Vec<&str> {
+    bullet.split('`').skip(1).step_by(2).collect()
+}
+
+/// A protocol entry that says a party may ignore it does not name a field its schema's older text refuses
+/// (`REQ-PRT-2`): a field added to an object the older schema closes is refused by an older reader, so the entry that
+/// names it says `Ignorable: no`. The field is named in backticks, as `field`, `Type.field`, `Type::field`.
+fn check_ignorable_fields(bullet: &str, refused: &[Refused]) -> Result<(), String> {
+    let first = bullet.lines().next().unwrap_or(bullet);
+    let words: Vec<&str> = bullet.split_whitespace().collect();
+    let says_yes = words.windows(2).any(|pair| {
+        pair[0] == "Ignorable:" && pair[1].trim_end_matches(['.', ',', ';', ')']) == "yes"
+    });
+    if !says_yes {
+        return Ok(());
+    }
+    // Named in backticks, as `field`, `Type.field` or `Type::field`, or as a plain word of the entry: leaving off the
+    // backticks is no way past the check.
+    let plain = bullet
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|w| !w.is_empty());
+    for word in code_words(bullet).into_iter().chain(plain) {
+        if let Some(found) = refused.iter().find(|r| {
+            word == r.property
+                || word.ends_with(&format!(".{}", r.property))
+                || word.ends_with(&format!("::{}", r.property))
+        }) {
+            return Err(format!(
+                "protocol changelog entry says a party may ignore `{}`, but the older schema ({} at `{}`) closes the object with additionalProperties: false, so an older reader refuses it: say `Ignorable: no`, or admit the field in the older schema (REQ-PRT-2): {first}",
+                found.property, found.file, found.pointer
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The new bullets of the protocol's changelog under a version from [`IGNORABLE_SINCE`] on.
+fn new_protocol_bullets(base: Option<&str>, head: Option<&str>) -> Vec<String> {
+    let before: Vec<String> = base
+        .map(sections)
+        .unwrap_or_default()
+        .iter()
+        .flat_map(|section| bullets(&section.body))
+        .collect();
+    head.map(sections)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|section| semver(&section.version).is_some_and(|v| v >= IGNORABLE_SINCE))
+        .flat_map(|section| bullets(&section.body))
+        .filter(|bullet| !before.contains(bullet))
+        .collect()
+}
+
 /// Bullets present in the head changelog but not the base one.
 fn new_bullets(base: Option<&str>, head: Option<&str>) -> Vec<String> {
     let before = base.map(all_bullets).unwrap_or_default();
@@ -438,6 +630,8 @@ pub fn check(
 
     // A changed path touches every contract that either mapping assigns it to; a path neither assigns is shared.
     let mut touched: BTreeSet<String> = BTreeSet::new();
+    // The changed paths each contract owns, at either mapping.
+    let mut touching: BTreeMap<String, Vec<&str>> = BTreeMap::new();
     let mut shared_paths: Vec<&str> = Vec::new();
     for path in changed {
         if !path.starts_with("contracts/") {
@@ -447,6 +641,9 @@ pub fn check(
         let in_base = owner(path, &base_contracts).map(|i| base_contracts[i].name.clone());
         if in_head.is_none() && in_base.is_none() {
             shared_paths.push(path);
+        }
+        for name in in_head.iter().chain(in_base.iter()) {
+            touching.entry(name.clone()).or_default().push(path);
         }
         touched.extend(in_head.into_iter().chain(in_base));
     }
@@ -476,6 +673,9 @@ pub fn check(
         .collect();
 
     let mut bumped: BTreeSet<String> = BTreeSet::new();
+    // Against a base that is no release line, the contracts whose head version no release holds: they take changes
+    // folded into it, so a lock move that touches them asks for no bump of them either.
+    let mut folded: BTreeSet<String> = BTreeSet::new();
     for name in &names {
         let head_contract = head_contracts.iter().find(|c| &c.name == name);
         let base_contract = base_contracts.iter().find(|c| &c.name == name);
@@ -486,6 +686,22 @@ pub fn check(
         for bullet in new_bullets(base_text.as_deref(), head_text.as_deref()) {
             if let Err(message) = check_decisions(&bullet, &defined) {
                 violations.push(violation(name, message));
+            }
+        }
+        if name == PROTOCOL_CONTRACT {
+            let schemas = format!(
+                "{}/schemas",
+                head_contract
+                    .or(base_contract)
+                    .map_or("", |c| &c.artefact_dir)
+            );
+            let refused = refused_additions(changed, &schemas, files);
+            for bullet in new_protocol_bullets(base_text.as_deref(), head_text.as_deref()) {
+                if let Err(message) = check_ignorable(&bullet)
+                    .and_then(|()| check_ignorable_fields(&bullet, &refused))
+                {
+                    violations.push(violation(name, message));
+                }
             }
         }
         if !touched.contains(name) {
@@ -527,9 +743,28 @@ pub fn check(
             .as_ref()
             .map(|s| bullets(&s.body))
             .unwrap_or_default();
+        // A version no release line holds changes in place against a milestone base (the fold rule); and a README-only
+        // rewording of it needs no new entry there.
+        let unreleased = !files.base_is_release()
+            && !files.released(&log).is_some_and(|text| {
+                // The same semantic version there, whatever its spelling: `4.0.00` is `4.0.0`.
+                sections(&text).iter().any(|s| {
+                    s.version == head_top.version
+                        || semver(&s.version).is_some_and(|v| Some(v) == semver(&head_top.version))
+                })
+            });
+        let readme = format!(
+            "{}/README.md",
+            head_contract.map_or("", |c| &c.artefact_dir)
+        );
+        let readme_only = moved.is_empty()
+            && touching
+                .get(name)
+                .is_some_and(|paths| !paths.is_empty() && paths.iter().all(|p| *p == readme));
         if !bullets(&head_top.body)
             .iter()
             .any(|bullet| !base_top_bullets.contains(bullet))
+            && !(unreleased && readme_only)
         {
             violations.push(violation(
                 name,
@@ -559,7 +794,9 @@ pub fn check(
                 format!("the base {log} has no version heading to bump from"),
             )),
             Some((base_label, base_version)) => {
-                if head_version <= base_version {
+                if unreleased && head_version >= base_version {
+                    folded.insert(name.clone());
+                } else if head_version <= base_version {
                     violations.push(violation(
                         name,
                         format!(
@@ -570,6 +807,107 @@ pub fn check(
                 } else {
                     bumped.insert(name.clone());
                 }
+            }
+        }
+    }
+
+    // A referenced contract's major bump changes the shapes and the Rust API that reference it, though no path of
+    // theirs changed: by a schema naming its URNs, or by the referencing module using its Rust module
+    // (`crate::<module>`, a re-export included).
+    let majors = |contract: &Contract| -> Result<Option<(Semver, Semver)>, String> {
+        let log = format!("{}/CHANGELOG.md", contract.artefact_dir);
+        let (Some(base), Some(head)) = (files.base(&log), files.head(&log)) else {
+            return Ok(None);
+        };
+        let top = |text: &str| {
+            sections(text)
+                .into_iter()
+                .next()
+                .map(|s| (semver(&s.version), s.version))
+        };
+        match (top(&base), top(&head)) {
+            (Some((Some(b), _)), Some((Some(h), _))) => Ok(Some((b, h))),
+            (_, Some((None, label))) | (Some((None, label)), _) => Err(format!(
+                "the first heading of {log} is not a version: {label}, so a major moved by it can't be read"
+            )),
+            _ => Err(format!(
+                "{log} has no version heading, so a major moved by it can't be read"
+            )),
+        }
+    };
+    let candidate_paths: BTreeSet<&String> = base_files.iter().chain(changed).collect();
+    let module_paths: Vec<(usize, String)> = head_contracts
+        .iter()
+        .enumerate()
+        .filter_map(|(index, c)| {
+            c.module_dir
+                .strip_prefix("contracts/src/")
+                .map(|m| (index, m.replace('/', "::")))
+        })
+        .collect();
+    for (moved_index, moved) in head_contracts.iter().enumerate() {
+        let (base_version, head_version) = match majors(moved) {
+            Ok(Some(versions)) => versions,
+            Ok(None) => continue,
+            Err(message) => {
+                // A touched contract's heading is refused above, with the same reason; one untouched is refused
+                // here, so a heading that isn't a version never lets a major go unseen.
+                if !touched.contains(&moved.name) {
+                    violations.push(violation(&moved.name, message));
+                }
+                continue;
+            }
+        };
+        if head_version.0 <= base_version.0 {
+            continue;
+        }
+        let urn = format!("urn:rutent:{}:", moved.name);
+        for (index, referencing) in head_contracts.iter().enumerate() {
+            if index == moved_index || !base_contracts.iter().any(|c| c.name == referencing.name) {
+                continue;
+            }
+            let schemas = format!("{}/schemas", referencing.artefact_dir);
+            let owned = |path: &&&String| owner(path, &head_contracts) == Some(index);
+            let by_schema = candidate_paths.iter().filter(owned).any(|path| {
+                within(path, &schemas)
+                    && path.ends_with(".json")
+                    && files.head(path).is_some_and(|text| text.contains(&urn))
+            });
+            let by_module = candidate_paths.iter().filter(owned).any(|path| {
+                within(path, &referencing.module_dir)
+                    && path.ends_with(".rs")
+                    && files.head(path).is_some_and(|text| {
+                        crate_paths(&text, &file_module(path))
+                            .iter()
+                            .any(|used| module_owner(used, &module_paths) == Some(moved_index))
+                    })
+            });
+            let how = match (by_schema, by_module) {
+                (false, false) => continue,
+                (true, false) => "its schemas reference",
+                (false, true) => "its Rust module uses",
+                (true, true) => "its schemas reference, and its Rust module uses,",
+            };
+            let (own_base, own_head) = match majors(referencing) {
+                Ok(Some(versions)) => versions,
+                Ok(None) | Err(_) => continue,
+            };
+            if own_head.0 <= own_base.0 {
+                violations.push(violation(
+                    &referencing.name,
+                    format!(
+                        "{how} {}, whose major moved from {} to {}, so its shapes changed with it and need a major bump too (the base is {}.{}.{} and the head is {}.{}.{})",
+                        moved.name,
+                        base_version.0,
+                        head_version.0,
+                        own_base.0,
+                        own_base.1,
+                        own_base.2,
+                        own_head.0,
+                        own_head.1,
+                        own_head.2
+                    ),
+                ));
             }
         }
     }
@@ -607,7 +945,9 @@ pub fn check(
             .iter()
             .map(|c| c.name.as_str())
             .filter(|name| {
-                head_contracts.iter().any(|c| c.name == *name) && !bumped.contains(*name)
+                head_contracts.iter().any(|c| c.name == *name)
+                    && !bumped.contains(*name)
+                    && !folded.contains(*name)
             })
             .collect();
         if !unbumped.is_empty() {
@@ -623,6 +963,133 @@ pub fn check(
         }
     }
     Ok(violations)
+}
+
+/// A version as `semver` reads it: major, minor, patch.
+type Semver = (u64, u64, u64);
+
+/// The module path of a Rust file under `contracts/src/`: `a/b/mod.rs` and `a/b.rs` are `a::b`, `lib.rs` is the
+/// crate root, ``.
+fn file_module(path: &str) -> String {
+    let inner = path.strip_prefix("contracts/src/").unwrap_or(path);
+    let inner = inner.strip_suffix(".rs").unwrap_or(inner);
+    let inner = inner
+        .strip_suffix("/mod")
+        .unwrap_or(if inner == "lib" { "" } else { inner });
+    inner.replace('/', "::")
+}
+
+/// Every path a Rust file at module `here` names from the crate, as a path from the crate root: under `crate::`,
+/// or under `super::`, once or more, from `here`'s parents; braces expanded at every depth, so
+/// `crate::{a::{b, c}, d}` names `a::b`, `a::c` and `d`.
+fn crate_paths(text: &str, here: &str) -> Vec<String> {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut paths = Vec::new();
+    let mut at = 0;
+    while at < text.len() {
+        let rest = &text[at..];
+        let boundary = at == 0 || !text[..at].ends_with(ident) && !text[..at].ends_with("::");
+        let base = if !boundary {
+            None
+        } else if let Some(after) = rest.strip_prefix("crate::") {
+            Some((String::new(), after))
+        } else if rest.starts_with("super::") {
+            let mut module: Vec<&str> = here.split("::").filter(|m| !m.is_empty()).collect();
+            let mut after = rest;
+            while let Some(next) = after.strip_prefix("super::") {
+                module.pop();
+                after = next;
+            }
+            Some((module.join("::"), after))
+        } else {
+            None
+        };
+        match base {
+            Some((prefix, after)) => {
+                expand(&prefix, after, &mut paths);
+                at = text.len() - after.len();
+            }
+            None => at += rest.chars().next().map_or(1, char::len_utf8),
+        }
+    }
+    paths
+}
+
+/// Expands the use tree at the start of `text` under `prefix` into `paths`.
+fn expand(prefix: &str, text: &str, paths: &mut Vec<String>) {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let join = |a: &str, b: &str| {
+        if a.is_empty() {
+            b.to_string()
+        } else {
+            format!("{a}::{b}")
+        }
+    };
+    let mut path = prefix.to_string();
+    let mut rest = text.trim_start();
+    loop {
+        if let Some(group) = rest.strip_prefix('{') {
+            // The group runs to its matching brace.
+            let mut depth = 1;
+            let mut end = group.len();
+            for (i, c) in group.char_indices() {
+                match c {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = i;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let inner = &group[..end];
+            let mut depth = 0;
+            let mut start = 0;
+            for (i, c) in inner.char_indices() {
+                match c {
+                    '{' => depth += 1,
+                    '}' => depth -= 1,
+                    ',' if depth == 0 => {
+                        expand(&path, &inner[start..i], paths);
+                        start = i + 1;
+                    }
+                    _ => {}
+                }
+            }
+            if !inner[start..].trim().is_empty() {
+                expand(&path, &inner[start..], paths);
+            }
+            return;
+        }
+        let len = rest.find(|c: char| !ident(c)).unwrap_or(rest.len());
+        if len == 0 {
+            if path != prefix || !prefix.is_empty() {
+                paths.push(path);
+            }
+            return;
+        }
+        path = join(&path, &rest[..len]);
+        rest = &rest[len..];
+        match rest.strip_prefix("::") {
+            Some(next) => rest = next,
+            None => {
+                paths.push(path);
+                return;
+            }
+        }
+    }
+}
+
+/// The contract whose Rust module is the longest prefix of `path`, as `module_paths` lists them.
+fn module_owner(path: &str, module_paths: &[(usize, String)]) -> Option<usize> {
+    module_paths
+        .iter()
+        .filter(|(_, m)| path == m || path.starts_with(&format!("{m}::")))
+        .max_by_key(|(_, m)| m.len())
+        .map(|(index, _)| *index)
 }
 
 fn violation(subject: &str, message: String) -> Violation {

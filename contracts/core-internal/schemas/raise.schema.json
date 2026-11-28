@@ -1,0 +1,770 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:core-internal:raise",
+  "title": "Raise",
+  "description": "A raise to the operator: a difference and the entries it rests on, and nothing that can move value or change an order, so a raise only detects (REQ-ORD-9, REQ-AUD-15, ADR-0009). That the difference is a real one (two amounts or times that differ, a charge above its maximum, two reports in two assets or units, a public end's figure its mismatch names) is checked by the Rust types.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "raise",
+    "difference",
+    "cites",
+    "at"
+  ],
+  "properties": {
+    "raise": {
+      "description": "The raise's id.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "difference": {
+      "$ref": "#/$defs/difference"
+    },
+    "cites": {
+      "description": "The receipts of the entries it rests on, at least one, each once; a raise of a `pair_not_built` may cite none, since a pair a restart dropped has no entry to cite, and so may a raise of a `holding_not_read`, since an account never read has no check to cite.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "urn:rutent:core-internal:receipt"
+      }
+    },
+    "at": {
+      "description": "When, by Core's clock, the one it passes as at.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+    }
+  },
+  "$defs": {
+    "difference": {
+      "description": "The difference.",
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "reports",
+            "reports_not_comparable",
+            "holding",
+            "holding_not_comparable",
+            "charge",
+            "settlement_time",
+            "public_end",
+            "pair_not_built",
+            "holding_not_read",
+            "reader_not_started"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "reports"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/difference_reports"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "reports_not_comparable"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/difference_reports_not_comparable"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "holding"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/difference_holding"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "holding_not_comparable"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/difference_holding_not_comparable"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "charge"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/difference_charge"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "settlement_time"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/difference_settlement_time"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "public_end"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/difference_public_end"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "pair_not_built"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/difference_pair_not_built"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "holding_not_read"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/difference_holding_not_read"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "reader_not_started"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/difference_reader_not_started"
+          }
+        }
+      ]
+    },
+    "difference_charge": {
+      "description": "A provider charged above its formula's maximum (REQ-QTE-5).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "order",
+        "segment",
+        "provider",
+        "charged",
+        "maximum",
+        "asset",
+        "result"
+      ],
+      "properties": {
+        "kind": {
+          "const": "charge"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "charged": {
+          "description": "What it charged, in the asset's unit.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        },
+        "maximum": {
+          "description": "Its formula's maximum; where no_formula is set, no formula's, so nothing is allowed.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        },
+        "asset": {
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/denomination"
+        },
+        "result": {
+          "description": "The receipt of the stated entry of the result whose charge this is: its provider's verified result about the order and segment.",
+          "$ref": "urn:rutent:core-internal:receipt"
+        },
+        "terms": {
+          "description": "The receipt of the stated entry of the provider's signed terms (urn:rutent:provider-role:terms) whose formula the charge is above, in force at the segment's start: binding from the later of its made_at and its received_at, no later than the segment's move took effect. Absent where the provider stated none by then, so the price its route was priced on bound it.",
+          "$ref": "urn:rutent:core-internal:receipt"
+        },
+        "no_formula": {
+          "description": "Set where the charge is stated in an asset no formula covers: a formula carries no asset and counts in the segment's from asset only. Only a charge in another asset than the segment's is so marked, which the log holds (no-formula-marks-a-charge-in-another-asset, REQ-QTE-5). Absent for a charge held to a formula.",
+          "const": "for_this_asset"
+        }
+      }
+    },
+    "difference_settlement_time": {
+      "description": "A material change in a provider's p99 settlement time (REQ-ORD-6).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "provider",
+        "before_seconds",
+        "now_seconds"
+      ],
+      "properties": {
+        "kind": {
+          "const": "settlement_time"
+        },
+        "provider": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "before_seconds": {
+          "description": "The p99 before, in seconds.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/safe_integer"
+        },
+        "now_seconds": {
+          "description": "The p99 now, in seconds.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/safe_integer"
+        }
+      }
+    },
+    "difference_reports": {
+      "description": "A segment's two reports disagree (REQ-ORD-9).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "order",
+        "segment",
+        "sent",
+        "received",
+        "asset"
+      ],
+      "properties": {
+        "kind": {
+          "const": "reports"
+        },
+        "order": {
+          "description": "The order raised.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "sent": {
+          "description": "What the sending party reports it sent.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        },
+        "received": {
+          "description": "What the receiving party reports it received.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        },
+        "asset": {
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/denomination"
+        }
+      }
+    },
+    "difference_reports_not_comparable": {
+      "description": "A segment's two reports can't be compared: they state two assets, or one asset in two units (REQ-ORD-9, THR-107). That the two assets differ is checked by the Rust types.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "order",
+        "segment",
+        "sent",
+        "received"
+      ],
+      "properties": {
+        "kind": {
+          "const": "reports_not_comparable"
+        },
+        "order": {
+          "description": "The order raised.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "sent": {
+          "description": "What the sending party reports it sent, as it stated it.",
+          "$ref": "#/$defs/reported"
+        },
+        "received": {
+          "description": "What the receiving party reports it received, as it stated it.",
+          "$ref": "#/$defs/reported"
+        }
+      }
+    },
+    "reported": {
+      "description": "One party's figure: an amount, in the asset and unit it was stated in.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "amount",
+        "asset"
+      ],
+      "properties": {
+        "amount": {
+          "description": "The amount, in the asset's unit.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        },
+        "asset": {
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/denomination"
+        }
+      }
+    },
+    "difference_holding": {
+      "description": "A holding account's balance and the value held there for orders disagree (REQ-AUD-15).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "account",
+        "direction",
+        "by",
+        "asset",
+        "word"
+      ],
+      "properties": {
+        "kind": {
+          "const": "holding"
+        },
+        "account": {
+          "description": "The holding account.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "direction": {
+          "description": "Which way it is off.",
+          "enum": [
+            "short",
+            "over"
+          ]
+        },
+        "by": {
+          "description": "By how much, in the asset's unit.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/positive_amount"
+        },
+        "asset": {
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/denomination"
+        },
+        "word": {
+          "description": "Whose word the balance was.",
+          "enum": [
+            "checked",
+            "publisher"
+          ]
+        }
+      }
+    },
+    "difference_holding_not_comparable": {
+      "description": "A holding account's balance can't be compared with the value held or evidenced there (REQ-AUD-15, INV-1). It names whose word the balance was, and the account's asset, exactly when a balance was read.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "account",
+        "reason"
+      ],
+      "properties": {
+        "kind": {
+          "const": "holding_not_comparable"
+        },
+        "account": {
+          "description": "The holding account.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "word": {
+          "description": "Whose word the balance was.",
+          "enum": [
+            "checked",
+            "publisher"
+          ]
+        },
+        "asset": {
+          "description": "The account's asset, in the unit its balance was read in.",
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/denomination"
+        },
+        "reason": {
+          "description": "Why it can't be compared: value evidenced in another asset or unit than the account's, value evidenced at an account with no reading, or value held or evidenced past the balance by more than an amount can state.",
+          "enum": [
+            "evidenced_in_another_asset",
+            "no_reading",
+            "sum_past_the_bound"
+          ]
+        }
+      },
+      "if": {
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "const": "no_reading"
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "word"
+              ]
+            },
+            {
+              "required": [
+                "asset"
+              ]
+            }
+          ]
+        }
+      },
+      "else": {
+        "required": [
+          "word",
+          "asset"
+        ]
+      }
+    },
+    "difference_public_end": {
+      "description": "A non-final segment's public record contradicts what its provider said it moved (REQ-ORD-33): the difference of a public_mismatch entry, raised and changing nothing else (ADR-0009). That the figure it names differs is checked by the Rust types.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "order",
+        "segment",
+        "found",
+        "moved",
+        "stated"
+      ],
+      "properties": {
+        "kind": {
+          "const": "public_end"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "found": {
+          "$ref": "#/$defs/public_end_mismatch"
+        },
+        "moved": {
+          "description": "What the network moved.",
+          "$ref": "#/$defs/public_figures"
+        },
+        "stated": {
+          "description": "What the provider said it moved.",
+          "$ref": "#/$defs/public_figures"
+        }
+      }
+    },
+    "public_end_mismatch": {
+      "description": "Which figure differs, in the order the movement's check reads them: its destination, then its asset, then its amount.",
+      "enum": [
+        "wrong_destination",
+        "wrong_asset",
+        "wrong_amount"
+      ]
+    },
+    "public_figures": {
+      "description": "A movement's figures at a public end, as the network or the provider states them.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "destination",
+        "asset",
+        "amount"
+      ],
+      "properties": {
+        "destination": {
+          "description": "The destination on the network.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "asset": {
+          "description": "The asset, by its id on the network.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "amount": {
+          "description": "The amount, in the asset's unit.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        }
+      }
+    },
+    "difference_pair_not_built": {
+      "description": "A segment's pair of reports was never built, so the comparison of the two parties' words was never made (REQ-ORD-9, ADR-0009, T-020-48): a pair a restart dropped, or one that couldn't be built or compared. Raised, never skipped silently. The only kind of raise that may cite no receipt.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "order",
+        "segment",
+        "why"
+      ],
+      "properties": {
+        "kind": {
+          "const": "pair_not_built"
+        },
+        "order": {
+          "description": "The order.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "description": "The later segment of the two: the one whose end owed the pair.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "why": {
+          "$ref": "#/$defs/pair_not_built"
+        }
+      }
+    },
+    "pair_not_built": {
+      "description": "Why the pair was never built.",
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "no_sent_report",
+            "no_flight",
+            "not_an_amount",
+            "refused"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "no_sent_report"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "segment"
+            ],
+            "properties": {
+              "kind": {
+                "const": "no_sent_report"
+              },
+              "segment": {
+                "description": "The segment whose sent report is missing: the one before the pair's later segment.",
+                "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+              }
+            }
+          },
+          "else": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "no_flight",
+                  "not_an_amount",
+                  "refused"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "difference_holding_not_read": {
+      "description": "A holding account whose balance Core asked and its module didn't give, so no check could be made (REQ-AUD-15, REQ-ORD-7, T-020-48): the platform passed no answer, the module refused, or it answered another question. It carries no balance (REQ-AUD-6). Raised once in a spell of failure; it may cite no receipt, and cites only its account's own last check where it has one.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "account",
+        "node",
+        "provider",
+        "why"
+      ],
+      "properties": {
+        "kind": {
+          "const": "holding_not_read"
+        },
+        "account": {
+          "description": "The holding account.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "node": {
+          "description": "The inner node it is at.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "description": "The provider whose module holds it.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "why": {
+          "$ref": "#/$defs/holding_not_read"
+        }
+      }
+    },
+    "holding_not_read": {
+      "description": "Why the balance wasn't read.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "not_answered",
+            "refused",
+            "another_answer",
+            "not_a_balance",
+            "not_permitted",
+            "not_timed",
+            "not_registered"
+          ]
+        }
+      }
+    },
+    "difference_reader_not_started": {
+      "description": "A listed public network whose reader didn't pass Core's start-up check, so the network doesn't start (REQ-CAT-22, DEC-28, T-020-60): it is off the catalogue's public list, the snapshot routes nothing to it and its segments read as unreadable, while Core's other networks run on. It moves nothing. Raised once in a spell of not starting; it cites the listing its reader was held to.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "network",
+        "why"
+      ],
+      "properties": {
+        "kind": {
+          "const": "reader_not_started"
+        },
+        "network": {
+          "description": "The network, as its listing names it.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "why": {
+          "$ref": "#/$defs/reader_not_started"
+        }
+      }
+    },
+    "reader_not_started": {
+      "description": "Why the network's reader didn't pass the start-up check: its listing breaks the reader contract's rules; no host address; another CA than the operator's; the host unreachable; no answer; an answer that isn't a reader's signed answer; a signature that doesn't verify under the listed key; an answer to another question or past its deadline; the reader unable to stand behind an answer; another network identity, or another trust rule, than the listing's.",
+      "enum": [
+        "listing_breaks_its_rules",
+        "no_host",
+        "other_ca",
+        "unreachable",
+        "no_answer",
+        "malformed",
+        "not_signed",
+        "refused",
+        "reader_unreadable",
+        "other_identity",
+        "other_trust"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "difference"
+        ],
+        "properties": {
+          "difference": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "pair_not_built",
+                  "holding_not_read"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "cites": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ]
+}

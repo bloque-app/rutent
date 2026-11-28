@@ -124,6 +124,9 @@ pub enum CatalogueError {
 #[derive(Debug, Clone)]
 struct Joined {
     advertisement: Advertisement,
+    /// The protocol version its envelope was made under: past that version's cutover its tuples leave routing
+    /// (`REQ-PRT-4`, `T-020-67`).
+    protocol_version: String,
     /// When it was made, to the whole second: its figures' age counts from here (`REQ-QTE-4`).
     made_at: Instant,
 }
@@ -141,6 +144,8 @@ pub struct Catalogue {
     advertising_seen: HashSet<PublicKey>,
     statements_seen: HashSet<PublicKey>,
     context: Option<(Deployment, String)>,
+    /// Each older protocol version still in force, with its cutover date (`T-020-54`).
+    older: BTreeMap<String, String>,
     skew_secs: Option<u64>,
     nodes: NodeBook,
     floors: HashMap<TupleKey, EvidenceGrade>,
@@ -314,6 +319,47 @@ impl Catalogue {
     pub fn add_public_node(&mut self, node: &str) -> Result<(), NodeError> {
         let private = self.publishers.publisher_of_node(node).is_some();
         self.nodes.add_public(node, private)
+    }
+
+    /// Takes a node off the operator's public list (the operator's `public_node` setting, `listed: false`,
+    /// `T-020-49`); whether it was on it. Its holding account stays on record, for the value resting there.
+    pub fn remove_public_node(&mut self, node: &str) -> bool {
+        self.nodes.remove_public(node)
+    }
+
+    /// Takes `network` onto the public list of networks from a permitted listing naming its reader service (`DEC-28`,
+    /// `REQ-CAT-22`, `T-020-60`): `listed` says the decided change names a listing (the catalogue reads no core-internal
+    /// shape, `DEC-2`, so Core says it); the network is on the list where its reader passed Core's start-up check
+    /// (`started`), and held off every route otherwise, so the snapshot routes nothing to it.
+    ///
+    /// # Errors
+    ///
+    /// If the change names no listing, the network is blank, or a provider declares it as its private node.
+    pub fn list_public_network(
+        &mut self,
+        network: &str,
+        listed: bool,
+        started: bool,
+    ) -> Result<(), NodeError> {
+        if network.trim().is_empty() {
+            return Err(NodeError::Blank);
+        }
+        if !listed {
+            return Err(NodeError::NoListing(network.to_owned()));
+        }
+        // A network a provider declares as its private node is never also a listed public one (`REQ-CAT-22`;
+        // `T-020-60`, the review of #356's round 2, Low 3): the private rails Core routes over unread and the networks it
+        // reads through their readers don't overlap.
+        if self.publishers.publisher_of_node(network).is_some() {
+            return Err(NodeError::DeclaredPrivate(network.to_owned()));
+        }
+        self.nodes.take_network(network, started);
+        Ok(())
+    }
+
+    /// Takes `network` off the public list of networks, as a decided delisting does; whether it was on it.
+    pub fn drop_public_network(&mut self, network: &str) -> bool {
+        self.nodes.drop_network(network)
     }
 
     /// Registers a public node's holding account, by default a plain wallet, as a module outside the core

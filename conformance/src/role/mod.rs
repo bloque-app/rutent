@@ -40,7 +40,8 @@
 use std::collections::BTreeSet;
 
 use rutent_contracts::provider_role::{
-    Advertisement, Deployment, Operation, PublicKey, ResultBody, Signature, Statement, VERSION,
+    Advertisement, ArrivalAnswer, ArrivalNotice, ArrivalQuestion, Denomination, Deployment,
+    Operation, OuterNode, PublicKey, ResultBody, Signature, Statement, VERSION,
 };
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -112,6 +113,41 @@ pub trait RoleProvider {
     fn status(&mut self, _transaction: &str) -> Option<Received<ResultBody>> {
         None
     }
+
+    /// For a reserve: its answer to the operator's question of what arrived at an account for an order
+    /// (`REQ-ORD-1`, `REQ-ORD-23`), or `None` if the provider doesn't answer the question. The answer names the
+    /// question's transaction and carries the reserve's notice of each credit, or says nothing arrived.
+    fn arrival(
+        &mut self,
+        _question: &Statement<ArrivalQuestion>,
+    ) -> Option<Received<ArrivalAnswer>> {
+        None
+    }
+
+    /// For a reserve: its notice of the credit it gave `reference`, as it sends one of its own accord
+    /// (`REQ-ORD-14`), or `None` if it knows no such credit or sends none. Asked again, it is the same credit's notice
+    /// under the same reference (`REQ-ORD-23`).
+    fn arrival_notice(&mut self, _reference: &str) -> Option<Received<ArrivalNotice>> {
+        None
+    }
+}
+
+/// A credit at a simulated bank: value that arrived at a reserve's account, which the reserve is then asked of.
+/// A reserve states what arrived from this, and not from the scenario that provoked it (`T-024-15`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BankCredit {
+    /// The reference the reserve gives the credit: the transaction of every notice of it.
+    pub reference: String,
+    /// The reserve's outer node the value arrived at: the bank's network.
+    pub node: OuterNode,
+    /// The asset, and the unit the amount is counted in.
+    pub asset: Denomination,
+    /// How much arrived, a positive decimal integer string in the unit.
+    pub amount: String,
+    /// The account at the reserve the value reached.
+    pub account: String,
+    /// The party that holds the account.
+    pub holder: String,
 }
 
 /// The test hooks the suite drives a provider through, for answers it can't provoke from outside. It is a harness
@@ -119,8 +155,22 @@ pub trait RoleProvider {
 /// fabricate the reserve's word (ADR-0008). Each hook returns false if the provider can't be driven that way; the
 /// answers it provokes are then uncovered, and the provider doesn't pass.
 pub trait RoleHarness: RoleProvider {
+    /// Tells the provider of a session the holder's register issued besides the one it was built with, `session`, in
+    /// which it answers a check of the holder's account as in its own (`T-024-21`): a deployment whose sessions don't
+    /// all bear one id. False where the provider holds no sessions.
+    fn open_session(&mut self, session: &str) -> bool {
+        let _ = session;
+        false
+    }
+
     /// Makes the provider's next real operation end with outcome unknown.
     fn force_outcome_unknown(&mut self) -> bool {
+        false
+    }
+
+    /// Makes the provider's next real operation end with outcome unknown, and fail: nothing moved on, and a status
+    /// query of it later says so (`REQ-ORD-1`, `T-020-47`). Not every provider can be driven so.
+    fn force_outcome_unknown_then_failure(&mut self) -> bool {
         false
     }
 
@@ -140,6 +190,18 @@ pub trait RoleHarness: RoleProvider {
         _amount: &str,
     ) -> bool {
         false
+    }
+
+    /// For a reserve: records that `credit` arrived at its bank, so the suite can ask what arrived (`REQ-ORD-23`).
+    /// False where the reserve has no such account or node.
+    fn credit_arrival(&mut self, _credit: &BankCredit) -> bool {
+        false
+    }
+
+    /// The internal steps the provider took to serve its segments, in order: how it served them, which the contract
+    /// doesn't show (`REQ-CAT-21`, `T-024-04`). A provider that takes none gives none.
+    fn internal_steps(&self) -> Vec<String> {
+        Vec::new()
     }
 }
 
@@ -163,6 +225,17 @@ impl<P: RoleProvider> RoleProvider for WithoutHooks<P> {
     fn status(&mut self, transaction: &str) -> Option<Received<ResultBody>> {
         self.0.status(transaction)
     }
+
+    fn arrival(
+        &mut self,
+        question: &Statement<ArrivalQuestion>,
+    ) -> Option<Received<ArrivalAnswer>> {
+        self.0.arrival(question)
+    }
+
+    fn arrival_notice(&mut self, reference: &str) -> Option<Received<ArrivalNotice>> {
+        self.0.arrival_notice(reference)
+    }
 }
 
 impl<P: RoleProvider> RoleHarness for WithoutHooks<P> {}
@@ -175,6 +248,9 @@ pub struct SuiteContext {
     pub deployment: Deployment,
     /// The protocol version every statement must name. By default, the provider-role contract's `VERSION`.
     pub protocol_version: String,
+    /// The older protocol versions still in force, each with the cutover date from which a statement under it is void
+    /// (`REQ-PRT-4`). None by default.
+    pub older_versions: Vec<(String, String)>,
     /// The operator's party identifier, the maker of every operation.
     pub operator: String,
     /// The account holder's session, for balance checks and withdrawal dry runs (`REQ-CAT-3`). The suite also
@@ -186,6 +262,17 @@ pub struct SuiteContext {
     pub subject: String,
 }
 
+impl SuiteContext {
+    /// The protocol versions in force where the suite runs: the one every statement must name, and each older one
+    /// until its cutover date (`REQ-PRT-4`).
+    pub fn protocol_versions(&self) -> rutent_contracts::provider_role::ProtocolVersions {
+        self.older_versions.iter().fold(
+            rutent_contracts::provider_role::ProtocolVersions::only(self.protocol_version.as_str()),
+            |versions, (version, cutover)| versions.with_older(version.as_str(), cutover.as_str()),
+        )
+    }
+}
+
 impl Default for SuiteContext {
     fn default() -> Self {
         Self {
@@ -194,6 +281,7 @@ impl Default for SuiteContext {
                 operator_key: placeholder_key(0),
             },
             protocol_version: VERSION.to_owned(),
+            older_versions: Vec::new(),
             operator: "conformance-operator".to_owned(),
             session: "conformance-session".to_owned(),
             account: "conformance-account".to_owned(),
@@ -265,6 +353,10 @@ pub enum Check {
     /// A reserve confirms a reversed credit only when that credit arrived, whole: the segment, asset and amount
     /// asked, and the question changes nothing (ADR-0008, `REQ-ORD-3`).
     ReversalConfirmationMatches,
+    /// A reserve states what arrived as a signed notice of each credit, answers the question of what arrived under
+    /// the question's transaction, from the credits at its bank and no others, and knows two notices of one credit
+    /// as one (`REQ-ORD-1`, `REQ-ORD-14`, `REQ-ORD-23`).
+    ArrivalsStated,
 }
 
 /// A kind of answer the suite saw.
@@ -298,12 +390,16 @@ pub enum Exercised {
     ReversalConfirmed,
     /// A reversal confirmation answered `not_confirmed` for a credit that didn't arrive whole.
     ReversalNotConfirmed,
+    /// A reserve answered the question of what arrived with its notice of a credit.
+    ArrivalNoticed,
+    /// A reserve answered the question of what arrived for an account nothing reached: nothing arrived.
+    NothingArrived,
 }
 
 impl Exercised {
     /// Whether only a [`RoleHarness`] hook can provoke this answer: outcome unknown and the status query that
-    /// resolves it, a failure and its owed reversal, and a confirmed reversed credit. A run through
-    /// [`WithoutHooks`] leaves these, and only these, uncovered.
+    /// resolves it, a failure and its owed reversal, and a confirmed reversed credit.
+    /// A run through [`WithoutHooks`] leaves these, and only these, uncovered.
     pub fn needs_a_hook(self) -> bool {
         matches!(
             self,

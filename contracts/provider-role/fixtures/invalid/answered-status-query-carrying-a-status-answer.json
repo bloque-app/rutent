@@ -1,0 +1,69 @@
+{
+  "question": {
+    "deployment": {
+      "name": "rutent-test",
+      "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+    },
+    "protocol_version": "2.0.1",
+    "shape": "urn:rutent:provider-role:operation",
+    "maker": "rutent-operator",
+    "made_at": "2026-11-06T15:04:05Z",
+    "signature": {
+      "scheme": "ed25519",
+      "key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+      "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+    },
+    "statement": {
+      "kind": "status_query",
+      "transaction": "tx-status-1",
+      "provider": "acme-co",
+      "about": "tx-001"
+    }
+  },
+  "answer": {
+    "deployment": {
+      "name": "rutent-test",
+      "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+    },
+    "protocol_version": "2.0.1",
+    "shape": "urn:rutent:provider-role:result",
+    "maker": "acme-co",
+    "made_at": "2026-11-06T15:10:00Z",
+    "signature": {
+      "scheme": "ed25519",
+      "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w",
+      "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+    },
+    "statement": {
+      "kind": "status_query",
+      "transaction": "tx-status-1",
+      "about": "tx-001",
+      "outcome": {
+        "status": "answered",
+        "result": {
+          "deployment": {
+            "name": "rutent-test",
+            "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+          },
+          "protocol_version": "2.0.1",
+          "shape": "urn:rutent:provider-role:result",
+          "maker": "acme-co",
+          "made_at": "2026-11-06T15:04:05Z",
+          "signature": {
+            "scheme": "ed25519",
+            "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w",
+            "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+          },
+          "statement": {
+            "kind": "status_query",
+            "transaction": "tx-status-1",
+            "about": "tx-001",
+            "outcome": {
+              "status": "not_known"
+            }
+          }
+        }
+      }
+    }
+  }
+}

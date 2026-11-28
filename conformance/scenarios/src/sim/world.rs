@@ -1,0 +1,449 @@
+//! The simulated world the providers' modules run in: the platform's shared state, scripts and journals among it, the
+//! simulated public networks and the rails the providers write their books to.
+
+use std::collections::{BTreeMap, HashMap};
+use std::net::{IpAddr, Ipv4Addr};
+
+use rutent_conformance::signing::{Ed25519Key, base64url};
+use rutent_conformance::sim::{
+    BOOK_KEY, BOOK_LENGTH_KEY, Behaviour, Entry, Movement, SCRIPT_PREFIX, chain_host, rail_host,
+};
+use rutent_contracts::module_interface::Identifier;
+use rutent_contracts::module_interface::{SecretRefusalReason, SecretValue, Time};
+use rutent_evidence::{NetworkRules, SimulatedNetwork};
+use rutent_prov::catalogue::Instant;
+use rutent_prov::module::platform::{ClockError, World};
+use rutent_prov::module::types::Endpoint;
+use rutent_prov::proxy::Caller;
+
+/// The world's clock until a scenario sets it: 2026-11-07T00:00:00Z.
+pub const WORLD_AT: Instant = Instant(1_794_009_600);
+
+/// What a world holds that no record may carry (`T-025-03`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Held {
+    /// Each provider's private statement key, base64url.
+    pub statement_keys: Vec<(String, String)>,
+    /// Each provider's credentials: provider, name, plaintext.
+    pub secrets: Vec<(String, String, String)>,
+    /// Each provider's own state entries: provider, key, value.
+    pub state: Vec<(String, String, String)>,
+}
+
+/// One behaviour waiting in a script.
+#[derive(Debug, Clone)]
+struct Queued {
+    /// The kind of operation it is for, or any real one.
+    on: Option<String>,
+    /// Whether it is for a dry run.
+    dry_run: bool,
+    behaviour: Behaviour,
+}
+
+/// What a provider's script holds: behaviours in the order they are taken, and what answers once they are used up.
+#[derive(Debug, Clone, Default)]
+struct Script {
+    queue: Vec<Queued>,
+    otherwise: Behaviour,
+}
+
+/// An outbound request a rail or a network received, as the platform's egress layer delivered it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Delivered {
+    /// The host it was sent to.
+    pub host: String,
+    /// The body.
+    pub body: String,
+}
+
+/// The world a platform runs simulated providers in (`World`).
+///
+/// It holds, per provider, a [`script`](SimWorld::script) the module reads its next behaviour from and a journal
+/// the module writes its books to, through its rail, and reads them back from; and a simulated public network each
+/// movement is recorded on. Every one of these is the platform's shared state, which a module reaches only through
+/// the interfaces the platform serves, so what a module does is recorded by the platform and nothing of it escapes
+/// the record (`NFR-5`).
+#[derive(Default)]
+pub struct SimWorld {
+    scripts: BTreeMap<String, Script>,
+    journals: BTreeMap<String, Vec<Entry>>,
+    addresses: BTreeMap<String, IpAddr>,
+    rails: BTreeMap<String, String>,
+    chains: BTreeMap<String, String>,
+    statement_keys: BTreeMap<String, String>,
+    delivered: Vec<Delivered>,
+    /// Movements the networks refused to record, and why.
+    pub refused_movements: Vec<(Movement, String)>,
+    /// The state keys the platform asked this world for, in order.
+    pub state_asked: Vec<String>,
+    seeded: HashMap<(String, String), String>,
+    /// What the deployment keeps among a holding account's statement for its module, by provider and key: Core's
+    /// readings of movements into a held public node's account, read through the node's reader (`T-020-60` (6)).
+    /// Never a scenario's: only Core's [`rutent_core_orch::rounds::Providers::keep_reading`] writes it.
+    kept: BTreeMap<(String, String), String>,
+    /// What Core's orders rest at each simulated provider's private node now, by node and asset, in whole units: what the
+    /// test worlds' stand-in holder ([`crate::kit::LEDGER_HOLDER`]) answers as the node's balance. The deployment sets it
+    /// before the holding check reads the accounts.
+    ledger: std::cell::RefCell<BTreeMap<(String, String), u128>>,
+    /// Each provider's secrets, by name (`T-024-07`), which only that provider's own declared lookup is answered from.
+    secrets: BTreeMap<(String, String), String>,
+    /// Every secret value the world handed a provider, by provider (`T-024-07`).
+    secrets_delivered: Vec<(String, String)>,
+    clock: Option<Instant>,
+    keys_down: Vec<String>,
+    /// The providers that refuse every dry run while the switch is on, ahead of anything queued for them
+    /// ([`SimWorld::refuse_dry_runs`]).
+    refusing_dry_runs: std::collections::BTreeSet<String>,
+    /// The endpoints the world serves each network's reader, and the networks themselves, which they answer from as
+    /// they stand (`T-024-25`, `T-020-60`).
+    readers: super::readers::Endpoints,
+    /// The flag of the fleet's operation clock: raised when a script holds a behaviour that waits out a real
+    /// deadline (silent, late), which is real time's to judge (`T-013-08`).
+    pub(crate) wall_time: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+}
+
+impl SimWorld {
+    /// A world with nothing in it.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A behaviour that never answers, or answers past the deadline, is about the operating system's time passing:
+    /// the platform's clock then follows it from here on, and that scenario's deadline is a real one.
+    fn follow_wall_time_for(&self, behaviour: &Behaviour) {
+        if (behaviour.silent || behaviour.late)
+            && let Some(flag) = &self.wall_time
+        {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// Serves `host` at the next address, and gives it.
+    fn serve(&mut self, host: &str) -> IpAddr {
+        let next = u8::try_from(self.addresses.len() + 1).expect("fewer than 250 hosts");
+        *self
+            .addresses
+            .entry(host.to_owned())
+            .or_insert(IpAddr::V4(Ipv4Addr::new(185, 12, 70, next)))
+    }
+
+    /// Serves `provider`'s rail: the backend its module writes its books to.
+    pub fn serve_rail(&mut self, provider: &str) {
+        let host = rail_host(provider);
+        self.serve(&host);
+        self.rails.insert(host, provider.to_owned());
+        self.journals.entry(provider.to_owned()).or_default();
+    }
+
+    /// Serves a simulated public network, `network`, with `rules` for its finality and its reorgs (`T-015-02`), and
+    /// its reader the endpoints its listing declares (`T-024-25`).
+    pub fn serve_network(&mut self, network: &str, rules: NetworkRules) {
+        let host = chain_host(network);
+        self.serve(&host);
+        self.chains.insert(host, network.to_owned());
+        self.readers.serve(network, rules);
+    }
+
+    /// The endpoints the world serves the networks' readers (`T-024-25`): a handle on them, shared, which the reader
+    /// host's network reads from threads of its own.
+    pub fn reader_endpoints(&self) -> super::readers::Endpoints {
+        self.readers.clone()
+    }
+
+    /// A simulated public network as it stands now, a copy.
+    pub fn network(&self, network: &str) -> Option<SimulatedNetwork> {
+        self.readers.network(network)
+    }
+
+    /// A simulated public network, to drive: blocks, reorgs and checkpoints are the scenario's to cause. Its readers
+    /// read what the scenario did as soon as the hold is let go.
+    pub fn network_mut(&mut self, network: &str) -> Option<super::readers::NetworkMut<'_>> {
+        self.readers.network_mut(network)
+    }
+
+    /// Queues `behaviour` for `provider`'s next operation that isn't a dry run and names a transaction, of whatever
+    /// kind: a withdrawal, deposit, transfer, conversion or reversal, and also a balance verification or a
+    /// reversal confirmation, which move nothing but ask the script all the same. A judgement names no
+    /// transaction and never does. To keep a behaviour for one kind, queue it with
+    /// [`SimWorld::script_for`].
+    pub fn script(&mut self, provider: &str, behaviour: Behaviour) {
+        self.queue(provider, None, false, behaviour);
+    }
+
+    /// Queues `behaviour` for `provider`'s next real operation of `kind`.
+    pub fn script_for(&mut self, provider: &str, kind: &str, behaviour: Behaviour) {
+        self.queue(provider, Some(kind), false, behaviour);
+    }
+
+    /// Queues `behaviour` for `provider`'s next dry run of `kind`.
+    pub fn script_dry_run(&mut self, provider: &str, kind: &str, behaviour: Behaviour) {
+        self.queue(provider, Some(kind), true, behaviour);
+    }
+
+    fn queue(&mut self, provider: &str, on: Option<&str>, dry_run: bool, behaviour: Behaviour) {
+        self.follow_wall_time_for(&behaviour);
+        self.scripts
+            .entry(provider.to_owned())
+            .or_default()
+            .queue
+            .push(Queued {
+                on: on.map(str::to_owned),
+                dry_run,
+                behaviour,
+            });
+    }
+
+    /// What `provider` does once its queued behaviours are used up. Without it, it answers as its role asks.
+    pub fn otherwise(&mut self, provider: &str, behaviour: Behaviour) {
+        self.follow_wall_time_for(&behaviour);
+        self.scripts
+            .entry(provider.to_owned())
+            .or_default()
+            .otherwise = behaviour;
+    }
+
+    /// How many behaviours are still queued for `provider`.
+    pub fn queued(&self, provider: &str) -> usize {
+        self.scripts.get(provider).map_or(0, |s| s.queue.len())
+    }
+
+    /// `provider`'s journal: its books, as its rail holds them.
+    pub fn journal(&self, provider: &str) -> &[Entry] {
+        self.journals.get(provider).map_or(&[], Vec::as_slice)
+    }
+
+    /// Every request the rails and the networks received, in order.
+    pub fn delivered(&self) -> &[Delivered] {
+        &self.delivered
+    }
+
+    /// Seeds one entry of `provider`'s own state, which its outside part may read.
+    pub fn seed_state(&mut self, provider: &str, key: &str, value: &str) {
+        self.seeded
+            .insert((provider.to_owned(), key.to_owned()), value.to_owned());
+    }
+
+    /// Keeps `text` under `provider`'s own state `key`, as the deployment keeps Core's reading of a movement into a held
+    /// public node's holding account for the account's module (`T-020-60` (6)): the assembly's answer to Core's
+    /// [`rutent_core_orch::rounds::Providers::keep_reading`], and nothing else's.
+    pub fn keep_reading(&mut self, provider: &str, key: &str, text: &str) {
+        self.kept
+            .insert((provider.to_owned(), key.to_owned()), text.to_owned());
+    }
+
+    /// Sets what Core's orders rest at the simulated providers' private nodes now, for the stand-in holder to answer.
+    pub fn set_ledger(&self, resting: BTreeMap<(String, String), u128>) {
+        *self.ledger.borrow_mut() = resting;
+    }
+
+    /// The stand-in holder's balance at `node` in `asset`: what Core's orders rest there now.
+    pub fn ledger_balance(&self, node: &str, asset: &str) -> u128 {
+        self.ledger
+            .borrow()
+            .get(&(node.to_owned(), asset.to_owned()))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Records `movement` on its network, as the network itself records a movement no provider's module made through
+    /// the platform: what a scenario drives, as it drives blocks and reorgs. Why the network refused it, where it did.
+    pub fn record_movement(
+        &mut self,
+        movement: &Movement,
+    ) -> Option<rutent_evidence::RecordRefused> {
+        self.readers.record(&movement.network, movement)
+    }
+
+    /// Seeds `provider`'s own secret `name`, which only a lookup of that provider's, for a secret its release
+    /// declares, is answered with (`T-024-07`, `AC-20`).
+    pub fn seed_secret(&mut self, provider: &str, name: &str, value: &str) {
+        self.secrets
+            .insert((provider.to_owned(), name.to_owned()), value.to_owned());
+    }
+
+    /// Holds `value` as `provider`'s secret `name`, which the platform's credential lookup hands only to the
+    /// provider's outside part, once the platform judged the lookup declared (`T-025-03`).
+    pub fn hold_secret(&mut self, provider: &str, name: &str, value: &str) {
+        self.seed_secret(provider, name, value);
+    }
+
+    /// Every secret value the world handed a provider's module, as the provider and the value, in order.
+    pub fn secrets_delivered(&self) -> &[(String, String)] {
+        &self.secrets_delivered
+    }
+
+    /// Every private statement key the world holds, as `(provider, base64url text)`, and every state entry it
+    /// seeded, as `(provider, key, value)`: what a leak scan seeks (`T-025-03`).
+    pub fn held_secrets(&self) -> Held {
+        Held {
+            statement_keys: self
+                .statement_keys
+                .iter()
+                .map(|(p, k)| (p.clone(), k.clone()))
+                .collect(),
+            secrets: self
+                .secrets
+                .iter()
+                .map(|((p, n), v)| (p.clone(), n.clone(), v.clone()))
+                .collect(),
+            state: self
+                .seeded
+                .iter()
+                .map(|((p, k), v)| (p.clone(), k.clone(), v.clone()))
+                .collect(),
+        }
+    }
+
+    /// Sets the clock the platform's records take their times from.
+    pub fn set_clock(&mut self, at: Instant) {
+        self.clock = Some(at);
+    }
+
+    /// `statement`, a JSON statement, signed anew with the statement key the world holds for `provider`, as the
+    /// provider's module would sign it (`T-024-21`): a scenario's stand-in for a provider that later states something
+    /// else about what it did. False, and nothing signed, where the world holds no key for it.
+    pub fn sign_as(&self, provider: &str, statement: &mut serde_json::Value) -> bool {
+        let Some(bytes) = self
+            .statement_keys
+            .get(provider)
+            .and_then(|key| rutent_core_audit::log::kept::from_base64url(key))
+            .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+        else {
+            return false;
+        };
+        rutent_conformance::signing::sign_value(statement, &Ed25519Key::from_bytes(&bytes));
+        true
+    }
+
+    /// Holds `key` as `provider`'s statement key.
+    pub fn hold_statement_key(&mut self, provider: &str, key: &Ed25519Key) {
+        self.statement_keys
+            .insert(provider.to_owned(), base64url(key.as_bytes()));
+    }
+
+    /// Takes down the store holding `provider`'s statement key.
+    pub fn make_key_store_unavailable(&mut self, provider: &str) {
+        self.keys_down.push(provider.to_owned());
+    }
+
+    /// Brings the store holding `provider`'s statement key back up.
+    pub fn make_key_store_available(&mut self, provider: &str) {
+        self.keys_down.retain(|p| p != provider);
+    }
+
+    /// Has `provider` refuse every dry run from now on, ahead of what is queued for it, while `on`; off, it answers as
+    /// its script says again, nothing queued taken meanwhile (`T-020-60` item (8)).
+    pub fn refuse_dry_runs(&mut self, provider: &str, on: bool) {
+        if on {
+            self.refusing_dry_runs.insert(provider.to_owned());
+        } else {
+            self.refusing_dry_runs.remove(provider);
+        }
+    }
+
+    fn next_behaviour(&mut self, provider: &str, kind: &str, dry_run: bool) -> Option<Behaviour> {
+        if dry_run && self.refusing_dry_runs.contains(provider) {
+            return Some(Behaviour::act(rutent_conformance::sim::Act::Refuse));
+        }
+        let script = self.scripts.get_mut(provider)?;
+        let at = script
+            .queue
+            .iter()
+            .position(|q| q.dry_run == dry_run && q.on.as_deref().is_none_or(|on| on == kind));
+        match at {
+            Some(at) => Some(script.queue.remove(at).behaviour),
+            None if script.otherwise != Behaviour::default() && !dry_run => {
+                Some(script.otherwise.clone())
+            }
+            None => None,
+        }
+    }
+}
+
+impl World for SimWorld {
+    fn secret(&mut self, provider: &str, name: &str) -> Option<String> {
+        let value = self
+            .secrets
+            .get(&(provider.to_owned(), name.to_owned()))
+            .cloned()?;
+        self.secrets_delivered
+            .push((provider.to_owned(), value.clone()));
+        Some(value)
+    }
+
+    fn state(&mut self, provider: &str, key: &str) -> Option<String> {
+        self.state_asked.push(key.to_owned());
+        if key == BOOK_KEY {
+            return Some(serde_json::to_string(self.journal(provider)).expect("a journal"));
+        }
+        if key == BOOK_LENGTH_KEY {
+            return Some(self.journal(provider).len().to_string());
+        }
+        if let Some(rest) = key
+            .strip_prefix(SCRIPT_PREFIX)
+            .and_then(|r| r.strip_prefix('/'))
+        {
+            let (kind, mode) = rest.split_once('/')?;
+            let behaviour = self.next_behaviour(provider, kind, mode == "dry")?;
+            return Some(serde_json::to_string(&behaviour).expect("a behaviour"));
+        }
+        let key = (provider.to_owned(), key.to_owned());
+        self.kept
+            .get(&key)
+            .or_else(|| self.seeded.get(&key))
+            .cloned()
+    }
+
+    fn route(&mut self, endpoint: &Endpoint) -> Option<(IpAddr, Option<Endpoint>)> {
+        self.addresses
+            .get(&endpoint.host)
+            .map(|address| (*address, None))
+    }
+
+    fn deliver(&mut self, _: &Endpoint, _: &str) {}
+
+    fn receive(&mut self, endpoint: &Endpoint, request: &rutent_prov::egress::Request) {
+        let body = String::from_utf8_lossy(request.body()).into_owned();
+        self.delivered.push(Delivered {
+            host: endpoint.host.clone(),
+            body: body.clone(),
+        });
+        if let Some(provider) = self.rails.get(&endpoint.host)
+            && let Ok(entry) = serde_json::from_str::<Entry>(&body)
+        {
+            self.journals
+                .entry(provider.clone())
+                .or_default()
+                .push(entry);
+        } else if let Some(network) = self.chains.get(&endpoint.host)
+            && let Ok(movement) = serde_json::from_str::<Movement>(&body)
+            && let Some(why) = self.readers.record(network, &movement)
+        {
+            self.refused_movements.push((movement, format!("{why:?}")));
+        }
+    }
+
+    fn now(&mut self) -> Result<Time, ClockError> {
+        self.clock
+            .unwrap_or(WORLD_AT)
+            .rfc3339()
+            .and_then(Time::new)
+            .ok_or(ClockError::PastYear9999)
+    }
+
+    fn statement_key(
+        &mut self,
+        caller: &Caller,
+        _: &Identifier,
+    ) -> Result<SecretValue, SecretRefusalReason> {
+        let provider = caller.provider().as_str();
+        if self.keys_down.iter().any(|p| p == provider) {
+            return Err(SecretRefusalReason::StoreUnavailable);
+        }
+        self.statement_keys
+            .get(provider)
+            .cloned()
+            .and_then(SecretValue::new)
+            .ok_or(SecretRefusalReason::NotFound)
+    }
+}

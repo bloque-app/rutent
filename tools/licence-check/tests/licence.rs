@@ -356,26 +356,39 @@ fn symlinked_lock_or_directory_under_experiments_is_an_error() {
     }
 }
 
+/// A fixture repository at `name` under the test temp dir: `git init`, a `.gitignore` with the given text, and the
+/// given locks written (not added: untracked files count as long as they are not ignored).
+fn fixture_repo(name: &str, ignore: &str, locks: &[&str]) -> std::path::PathBuf {
+    let base = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let _ = fs::remove_dir_all(&base);
+    fs::create_dir_all(&base).expect("fixture dir");
+    let git = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&base)
+        .status()
+        .expect("git runs");
+    assert!(git.success());
+    fs::write(base.join(".gitignore"), ignore).expect("fixture ignore file");
+    for lock in locks {
+        let path = base.join(lock);
+        fs::create_dir_all(path.parent().expect("parent")).expect("fixture dir");
+        fs::write(path, "version = 4\n").expect("fixture lock");
+    }
+    base
+}
+
 // verifies: REQ-MOD-5
 #[test]
 fn a_lock_under_components_is_read_like_one_under_experiments() {
-    let base = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("licence-find-all-locks");
-    let _ = fs::remove_dir_all(&base);
-    for dir in [
-        "experiments/a",
-        "components/stm/vos-program",
-        "components/stm/vos-program/target/release",
-        "components/stm/src",
-    ] {
-        fs::create_dir_all(base.join(dir)).expect("fixture dir");
-    }
-    for lock in [
-        "experiments/a/Cargo.lock",
-        "components/stm/vos-program/Cargo.lock",
-        "components/stm/vos-program/target/release/Cargo.lock",
-    ] {
-        fs::write(base.join(lock), "version = 4\n").expect("fixture lock");
-    }
+    let base = fixture_repo(
+        "licence-find-all-locks",
+        "target\n",
+        &[
+            "experiments/a/Cargo.lock",
+            "components/stm/vos-program/Cargo.lock",
+            "components/stm/vos-program/target/release/Cargo.lock",
+        ],
+    );
     let found = find_all_locks(&base).expect("walk");
     fs::remove_dir_all(&base).expect("clean up");
     assert_eq!(
@@ -385,4 +398,151 @@ fn a_lock_under_components_is_read_like_one_under_experiments() {
             "experiments/a/Cargo.lock"
         ]
     );
+}
+
+// verifies: DEC-6
+#[test]
+fn a_lock_anywhere_in_the_repository_is_found() {
+    let base = fixture_repo(
+        "licence-find-whole-tree",
+        "target\n",
+        &[
+            "Cargo.lock",
+            "tools/x/Cargo.lock",
+            "services/y/inner/Cargo.lock",
+            "services/y/target/Cargo.lock",
+            "components/a/Cargo.lock",
+        ],
+    );
+    let found = find_all_locks(&base).expect("walk");
+    fs::remove_dir_all(&base).expect("clean up");
+    assert_eq!(
+        found,
+        vec![
+            "components/a/Cargo.lock",
+            "services/y/inner/Cargo.lock",
+            "tools/x/Cargo.lock"
+        ]
+    );
+}
+
+// verifies: DEC-6
+#[test]
+fn an_ignored_lock_is_not_read_and_an_untracked_unignored_lock_is() {
+    let base = fixture_repo(
+        "licence-find-ignored",
+        "/tools/x/tests/fixtures/*/Cargo.lock\n",
+        &[
+            "tools/x/tests/fixtures/undocumented/Cargo.lock",
+            "tools/x/Cargo.lock",
+            "tools/z/Cargo.lock",
+        ],
+    );
+    let found = find_all_locks(&base).expect("walk");
+    fs::remove_dir_all(&base).expect("clean up");
+    assert_eq!(found, vec!["tools/x/Cargo.lock", "tools/z/Cargo.lock"]);
+}
+
+// verifies: DEC-6
+#[test]
+fn a_lock_under_an_unignored_target_directory_is_read() {
+    // Only what `.gitignore` ignores is skipped: an unignored `target/` lock is read, and so fails loud.
+    let base = fixture_repo("licence-find-target", "", &["a/target/Cargo.lock"]);
+    let found = find_all_locks(&base).expect("walk");
+    fs::remove_dir_all(&base).expect("clean up");
+    assert_eq!(found, vec!["a/target/Cargo.lock"]);
+}
+
+// verifies: DEC-6
+#[test]
+fn a_nested_git_repository_fails_closed() {
+    let base = fixture_repo("licence-find-nested", "", &["tools/x/Cargo.lock"]);
+    let nested = base.join("vendor/other");
+    fs::create_dir_all(&nested).expect("nested dir");
+    let git = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&nested)
+        .status()
+        .expect("git runs");
+    assert!(git.success());
+    fs::write(nested.join("Cargo.lock"), "version = 4\n").expect("nested lock");
+    let result = find_all_locks(&base);
+    fs::remove_dir_all(&base).expect("clean up");
+    assert!(
+        matches!(&result, Err(e) if e.contains("nested git repository")),
+        "{result:?}"
+    );
+}
+
+// verifies: DEC-6
+#[test]
+fn a_directory_that_is_not_a_git_repository_fails_closed() {
+    // Outside the repository's own tree, so no parent repository answers.
+    let base = std::env::temp_dir().join(format!("licence-find-no-git-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    fs::create_dir_all(base.join("tools/x")).expect("dir");
+    fs::write(base.join("tools/x/Cargo.lock"), "version = 4\n").expect("lock");
+    let result = find_all_locks(&base);
+    fs::remove_dir_all(&base).expect("clean up");
+    assert!(
+        result.is_err(),
+        "no git listing must be an error, got {result:?}"
+    );
+}
+
+// verifies: DEC-6
+#[test]
+fn a_symbolic_link_lock_fails_closed() {
+    let base = fixture_repo("licence-find-symlink", "", &["tools/x/Cargo.lock"]);
+    std::os::unix::fs::symlink("x/Cargo.lock", base.join("tools/Cargo.lock")).expect("symlink");
+    let result = find_all_locks(&base);
+    fs::remove_dir_all(&base).expect("clean up");
+    assert!(
+        matches!(&result, Err(e) if e.contains("symbolic link")),
+        "{result:?}"
+    );
+}
+
+// verifies: DEC-6
+#[test]
+fn a_git_submodule_fails_closed() {
+    let base = fixture_repo("licence-find-submodule", "", &["tools/x/Cargo.lock"]);
+    // A gitlink entry, as a submodule leaves in the index.
+    let git = std::process::Command::new("git")
+        .args([
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            "160000,1111111111111111111111111111111111111111,vendor/sub",
+        ])
+        .current_dir(&base)
+        .status()
+        .expect("git runs");
+    assert!(git.success());
+    let result = find_all_locks(&base);
+    fs::remove_dir_all(&base).expect("clean up");
+    assert!(
+        matches!(&result, Err(e) if e.contains("vendor/sub") && e.contains("submodule")),
+        "{result:?}"
+    );
+}
+
+// verifies: REQ-MOD-5
+#[test]
+fn tracked_lock_that_gitignore_also_matches_is_read() {
+    let base = fixture_repo(
+        "licence-find-tracked-ignored",
+        "Cargo.lock\n",
+        &["tools/x/Cargo.lock", "tools/y/Cargo.lock"],
+    );
+    // `tools/x` is tracked although `.gitignore` matches it (`git add -f`); `tools/y` is only ignored.
+    let git = std::process::Command::new("git")
+        .args(["add", "-f", "tools/x/Cargo.lock"])
+        .current_dir(&base)
+        .status()
+        .expect("git runs");
+    assert!(git.success());
+    let found = find_all_locks(&base).expect("walk");
+    fs::remove_dir_all(&base).expect("clean up");
+    assert_eq!(found, vec!["tools/x/Cargo.lock"]);
 }

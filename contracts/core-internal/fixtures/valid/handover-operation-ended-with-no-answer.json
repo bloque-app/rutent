@@ -1,0 +1,6 @@
+{
+  "kind": "operation_unanswered",
+  "provider": "bridge-pay",
+  "transaction": "tx-003",
+  "ended_by": "outcome_unknown"
+}

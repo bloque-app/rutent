@@ -1,0 +1,30 @@
+{
+  "deployment": {
+    "name": "rutent-test",
+    "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+  },
+  "protocol_version": "2.0.1",
+  "shape": "urn:rutent:provider-role:hold",
+  "maker": "reserve-bank-co",
+  "made_at": "2026-11-06T15:00:30Z",
+  "signature": {
+    "scheme": "ed25519",
+    "key": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8",
+    "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+  },
+  "statement": {
+    "record": {
+      "id": "dr-0004",
+      "digest": {
+        "algorithm": "sha-256",
+        "value": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    "candidate": "c1",
+    "for": {
+      "kind": "order",
+      "order": "ord-1"
+    },
+    "valid_until": "2026-11-06T15:01:55Z"
+  }
+}

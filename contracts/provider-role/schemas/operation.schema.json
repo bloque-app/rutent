@@ -14,7 +14,7 @@
   },
   "$defs": {
     "operation": {
-      "description": "One operation, by kind: a reserve's withdrawal, deposit, balance verification and reversal confirmation, an exchange's conversion, a ramp's transfer, an exchange's or ramp's reversal, and a verifier's judgement (REQ-CAT-9, REQ-CAT-15, ADR-0008).",
+      "description": "One operation, by kind: a reserve's withdrawal, deposit, balance verification and reversal confirmation, an exchange's conversion, a ramp's transfer, an exchange's or ramp's reversal, and a verifier's judgement (REQ-CAT-9, REQ-CAT-15, ADR-0008); and the operator's own questions: a holding account's balance, a status question, a hold request and the question of a private node's record (REQ-AUD-15, REQ-ORD-1, REQ-QTE-15, REQ-ORD-41).",
       "type": "object",
       "required": [
         "kind"
@@ -30,7 +30,10 @@
             "judgement",
             "reversal",
             "reversal_confirmation",
-            "holding_balance"
+            "holding_balance",
+            "status_query",
+            "hold",
+            "inner_segments_query"
           ]
         }
       },
@@ -168,6 +171,51 @@
           },
           "then": {
             "$ref": "#/$defs/holding_balance"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "status_query"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/status_query"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "hold"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/hold"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "inner_segments_query"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/inner_segments_query"
           }
         }
       ]
@@ -596,6 +644,113 @@
         },
         "asset": {
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "status_query": {
+      "description": "A question to a provider that declares status_query tracking of where a transaction it was handed stands, late (REQ-ORD-1, REQ-CAT-16; 4.0.0). Asked under a transaction of its own, never the one asked about. Never a dry run: it changes nothing, and the answer moves nothing.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "transaction",
+        "provider",
+        "about"
+      ],
+      "properties": {
+        "kind": {
+          "const": "status_query"
+        },
+        "transaction": {
+          "description": "This question's own transaction; its answer names it (REQ-ORD-1).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "description": "The provider asked.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "about": {
+          "description": "The transaction asked about: one the provider was handed an operation under.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "hold": {
+      "description": "A request that a reserve hold the quote a choice round chose for a new route before it starts (REQ-QTE-15; 4.0.0): the decision record by id and digest, the candidate, the order or session the hold is for, and the validity asked. The reserve answers with its own signed hold of exactly these under this request's transaction, or refuses. Never a dry run, and it moves nothing.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "transaction",
+        "provider",
+        "record",
+        "candidate",
+        "for",
+        "valid_until"
+      ],
+      "properties": {
+        "kind": {
+          "const": "hold"
+        },
+        "transaction": {
+          "description": "The hold's own transaction: the answer and the hold it carries name it.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "description": "The reserve asked: the one that starts each part of the route.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "record": {
+          "$ref": "urn:rutent:provider-role:hold#/$defs/record"
+        },
+        "candidate": {
+          "description": "The candidate to hold: the record's chosen one.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "for": {
+          "$ref": "urn:rutent:provider-role:hold#/$defs/held_for"
+        },
+        "valid_until": {
+          "description": "The validity asked, at most the earliest validity among the figures the candidate cites: the hold holds no longer.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+        }
+      }
+    },
+    "inner_segments_query": {
+      "description": "The operator's question to a provider of a private node's publisher: its record of the segments that ran inside the node (REQ-ORD-41; 4.0.0). Asked under a transaction of its own, of a provider whose module handles inner_segments_query. Never a dry run: it changes nothing, and the answer moves nothing.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "transaction",
+        "provider",
+        "node",
+        "about"
+      ],
+      "properties": {
+        "kind": {
+          "const": "inner_segments_query"
+        },
+        "transaction": {
+          "description": "This question's own transaction; its answer names it.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "description": "The provider asked.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "node": {
+          "description": "The private node whose record is asked for.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "about": {
+          "description": "The transactions the question is about: the segments whose record is asked for. The provider answers with the segments it ran under these transactions alone, never its whole book of the node.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+          }
         }
       }
     }

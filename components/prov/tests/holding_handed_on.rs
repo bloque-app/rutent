@@ -85,6 +85,47 @@ fn polygon_with_value() -> (Signed, Holdings) {
 
 // verifies: REQ-ORD-40, INV-5
 #[test]
+fn handed_on_routes_start_is_proven_by_the_holding_record_and_settles_no_segment() {
+    let (mut s, mut holdings) = polygon_with_value();
+    let route = handed_on_from("polygon");
+    let start = holdings
+        .start_handed_on(&mut s.platform, &TestOperator, &route, "o-1", "60")
+        .expect("the route starts");
+
+    // The route has no withdrawal segment (state-machine's contract): its first segment is the one that starts on
+    // the proof, and the record is the account's own, no segment's.
+    assert_ne!(route[0].kind, OperationKind::Withdrawal);
+    assert_eq!(start.first_segment, route[0].segment_id);
+    assert!(
+        route.iter().all(
+            |segment| !start.record.reference.contains(segment.segment_id.as_str())
+                && !start.transaction.contains(segment.segment_id.as_str())
+        ),
+        "the record is named for a segment: {start:?}"
+    );
+
+    // A route whose first segment is a withdrawal is no route handed on, even from an inner node, and the account
+    // gives nothing up for it.
+    let mut with_withdrawal = handed_on_from("polygon");
+    with_withdrawal[0].kind = OperationKind::Withdrawal;
+    assert_eq!(
+        holdings
+            .start_handed_on(
+                &mut s.platform,
+                &TestOperator,
+                &with_withdrawal,
+                "o-1",
+                "10"
+            )
+            .unwrap_err(),
+        StartError::NotHandedOn
+    );
+    assert!(covers(&mut s, POLYGON_WALLET, "USDC", "o-1", 40));
+    assert!(!covers(&mut s, POLYGON_WALLET, "USDC", "o-1", 41));
+}
+
+// verifies: REQ-ORD-40, INV-5
+#[test]
 fn handed_on_routes_withdrawal_is_proven_by_the_holding_accounts_record() {
     let (mut s, mut holdings) = polygon_with_value();
     let start = holdings
@@ -109,6 +150,20 @@ fn handed_on_routes_withdrawal_is_proven_by_the_holding_accounts_record() {
         "the proof is the wallet's own record of a withdrawal: {}",
         start.record.reference
     );
+
+    // The wallet's own signed answer comes with it, naming the withdrawal's transaction (`T-020-26`): the holding
+    // account's statement of it, which the host keeps.
+    assert!(
+        start
+            .transaction
+            .starts_with(&format!("{POLYGON_WALLET}-withdrawal-"))
+    );
+    let answer: serde_json::Value = serde_json::from_slice(&start.answer).expect("a signed result");
+    assert_eq!(
+        answer["statement"]["transaction"],
+        start.transaction.as_str()
+    );
+    assert_eq!(answer["maker"], POLYGON_WALLET);
 
     // The value left the account for the route: the order holds what is left, by the wallet's own word too.
     assert!(covers(&mut s, POLYGON_WALLET, "USDC", "o-1", 40));

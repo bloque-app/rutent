@@ -1,0 +1,23 @@
+{
+  "request": "req-accept-fault-1",
+  "caller": {
+    "party": "cust-1",
+    "acts": "cust-1",
+    "role": "customer",
+    "kind": "person"
+  },
+  "action": {
+    "kind": "accept_fault",
+    "order": "ord-1",
+    "segment": "p1-s2",
+    "showing": {
+      "transaction": "tx-f2",
+      "commitment": {
+        "algorithm": "sha-256",
+        "value": "3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c"
+      }
+    },
+    "session": "sess-1"
+  },
+  "at": "2026-11-10T09:00:00Z"
+}

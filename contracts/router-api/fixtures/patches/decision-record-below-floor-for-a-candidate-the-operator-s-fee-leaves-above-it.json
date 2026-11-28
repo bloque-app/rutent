@@ -1,0 +1,21 @@
+{
+  "base": "decision-record-with-no-route",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/statement/request/floor",
+      "value": "240000000"
+    },
+    {
+      "op": "replace",
+      "path": "/statement/bounds/operator_fee",
+      "value": {
+        "flat": "1000000",
+        "proportional": {
+          "numerator": "1",
+          "denominator": "1000"
+        }
+      }
+    }
+  ]
+}

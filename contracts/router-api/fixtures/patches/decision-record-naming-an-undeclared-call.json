@@ -5,6 +5,11 @@
       "op": "replace",
       "path": "/statement/candidates/0/parts/0/operations/0/calls/1/kind",
       "value": "deposit"
+    },
+    {
+      "op": "replace",
+      "path": "/signature/value",
+      "value": "y4rc2AU62_427er6Zxdns7vq--EdYAd8DYiKEDGKp88naH4ZnF69sxeFQ9usdN0SP9ZcNiGnB8wxYAiAseLSDA"
     }
   ]
 }

@@ -89,7 +89,15 @@ security review. It may land on `develop` before that, once the reviewer approve
   which hold earlier ones (`experiments/2026-11-07-module-format/wasm-binding/` and `pvm-binding/`);
 - `CMP-CORE-AUTHZ`'s policy engine (`components/core-authz/`);
 - the log's and the checkpoints' signing (`components/core-audit/`);
-- the repository's own gates: `.github/`, `licences/`, `tools/licence-check/` and `tools/contract-guard/`.
+- the reader host (`components/reader-host/`, `CMP-EVIDENCE`'s standalone part, `DEC-28`): the readers' answers'
+  signing, the mTLS link to Core and the readers' egress; and the provider system's two paths it alone reaches beside
+  the egress layer, the provider's jail and the key resolver, re-exported (`components/prov/src/confine.rs`,
+  `components/prov/src/keys.rs`), the crate root that declares them (`components/prov/src/lib.rs`), the jail itself
+  (`components/prov/src/module/sandbox.rs`) and the module that declares it (`components/prov/src/module/mod.rs`), the
+  files that define the key resolver (under `components/prov/src/proxy/`, already listed), and the provider system's
+  manifest (`components/prov/Cargo.toml`), where a target path could move the library;
+- the repository's own gates: `.github/`, `licences/`, `tools/licence-check/`, `tools/contract-guard/` and
+  `tools/boundary-check/`, which holds the module boundary and the reader host's admitted paths.
 
 `.github/CODEOWNERS` holds each of these paths for the owner, and `main`'s protection requires code-owner review.
 Its `enforce_admins` is off, so the owner's own merge of the release is the click. A path added to this list is

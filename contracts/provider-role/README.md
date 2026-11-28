@@ -1,10 +1,15 @@
 # provider-role contract
 
-This contract holds four things:
+This contract holds seven things:
 
 - what a provider advertises and declares to join the catalogue (`T-002-01`);
 - the operations each role is asked, and the results it gives (`T-002-02`);
 - the verifier's standalone judgement, and the reserve's reversal confirmation;
+- a provider's signed terms for a tuple, and a reserve's signed hold of a quote (3.1.0), with the operator's status
+  question and hold request (4.0.0);
+- a reserve's signed notice of value arriving, the operator's question of what arrived and the reserve's answer
+  (3.1.0);
+- a publisher's signed record of the segments inside its private node, labelled its word (3.1.0);
 - the envelope every party statement travels in (`REQ-PRT-1`).
 
 It is format-neutral and language-neutral (`DEC-4`): nothing here assumes a module format.
@@ -21,11 +26,21 @@ It is format-neutral and language-neutral (`DEC-4`): nothing here assumes a modu
 | `urn:rutent:provider-role:result` | `schemas/result.schema.json` | A provider's result for one operation, in the envelope |
 | `urn:rutent:provider-role:judgement` | `schemas/judgement.schema.json` | A verifier's judgement, in its own envelope |
 | `urn:rutent:provider-role:reversal-confirmation` | `schemas/reversal-confirmation.schema.json` | A reserve's confirmation that one reversed credit arrived, in its own envelope (ADR-0008) |
+| `urn:rutent:provider-role:terms` | `schemas/terms.schema.json` | A provider's terms for one of its tuples, in the envelope: the tuple by provider and both ends, its fee formula, and its slippage regime where the tuple sets a rate (3.1.0, `REQ-QTE-5`, `REQ-QTE-6`) |
+| `urn:rutent:provider-role:hold` | `schemas/hold.schema.json` | A reserve's hold of a quote, in the envelope: the choice record by id and digest, the candidate, the order or session it is for, its validity (3.1.0, `REQ-QTE-15`) |
+| `urn:rutent:provider-role:arrival-notice` | `schemas/arrival-notice.schema.json` | A reserve's notice of value arriving, in the envelope: the transaction it gives the credit, its per-credit reference, the outer node, the asset with its unit, the amount, the account and its holder (3.1.0, `REQ-ORD-14`, `REQ-ORD-23`) |
+| `urn:rutent:provider-role:arrival-question` | `schemas/arrival-question.schema.json` | The operator's question to a reserve of what arrived at an account, in the envelope: its own transaction, the reserve asked, the holder's session, the account, the outer node and the asset (3.1.0, `REQ-ORD-1`, `REQ-ORD-23`) |
+| `urn:rutent:provider-role:arrival-answer` | `schemas/arrival-answer.schema.json` | A reserve's answer to that question, in the envelope: the question's transaction, and the reserve's arrival notice of each credit whole, or that nothing arrived, or a refusal that never says when it lifts (3.1.0, `REQ-ORD-1`, `REQ-ORD-23`) |
+| `urn:rutent:provider-role:inner-segments` | `schemas/inner-segments.schema.json` | A publisher's record of the segments inside one of its private nodes, in the envelope: the node, the publisher, the label `publishers_word`, and each segment's transaction, asset and amount in and out, and fee (3.1.0, `REQ-ORD-41`, `REQ-ORD-3`) |
 | `urn:rutent:provider-role:common` | `schemas/common.schema.json` | Shared atoms: identifier, version, protocol version, public key, amount, safe integer, timestamp, evidence grade, decimal |
 
-The schemas refer to each other by `$id`. A validator registers all nine and needs nothing from the network.
+The schemas refer to each other by `$id`. A validator registers all fifteen and needs nothing from the network.
 A fixture's file name starts with its shape: `advertisement-`, `statement-envelope-`, `operation-`, `result-`,
-`successive-advertisements-` or `answered-operation-`. The last two are bundles, not schemas:
+`terms-`, `hold-`, `arrival-notice-`, `arrival-question-`, `arrival-answer-`, `inner-segments-`, `successive-advertisements-`,
+`answered-operation-`, `arrival-notices-` or `answered-arrival-question-`. The last four are bundles, not schemas:
+`arrival-notices` is an `earlier` and a `later` enveloped arrival notice, for the rule that relates them
+(`check_one_credit`), and `answered-arrival-question` an enveloped `question` and the enveloped `answer` to it
+(`check_answer`). Of the other two,
 `successive-advertisements` is a `previous` and a `next` enveloped advertisement, each checked against the
 advertisement schema, for the rules that relate them (`validate_successor`); `answered-operation` is an enveloped
 `operation`, the enveloped `result` that answers it, and the `terms` of the tuple it runs through (the
@@ -39,8 +54,13 @@ decision records. All its fields are required:
 
 - `deployment` `{name, operator_key}`: a globally unique deployment, bound to its operator by the operator's
   Ed25519 public key (`THR-8`).
-- `protocol_version`: `major.minor.patch`. The statement is void at any other deployment or version
-  (`REQ-PRT-1`).
+- `protocol_version`: `major.minor.patch`. The statement is void at any other deployment, and at any version the
+  reader doesn't hold in force (`REQ-PRT-1`). A reader holds its current version and, during a cutover, an older one
+  with its cutover date, from which a statement under it is void (`ProtocolVersions`, `check_context(deployment,
+  versions, at)`, `REQ-PRT-4`, 4.0.0).
+- Each change to this contract says in its changelog entry whether a party may ignore it, `Ignorable: yes` or
+  `Ignorable: no`; one that adds a protection is never ignorable, and the contract guard refuses an entry from 4.0.0 on
+  that says neither (`REQ-PRT-2`).
 - `shape`: the `$id` of the statement's schema. It is signed with the rest, so a result can't be presented as a
   quote. A schema for one kind of statement `$ref`s the envelope, fixes `shape` with `const`, and narrows
   `statement`.
@@ -185,6 +205,7 @@ or with the accepted one's `statements` key (which `next` must then list for `ad
   - an optional fill `increment`;
   - `reporting`, `gross` or `net`;
   - `required_inputs` (`REQ-CAT-11`, `REQ-CAT-12`).
+- A reserve's declaration may say it answers hold requests (`answers_hold_requests`, 4.0.0; "Terms and holds").
 - `declarations` holds:
   - `tracking`, for every provider (`REQ-CAT-16`);
   - `evidence`: the weakest grade the provider gives, and its availability (`REQ-CAT-10`, `REQ-ORD-39`);
@@ -200,7 +221,16 @@ or with the accepted one's `statements` key (which `next` must then list for `ad
 - **Operations.** An operation is the operator's statement, signed with its `operator_key`.
   - Its `kind` is one of `withdrawal`, `deposit`, `balance_verification` and `reversal_confirmation` (reserve),
     `holding_balance` (a holding account's module, 3.0.0), `conversion` (exchange), `transfer` (ramp), `reversal` (exchange or ramp), or `judgement` (verifier)
-    (`REQ-CAT-9`, `REQ-CAT-15`, ADR-0008).
+    (`REQ-CAT-9`, `REQ-CAT-15`, ADR-0008); or the operator's `status_query`, `hold` and `inner_segments_query` (4.0.0).
+  - A status query (4.0.0) is asked of a provider that declares `status_query` tracking, under a transaction of its
+    own, naming the transaction it is `about`. Its result names both, and is `answered` (the provider's own result for
+    `about`, whole), `not_known` or `refused`; `check_status_answer` takes both signed statements, so the answer is the
+    provider asked's (`AnsweredByAnotherProvider`). It changes nothing (`REQ-ORD-1`).
+  - An inner-segments query (4.0.0, `T-020-58`) is the operator's question, of a provider that handles it, for the record
+    of the segments that ran inside a private node: its own transaction, the `provider` asked and the `node`. Its result
+    names the transaction and the node, and is `answered` (the provider's own `inner-segments` statement for the node,
+    whole), `not_known` or `refused`; `check_inner_segments_answer` holds the answer to the question, so an answer to
+    another question, transaction, node or provider is no record of the node (`REQ-ORD-41`). It changes nothing.
   - The value-moving kinds carry a `transaction`, the `provider` asked, their segment, `inputs` (`REQ-CAT-12`) and
     `dry_run` (`REQ-CAT-14`). A conversion and a transfer also carry a `direction`, `exact_in` or `exact_out`,
     which says which amount is stated.
@@ -238,6 +268,14 @@ or with the accepted one's `statements` key (which `next` must then list for `ad
 - **Amounts** (2.1.0; see "Amounts against the operation"). `amount_in` is what left the segment's origin, the
   provider's charge included, whether the tuple reports gross or net: `reporting` says only whether `amount_out`
   includes the charge. The fee is in the asset the segment takes in, in the origin unit.
+- **Less the charge** (3.1.0). Under `gross`, a segment that keeps its asset (a withdrawal, a deposit or a transfer)
+  delivers its `amount_out` less its charge. `amount_out` is in the out unit, the operation's out asset at its
+  destination decimals, and the fee in the origin unit, which differ where a reserve's two ends count in different
+  decimals. So the charge subtracted is the fee restated in the out unit: multiplied out exactly where that unit is
+  finer, divided and rounded up where it is coarser, so the charge is never counted below what was charged and
+  what arrives is never overstated (`charge_in_out_unit`, `less_the_charge`). A charge above `amount_out` delivers
+  nothing that can be stated (`None`). Under `net`, what it delivers is its `amount_out`. A conversion's output is as
+  its answer states it: its fee is in its `from` asset, which it doesn't give out.
 - **No `null`.** An optional field is present with a value or absent. Rust refuses `null` as the schemas do.
 - **Evidence** is a non-empty list of `{grade, reference, by}`, where `by` says whose evidence each piece is. A
   public record and a reserve's statement can then both close an order (`REQ-ORD-33`, `REQ-ORD-39`, ADR-0007).
@@ -254,6 +292,149 @@ or with the accepted one's `statements` key (which `next` must then list for `ad
   origin amount and sets no rate.
 - **Refusals.** A refusal's `class` is `lifts_at_known_time` (with `lifts_at`), `waits_on_person` or `final`
   (`REQ-CAT-18`).
+
+## Terms and holds (3.1.0, 4.0.0)
+
+A provider's fee terms and a reserve's held quote are each its maker's own signed statement. A provider hands its
+terms back in a dry-run answer's optional `terms` (4.0.0), and a reserve its hold in the answer to the operator's hold request
+(`hold`, 4.0.0). What a reader does with them, and how Core's log records them, is core-internal's README's.
+
+- **Terms** (`TupleTerms`, shape `urn:rutent:provider-role:terms`). The maker is the tuple's provider. The body
+  names the tuple, by its provider and both ends (an inner node by identifier or an outer node by its network, and
+  the asset with its unit), the fee formula (`flat`, `proportional`, optional `maximum`, in the tuple's input
+  unit), and the slippage regime, present exactly where the tuple sets a rate: an exchange's, whose ends hold
+  different assets. Terms bind from the later of their `made_at` and the time the reader received them, never
+  `made_at` alone, so terms added after a segment started but dated before it never bind it (router-api's
+  `StatedTerms::from_statement`).
+- **A hold** (`Hold`, shape `urn:rutent:provider-role:hold`). Made by the reserve that starts each part of the
+  route. The body names its own `transaction`, its id, unique to it; the choice round's decision record by id and
+  digest (`record`), the candidate held, what it is `for`, an order or a session before its order exists, and its
+  `valid_until`, at most the earliest validity among the figures the candidate cites (router-api's
+  `HeldQuote::check_hold`, which has the record). Redeeming is refused for any order but the one it names, or one
+  accepted in the session it names (`check_redemption`).
+- **The hold request and its answer** (4.0.0). `Operation::Hold` (`hold`) is the operator's request that a reserve
+  hold a chosen quote: the hold's transaction, the reserve, the record, the candidate, whom it is for and the validity
+  asked. The reserve answers with `ResultBody::Hold`, `held` carrying its own `Hold` whole (`NestedMaker` otherwise),
+  or `refused`. `check_hold_answer(request, answer)` takes both signed statements and holds the answer to the
+  request: made by the reserve asked (`OfAnotherReserve`), its transaction (`AnswersAnotherRequest`), the quote asked
+  (`HoldsAnotherQuote`) and the validity asked (`PastTheValidityAsked`).
+- **Who answers hold requests** (4.0.0, `T-020-56`). A reserve's declaration says it with `answers_hold_requests`,
+  optional: `true` where it answers them, and absent or `false` where it doesn't, so the operator asks it for none
+  (`ReserveDeclaration::answers_hold_requests`). It is the reserve's own word at publishing, as its other two answers
+  are; a reserve that doesn't declare it is never asked, and a quote at it is shown unheld, as before 4.0.0.
+  A declaration admits fields it doesn't name (`T-020-54`): an optional field a later version adds is one an older
+  reader ignores, as that version's changelog entry says (`REQ-PRT-2`), and the contract guard holds an entry that says
+  so to the older schema's own text. The 3.0.0 declaration was closed, so `answers_hold_requests` itself is not ignorable
+  by a 3.0.0 reader; the changelog says so.
+- **Terms handed back** (4.0.0). A withdrawal's, deposit's, transfer's or conversion's dry-run answer may carry the provider's
+  own signed `terms`, a nested statement of the result's maker (`ResultBody::terms`).
+
+| Rule | Where | Invalid fixture |
+|---|---|---|
+| A terms statement names its shape, its tuple, its fee formula; a proportion's denominator is above zero | schema | `terms-under-another-shape`, `terms-with-a-zero-denominator` |
+| Terms are made by their tuple's provider | Rust, `check_terms`: `OfAnotherMaker` | `terms-made-by-another-party` |
+| Terms state a slippage regime exactly where their tuple sets a rate | Rust, `check_terms`: `NoSlippageWhereARate`, `SlippageWhereNoRate` | `terms-of-an-exchange-without-a-slippage-regime`, `terms-of-a-reserve-with-a-slippage-regime` |
+| A hold names its transaction, its record by id and digest, its candidate, an order or a session, and its validity | schema | `hold-without-its-transaction`, `hold-of-a-record-without-its-digest`, `hold-for-no-order-or-session` |
+| A hold is redeemed only for its order, or an order accepted in its session | Rust, `check_redemption`: `ForAnotherOrder`, `ForAnotherSession` | none: it relates a hold to its redemption; a test covers it |
+| A hold names the record it holds by id and digest, which must be its held quote's | router-api, `HeldQuote::check_hold` | none here: `hold-of-another-records-candidate-of-the-same-id` is a valid statement, refused against another record in router-api's tests |
+
+## Arrivals (3.1.0, 4.0.0)
+
+A reserve states what arrived at its accounts in a notice of its own, and answers the operator's question of what
+arrived with those notices. How Core's log keys a deposit on a notice is core-internal's README's.
+
+- **The notice** (`ArrivalNotice`, shape `urn:rutent:provider-role:arrival-notice`). Made by the reserve the value
+  arrived at. The body names the `transaction` the reserve gives the credit, the reserve's outer `node`, by its
+  network, the `asset` with the unit the amount is counted in, the `amount`, above zero, the `account` it reached and
+  the `holder`, the party that holds it (`REQ-ORD-14`, `REQ-ORD-23`). It may name the `destination` of an automatic
+  deposit (4.0.0, `REQ-ORD-13`): the reserve, outer node, account and asset the reserve set from its customer's
+  parameters, and who set them (`set_by`) for whom (`set_for`). Absent, it names none.
+- **The transaction is the per-credit reference.** It is the reserve's own, the same in every notice of the credit,
+  whenever signed: the one reference a reader knows the credit by.
+- **One credit, one arrival.** `check_one_credit(earlier, later)` says two notices of the same maker and transaction
+  are one credit where they state the same figures (`Credits::One`), refuses the same transaction with another node,
+  asset, unit, amount, account, holder or destination (`CreditRestated::OtherFigures`), and takes another maker's or another
+  transaction's notice as another credit (`Credits::Two`). Times and signatures are left aside.
+- **Two references are two claims.** Two notices under different transactions are two signed claims, each
+  attributable to the reserve that made it (`REQ-AUD-2`). Neither this contract nor a reader can tell them from two
+  real credits: a reserve that states one credit twice, under two references, has signed for both, and the loss is
+  that reserve's.
+- **The question of what arrived** (`ArrivalQuestion`, shape `urn:rutent:provider-role:arrival-question`). The
+  operator's statement, signed with the deployment's `operator_key` (`check_signed_by_operator`), as an operation
+  is. It names its own `transaction`, fresh for the order it is asked for, so its answer counts only as that
+  transaction's (`REQ-ORD-1`); the reserve asked (`provider`); the holder's `session`; the `account`, the outer
+  `node`, and the `asset` with the unit it is counted in there. It names no order, as no operation does.
+  What arrived at an account tells whether its funds suffice for that much, so the question counts as a balance check
+  (`REQ-CAT-4`) and is asked in the holder's session (`REQ-CAT-3`), outside the bound for the holder's own order.
+- **The answer** (`ArrivalAnswer`, shape `urn:rutent:provider-role:arrival-answer`). The reserve's statement. It
+  names the question's `transaction`, and its `outcome` by `status`: `arrived`, with
+  the reserve's enveloped notice of each credit, whole and unchanged, at least one; `nothing_arrived`, carrying
+  nothing; or `refused`, with a balance refusal's class, which never says when it lifts (`INV-9`). So the answer is
+  the same notice the reserve sends of its own accord, by its transaction, under the question's transaction.
+  `check_shape` and `check_context` reach each notice it carries, which must be the answering reserve's own
+  (`NestedMaker`). `check_answer(question, answer)` holds it to the question: the question's transaction
+  (`AnswersAnotherQuestion`), made by the reserve asked (`OfAnotherReserve`), each notice of the outer node, asset
+  and account asked about, the asset by its unit too, since an amount is read in its unit (`AtAnotherNode`,
+  `InAnotherAsset`, `ToAnotherAccount`, by the notice's position).
+- **Each notice is the reserve's statement.** A notice an answer carries is the same statement the reserve sends of
+  its own accord, and a reader may take it alone.
+- **Shapes of their own.** Not an operation kind and a result kind, so `Operation` and `ResultBody` kept their
+  variants in 3.1.0.
+
+| Rule | Where | Invalid fixture |
+|---|---|---|
+| A notice names its shape, its transaction, its outer node, its asset with its unit, a positive amount, its account and the account's holder | schema | `arrival-notice-under-another-shape`, `arrival-notice-without-its-transaction`, `arrival-notice-without-its-outer-node`, `arrival-notice-at-an-inner-node`, `arrival-notice-without-its-asset`, `arrival-notice-asset-without-its-unit`, `arrival-notice-without-its-amount`, `arrival-notice-of-a-zero-amount`, `arrival-notice-without-its-account`, `arrival-notice-without-its-holder` |
+| Two notices of one credit state the same figures | Rust, `check_one_credit`: `OtherFigures` | `arrival-notices-of-one-credit-with-another-amount` |
+| A question names its shape, its own transaction, the holder's session, and an outer node | schema | `arrival-question-under-another-shape`, `arrival-question-without-its-transaction`, `arrival-question-without-a-session`, `arrival-question-at-an-inner-node` |
+| A question is signed with its deployment's operator key | Rust, `check_signed_by_operator` | `arrival-question-signed-with-another-key` |
+| An answer names its shape and the question's transaction; what arrived carries at least one notice, nothing arrived carries none, and a refusal never says when it lifts | schema | `arrival-answer-under-another-shape`, `arrival-answer-without-its-transaction`, `arrival-answer-arrived-with-no-notices`, `arrival-answer-that-nothing-arrived-carrying-a-notice`, `arrival-answer-refusal-saying-when-it-lifts` |
+| Each notice an answer carries is an arrival notice, made by the answering reserve | schema (`const`), and Rust `check_shape`; Rust, `check_context`: `NestedMaker` | `arrival-answer-carrying-another-shape-as-its-notice`, `arrival-answer-carrying-another-reserves-notice` |
+| An answer names the question's transaction, is made by the reserve asked, and each notice is of its node, asset and unit, and account | Rust, `check_answer`: `AnswersAnotherQuestion`, `OfAnotherReserve`, `AtAnotherNode`, `InAnotherAsset`, `ToAnotherAccount` | `answered-arrival-question-under-another-transaction`, `answered-arrival-question-by-another-reserve`, `answered-arrival-question-at-another-node`, `answered-arrival-question-in-another-asset`, `answered-arrival-question-in-another-unit`, `answered-arrival-question-about-another-account` |
+
+What the contract leaves to its reader: that the notice's maker is a reserve whose advertisement lists that outer
+node and asset (the catalogue's, `F-012`); that a credit taken once is taken once (Core's, `T-020-19`, holding each
+notice it took against the next by `check_one_credit`, a notice carried in an answer included); that a question's
+session is the account holder's, open, and counted against the bound unless for the holder's own order (`F-021`'s
+session register); and that a question is asked for the order it is for, under a transaction fresh for it, and
+its answer follows it (`T-020-19`; core-internal says how the log binds them).
+
+## Inner segments (3.1.0)
+
+`CMP-EVIDENCE`'s replay (`REQ-ORD-41`) reads what a publisher recorded of the segments inside its private node, and
+before 3.1.0 no contract shaped that record: the assembly's `Books` was filled by hand (`F-015`, `T-020-09`). The
+record is now the publisher's own statement (`InnerSegments`, shape `urn:rutent:provider-role:inner-segments`). Its
+body names no transaction of its own.
+
+- **Who makes it.** A publisher holds no key, so the record is made and signed by one of its providers, stating for
+  it, as any statement a publisher stands behind is. `check_inner_segments(record, advertisement)` is given the
+  maker's advertisement, the one the catalogue accepted last for it and never one that arrives with the record, and
+  holds the record to it: the advertisement is the maker's own (`NotItsMakersAdvertisement`), its `publisher` is the
+  one the record names (`OfAnotherPublisher`), and it declares the record's `node` among its `private_nodes`
+  (`NodeNotDeclared`). That the record is signed with a key that advertisement lists for `statements` is the
+  reader's, as for every statement.
+- **What it names.** The private `node`; the `publisher` whose word it is; and the `segments`, at least one, in the order they ran, each with the
+  `transaction` it ran under (`Books::recorded` asks by node and transactions), the `asset_in` and `amount_in`, the
+  `asset_out` and `amount_out`, and the `fee`, in the asset that went in.
+- **Labelled the publisher's word** (`REQ-ORD-3`, `AC-35`). `standing` is required and has one value,
+  `publishers_word` (`Standing::PublishersWord`), so the label travels with the record wherever it goes. Inside a
+  private node there is no other witness: a replay of the record against the public movement out shows consistency
+  with the exit, never that the segments happened (`THR-131`), and a route ending inside the node stays its
+  publisher's word.
+- **No figure refused.** The contract holds the record's fields, not its arithmetic: segments that don't add up or
+  don't chain are still the publisher's record, so the replay sees them and records the mismatch
+  (`inner-segments-that-do-not-add-up` is a valid fixture).
+
+| Rule | Where | Invalid fixture |
+|---|---|---|
+| A record names its shape, its node, its publisher, its label and at least one segment | schema | `inner-segments-under-another-shape`, `inner-segments-without-its-publisher`, `inner-segments-without-its-label`, `inner-segments-without-segments` |
+| Its label is the publisher's word, and nothing else | schema (`const`), and Rust (`Standing`) | `inner-segments-labelled-as-proof` |
+| Each segment names its transaction, its asset and amount in and out, and its fee, in whole numbers | schema | `inner-segments-segment-without-its-transaction`, `inner-segments-segment-without-its-asset-in`, `inner-segments-segment-without-its-amount-in`, `inner-segments-segment-without-its-amount-out`, `inner-segments-segment-without-its-fee`, `inner-segments-fee-with-a-fraction` |
+| A record is made by a provider of the publisher it names that declares its node, by that provider's advertisement | Rust, `check_inner_segments`: `NotItsMakersAdvertisement`, `OfAnotherPublisher`, `NodeNotDeclared` | `published-inner-segments-against-another-providers-advertisement`, `published-inner-segments-for-another-publisher`, `published-inner-segments-at-a-node-its-maker-does-not-declare` |
+
+What the contract leaves to its reader: that the advertisement it passes is the one its catalogue accepted for the
+record's maker, and the record's key one it lists for `statements` (the catalogue's, `REQ-CAT-20`, `REQ-CAT-22`);
+that each transaction is one of the order's segments at that node, run by one of the
+publisher's providers (Core's); and that the segments add up and hand on to the public exit (the replay's).
 
 ## Which rule lives where
 
@@ -308,7 +489,7 @@ class and regime each pick one closed shape, so a field that belongs to another 
 | An operation is one of the eight kinds | schema | `operation-of-an-unknown-kind` |
 | A reversal names the segment it reverses, a positive amount, and is never a dry run | schema | `operation-reversal-without-the-segment-it-reverses`, `operation-reversal-of-a-zero-amount`, `operation-reversal-as-a-dry-run` |
 | A reversal confirmation names no account | schema | `operation-reversal-confirmation-asking-about-an-account` |
-| An optional field is never `null` | schema, and Rust (`present`) | `operation-withdrawal-with-a-null-session`, `result-judgement-with-a-null-holder-key`, `advertisement-tuple-with-a-null-increment`, `advertisement-with-a-null-evidence-declaration`, `advertisement-with-a-null-safe-retry-declaration`, `advertisement-with-a-null-offer` |
+| An optional field is never `null` | schema, and Rust (`present`) | `operation-withdrawal-with-a-null-session`, `result-judgement-with-a-null-holder-key`, `advertisement-tuple-with-a-null-increment`, `advertisement-with-a-null-evidence-declaration`, `advertisement-with-a-null-safe-retry-declaration`, `advertisement-with-a-null-offer`, `advertisement-reserve-declaring-hold-requests-as-null` |
 | An operation names its transaction, and a withdrawal goes into an inner node | schema | `operation-without-a-transaction`, `operation-withdrawal-into-an-outer-node` |
 | A withdrawal dry run names its session | schema (`if`/`then`) | `operation-withdrawal-dry-run-without-a-session` |
 | A conversion or transfer states its direction | schema | `operation-conversion-without-a-direction` |

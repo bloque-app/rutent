@@ -42,13 +42,17 @@
 //!   and never held by the module.
 
 mod calls;
-mod https;
-mod kv;
-mod resolver;
-mod settings;
+// Named by `crate::keys`, which re-exports from each the items it defines (`T-015-04`): crate-visible, so the reader
+// host's path resolves to where each is defined.
+pub(crate) mod https;
+pub(crate) mod kv;
+pub(crate) mod resolver;
+pub(crate) mod settings;
 mod shared;
 mod signing;
-mod transport;
+// The reader host's facade over a role's statement keys alone (`T-015-05`), which `crate::keys` re-exports.
+pub(crate) mod statement_keys;
+pub(crate) mod transport;
 mod world;
 
 #[cfg(test)]
@@ -66,6 +70,6 @@ pub use settings::{
     Bucket, InvalidSettings, ProxySettings, RoleSettings, StoreAddress, StoreScheme, kv_bucket,
 };
 pub use shared::{Caller, CredentialProxy, InFlight, Refusal, Use, UseOf, answer, judge};
-pub use signing::{Answering, SigningError, check_key, sign_result};
+pub use signing::{AboutAsked, Answering, SigningError, check_key, sign_result};
 pub use transport::{Header, Request, Response, Transport, TransportError};
 pub use world::{NoState, ProductionWorld, StateStore};

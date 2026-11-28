@@ -14,10 +14,11 @@ use rutent_contracts::module_interface::{
     CallRefusalReason, CrossModuleCall, CrossModuleOutcome, Declaration, Identifier, OperationKind,
     PartName, RouteReference, SecretRefusalReason, validate_call, validate_call_against,
 };
-use rutent_prov::module::platform::Platform;
+use rutent_prov::module::platform::{Platform, SteppedClock};
 use rutent_prov::module::types::{Events, Handled, LookupOutcome};
 use rutent_prov::proxy::NamedCall;
 use serde_json::json;
+use std::sync::Arc;
 
 fn id(text: &str) -> Identifier {
     Identifier::new(text).expect("an identifier")
@@ -117,6 +118,8 @@ fn the_call(events: &Events, caller: &Declaration, label: &str) -> CrossModuleCa
 fn undeclared_cross_module_call_is_refused() {
     for language in languages() {
         let mut binding = binding("reserve");
+        // On a clock that stands still (`T-013-08`): a callee's start inside the operation can't pass a real deadline.
+        binding.set_operation_clock(Arc::new(SteppedClock::new()));
         let callee = format!("callee-{language}");
         let caller = format!("caller-{language}");
         let stranger = format!("stranger-{language}");
@@ -282,6 +285,8 @@ fn undeclared_cross_module_call_is_refused() {
 fn declared_call_runs_on_the_callees_own_credentials() {
     for language in languages() {
         let mut binding = binding("reserve");
+        // On a clock that stands still (`T-013-08`): a callee's start inside the operation can't pass a real deadline.
+        binding.set_operation_clock(Arc::new(SteppedClock::new()));
         let callee = format!("callee-{language}");
         let caller = format!("caller-{language}");
         // Hostile callee: it resolves its own key, and then asks for the caller's own secret by its name. It
@@ -386,6 +391,8 @@ fn declared_call_runs_on_the_callees_own_credentials() {
 fn call_back_into_a_provider_already_running_is_refused_as_unavailable() {
     for language in languages() {
         let mut binding = binding("reserve");
+        // On a clock that stands still (`T-013-08`): a callee's start inside the operation can't pass a real deadline.
+        binding.set_operation_clock(Arc::new(SteppedClock::new()));
         let (a, b) = (format!("first-{language}"), format!("second-{language}"));
         // A calls B, and B calls back into A, which is still handling the operation that called B. A looks up its
         // own key after its call returns, so any lookup of A's inside B's call would show as a second one.

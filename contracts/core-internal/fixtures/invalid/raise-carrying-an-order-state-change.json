@@ -1,0 +1,34 @@
+{
+  "raise": "raise-1",
+  "difference": {
+    "kind": "reports",
+    "order": "ord-17",
+    "segment": "seg-2",
+    "sent": "1000000000",
+    "received": "999000000",
+    "asset": {
+      "id": "USDC",
+      "decimals": 6
+    }
+  },
+  "cites": [
+    {
+      "log": "log-main",
+      "index": 60,
+      "entry": {
+        "algorithm": "sha-256",
+        "value": "6161616161616161616161616161616161616161616161616161616161616161"
+      }
+    },
+    {
+      "log": "log-main",
+      "index": 61,
+      "entry": {
+        "algorithm": "sha-256",
+        "value": "6262626262626262626262626262626262626262626262626262626262626262"
+      }
+    }
+  ],
+  "at": "2026-11-10T09:00:00Z",
+  "order_state": "failed"
+}

@@ -17,16 +17,19 @@ use serde_json::{Value, json};
 /// The provider-role contract's schemas, which the result schema refers to by their `$id`. The contract crate
 /// carries no schema text (it builds for `no_std`), so the files are read from `contracts/provider-role/schemas/`
 /// at build time.
-const SCHEMAS: [&str; 9] = [
+const SCHEMAS: [&str; 12] = [
     include_str!("../../../../contracts/provider-role/schemas/advertisement.schema.json"),
     include_str!("../../../../contracts/provider-role/schemas/common.schema.json"),
     include_str!("../../../../contracts/provider-role/schemas/declarations.schema.json"),
+    include_str!("../../../../contracts/provider-role/schemas/hold.schema.json"),
+    include_str!("../../../../contracts/provider-role/schemas/inner-segments.schema.json"),
     include_str!("../../../../contracts/provider-role/schemas/judgement.schema.json"),
     include_str!("../../../../contracts/provider-role/schemas/operation.schema.json"),
     include_str!("../../../../contracts/provider-role/schemas/reserve-declaration.schema.json"),
     include_str!("../../../../contracts/provider-role/schemas/result.schema.json"),
     include_str!("../../../../contracts/provider-role/schemas/reversal-confirmation.schema.json"),
     include_str!("../../../../contracts/provider-role/schemas/statement-envelope.schema.json"),
+    include_str!("../../../../contracts/provider-role/schemas/terms.schema.json"),
 ];
 
 /// The result body's definition in the result schema: the platform's own envelope is not the module's to judge.

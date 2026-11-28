@@ -50,7 +50,11 @@ use rutent_contracts::router_api::{
 /// The drop reasons this suite knows, as router-api 3.0.0 names them (`T-011-05`). `DropReason` is
 /// `#[non_exhaustive]` since 3.0.0, so a reason added later (still a major under `DEC-4`) breaks no build here; a
 /// test holds this list to the contract's schema, so a new reason fails it until the suite is reviewed for it.
-pub const DROP_REASONS: [&str; 17] = [
+/// `batched_payout` (router-api 4.0.0, `T-020-39`) is checked by the contract's own [`DecisionRecord::check`], which the
+/// suite runs first: its part's last operation, a deposit at a tuple the snapshot says pays out in batches; and the
+/// contract refuses a kept or outranked candidate that ends there (`T-020-43`). The cases where the router drops
+/// one are `T-020-43`'s.
+pub const DROP_REASONS: [&str; 18] = [
     "stale_figure",
     "void_statement",
     "quote_voided",
@@ -63,6 +67,7 @@ pub const DROP_REASONS: [&str; 17] = [
     "no_price",
     "fee_above_amount",
     "nothing_delivered",
+    "batched_payout",
     "excluded_by_policy",
     "below_floor",
     "no_positive_outcome",
@@ -329,17 +334,21 @@ impl<'a> Reader<'a> {
     /// Whether a statement figure is usable here: within its validity and not void (`REQ-QTE-4`, `REQ-PRT-1`), and,
     /// for an accepted answer in a choice round, made at or after the shortlist round's `taken_at` (`REQ-CAT-5`).
     fn is_usable(&self, figure: &Figure) -> bool {
-        let (deployment, version) = (
+        // The versions in force under the bounds, judged at the snapshot's time (provider-role 4.0.0, `REQ-PRT-4`).
+        let (deployment, versions, at) = (
             &self.record.bounds.deployment,
-            self.record.bounds.protocol_version.as_str(),
+            self.record.bounds.protocol_versions(),
+            self.record.snapshot.taken_at.as_str(),
         );
         let in_context = match &figure.value {
             FigureValue::FreshQuote { quote, .. } => {
-                quote.check_context(deployment, version).is_ok()
+                quote.check_context(deployment, &versions, at).is_ok()
             }
-            FigureValue::DryRun { result, .. } => result.check_context(deployment, version).is_ok(),
+            FigureValue::DryRun { result, .. } => {
+                result.check_context(deployment, &versions, at).is_ok()
+            }
             FigureValue::Eligibility { judgement, .. } => {
-                judgement.check_context(deployment, version).is_ok()
+                judgement.check_context(deployment, &versions, at).is_ok()
             }
             _ => true,
         };
@@ -478,8 +487,9 @@ impl<'a> Reader<'a> {
     }
 
     /// Every operation's fee and amount out, recomputed. An operation that cites usable accepted answers for its
-    /// amount in states each one's fee and amount out: a provider's confirmed terms bind over its advertised price,
-    /// as the contract's confirmation rule already requires of the choice. Any other operation states what its
+    /// amount in states each one's fee and what arrives by it (router-api's `Operation::stated_out`: under a gross
+    /// tuple, a same-asset answer's amount out less its charge): a provider's confirmed terms bind over its
+    /// advertised price, as the contract's confirmation rule already requires of the choice. Any other operation states what its
     /// price gives on its amount in, between its two units.
     fn amounts_follow_their_figures(&self, findings: &mut Vec<Finding>) {
         for candidate in &self.record.candidates {
@@ -537,15 +547,22 @@ impl<'a> Reader<'a> {
                 }
                 if !answers.is_empty() {
                     for (id, answer) in answers {
-                        if answer.fee != &operation.fee
-                            || answer.amount_out != operation.amount_out.as_str()
+                        // What arrives by the answer: under a gross tuple, a same-asset answer less its charge,
+                        // and nothing where its charge is above what it gives out. Such an operation states `0`
+                        // out, so its candidate is dropped as arriving with nothing, or as delivering nothing
+                        // short of the destination: a kept candidate can't state `0` out (`T-011-07`).
+                        let arrives = operation
+                            .stated_out(cited.tuple, answer.amount_out, answer.fee)
+                            .unwrap_or_else(|| "0".to_owned());
+                        if answer.fee != &operation.fee || arrives != operation.amount_out.as_str()
                         {
                             fail(format!(
-                                "states a fee of {} and {} out, but answer {id} gives {} and {}",
+                                "states a fee of {} and {} out, but answer {id} gives {} and {} out, {} arriving",
                                 operation.fee.amount,
                                 operation.amount_out,
                                 answer.fee.amount,
-                                answer.amount_out
+                                answer.amount_out,
+                                arrives
                             ));
                         }
                     }

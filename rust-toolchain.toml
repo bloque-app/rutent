@@ -1,0 +1,9 @@
+# The root workspace's toolchain, pinned (T-020-11d), with the components and targets CI and the guests' builds use.
+# CI's floating `stable` turned m3 red twice on its own when it moved to 1.100.0: cargo's new build layout (T-020-11c)
+# and rustfmt's wrapping. Moving it is a deliberate change of its own: see F-024's notes ("The toolchain is pinned").
+# The sub-workspaces under `components/stm/vos-program/` and `experiments/` pin their own.
+[toolchain]
+channel = "1.98.0"
+components = ["clippy", "rustfmt"]
+targets = ["riscv32imac-unknown-none-elf", "wasm32-unknown-unknown"]
+profile = "minimal"

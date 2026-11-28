@@ -1,0 +1,16 @@
+{
+  "request": "req-300",
+  "outcome": {
+    "answer": "opened",
+    "session": "sess-300",
+    "expires_at": "2026-11-10T09:15:00Z"
+  },
+  "receipt": {
+    "log": "log-main",
+    "index": 50,
+    "entry": {
+      "algorithm": "sha-256",
+      "value": "4040404040404040404040404040404040404040404040404040404040404040"
+    }
+  }
+}

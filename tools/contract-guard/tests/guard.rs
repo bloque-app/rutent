@@ -1,6 +1,8 @@
 //! Behaviour of the contract guard core, on in-memory fixtures. No test here creates a commit (`T-001-05`, `DEC-4`).
 
-use rutent_contract_guard::{Files, Violation, check, parse_contracts, split_nul_names};
+use rutent_contract_guard::{
+    Files, Violation, check, is_release_base, parse_contracts, split_nul_names,
+};
 use std::collections::HashMap;
 
 const CONTRACTS: &str = "\
@@ -56,6 +58,10 @@ fn lock_with_extra_edge(serde: &str) -> String {
 struct Fixture {
     base: HashMap<String, String>,
     head: HashMap<String, String>,
+    /// The release line's (`develop`'s) files, read only where the base is not itself a release line.
+    release: HashMap<String, String>,
+    /// Whether the base is a non-release line, a milestone branch such as `m3`.
+    milestone_base: bool,
 }
 
 impl Default for Fixture {
@@ -64,7 +70,12 @@ impl Default for Fixture {
         base.insert("contracts/CONTRACTS".to_string(), CONTRACTS.to_string());
         let mut head = HashMap::new();
         head.insert("PLAN.md".to_string(), PLAN.to_string());
-        Fixture { base, head }
+        Fixture {
+            base,
+            head,
+            release: HashMap::new(),
+            milestone_base: false,
+        }
     }
 }
 
@@ -86,6 +97,17 @@ impl Fixture {
         self.head.insert(path.to_string(), text.to_string());
         self
     }
+    /// The base is a milestone branch, and the release line holds `text` at `path`.
+    fn on_release_line(mut self, path: &str, text: &str) -> Self {
+        self.release.insert(path.to_string(), text.to_string());
+        self.milestone_base = true;
+        self
+    }
+    /// The base is a milestone branch, and the release line has no such file.
+    fn milestone(mut self) -> Self {
+        self.milestone_base = true;
+        self
+    }
 }
 
 impl Files for Fixture {
@@ -98,6 +120,12 @@ impl Files for Fixture {
     }
     fn head(&self, path: &str) -> Option<String> {
         self.head.get(path).cloned()
+    }
+    fn base_is_release(&self) -> bool {
+        !self.milestone_base
+    }
+    fn released(&self, path: &str) -> Option<String> {
+        self.release.get(path).cloned()
     }
 }
 
@@ -744,5 +772,602 @@ fn base_files_without_a_changelog_fail() {
             .iter()
             .any(|v| v.subject == "provider-role" && v.message.contains("files")),
         "a contract that owns base files must keep a base changelog, got {violations:?}"
+    );
+}
+
+/// The state machine's major moves, and the host's schemas reference its shapes; `host` is the host's version at
+/// the head, its changelog changed only if it moved.
+fn referenced_major(state_machine: &str, host: &str) -> (Fixture, Vec<&'static str>) {
+    let host_base = "# host changelog\n\n## 2.1.0\n- no_std. (DEC-4, T-010-01)\n";
+    let mut fixture = Fixture::default()
+        .base_only(
+            "contracts/state-machine/CHANGELOG.md",
+            "# state-machine changelog\n\n## 2.1.0\n- no_std. (DEC-4, T-010-01)\n",
+        )
+        .head_only(
+            "contracts/state-machine/CHANGELOG.md",
+            &format!(
+                "# state-machine changelog\n\n## {state_machine}\n- A new input. (DEC-4, DEC-20, T-020-01)\n\n## 2.1.0\n- no_std. (DEC-4, T-010-01)\n"
+            ),
+        )
+        .at_both(
+            "contracts/state-machine/schemas/order.schema.json",
+            "{\"$id\": \"urn:rutent:state-machine:order\"}",
+        )
+        .at_both(
+            "contracts/state-machine/host/schemas/snapshot.schema.json",
+            "{\"$ref\": \"urn:rutent:state-machine:order\"}",
+        )
+        .base_only("contracts/state-machine/host/CHANGELOG.md", host_base);
+    let mut changed = vec![
+        "contracts/state-machine/CHANGELOG.md",
+        "contracts/state-machine/schemas/order.schema.json",
+    ];
+    if host == "2.1.0" {
+        fixture = fixture.head_only("contracts/state-machine/host/CHANGELOG.md", host_base);
+    } else {
+        fixture = fixture.head_only(
+            "contracts/state-machine/host/CHANGELOG.md",
+            &format!("# host changelog\n\n## {host}\n- Follows state-machine. (DEC-4, DEC-20, T-020-01)\n\n## 2.1.0\n- no_std. (DEC-4, T-010-01)\n"),
+        );
+        changed.push("contracts/state-machine/host/CHANGELOG.md");
+    }
+    (fixture, changed)
+}
+
+// verifies: DEC-4, DEC-20
+#[test]
+fn a_referenced_contract_s_major_bump_needs_the_referencing_contract_s_major_bump() {
+    let (fixture, changed) = referenced_major("3.0.0", "2.1.0");
+    let violations = run(&changed, &fixture);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.subject == "host" && v.message.contains("reference state-machine")),
+        "expected the host to need a bump, got {violations:?}"
+    );
+    let (fixture, changed) = referenced_major("3.0.0", "2.2.0");
+    let violations = run(&changed, &fixture);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.subject == "host" && v.message.contains("major bump")),
+        "a minor bump of the host is not enough, got {violations:?}"
+    );
+    let (fixture, changed) = referenced_major("3.0.0", "3.0.0");
+    assert_eq!(run(&changed, &fixture), Vec::new());
+    // A minor bump of the referenced contract asks nothing of the host.
+    let (fixture, changed) = referenced_major("2.2.0", "2.1.0");
+    assert_eq!(run(&changed, &fixture), Vec::new());
+}
+
+/// module-interface's major moves, and router-api's Rust module re-exports one of its types, written `use_line`.
+fn module_use(use_line: &str, router_api: &str) -> (Fixture, Vec<&'static str>) {
+    let router_base = "# router-api changelog\n\n## 3.0.0\n- Routes. (DEC-4, T-004-01)\n";
+    let mut fixture = Fixture::default()
+        .base_only(
+            "contracts/module-interface/CHANGELOG.md",
+            "# module-interface changelog\n\n## 4.0.0\n- Calls. (DEC-4, T-003-01)\n",
+        )
+        .head_only(
+            "contracts/module-interface/CHANGELOG.md",
+            "# module-interface changelog\n\n## 5.0.0\n- A call kind renamed. (DEC-4, DEC-20, T-020-01)\n\n## 4.0.0\n- Calls. (DEC-4, T-003-01)\n",
+        )
+        .at_both("contracts/src/module_interface/types.rs", "pub enum OperationKind {}")
+        .at_both("contracts/src/router_api/types.rs", use_line)
+        .base_only("contracts/router-api/CHANGELOG.md", router_base);
+    let mut changed = vec![
+        "contracts/module-interface/CHANGELOG.md",
+        "contracts/src/module_interface/types.rs",
+    ];
+    if router_api == "3.0.0" {
+        fixture = fixture.head_only("contracts/router-api/CHANGELOG.md", router_base);
+    } else {
+        fixture = fixture.head_only(
+            "contracts/router-api/CHANGELOG.md",
+            &format!("# router-api changelog\n\n## {router_api}\n- Follows module-interface. (DEC-4, DEC-20, T-020-01)\n\n## 3.0.0\n- Routes. (DEC-4, T-004-01)\n"),
+        );
+        changed.push("contracts/router-api/CHANGELOG.md");
+    }
+    (fixture, changed)
+}
+
+// verifies: DEC-4, DEC-20
+#[test]
+fn a_rust_module_using_a_contract_whose_major_moved_needs_its_own_major_bump() {
+    for line in [
+        "pub use crate::module_interface::OperationKind as CallKind;",
+        "use crate::{provider_role::Id, module_interface::OperationKind};",
+    ] {
+        let (fixture, changed) = module_use(line, "3.0.0");
+        let violations = run(&changed, &fixture);
+        assert!(
+            violations.iter().any(|v| v.subject == "router-api"
+                && v.message.contains("Rust module uses module-interface")),
+            "{line}: expected router-api to need a bump, got {violations:?}"
+        );
+        let (fixture, changed) = module_use(line, "4.0.0");
+        assert_eq!(run(&changed, &fixture), Vec::new(), "{line}");
+    }
+    // A module that names no other contract's module asks nothing of it.
+    let (fixture, changed) = module_use("pub enum Route {}", "3.0.0");
+    assert_eq!(run(&changed, &fixture), Vec::new());
+}
+
+// verifies: DEC-4
+#[test]
+fn a_changelog_heading_that_is_not_a_version_is_refused_even_untouched() {
+    let fixture = Fixture::default().at_both(
+        "contracts/router-api/CHANGELOG.md",
+        "# router-api changelog\n\n## next\n- Routes. (DEC-4, T-004-01)\n",
+    );
+    let violations = run(&[], &fixture);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.subject == "router-api" && v.message.contains("not a version")),
+        "expected the heading refused, got {violations:?}"
+    );
+}
+
+// verifies: DEC-4, DEC-20
+#[test]
+fn a_use_in_nested_braces_or_through_super_counts_as_a_use() {
+    // Nested braces: the use of module-interface sits past the first closing brace.
+    for line in [
+        "use crate::{provider_role::{Id, Kind}, module_interface::OperationKind};",
+        "use crate::{provider_role::{types::{Id}}, module_interface::{OperationKind}};",
+    ] {
+        let (fixture, changed) = module_use(line, "3.0.0");
+        let violations = run(&changed, &fixture);
+        assert!(
+            violations.iter().any(|v| v.subject == "router-api"
+                && v.message.contains("Rust module uses module-interface")),
+            "{line}: expected router-api to need a bump, got {violations:?}"
+        );
+    }
+    // `super::` from the host's module, nested in the state machine's, names the state machine's module.
+    let host_base = "# host changelog\n\n## 2.1.0\n- no_std. (DEC-4, T-010-01)\n";
+    let fixture = Fixture::default()
+        .base_only(
+            "contracts/state-machine/CHANGELOG.md",
+            "# state-machine changelog\n\n## 2.1.0\n- no_std. (DEC-4, T-010-01)\n",
+        )
+        .head_only(
+            "contracts/state-machine/CHANGELOG.md",
+            "# state-machine changelog\n\n## 3.0.0\n- A new input. (DEC-4, DEC-20, T-020-01)\n\n## 2.1.0\n- no_std. (DEC-4, T-010-01)\n",
+        )
+        .at_both("contracts/src/state_machine/mod.rs", "pub struct Order;")
+        .at_both("contracts/src/state_machine/host/mod.rs", "use super::{Order, RecordedInput};")
+        .at_both("contracts/state-machine/host/CHANGELOG.md", host_base);
+    let violations = run(
+        &[
+            "contracts/state-machine/CHANGELOG.md",
+            "contracts/src/state_machine/mod.rs",
+        ],
+        &fixture,
+    );
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.subject == "host" && v.message.contains("Rust module uses state-machine")),
+        "expected the host to need a bump, got {violations:?}"
+    );
+}
+
+/// A protocol change from 4.0.0 on, `entry` its one new bullet, at a bumped provider-role.
+fn protocol_change(entry: &str) -> Vec<Violation> {
+    let base = "# provider-role changelog\n\n## 3.0.0\n- Holding balance. (DEC-4, T-016-02)\n";
+    let head = format!(
+        "# provider-role changelog\n\n## 4.0.0\n{entry}\n\n## 3.0.0\n- Holding balance. (DEC-4, T-016-02)\n"
+    );
+    let fixture = Fixture::default()
+        .base_only("contracts/provider-role/CHANGELOG.md", base)
+        .head_only("contracts/provider-role/CHANGELOG.md", &head)
+        .changed_head(
+            "contracts/provider-role/schemas/operation.schema.json",
+            "{}",
+        );
+    run(
+        &[
+            "contracts/provider-role/CHANGELOG.md",
+            "contracts/provider-role/schemas/operation.schema.json",
+        ],
+        &fixture,
+    )
+}
+
+/// Each protocol change says whether a party may ignore it (`REQ-PRT-2`, finding 11 of `M3`'s milestone review): an
+/// entry of provider-role's changelog from 4.0.0 on that says neither, or both, fails; one that says either passes.
+// verifies: REQ-PRT-2
+#[test]
+fn changelog_entry_that_says_neither_ignorable_nor_not_fails_the_contract_guard() {
+    for entry in [
+        "- A status question. (DEC-4, T-020-45)",
+        "- A status question, which a party may ignore. (DEC-4, T-020-45)",
+        "- A status question. Ignorable: yes. Ignorable: no. (DEC-4, T-020-45)",
+        "- A status question. Ignorable: none. (DEC-4, T-020-45)",
+        "- A status question. Ignorable: not sure. (DEC-4, T-020-45)",
+        "- A status question. Ignorable: no. Ignorable: no. (DEC-4, T-020-45)",
+    ] {
+        let violations = protocol_change(entry);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.subject == "provider-role" && v.message.contains("neither or both")),
+            "{entry}: expected an ignorable violation, got {violations:?}"
+        );
+    }
+    for entry in [
+        "- A status question. Ignorable: no. (DEC-4, T-020-45)",
+        "- Docs. Ignorable:\n  yes. (DEC-4, T-020-45)",
+    ] {
+        assert_eq!(protocol_change(entry), Vec::new(), "{entry}");
+    }
+    // Before 4.0.0 the protocol's entries said nothing of it, and another contract's never need to.
+    let old = Fixture::default()
+        .base_only("contracts/provider-role/CHANGELOG.md", "# provider-role changelog\n\n## 2.0.0\n- Keys. (DEC-4, T-002-03)\n")
+        .head_only(
+            "contracts/provider-role/CHANGELOG.md",
+            "# provider-role changelog\n\n## 2.1.0\n- Amounts. (DEC-4, T-002-03)\n\n## 2.0.0\n- Keys. (DEC-4, T-002-03)\n",
+        )
+        .changed_head("contracts/provider-role/schemas/operation.schema.json", "{}");
+    assert_eq!(
+        run(
+            &[
+                "contracts/provider-role/CHANGELOG.md",
+                "contracts/provider-role/schemas/operation.schema.json",
+            ],
+            &old,
+        ),
+        Vec::new()
+    );
+}
+
+/// A change that adds a protection is never ignorable (`REQ-PRT-2`, `THR-64`).
+// verifies: REQ-PRT-2
+#[test]
+fn change_adding_a_protection_marked_ignorable_fails_the_contract_guard() {
+    let violations =
+        protocol_change("- Cutovers. Adds a protection. Ignorable: yes. (DEC-4, T-020-45)");
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.subject == "provider-role" && v.message.contains("adds a protection")),
+        "expected a protection violation, got {violations:?}"
+    );
+    // Read whatever its case.
+    let lower =
+        protocol_change("- Cutovers, which adds a protection. Ignorable: yes. (DEC-4, T-020-45)");
+    assert!(
+        lower
+            .iter()
+            .any(|v| v.subject == "provider-role" && v.message.contains("adds a protection")),
+        "expected a protection violation in lower case, got {lower:?}"
+    );
+    assert_eq!(
+        protocol_change("- Cutovers. Ignorable: no. Adds a protection. (DEC-4, T-020-45)"),
+        Vec::new()
+    );
+}
+
+const PROVIDER_LOG: &str = "contracts/provider-role/CHANGELOG.md";
+const PROVIDER_SCHEMA: &str = "contracts/provider-role/schemas/operation.schema.json";
+const PROVIDER_README: &str = "contracts/provider-role/README.md";
+
+/// A provider-role changelog whose top section is `top`, each section one bullet.
+fn provider_log(sections: &[(&str, &str)]) -> String {
+    let mut text = "# provider-role changelog\n".to_string();
+    for (version, bullet) in sections {
+        text.push_str(&format!("\n## {version}\n- {bullet} (DEC-4, T-020-45)\n"));
+    }
+    text
+}
+
+/// Provider-role at 4.0.0 on a milestone base (`m3`), where `develop` holds 3.0.0 alone; the head folds `bullet` into
+/// 4.0.0 and changes `changed`. `released` makes `develop` hold 4.0.0 as well.
+fn fold(changed: &[(&str, &str)], bullet: &str, released: bool, milestone: bool) -> Vec<Violation> {
+    let base_log = provider_log(&[("4.0.0", "Adverts. Ignorable: no."), ("3.0.0", "Holding.")]);
+    let head_log = format!(
+        "{}- {bullet} (DEC-4, T-020-45)\n",
+        provider_log(&[("4.0.0", "Adverts. Ignorable: no.")])
+    ) + "\n## 3.0.0\n- Holding. (DEC-4, T-020-45)\n";
+    let release_log = if released {
+        base_log.clone()
+    } else {
+        provider_log(&[("3.0.0", "Holding.")])
+    };
+    let mut fixture = Fixture::default()
+        .base_only(PROVIDER_LOG, &base_log)
+        .head_only(PROVIDER_LOG, &head_log);
+    for (path, text) in changed {
+        fixture = fixture.changed_head(path, text);
+    }
+    if milestone {
+        fixture = fixture.on_release_line(PROVIDER_LOG, &release_log);
+    }
+    let mut paths: Vec<&str> = changed.iter().map(|(path, _)| *path).collect();
+    paths.push(PROVIDER_LOG);
+    run(&paths, &fixture)
+}
+
+/// A fold into a contract version no release has seen needs no bump against a milestone base, and the same change
+/// against `develop`, where that version is released, fails without one (`T-020-54`, the milestone reviewer's
+/// check of 2026-11-25).
+// verifies: DEC-4
+#[test]
+fn fold_into_an_unreleased_version_against_a_milestone_base_passes() {
+    let schema = [(PROVIDER_SCHEMA, "{}")];
+    let bullet = "A fold. Ignorable: no.";
+    // m3-like base: 4.0.0 is on no release line.
+    assert_eq!(fold(&schema, bullet, false, true), Vec::new());
+    // develop-like base, the version released: a bump is needed.
+    let violations = fold(&schema, bullet, true, true);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.subject == "provider-role" && v.message.contains("version not bumped")),
+        "a released version changed without a bump: {violations:?}"
+    );
+    // A base that is itself a release line keeps the rule whatever the release line holds.
+    let violations = fold(&schema, bullet, false, false);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.subject == "provider-role" && v.message.contains("version not bumped")),
+        "a release base keeps the bump rule: {violations:?}"
+    );
+}
+
+/// The milestone base's allowance is for versions no release has: a lower version, or a version `develop` holds,
+/// still fails there.
+// verifies: DEC-4
+#[test]
+fn milestone_base_still_refuses_a_version_that_went_down_or_has_been_released() {
+    let head_log = provider_log(&[("3.1.0", "Adverts. Ignorable: no."), ("3.0.0", "Holding.")]);
+    let base_log = provider_log(&[("4.0.0", "Adverts. Ignorable: no."), ("3.0.0", "Holding.")]);
+    // The head's top version is lower than the base's, and unreleased.
+    let fixture = Fixture::default()
+        .base_only(PROVIDER_LOG, &base_log)
+        .head_only(PROVIDER_LOG, &head_log)
+        .changed_head(PROVIDER_SCHEMA, "{}")
+        .on_release_line(PROVIDER_LOG, &provider_log(&[("3.0.0", "Holding.")]));
+    let violations = run(&[PROVIDER_LOG, PROVIDER_SCHEMA], &fixture);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.message.contains("version not bumped")),
+        "a version that went down is refused: {violations:?}"
+    );
+    // The released 3.0.0 changed on the milestone: needs a bump.
+    let base_log = provider_log(&[("3.0.0", "Holding.")]);
+    let head_log = format!("{base_log}- A fold. (DEC-4, T-020-45)\n");
+    let fixture = Fixture::default()
+        .base_only(PROVIDER_LOG, &base_log)
+        .head_only(PROVIDER_LOG, &head_log)
+        .changed_head(PROVIDER_SCHEMA, "{}")
+        .on_release_line(PROVIDER_LOG, &base_log);
+    let violations = run(&[PROVIDER_LOG, PROVIDER_SCHEMA], &fixture);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.message.contains("version not bumped")),
+        "a released version is refused: {violations:?}"
+    );
+    // A contract `develop` doesn't have at all is unreleased in every version.
+    let base_log = provider_log(&[("1.0.0", "Adverts. Ignorable: no.")]);
+    let head_log = format!("{base_log}- A fold. (DEC-4, T-020-45)\n");
+    let fixture = Fixture::default()
+        .base_only(PROVIDER_LOG, &base_log)
+        .head_only(PROVIDER_LOG, &head_log)
+        .changed_head(PROVIDER_SCHEMA, "{}")
+        .milestone();
+    assert_eq!(run(&[PROVIDER_LOG, PROVIDER_SCHEMA], &fixture), Vec::new());
+}
+
+/// A README-only rewording of an unreleased version needs no new bullet against a milestone base; against `develop`,
+/// or for any other file, or for a released version, it still does (`T-020-54`'s addendum of 2026-11-25).
+// verifies: DEC-4
+#[test]
+fn readme_only_change_to_an_unreleased_version_needs_no_new_bullet_against_a_milestone_base() {
+    let log = provider_log(&[("4.0.0", "Adverts. Ignorable: no."), ("3.0.0", "Holding.")]);
+    let develop = provider_log(&[("3.0.0", "Holding.")]);
+    let build = |milestone: bool, released: &str, path: &str| {
+        let mut fixture = Fixture::default()
+            .at_both(PROVIDER_LOG, &log)
+            .changed_head(path, "reworded");
+        if milestone {
+            fixture = fixture.on_release_line(PROVIDER_LOG, released);
+        }
+        run(&[path], &fixture)
+    };
+    assert_eq!(build(true, &develop, PROVIDER_README), Vec::new());
+    for (milestone, released, path) in [
+        (false, develop.as_str(), PROVIDER_README),
+        (true, log.as_str(), PROVIDER_README),
+        (true, develop.as_str(), PROVIDER_SCHEMA),
+    ] {
+        let violations = build(milestone, released, path);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.subject == "provider-role" && v.message.contains("adds no bullet")),
+            "milestone {milestone}, {path}: expected a missing-bullet violation, got {violations:?}"
+        );
+    }
+}
+
+/// A provider-role 4.0.0 change whose `schema` goes from `before` (`None`: a new file) to `after`, with `entry` its
+/// one new bullet.
+fn schema_change(before: Option<&str>, after: &str, entry: &str) -> Vec<Violation> {
+    let base_log = "# provider-role changelog\n\n## 3.0.0\n- Holding balance. (DEC-4, T-016-02)\n";
+    let head_log = format!(
+        "# provider-role changelog\n\n## 4.0.0\n{entry}\n\n## 3.0.0\n- Holding balance. (DEC-4, T-016-02)\n"
+    );
+    let path = "contracts/provider-role/schemas/reserve-declaration.schema.json";
+    let mut fixture = Fixture::default()
+        .base_only(PROVIDER_LOG, base_log)
+        .head_only(PROVIDER_LOG, &head_log)
+        .changed_head(path, after);
+    if let Some(before) = before {
+        fixture = fixture.base_only(path, before);
+    }
+    run(&[PROVIDER_LOG, path], &fixture)
+}
+
+const CLOSED: &str =
+    r#"{"type":"object","additionalProperties":false,"properties":{"a":{"type":"boolean"}}}"#;
+const CLOSED_PLUS_B: &str = r#"{"type":"object","additionalProperties":false,"properties":{"a":{"type":"boolean"},"b":{"type":"boolean"}}}"#;
+const OPEN: &str = r#"{"type":"object","properties":{"a":{"type":"boolean"}}}"#;
+const OPEN_PLUS_B: &str =
+    r#"{"type":"object","properties":{"a":{"type":"boolean"},"b":{"type":"boolean"}}}"#;
+
+/// A change marked ignorable must be ignorable: a field it adds to an object the older schema closes is refused by
+/// that schema, so an entry that names the field and says a party may ignore it contradicts the schema (`REQ-PRT-2`,
+/// the milestone reviewer's Low of 2026-11-26). An entry that says not ignorable, or a field the older schema admits,
+/// passes. The guard holds the two to agree.
+// verifies: REQ-PRT-2
+#[test]
+fn field_marked_ignorable_is_admitted_by_the_older_schema() {
+    let yes = "- Adds `b`, optional. Ignorable: yes. (DEC-4, T-020-54)";
+    let no = "- Adds `b`, optional. Ignorable: no. (DEC-4, T-020-54)";
+    // The older schema closes the object: a field added to it is refused by it, so it is not ignorable.
+    let violations = schema_change(Some(CLOSED), CLOSED_PLUS_B, yes);
+    assert!(
+        violations.iter().any(|v| v.subject == "provider-role"
+            && v.message.contains("older schema")
+            && v.message.contains("`b`")),
+        "expected an older-schema violation, got {violations:?}"
+    );
+    // Written as the type's field, or with the schema's name beside it, it is the same field.
+    for entry in [
+        "- Adds `ReserveDeclaration.b`. Ignorable: yes. (DEC-4, T-020-54)",
+        "- Adds `reserve-declaration.schema.json`'s `b`. Ignorable: yes. (DEC-4, T-020-54)",
+    ] {
+        assert!(
+            !schema_change(Some(CLOSED), CLOSED_PLUS_B, entry).is_empty(),
+            "{entry}"
+        );
+    }
+    // Says not ignorable: the two agree.
+    assert_eq!(schema_change(Some(CLOSED), CLOSED_PLUS_B, no), Vec::new());
+    // The older schema admits it: ignorable agrees.
+    assert_eq!(schema_change(Some(OPEN), OPEN_PLUS_B, yes), Vec::new());
+    assert_eq!(
+        schema_change(
+            Some(r#"{"type":"object","additionalProperties":true,"properties":{"a":{}}}"#),
+            r#"{"type":"object","additionalProperties":true,"properties":{"a":{},"b":{}}}"#,
+            yes
+        ),
+        Vec::new()
+    );
+    // An entry that names no added field says nothing about one; a new schema, or a new object, has no older reader.
+    assert_eq!(
+        schema_change(
+            Some(CLOSED),
+            CLOSED_PLUS_B,
+            "- Docs. Ignorable: yes. (DEC-4, T-020-54)"
+        ),
+        Vec::new()
+    );
+    assert_eq!(schema_change(None, CLOSED_PLUS_B, yes), Vec::new());
+    let nested_before =
+        r#"{"$defs":{"x":{"type":"object","additionalProperties":false,"properties":{"a":{}}}}}"#;
+    let nested_after = r#"{"$defs":{"x":{"type":"object","additionalProperties":false,"properties":{"a":{},"b":{}}},"y":{"type":"object","additionalProperties":false,"properties":{"c":{}}}}}"#;
+    assert!(!schema_change(Some(nested_before), nested_after, yes).is_empty());
+    assert_eq!(
+        schema_change(
+            Some(nested_before),
+            nested_after,
+            "- Adds `c`, a new shape. Ignorable: yes. (DEC-4, T-020-54)"
+        ),
+        Vec::new()
+    );
+    // A schema the head can't read, or the base can't, is not a verdict either way: the entry's own marker stands.
+    assert_eq!(
+        schema_change(Some("not json"), CLOSED_PLUS_B, yes),
+        Vec::new()
+    );
+}
+
+/// A heading is the version `develop` holds when it reads as the same semantic version, whatever its spelling: `4.0.00`
+/// is `4.0.0`, released, so changing it needs a bump (the review's L1).
+// verifies: DEC-4
+#[test]
+fn a_differently_spelled_heading_of_a_released_version_is_still_released() {
+    let develop = provider_log(&[("4.0.0", "Adverts. Ignorable: no."), ("3.0.0", "Holding.")]);
+    let head = format!(
+        "{}- A fold. (DEC-4, T-020-45)\n",
+        provider_log(&[("4.0.00", "Adverts. Ignorable: no.")])
+    ) + "\n## 3.0.0\n- Holding. (DEC-4, T-020-45)\n";
+    let fixture = Fixture::default()
+        .base_only(PROVIDER_LOG, &develop)
+        .head_only(PROVIDER_LOG, &head)
+        .changed_head(PROVIDER_SCHEMA, "{}")
+        .on_release_line(PROVIDER_LOG, &develop);
+    let violations = run(&[PROVIDER_LOG, PROVIDER_SCHEMA], &fixture);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.message.contains("version not bumped")),
+        "a released version by another spelling is refused: {violations:?}"
+    );
+}
+
+/// Without `develop` nothing says which versions are released, so the base is a release base, whatever `main` says (the
+/// review's L2); with it, the base is one where it is on a release line.
+// verifies: DEC-4
+#[test]
+fn a_base_with_no_develop_is_a_release_base() {
+    assert!(is_release_base(false, false));
+    assert!(is_release_base(false, true));
+    assert!(is_release_base(true, true));
+    assert!(!is_release_base(true, false));
+}
+
+/// A field named in plain words, with no backticks, is named all the same, and a closed object with no `properties`
+/// key admits nothing, so a field added to it is refused by the older schema (the review's L3).
+// verifies: REQ-PRT-2
+#[test]
+fn ignorable_field_check_reads_plain_words_and_closed_objects_with_no_properties() {
+    // Plain words.
+    let violations = schema_change(
+        Some(CLOSED),
+        CLOSED_PLUS_B,
+        "- Adds the optional field b to the declaration. Ignorable: yes. (DEC-4, T-020-54)",
+    );
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.message.contains("older schema")),
+        "{violations:?}"
+    );
+    assert_eq!(
+        schema_change(
+            Some(CLOSED),
+            CLOSED_PLUS_B,
+            "- Adds the optional field b to the declaration. Ignorable: no. (DEC-4, T-020-54)"
+        ),
+        Vec::new()
+    );
+    // A closed object with no properties key.
+    let bare = r#"{"type":"object","additionalProperties":false}"#;
+    let with_b =
+        r#"{"type":"object","additionalProperties":false,"properties":{"b":{"type":"boolean"}}}"#;
+    assert!(
+        !schema_change(
+            Some(bare),
+            with_b,
+            "- Adds `b`. Ignorable: yes. (DEC-4, T-020-54)"
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        schema_change(
+            Some(bare),
+            with_b,
+            "- Adds `b`. Ignorable: no. (DEC-4, T-020-54)"
+        ),
+        Vec::new()
     );
 }

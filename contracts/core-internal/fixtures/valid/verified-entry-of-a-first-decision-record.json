@@ -1,0 +1,30 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "rutent",
+    "acts": "core-orch",
+    "role": "core",
+    "kind": "component"
+  },
+  "what": {
+    "call": "decision_record",
+    "decision_record": "dr-0001",
+    "order": "ord-1",
+    "round": "shortlist",
+    "record": {
+      "algorithm": "sha-256",
+      "value": "2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e"
+    },
+    "shortlisted": [
+      "kyc-check",
+      "bank-co"
+    ]
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "core_clock"
+  },
+  "outcome": {
+    "status": "observed"
+  }
+}

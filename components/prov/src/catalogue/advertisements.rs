@@ -56,7 +56,7 @@ pub enum JoinRefusal {
     Publisher(super::PublisherError),
     /// A declaration rule refused it.
     Declaration(super::DeclarationError),
-    /// It declares a private node the operator lists as public (`REQ-CAT-22`).
+    /// It declares a private node the operator lists as public, or a public network a listing names (`REQ-CAT-22`).
     PrivateNodeIsPublic(String),
     /// The catalogue was never told which deployment and protocol version it serves ([`Catalogue::set_context`]).
     NoContext,
@@ -134,6 +134,23 @@ impl Catalogue {
         protocol_version: &str,
     ) {
         self.context = Some((deployment, protocol_version.to_owned()));
+    }
+
+    /// Puts an older protocol version in force until `cutover` (an RFC 3339 UTC time in the contract's form): a
+    /// statement under it is taken before then, and void from then on, judged at the caller's clock (`REQ-PRT-4`,
+    /// `THR-64`). A date set again for a version replaces the first; the current version is never an older one. The
+    /// operator's decided setting reaches here (`T-020-49`, `T-020-54`).
+    pub fn set_cutover(&mut self, version: &str, cutover: &str) {
+        self.older.insert(version.to_owned(), cutover.to_owned());
+    }
+
+    /// The protocol versions in force: the one the catalogue serves, and each older one before its cutover date.
+    pub fn protocol_versions(&self) -> Option<rutent_contracts::provider_role::ProtocolVersions> {
+        let (_, current) = self.context.as_ref()?;
+        Some(self.older.iter().fold(
+            rutent_contracts::provider_role::ProtocolVersions::only(current.as_str()),
+            |versions, (version, cutover)| versions.with_older(version.as_str(), cutover.as_str()),
+        ))
     }
 
     /// Sets how far ahead of the caller's clock an advertisement may be dated, in seconds
@@ -214,13 +231,21 @@ impl Catalogue {
     /// follow an outcome, comes from a provider with a grant in force, and its publisher and reserve declaration
     /// are recorded. `at` is the caller's clock, the one the skew check counts from. A refusal changes nothing.
     pub fn join(&mut self, received: &[u8], at: Instant) -> Result<(), JoinRefusal> {
-        let (deployment, protocol_version) = self.context.clone().ok_or(JoinRefusal::NoContext)?;
+        let (deployment, _) = self.context.clone().ok_or(JoinRefusal::NoContext)?;
+        let versions = self.protocol_versions().ok_or(JoinRefusal::NoContext)?;
         let statement: Statement<Advertisement> =
             serde_json::from_slice(received).map_err(|e| JoinRefusal::Unreadable(e.to_string()))?;
         canonicalize(received).map_err(JoinRefusal::NoSigningInput)?;
         statement.check_shape().map_err(JoinRefusal::WrongShape)?;
         statement
-            .check_context(&deployment, &protocol_version)
+            // Judged at the caller's clock `at`, never the maker's own `made_at`, so a statement can't be dated back past a
+            // cutover (provider-role 4.0.0): the versions in force are the catalogue's, each older one with the date the operator
+            // set. A clock past year 9999 can't be written, and voids it.
+            .check_context(
+                &deployment,
+                &versions,
+                &at.rfc3339().ok_or(JoinRefusal::BadTime)?,
+            )
             .map_err(JoinRefusal::WrongContext)?;
         let ad = &statement.statement;
         if ad.declarations.tracking.is_empty() {
@@ -261,7 +286,14 @@ impl Catalogue {
             return Err(JoinRefusal::NotNewer);
         }
         self.check_key_history(&statement)?;
-        if let Some(node) = ad.private_nodes.iter().find(|n| self.nodes.is_public(n)) {
+        // A node declared private is on neither public list: the operator's public nodes, nor the public networks a
+        // listing names (`REQ-CAT-22`; `T-020-60`, the review of #356's round 2, Low 3), so a private rail is never a
+        // listed network read through its reader.
+        if let Some(node) = ad
+            .private_nodes
+            .iter()
+            .find(|n| self.nodes.is_public(n) || self.nodes.is_listed_network(n))
+        {
             return Err(JoinRefusal::PrivateNodeIsPublic(node.clone()));
         }
         let backup = (self.publishers.clone(), self.declarations.clone());
@@ -289,6 +321,7 @@ impl Catalogue {
             ad.provider.clone(),
             Joined {
                 advertisement: ad.clone(),
+                protocol_version: statement.protocol_version.clone(),
                 made_at: Instant(made_at.secs),
             },
         );
@@ -386,6 +419,36 @@ impl Catalogue {
     /// statement (`THR-4`). Then the signature must verify over the statement's signing input. `at` is the caller's
     /// clock, as everywhere: a statement dated more than the skew ahead of it is refused.
     pub fn verify_statement(&self, received: &[u8], at: Instant) -> Result<(), StatementRefusal> {
+        self.verify_statement_begun(received, at, at)
+    }
+
+    /// [`Catalogue::verify_statement`] for a statement that answers a segment begun at `begun`: the protocol version it
+    /// names is judged as of the segment's beginning, not of the clock it lands on, so a segment begun before a cutover
+    /// resolves by the version it began under whether its result lands before or after the date (`REQ-PRT-2`,
+    /// `REQ-PRT-4`, `T-020-54`). A segment begun after the cutover takes no statement under the old version at all.
+    /// Everything else (the key, the skew) is judged at `at`, as always.
+    pub fn verify_statement_begun(
+        &self,
+        received: &[u8],
+        at: Instant,
+        begun: Instant,
+    ) -> Result<(), StatementRefusal> {
+        let versions = self
+            .protocol_versions()
+            .ok_or(StatementRefusal::NoContext)?;
+        self.verify_statement_under(received, at, &versions, begun)
+    }
+
+    /// [`Catalogue::verify_statement_begun`] by `versions`, the protocol versions in force as the segment's start
+    /// recorded them, not as the catalogue holds them now: a cutover moved since changes nothing for a segment already
+    /// begun (`REQ-PRT-2`, `T-020-54`).
+    pub fn verify_statement_under(
+        &self,
+        received: &[u8],
+        at: Instant,
+        versions: &rutent_contracts::provider_role::ProtocolVersions,
+        begun: Instant,
+    ) -> Result<(), StatementRefusal> {
         let unreadable = |what: &str| StatementRefusal::Unreadable(what.to_owned());
         let text = |path: &[&str]| -> Result<String, StatementRefusal> {
             let bytes = rutent_contracts::provider_role::member(received, path)
@@ -393,15 +456,21 @@ impl Catalogue {
                 .ok_or_else(|| unreadable(&path.join("/")))?;
             serde_json::from_slice::<String>(bytes).map_err(|_| unreadable(&path.join("/")))
         };
-        let (deployment, protocol_version) =
-            self.context.as_ref().ok_or(StatementRefusal::NoContext)?;
+        let (deployment, _) = self.context.as_ref().ok_or(StatementRefusal::NoContext)?;
         let sent_deployment: rutent_contracts::provider_role::Deployment =
             rutent_contracts::provider_role::member(received, &["deployment"])
                 .ok()
                 .flatten()
                 .and_then(|bytes| serde_json::from_slice(bytes).ok())
                 .ok_or_else(|| unreadable("deployment"))?;
-        if &sent_deployment != deployment || text(&["protocol_version"])? != *protocol_version {
+        // The version is judged at the caller's clock (a segment's beginning, for its result), never the statement's own
+        // `made_at`: a holdout can't date a statement back before its cutover (`REQ-PRT-4`, `THR-64`). A clock no time
+        // can be written for voids an older version's.
+        let sent_version = text(&["protocol_version"])?;
+        let in_force = begun
+            .rfc3339()
+            .is_some_and(|then| versions.in_force(&sent_version, &then).is_ok());
+        if &sent_deployment != deployment || !in_force {
             return Err(StatementRefusal::WrongContext);
         }
         let maker = text(&["maker"])?;

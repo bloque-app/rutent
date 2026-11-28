@@ -1,0 +1,5 @@
+# The module platform's toolchain floor is newer than VOS's workspace toolchain (wasmtime's crates ask rustc 1.95), so
+# this package builds with VOS's guest toolchain, which CI installs already, and links nothing of VOS (Cargo.toml).
+[toolchain]
+channel = "nightly-2026-03-20"
+targets = ["wasm32-unknown-unknown"]

@@ -30,7 +30,11 @@
 //! choice round, only those two are confirmed; `f-dep-2` refuses the slow route's amount (`AC-3`), and
 //! `f-ex-c`'s quote is past its validity.
 
-use rutent_contracts::router_api::{CatalogueSnapshot, PolicyBounds, Request};
+use rutent_contracts::provider_role::NodeRef;
+use rutent_contracts::router_api::{
+    Amount, CatalogueSnapshot, Endpoint, FeeFormula, FigureValue, PolicyBounds, Request,
+    SlippageLimit, TupleKey,
+};
 use serde_json::{Value, json};
 
 /// One input the suite routes, and what a router must choose on it.
@@ -352,6 +356,12 @@ fn deposit(s: &mut Snapshot, id: &str, by: Party, price: Value) {
     );
 }
 
+/// States `payouts: batched` on the tuple the last `deposit` advertised.
+fn batching_payouts(s: &mut Snapshot) {
+    let tuple = s.figures.len() - 2;
+    s.figures[tuple]["value"]["tuple"]["payouts"] = json!("batched");
+}
+
 /// The AC-2 network's advertised figures.
 fn ac2_advertised(s: &mut Snapshot) {
     withdrawal(s);
@@ -430,8 +440,32 @@ fn ac2_shortlist_snapshot() -> CatalogueSnapshot {
 /// The AC-2 network refreshed for the choice round: the advertised figures, a minute older, and the shortlisted
 /// providers' answers.
 fn ac2_choice_snapshot() -> CatalogueSnapshot {
+    ac2_choice_snapshot_with(false)
+}
+
+/// [`ac2_choice_snapshot`], and with `batching` a deposit at a reserve that pays out in batches, free of fee and
+/// answering the slow route's amount: it would win that route and the round, were it not dropped (`REQ-ORD-33`,
+/// `T-020-43`).
+fn ac2_choice_snapshot_with(batching: bool) -> CatalogueSnapshot {
     let mut s = Snapshot::new("snap-ac2-choice", CHOICE_AT, 3600);
     ac2_advertised(&mut s);
+    if batching {
+        deposit(
+            &mut s,
+            "f-dep-batched",
+            ("reserve-batching", "batching-co"),
+            json!({ "fee": fee("0", "0", "1"), "settlement_seconds": 120 }),
+        );
+        batching_payouts(&mut s);
+        s.reserve_answer(
+            "f-dep-batched-dry-run",
+            ("reserve-batching", "batching-co"),
+            "deposit",
+            "f-dep-batched",
+            ("253963518000000000000", "USDC", "0", "253963518"),
+            120,
+        );
+    }
     let now = (MADE_AT, VALID_UNTIL, (5, Some(120)));
     s.reserve_answer(
         "f-w-dry-run",
@@ -542,8 +576,36 @@ fn bounds(max_hops: u8, provider_ceilings: Value, excluded_providers: Value) -> 
             "excluded_tuples": [],
             "provider_ceilings": provider_ceilings,
             "publisher_ceilings": [],
+            "operator_fee": { "flat": "0", "proportional": { "numerator": "0", "denominator": "1" } },
+            "slippage_limits": [],
         }),
     )
+}
+
+/// A slippage limit of 50 basis points for every exchange tuple of the snapshot, so the bounds limit each one
+/// that settles within three days (`REQ-QTE-9`, router-api's `PolicyBounds::check_against`).
+fn limits_for(snapshot: &CatalogueSnapshot) -> Vec<SlippageLimit> {
+    snapshot
+        .figures
+        .iter()
+        .filter_map(|f| match (&f.value, f.origin.provider()) {
+            (FigureValue::ExchangeTuple { tuple }, Some(provider)) => {
+                let end = |asset: &rutent_contracts::provider_role::Denomination| Endpoint {
+                    node: NodeRef::Inner(tuple.node.clone()),
+                    asset: asset.clone(),
+                };
+                Some(SlippageLimit {
+                    tuple: TupleKey {
+                        provider: provider.clone(),
+                        from: end(&tuple.from),
+                        to: end(&tuple.to),
+                    },
+                    max_bps: 50.try_into().expect("basis points"),
+                })
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 fn request(id: &str, round: Value, to: Value, objective: &str, floor: Option<&str>) -> Request {
@@ -642,6 +704,14 @@ fn policy_case() -> Case {
         RESERVE_WALLET,
         json!({ "fee": fee("0", "1", "2000"), "settlement_seconds": 120 }),
     );
+    // A deposit at a reserve that pays out in batches: no route ends on it (`REQ-ORD-33`, `T-020-43`).
+    deposit(
+        &mut s,
+        "f-dep-batched",
+        RESERVE_WALLET_2,
+        json!({ "fee": fee("0", "1", "2000"), "settlement_seconds": 120 }),
+    );
+    batching_payouts(&mut s);
     deposit(
         &mut s,
         "f-dep-greedy",
@@ -695,6 +765,10 @@ fn policy_case() -> Case {
             (vec!["f-w", "f-ex-unpriced"], "no_price"),
             (vec!["f-w", "f-ex-fast", "f-ramp-dear"], "fee_above_amount"),
             (vec!["f-w", "f-ex-fast", "f-ramp-all"], "nothing_delivered"),
+            (
+                vec!["f-w", "f-ex-fast", "f-ramp-x", "f-dep-batched"],
+                "batched_payout",
+            ),
         ],
     }
 }
@@ -777,6 +851,33 @@ fn tie_case() -> Case {
     }
 }
 
+/// The AC-2 choice round with one more deposit, at a reserve that pays out in batches, free of fee and confirmed at
+/// the slow route's amount: through it the slow route would arrive with 253.963518 USDC, more than the 253.836536
+/// of the route through `f-dep`, and win. It is dropped as `batched_payout` and the route through `f-dep` is
+/// chosen (`REQ-ORD-33`, `T-020-43`): a router that drops it only when it shortlists, not when it chooses, fails
+/// here.
+fn batching_deposit_would_win_case() -> Case {
+    let name = "batching-deposit-would-win-choice";
+    Case {
+        name,
+        request: request(
+            name,
+            choice_of("ac2-shortlist"),
+            to_polygon(),
+            "lowest_total_cost",
+            None,
+        ),
+        snapshot: ac2_choice_snapshot_with(true),
+        bounds: bounds(6, json!([]), json!([])),
+        expected: Expected::Route(SLOW_ROUTE.to_vec()),
+        objective_pair: false,
+        drops: vec![(
+            vec!["f-w", "f-ex-slow", "f-ramp-x", "f-dep-batched"],
+            "batched_payout",
+        )],
+    }
+}
+
 /// Every case of the suite.
 pub fn cases() -> Vec<Case> {
     let ac2_bounds = || bounds(6, json!([]), json!([]));
@@ -835,7 +936,33 @@ pub fn cases() -> Vec<Case> {
             Expected::NoRoute,
             false,
         ),
+        floor_after_the_operators_fee(ac2_choice(
+            "floor-judged-after-the-operators-fee",
+            "lowest_total_cost",
+            Some("250000000"),
+            Expected::NoRoute,
+            false,
+        )),
         policy_case(),
         tie_case(),
+        batching_deposit_would_win_case(),
     ]
+    .into_iter()
+    .map(|mut case| {
+        case.bounds.slippage_limits = limits_for(&case.snapshot);
+        case
+    })
+    .collect()
+}
+
+/// The AC-2 choice round with a floor of 250 USDC and an operator's fee of a flat 10 USDC (`REQ-ORD-27`,
+/// `REQ-QTE-2`). The slow route arrives with 253.836536 USDC, above the floor before the fee and 243.836536 after
+/// it, below; the fast one with 246.877249, below either way. So no route: a router judging the floor before the
+/// operator's fee would choose the slow route and show the customer less than the floor.
+fn floor_after_the_operators_fee(mut case: Case) -> Case {
+    case.bounds.operator_fee = FeeFormula {
+        flat: Amount::new("10000000").expect("an amount"),
+        ..case.bounds.operator_fee
+    };
+    case
 }

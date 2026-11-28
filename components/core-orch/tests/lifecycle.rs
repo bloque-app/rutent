@@ -1,0 +1,1222 @@
+//! A release's lifecycle actions through policy (`T-020-49`): `promote`, `roll_back`, the five and the platform's
+//! `confirm` ask policy before they read anything of the platform's releases, so a refused caller is told the same
+//! whatever is there and its attempt is recorded (`F-025`'s L6); and each is carried out on a permitted effect alone,
+//! held to what the platform holds.
+
+use std::cell::Cell;
+use std::collections::BTreeSet;
+
+use rutent_contracts::core_internal::calls::{AppendFailure, Decisions, GeneralEntry, Log};
+use rutent_contracts::core_internal::{
+    Action, Actor, ActorKind, Answer, CatalogueChange, Decision, DecisionRequest, Effect, Entry,
+    Outcome, Receipt, RefusalClass, Role, What,
+};
+use rutent_contracts::module_interface::{Digest, Identifier, PlatformRefusal};
+use rutent_contracts::provider_role::{Operation, PublicKey, Statement};
+use rutent_contracts::router_api::{DecisionRecord, Id};
+use rutent_core_orch::rounds::Fresh;
+use rutent_core_orch::segments::lifecycle::{
+    Changed, Journal, ReleaseAsked, ReleaseChange, ReleaseRefused, Releases, Waiting,
+};
+use rutent_core_orch::segments::roll_back::{RollBackAsked, RollBackRefused, RollsBack};
+use rutent_core_orch::segments::{Answered, Modules, PromoteRefused, Promotion, Segments};
+use rutent_core_orch::snapshot::{Clock, Reading};
+use rutent_prov::catalogue::Instant;
+use rutent_prov::module::lifecycle::{LifecycleRefusal, SegmentRecord};
+use rutent_prov::module::types::Events;
+use rutent_prov::proxy::RouteNotNamed;
+use serde_json::json;
+
+const KEY: &str = "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w";
+
+fn id(text: &str) -> Id {
+    Id::new(text).unwrap()
+}
+
+fn receipt(index: usize) -> Receipt {
+    serde_json::from_value(json!({
+        "log": "log-1",
+        "index": index,
+        "entry": { "algorithm": "sha-256", "value": format!("{index:064x}") },
+    }))
+    .unwrap()
+}
+
+fn digest() -> Digest {
+    serde_json::from_value(json!({"algorithm": "sha-256", "value": "a".repeat(64)})).unwrap()
+}
+
+struct TestClock(Cell<Reading>);
+
+impl Clock for TestClock {
+    fn now(&self) -> Reading {
+        self.0.get()
+    }
+}
+
+fn clock() -> TestClock {
+    TestClock(Cell::new(Reading::at(1_794_200_000)))
+}
+
+#[derive(Default)]
+struct Ids(u64);
+
+impl Fresh for Ids {
+    fn id(&mut self) -> Id {
+        self.0 += 1;
+        id(&format!("id-{:04}", self.0))
+    }
+}
+
+/// A log that keeps what it is handed; refusing every append from the `n`th on, where set.
+#[derive(Default)]
+struct KeptLog(Vec<Entry>, Option<usize>);
+
+impl Log for KeptLog {
+    fn append(&mut self, entry: &GeneralEntry) -> Result<Receipt, AppendFailure> {
+        if self.1.is_some_and(|n| self.0.len() >= n) {
+            return Err(AppendFailure::Unavailable);
+        }
+        self.0.push(entry.entry().clone());
+        Ok(receipt(self.0.len() - 1))
+    }
+}
+
+impl Journal for KeptLog {
+    fn history(&self) -> Vec<(Receipt, Entry)> {
+        self.0
+            .iter()
+            .enumerate()
+            .map(|(n, e)| (receipt(n), e.clone()))
+            .collect()
+    }
+}
+
+/// Policy answering every request as set, remembering each attempt: the decision's entry policy records.
+struct Answering {
+    answer: Answer,
+    asked: Vec<DecisionRequest>,
+}
+
+impl Answering {
+    fn with(answer: Answer) -> Self {
+        Self {
+            answer,
+            asked: Vec::new(),
+        }
+    }
+}
+
+impl Decisions for Answering {
+    fn decide(&mut self, request: &DecisionRequest) -> Result<Decision, AppendFailure> {
+        self.asked.push(request.clone());
+        Ok(Decision {
+            request: request.request.clone(),
+            decision: id(&format!("dec-{}", self.asked.len())),
+            outcome: self.answer,
+            receipt: receipt(10_000 + self.asked.len()),
+        })
+    }
+}
+
+fn core() -> Actor {
+    Actor {
+        party: id("rutent"),
+        acts: id("rutent-core"),
+        role: Role::Core,
+        kind: ActorKind::Component,
+    }
+}
+
+fn operator() -> Actor {
+    Actor {
+        party: id("operator"),
+        acts: id("ops-lead"),
+        role: Role::Operator,
+        kind: ActorKind::Person,
+    }
+}
+
+/// A platform's releases: a staged version, a waiting release and a held set, each counted when read, and every
+/// lifecycle action carried out recorded with who carried it out.
+#[derive(Default)]
+struct Platform {
+    staged: Option<String>,
+    waiting: Option<Waiting>,
+    held: Option<BTreeSet<String>>,
+    refuses: Option<LifecycleRefusal>,
+    reads: Cell<usize>,
+    done: Vec<(&'static str, String)>,
+}
+
+impl Platform {
+    /// A platform holding something for every action: a staged 2.2.0, a waiting 2.3.0 and a set held at 2.1.0.
+    fn holding() -> Self {
+        Platform {
+            staged: Some("2.2.0".into()),
+            waiting: Some(Waiting {
+                version: "2.3.0".into(),
+                digest: digest(),
+                statement_key: PublicKey::new(KEY).unwrap(),
+            }),
+            held: Some(BTreeSet::from(["2.1.0".to_owned()])),
+            ..Platform::default()
+        }
+    }
+
+    fn carried(&mut self, what: &'static str, by: &Id) -> Result<(), LifecycleRefusal> {
+        if let Some(refusal) = self.refuses {
+            return Err(refusal);
+        }
+        self.done.push((what, by.to_string()));
+        Ok(())
+    }
+}
+
+impl Releases for Platform {
+    fn waiting(&self, _: &Id) -> Option<Waiting> {
+        self.reads.set(self.reads.get() + 1);
+        self.waiting.clone()
+    }
+    fn held(&self, _: &Id) -> Option<BTreeSet<String>> {
+        self.reads.set(self.reads.get() + 1);
+        self.held.clone()
+    }
+    fn accept(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        _: &Digest,
+        by: &Id,
+        _: Instant,
+    ) -> Result<(), LifecycleRefusal> {
+        self.carried("accept", by)
+    }
+    fn withdraw(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        _: &Digest,
+        by: &Id,
+        _: Instant,
+    ) -> Result<(), LifecycleRefusal> {
+        self.carried("withdraw", by)
+    }
+    fn revoke(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        _: &Id,
+        by: &Id,
+        _: Instant,
+    ) -> Result<Option<String>, LifecycleRefusal> {
+        self.carried("revoke", by).map(|()| None)
+    }
+    fn declare_exploited(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        _: &Id,
+        by: &Id,
+        _: Instant,
+    ) -> Result<Option<String>, LifecycleRefusal> {
+        self.carried("declare_exploited", by).map(|()| None)
+    }
+    fn mark_stale(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        _: &Id,
+        by: &Id,
+        _: Instant,
+    ) -> Result<usize, LifecycleRefusal> {
+        self.carried("mark_stale", by).map(|()| 1)
+    }
+    fn confirm(&mut self, _: &Effect, _: &Id, by: &Id, _: Instant) -> Result<(), LifecycleRefusal> {
+        self.carried("confirm", by)?;
+        self.held = None;
+        Ok(())
+    }
+    fn staged(&self, provider: &Id) -> Option<String> {
+        RollsBack::staged(self, provider)
+    }
+    fn roll_back(
+        &mut self,
+        effect: &Effect,
+        provider: &Id,
+        by: &Id,
+        at: Instant,
+    ) -> Result<String, LifecycleRefusal> {
+        RollsBack::roll_back(self, effect, provider, by, at)
+    }
+    fn mark(&self, _: &Id, _: &Id) -> Option<rutent_prov::module::lifecycle::Mark> {
+        None
+    }
+    fn in_force(&self, _: &Id) -> Option<String> {
+        None
+    }
+    fn is_accepted(&self, _: &Id, _: &Id) -> bool {
+        true
+    }
+}
+
+impl RollsBack for Platform {
+    fn staged(&self, _: &Id) -> Option<String> {
+        self.reads.set(self.reads.get() + 1);
+        self.staged.clone()
+    }
+    fn roll_back(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        by: &Id,
+        _: Instant,
+    ) -> Result<String, LifecycleRefusal> {
+        self.carried("roll_back", by)?;
+        Ok(self.staged.take().unwrap_or_default())
+    }
+}
+
+impl Modules for Platform {
+    fn begin_segment(&mut self, _: &Id, _: &Identifier) -> Result<String, PlatformRefusal> {
+        unreachable!("no segment here")
+    }
+    fn name_calls(
+        &mut self,
+        _: &Identifier,
+        _: &DecisionRecord,
+        _: (usize, usize),
+        _: &Identifier,
+    ) -> Result<usize, RouteNotNamed> {
+        unreachable!("no segment here")
+    }
+    fn carry_out(&mut self, _: &Effect, _: &Id, _: &Statement<Operation>) -> Answered {
+        unreachable!("no segment here")
+    }
+    fn take_events(&mut self) -> Events {
+        Events::default()
+    }
+    fn end_segment(&mut self, _: &Identifier) -> Option<SegmentRecord> {
+        None
+    }
+    fn end_calls(&mut self, _: &Identifier) {}
+    fn staged(&self, provider: &Id) -> Option<String> {
+        RollsBack::staged(self, provider)
+    }
+    fn promote(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        by: &Id,
+        _: Instant,
+    ) -> Result<String, LifecycleRefusal> {
+        self.carried("promote", by)?;
+        Ok(self.staged.take().unwrap_or_default())
+    }
+}
+
+/// What one asking of `action` at `bridge-pay` comes to, over `platform`, `policy` and `log`: the answer as text, so
+/// the seven actions' answers compare.
+fn ask(action: &str, platform: &mut Platform, policy: &mut Answering, log: &mut KeptLog) -> String {
+    let (provider, caller, core) = (id("bridge-pay"), operator(), core());
+    let mut segments = Segments::new();
+    let (staged, waiting, held) = (id("2.2.0"), id("2.3.0"), [id("2.1.0")]);
+    let key = PublicKey::new(KEY).unwrap();
+    let release = |change| ReleaseAsked {
+        provider: &provider,
+        change,
+        caller: &caller,
+        core: &core,
+    };
+    let text = |r: Result<String, String>| match r {
+        Ok(_) => "carried out".to_owned(),
+        Err(e) => e,
+    };
+    match action {
+        "promote" => text(
+            segments
+                .promote(
+                    log,
+                    policy,
+                    platform,
+                    &clock(),
+                    &mut Ids::default(),
+                    &Promotion {
+                        provider: &provider,
+                        version: &staged,
+                        caller: &caller,
+                        core: &core,
+                    },
+                )
+                .map_err(|e| match e {
+                    PromoteRefused::NotPermitted(a) => format!("not permitted: {a:?}"),
+                    other => format!("{other:?}"),
+                }),
+        ),
+        "roll_back" => text(
+            segments
+                .roll_back(
+                    log,
+                    policy,
+                    platform,
+                    &clock(),
+                    &mut Ids::default(),
+                    &RollBackAsked {
+                        provider: &provider,
+                        version: &staged,
+                        caller: &caller,
+                        core: &core,
+                    },
+                )
+                .map_err(|e| match e {
+                    RollBackRefused::NotPermitted(a) => format!("not permitted: {a:?}"),
+                    other => format!("{other:?}"),
+                }),
+        ),
+        other => {
+            let change = match other {
+                "accept" => ReleaseChange::Accept {
+                    version: &waiting,
+                    statement_key: &key,
+                },
+                "withdraw" => ReleaseChange::Withdraw { version: &waiting },
+                "revoke" => ReleaseChange::Revoke { version: &staged },
+                "declare_exploited" => ReleaseChange::DeclareExploited { version: &staged },
+                "mark_stale" => ReleaseChange::MarkStale { version: &staged },
+                "confirm" => ReleaseChange::Confirm { versions: &held },
+                _ => unreachable!(),
+            };
+            text(
+                segments
+                    .change_release(
+                        log,
+                        policy,
+                        platform,
+                        &clock(),
+                        &mut Ids::default(),
+                        &release(change),
+                    )
+                    .map(|c| format!("{c:?}"))
+                    .map_err(|e| match e {
+                        ReleaseRefused::NotPermitted(a) => format!("not permitted: {a:?}"),
+                        other => format!("{other:?}"),
+                    }),
+            )
+        }
+    }
+}
+
+const ACTIONS: [&str; 8] = [
+    "promote",
+    "roll_back",
+    "accept",
+    "withdraw",
+    "revoke",
+    "declare_exploited",
+    "mark_stale",
+    "confirm",
+];
+
+/// `F-025`'s L6 (`T-020-49`): `promote`, `roll_back`, the five and `confirm` ask policy before they read anything of the
+/// platform's releases. A refused caller is told the same, not permitted, whether the platform holds something for the
+/// action (staged, waiting or held) or nothing, nothing of the platform is read and no effect is recorded; and each
+/// attempt is asked of policy, which records it as its decision's entry, naming the action and the caller. A permitted
+/// caller learns the difference.
+// verifies: REQ-AUZ-1, REQ-MDL-4
+#[test]
+fn refused_caller_is_told_the_same_whether_or_not_anything_is_staged_and_its_attempt_is_recorded() {
+    let refused = Answer::Refuse {
+        class: RefusalClass::NotPermitted,
+    };
+    for action in ACTIONS {
+        let mut answers = Vec::new();
+        for mut platform in [Platform::holding(), Platform::default()] {
+            let (mut policy, mut log) = (Answering::with(refused), KeptLog::default());
+            answers.push(ask(action, &mut platform, &mut policy, &mut log));
+            assert_eq!(
+                policy.asked.len(),
+                1,
+                "{action}: the attempt is asked, and recorded"
+            );
+            assert_eq!(policy.asked[0].caller, operator(), "{action}");
+            assert!(
+                matches!(policy.asked[0].action, Action::ChangeCatalogue { provider: ref p, .. } if p.as_str() == "bridge-pay"),
+                "{action}"
+            );
+            assert_eq!(
+                platform.reads.get(),
+                0,
+                "{action}: nothing of the platform is read"
+            );
+            assert!(platform.done.is_empty(), "{action}");
+            assert!(log.0.is_empty(), "{action}: no effect");
+        }
+        assert_eq!(answers[0], answers[1], "{action}: told the same");
+        assert_eq!(
+            answers[0],
+            format!("not permitted: {refused:?}"),
+            "{action}"
+        );
+
+        // Permitted, the caller learns whether anything is there (revoking, declaring and marking stale read nothing:
+        // the platform holds them to the version named).
+        let (mut policy, mut log) = (Answering::with(Answer::Permit {}), KeptLog::default());
+        let there = ask(action, &mut Platform::holding(), &mut policy, &mut log);
+        let (mut policy, mut log) = (Answering::with(Answer::Permit {}), KeptLog::default());
+        let nothing = ask(action, &mut Platform::default(), &mut policy, &mut log);
+        assert_eq!(there, "carried out", "{action}");
+        if !matches!(action, "revoke" | "declare_exploited" | "mark_stale") {
+            assert_ne!(there, nothing, "{action}");
+            assert!(log.0.is_empty(), "{action}: nothing there, no effect");
+        }
+    }
+}
+
+/// The platform's `confirm` (`T-013-11`) is carried out only on a permitted decision (`REQ-AUZ-6`, `REQ-AUZ-1`): asked
+/// of policy as `confirm_releases` naming the provider and the versions; refused, nothing is confirmed and no effect
+/// recorded; permitted, the versions are held to the ones the platform holds the provider's releases at (other versions,
+/// or nothing held, confirm nothing and record no effect), then the effect is recorded, the platform confirms by the
+/// decision's caller, and the result is recorded done, or failed where the platform refuses.
+// verifies: REQ-AUZ-6, REQ-AUZ-1
+#[test]
+fn operator_confirms_a_providers_releases_only_on_a_permitted_decision() {
+    let (provider, caller, core) = (id("bridge-pay"), operator(), core());
+    let confirm =
+        |platform: &mut Platform, policy: &mut Answering, log: &mut KeptLog, versions: &[Id]| {
+            Segments::new().change_release(
+                log,
+                policy,
+                platform,
+                &clock(),
+                &mut Ids::default(),
+                &ReleaseAsked {
+                    provider: &provider,
+                    change: ReleaseChange::Confirm { versions },
+                    caller: &caller,
+                    core: &core,
+                },
+            )
+        };
+    let held = [id("2.1.0")];
+
+    let refused = Answer::Refuse {
+        class: RefusalClass::NotPermitted,
+    };
+    let (mut platform, mut policy, mut log) = (
+        Platform::holding(),
+        Answering::with(refused),
+        KeptLog::default(),
+    );
+    assert_eq!(
+        confirm(&mut platform, &mut policy, &mut log, &held),
+        Err(ReleaseRefused::NotPermitted(refused))
+    );
+    assert!(platform.done.is_empty() && log.0.is_empty());
+    assert!(platform.held.is_some(), "still held");
+    assert!(matches!(
+        &policy.asked[0].action,
+        Action::ChangeCatalogue { change: CatalogueChange::ConfirmReleases, versions, version: None, .. }
+            if versions == &held
+    ));
+
+    let (mut policy, mut log) = (Answering::with(Answer::Permit {}), KeptLog::default());
+    assert_eq!(
+        confirm(&mut platform, &mut policy, &mut log, &[id("2.0.0")]),
+        Err(ReleaseRefused::NotWhatItNames {
+            holds: vec!["2.1.0".into()]
+        })
+    );
+    assert!(
+        platform.done.is_empty() && log.0.is_empty(),
+        "other versions confirm nothing"
+    );
+
+    assert_eq!(
+        confirm(&mut platform, &mut policy, &mut log, &held),
+        Ok(Changed::Confirmed)
+    );
+    assert_eq!(platform.done, vec![("confirm", "ops-lead".to_owned())]);
+    let whats: Vec<(&What, Outcome)> = log
+        .0
+        .iter()
+        .map(|e| match e {
+            Entry::Verified(v) => (&v.what, v.outcome),
+            Entry::Stated(_) => panic!("verified"),
+        })
+        .collect();
+    assert_eq!(whats.len(), 2, "the effect, then its result");
+    assert!(matches!(
+        whats[0],
+        (
+            What::Effect {
+                action: Action::ChangeCatalogue {
+                    change: CatalogueChange::ConfirmReleases,
+                    ..
+                },
+                ..
+            },
+            Outcome::ToTakeEffect {}
+        )
+    ));
+    assert!(matches!(whats[1], (What::Result { .. }, Outcome::Done {})));
+
+    // Nothing held any more: a permitted caller is told there is nothing to confirm, and nothing is recorded.
+    let mut log = KeptLog::default();
+    assert_eq!(
+        confirm(&mut platform, &mut policy, &mut log, &held),
+        Err(ReleaseRefused::NothingToDo)
+    );
+    assert!(log.0.is_empty());
+
+    // The platform's refusal records the result failed.
+    let mut platform = Platform {
+        refuses: Some(LifecycleRefusal::Unrecorded),
+        ..Platform::holding()
+    };
+    let mut log = KeptLog::default();
+    assert_eq!(
+        confirm(&mut platform, &mut policy, &mut log, &held),
+        Err(ReleaseRefused::Lifecycle(LifecycleRefusal::Unrecorded))
+    );
+    assert!(matches!(log.0.last(), Some(Entry::Verified(v)) if v.outcome == Outcome::Failed {}));
+}
+
+/// A decision that only restricts what runs, which the platform took but couldn't write to its record, took effect:
+/// its result is `done`, never `failed`, so the log never trusts a release declared exploited again, and the answer
+/// says it isn't durable on the platform (`T-013-10`).
+// verifies: REQ-MDL-20
+#[test]
+fn a_restriction_the_platform_took_unrecorded_is_recorded_done() {
+    let (provider, caller, core, version) = (id("bridge-pay"), operator(), core(), id("2.2.0"));
+    let mut platform = Platform {
+        refuses: Some(LifecycleRefusal::TakenUnrecorded),
+        ..Platform::holding()
+    };
+    let (mut policy, mut log) = (Answering::with(Answer::Permit {}), KeptLog::default());
+    let changed = Segments::new().change_release(
+        &mut log,
+        &mut policy,
+        &mut platform,
+        &clock(),
+        &mut Ids::default(),
+        &ReleaseAsked {
+            provider: &provider,
+            change: ReleaseChange::DeclareExploited { version: &version },
+            caller: &caller,
+            core: &core,
+        },
+    );
+    assert_eq!(changed, Ok(Changed::TakenUnrecorded));
+    assert!(matches!(log.0.last(), Some(Entry::Verified(v)) if v.outcome == Outcome::Done {}));
+}
+
+/// A platform whose record can break, and which crashes: a version declared exploited while its record couldn't hold it
+/// is exploited in memory only, and gone after the crash, when the platform holds the provider's releases for the
+/// operator's word.
+struct Crashing {
+    broken: bool,
+    recorded: BTreeSet<String>,
+    exploited: BTreeSet<String>,
+    held: Option<BTreeSet<String>>,
+    calls: Vec<String>,
+}
+
+impl Crashing {
+    fn wanted() -> BTreeSet<String> {
+        BTreeSet::from(["2.1.0".to_owned(), "2.2.0".to_owned()])
+    }
+
+    fn crash(&mut self) {
+        self.exploited = self.recorded.clone();
+        self.held = Some(&Self::wanted() - &self.exploited);
+    }
+}
+
+impl Releases for Crashing {
+    fn waiting(&self, _: &Id) -> Option<Waiting> {
+        None
+    }
+    fn held(&self, _: &Id) -> Option<BTreeSet<String>> {
+        self.held.as_ref().map(|h| h - &self.exploited)
+    }
+    fn accept(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        _: &Digest,
+        _: &Id,
+        _: Instant,
+    ) -> Result<(), LifecycleRefusal> {
+        unreachable!()
+    }
+    fn withdraw(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        _: &Digest,
+        _: &Id,
+        _: Instant,
+    ) -> Result<(), LifecycleRefusal> {
+        unreachable!()
+    }
+    fn revoke(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        _: &Id,
+        _: &Id,
+        _: Instant,
+    ) -> Result<Option<String>, LifecycleRefusal> {
+        unreachable!()
+    }
+    fn declare_exploited(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        version: &Id,
+        _: &Id,
+        _: Instant,
+    ) -> Result<Option<String>, LifecycleRefusal> {
+        self.calls.push(format!("declare_exploited {version}"));
+        if !self.exploited.insert(version.to_string()) {
+            return Err(LifecycleRefusal::AlreadyMarked);
+        }
+        if self.broken {
+            return Err(LifecycleRefusal::TakenUnrecorded);
+        }
+        self.recorded.insert(version.to_string());
+        Ok(None)
+    }
+    fn mark_stale(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        _: &Id,
+        _: &Id,
+        _: Instant,
+    ) -> Result<usize, LifecycleRefusal> {
+        unreachable!()
+    }
+    fn confirm(&mut self, _: &Effect, _: &Id, _: &Id, _: Instant) -> Result<(), LifecycleRefusal> {
+        self.calls.push("confirm".to_owned());
+        self.held = None;
+        Ok(())
+    }
+    fn staged(&self, _: &Id) -> Option<String> {
+        None
+    }
+    fn roll_back(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        _: &Id,
+        _: Instant,
+    ) -> Result<String, LifecycleRefusal> {
+        unreachable!()
+    }
+    fn mark(&self, _: &Id, _: &Id) -> Option<rutent_prov::module::lifecycle::Mark> {
+        None
+    }
+    fn in_force(&self, _: &Id) -> Option<String> {
+        None
+    }
+    fn is_accepted(&self, _: &Id, _: &Id) -> bool {
+        true
+    }
+}
+
+/// A restriction the platform could not record before a crash still holds after Core reopens (`T-020-49`, gap 3 of its
+/// first build): the operator's decided `declare_exploited` is taken in memory only (`TakenUnrecorded`) and its result
+/// is `done` in Core's log; the platform crashes and, its record not knowing it, holds the provider's releases at both
+/// versions. A reopened Core, asked to confirm them, takes the restriction again from its log before the confirmation
+/// takes effect, so the exploited version stays exploited and only the other comes back into force. The re-taking adds
+/// no entry: the log holds the effect done already.
+// verifies: REQ-MDL-20, NFR-6
+#[test]
+fn restriction_the_platform_could_not_record_before_a_crash_still_holds_after_core_reopens() {
+    let (provider, caller, core) = (id("bridge-pay"), operator(), core());
+    let mut platform = Crashing {
+        broken: true,
+        recorded: BTreeSet::new(),
+        exploited: BTreeSet::new(),
+        held: None,
+        calls: Vec::new(),
+    };
+    let (mut policy, mut log) = (Answering::with(Answer::Permit {}), KeptLog::default());
+    let exploited = id("2.2.0");
+    let taken = Segments::new().change_release(
+        &mut log,
+        &mut policy,
+        &mut platform,
+        &clock(),
+        &mut Ids::default(),
+        &ReleaseAsked {
+            provider: &provider,
+            change: ReleaseChange::DeclareExploited {
+                version: &exploited,
+            },
+            caller: &caller,
+            core: &core,
+        },
+    );
+    assert_eq!(taken, Ok(Changed::TakenUnrecorded));
+    platform.crash();
+    assert!(!platform.exploited.contains("2.2.0"), "the crash lost it");
+    assert_eq!(platform.held(&provider), Some(Crashing::wanted()));
+
+    // Core reopens on its log: its segments are new, and the confirmation reads its history from the log itself.
+    let before = log.0.len();
+    let held: Vec<Id> = Crashing::wanted().iter().map(|v| id(v)).collect();
+    let confirmed = Segments::new().change_release(
+        &mut log,
+        &mut policy,
+        &mut platform,
+        &clock(),
+        &mut Ids::default(),
+        &ReleaseAsked {
+            provider: &provider,
+            change: ReleaseChange::Confirm { versions: &held },
+            caller: &caller,
+            core: &core,
+        },
+    );
+    assert_eq!(confirmed, Ok(Changed::Confirmed));
+    assert_eq!(
+        platform.calls,
+        [
+            "declare_exploited 2.2.0",
+            "declare_exploited 2.2.0",
+            "confirm"
+        ],
+        "taken again before the confirmation"
+    );
+    assert!(platform.exploited.contains("2.2.0"), "it still holds");
+    assert_eq!(
+        log.0.len(),
+        before + 2,
+        "the confirmation's effect and result, and nothing else"
+    );
+}
+
+/// A restriction whose result the log didn't take is taken again before a confirmation (`T-020-49`, M1 of #337's
+/// review): the declaration's effect is appended and the platform takes it (in memory only, its record broken), but the
+/// log takes no result; Core and the platform stop. The effect has no `failed` result, so the reopened Core's
+/// confirmation takes it again first, and the version stays exploited.
+// verifies: REQ-MDL-20, NFR-6
+#[test]
+fn restriction_whose_result_the_log_did_not_take_is_taken_again_before_a_confirmation() {
+    let (provider, caller, core) = (id("bridge-pay"), operator(), core());
+    let mut platform = Crashing {
+        broken: true,
+        recorded: BTreeSet::new(),
+        exploited: BTreeSet::new(),
+        held: None,
+        calls: Vec::new(),
+    };
+    let mut policy = Answering::with(Answer::Permit {});
+    let mut log = KeptLog(Vec::new(), Some(1));
+    let exploited = id("2.2.0");
+    let declared = Segments::new().change_release(
+        &mut log,
+        &mut policy,
+        &mut platform,
+        &clock(),
+        &mut Ids::default(),
+        &ReleaseAsked {
+            provider: &provider,
+            change: ReleaseChange::DeclareExploited {
+                version: &exploited,
+            },
+            caller: &caller,
+            core: &core,
+        },
+    );
+    assert!(
+        matches!(declared, Err(ReleaseRefused::Append(_))),
+        "{declared:?}"
+    );
+    assert_eq!(log.0.len(), 1, "the effect, and no result");
+    platform.crash();
+    assert!(!platform.exploited.contains("2.2.0"));
+
+    log.1 = None;
+    let held: Vec<Id> = Crashing::wanted().iter().map(|v| id(v)).collect();
+    let confirmed = Segments::new().change_release(
+        &mut log,
+        &mut policy,
+        &mut platform,
+        &clock(),
+        &mut Ids::default(),
+        &ReleaseAsked {
+            provider: &provider,
+            change: ReleaseChange::Confirm { versions: &held },
+            caller: &caller,
+            core: &core,
+        },
+    );
+    assert_eq!(confirmed, Ok(Changed::Confirmed));
+    assert_eq!(
+        platform.calls,
+        [
+            "declare_exploited 2.2.0",
+            "declare_exploited 2.2.0",
+            "confirm"
+        ]
+    );
+    assert!(platform.exploited.contains("2.2.0"), "it still holds");
+}
+
+/// A platform whose one version is in force and has nothing newer: marking it stale never takes effect.
+struct Unstalable {
+    held: Option<BTreeSet<String>>,
+    calls: Vec<String>,
+}
+
+impl Releases for Unstalable {
+    fn waiting(&self, _: &Id) -> Option<Waiting> {
+        None
+    }
+    fn held(&self, _: &Id) -> Option<BTreeSet<String>> {
+        self.held.clone()
+    }
+    fn accept(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        _: &Digest,
+        _: &Id,
+        _: Instant,
+    ) -> Result<(), LifecycleRefusal> {
+        unreachable!()
+    }
+    fn withdraw(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        _: &Digest,
+        _: &Id,
+        _: Instant,
+    ) -> Result<(), LifecycleRefusal> {
+        unreachable!()
+    }
+    fn revoke(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        _: &Id,
+        _: &Id,
+        _: Instant,
+    ) -> Result<Option<String>, LifecycleRefusal> {
+        unreachable!()
+    }
+    fn declare_exploited(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        _: &Id,
+        _: &Id,
+        _: Instant,
+    ) -> Result<Option<String>, LifecycleRefusal> {
+        unreachable!()
+    }
+    fn mark_stale(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        version: &Id,
+        _: &Id,
+        _: Instant,
+    ) -> Result<usize, LifecycleRefusal> {
+        self.calls.push(format!("mark_stale {version}"));
+        Err(LifecycleRefusal::NoNewerVersion)
+    }
+    fn confirm(&mut self, _: &Effect, _: &Id, _: &Id, _: Instant) -> Result<(), LifecycleRefusal> {
+        self.calls.push("confirm".to_owned());
+        self.held = None;
+        Ok(())
+    }
+    fn staged(&self, _: &Id) -> Option<String> {
+        None
+    }
+    fn roll_back(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        _: &Id,
+        _: Instant,
+    ) -> Result<String, LifecycleRefusal> {
+        unreachable!()
+    }
+    fn mark(&self, _: &Id, _: &Id) -> Option<rutent_prov::module::lifecycle::Mark> {
+        None
+    }
+    fn in_force(&self, _: &Id) -> Option<String> {
+        Some("2.1.0".to_owned())
+    }
+    fn is_accepted(&self, _: &Id, _: &Id) -> bool {
+        true
+    }
+}
+
+/// A restriction the platform refused before its result was written does not hold its provider for good (`T-020-65`,
+/// the milestone reviewer's check of `T-020-49`): the operator's `mark_stale` of the version in force is refused by the
+/// platform (nothing newer to move to), and Core stops before the `failed` result is written. The platform ends unclean
+/// and holds the provider. Core completes the effect's missing result from what the platform answers: the mark never took
+/// effect, so it is `failed`, and the confirmation, which would otherwise take it again and be refused at every attempt,
+/// confirms the provider. Reopening Core completes it the same way before any confirmation (`reopen_lifecycle`).
+// verifies: NFR-6, REQ-MDL-4
+#[test]
+fn restriction_refused_before_its_result_was_written_does_not_hold_its_provider_for_good() {
+    let (provider, caller, core) = (id("bridge-pay"), operator(), core());
+    let mut platform = Unstalable {
+        held: None,
+        calls: Vec::new(),
+    };
+    let mut policy = Answering::with(Answer::Permit {});
+    let mut log = KeptLog(Vec::new(), Some(1));
+    let stale = id("2.1.0");
+    let marked = Segments::new().change_release(
+        &mut log,
+        &mut policy,
+        &mut platform,
+        &clock(),
+        &mut Ids::default(),
+        &ReleaseAsked {
+            provider: &provider,
+            change: ReleaseChange::MarkStale { version: &stale },
+            caller: &caller,
+            core: &core,
+        },
+    );
+    assert!(
+        matches!(marked, Err(ReleaseRefused::Append(_))),
+        "{marked:?}"
+    );
+    assert_eq!(log.0.len(), 1, "the effect, and no result");
+    platform.held = Some(BTreeSet::from(["2.1.0".to_owned()]));
+
+    // Core reopens and completes the result from what the platform answers.
+    log.1 = None;
+    let mut reopened_log = KeptLog(log.0.clone(), None);
+    let completed = Segments::reopen_lifecycle(&mut reopened_log, &platform, &clock(), &core)
+        .expect("completed");
+    assert_eq!(completed, 1);
+    assert!(matches!(
+        reopened_log.0.last(),
+        Some(Entry::Verified(v)) if matches!(v.what, What::Result { .. }) && v.outcome == Outcome::Failed {}
+    ));
+
+    // On the log as it stood (no reopening ran), the confirmation completes it first and confirms.
+    let held = [id("2.1.0")];
+    let confirmed = Segments::new().change_release(
+        &mut log,
+        &mut policy,
+        &mut platform,
+        &clock(),
+        &mut Ids::default(),
+        &ReleaseAsked {
+            provider: &provider,
+            change: ReleaseChange::Confirm { versions: &held },
+            caller: &caller,
+            core: &core,
+        },
+    );
+    assert_eq!(confirmed, Ok(Changed::Confirmed));
+    assert_eq!(
+        platform.calls,
+        ["mark_stale 2.1.0", "confirm"],
+        "not taken again"
+    );
+}
+
+/// A withdrawal is not taken again for a release resubmitted under a new digest (`T-020-66`, L3 of #342's review): the
+/// operator's withdrawal of 2.3.0 is logged, its result never written, and the platform ends unclean, dropping the
+/// release that waited (a waiting release is in no platform record). The publisher resubmits 2.3.0 under another digest,
+/// which waits. The confirmation takes no withdrawal again (the effect names a version, not a digest, so nothing could
+/// tell the resubmission apart), and the resubmitted release still waits for its own decision.
+// verifies: REQ-MDL-4
+#[test]
+fn withdrawal_is_not_taken_again_for_a_release_resubmitted_under_a_new_digest() {
+    let (provider, caller, core) = (id("bridge-pay"), operator(), core());
+    let mut platform = Platform::holding();
+    let mut policy = Answering::with(Answer::Permit {});
+    let mut log = KeptLog(Vec::new(), Some(1));
+    let version = id("2.3.0");
+    let withdrawn = Segments::new().change_release(
+        &mut log,
+        &mut policy,
+        &mut platform,
+        &clock(),
+        &mut Ids::default(),
+        &ReleaseAsked {
+            provider: &provider,
+            change: ReleaseChange::Withdraw { version: &version },
+            caller: &caller,
+            core: &core,
+        },
+    );
+    assert!(
+        matches!(withdrawn, Err(ReleaseRefused::Append(_))),
+        "{withdrawn:?}"
+    );
+    assert_eq!(log.0.len(), 1, "the effect, and no result");
+
+    // The platform ended unclean: the withdrawn release is gone, its version resubmitted under a new digest, waiting.
+    let resubmitted: Digest =
+        serde_json::from_value(json!({"algorithm": "sha-256", "value": "b".repeat(64)})).unwrap();
+    platform.done.clear();
+    platform.waiting = Some(Waiting {
+        version: "2.3.0".into(),
+        digest: resubmitted.clone(),
+        statement_key: PublicKey::new(KEY).unwrap(),
+    });
+    log.1 = None;
+    let held = [id("2.1.0")];
+    let confirmed = Segments::new().change_release(
+        &mut log,
+        &mut policy,
+        &mut platform,
+        &clock(),
+        &mut Ids::default(),
+        &ReleaseAsked {
+            provider: &provider,
+            change: ReleaseChange::Confirm { versions: &held },
+            caller: &caller,
+            core: &core,
+        },
+    );
+    assert_eq!(confirmed, Ok(Changed::Confirmed));
+    assert_eq!(
+        platform.done,
+        vec![("confirm", "ops-lead".to_owned())],
+        "no withdrawal taken again"
+    );
+    assert_eq!(
+        platform.waiting.as_ref().map(|w| &w.digest),
+        Some(&resubmitted),
+        "the resubmitted release still waits"
+    );
+}
+
+/// A stale mark of a version the platform holds no release of stays open (`T-020-66`, L1 of #342's review): Core's log
+/// holds the mark's effect with no result, and the platform reopened against knows nothing of the provider (a replaced
+/// host): nothing marked, nothing in force. The reopening records nothing, since the platform's standing can't tell; it
+/// would record `failed` were the version held with nothing newer in force.
+// verifies: NFR-6
+#[test]
+fn stale_mark_of_a_version_the_platform_holds_no_release_of_stays_open() {
+    struct Stranger;
+    impl Releases for Stranger {
+        fn waiting(&self, _: &Id) -> Option<Waiting> {
+            None
+        }
+        fn held(&self, _: &Id) -> Option<BTreeSet<String>> {
+            None
+        }
+        fn accept(
+            &mut self,
+            _: &Effect,
+            _: &Id,
+            _: &Digest,
+            _: &Id,
+            _: Instant,
+        ) -> Result<(), LifecycleRefusal> {
+            unreachable!()
+        }
+        fn withdraw(
+            &mut self,
+            _: &Effect,
+            _: &Id,
+            _: &Digest,
+            _: &Id,
+            _: Instant,
+        ) -> Result<(), LifecycleRefusal> {
+            unreachable!()
+        }
+        fn revoke(
+            &mut self,
+            _: &Effect,
+            _: &Id,
+            _: &Id,
+            _: &Id,
+            _: Instant,
+        ) -> Result<Option<String>, LifecycleRefusal> {
+            unreachable!()
+        }
+        fn declare_exploited(
+            &mut self,
+            _: &Effect,
+            _: &Id,
+            _: &Id,
+            _: &Id,
+            _: Instant,
+        ) -> Result<Option<String>, LifecycleRefusal> {
+            unreachable!()
+        }
+        fn mark_stale(
+            &mut self,
+            _: &Effect,
+            _: &Id,
+            _: &Id,
+            _: &Id,
+            _: Instant,
+        ) -> Result<usize, LifecycleRefusal> {
+            Err(LifecycleRefusal::NoSuchVersion)
+        }
+        fn confirm(
+            &mut self,
+            _: &Effect,
+            _: &Id,
+            _: &Id,
+            _: Instant,
+        ) -> Result<(), LifecycleRefusal> {
+            unreachable!()
+        }
+        fn staged(&self, _: &Id) -> Option<String> {
+            None
+        }
+        fn roll_back(
+            &mut self,
+            _: &Effect,
+            _: &Id,
+            _: &Id,
+            _: Instant,
+        ) -> Result<String, LifecycleRefusal> {
+            unreachable!()
+        }
+        fn mark(&self, _: &Id, _: &Id) -> Option<rutent_prov::module::lifecycle::Mark> {
+            None
+        }
+        fn in_force(&self, _: &Id) -> Option<String> {
+            None
+        }
+        fn is_accepted(&self, _: &Id, _: &Id) -> bool {
+            false
+        }
+    }
+    let (provider, caller, core) = (id("bridge-pay"), operator(), core());
+    let mut policy = Answering::with(Answer::Permit {});
+    let mut log = KeptLog(Vec::new(), Some(1));
+    let stale = id("2.1.0");
+    let _ = Segments::new().change_release(
+        &mut log,
+        &mut policy,
+        &mut Stranger,
+        &clock(),
+        &mut Ids::default(),
+        &ReleaseAsked {
+            provider: &provider,
+            change: ReleaseChange::MarkStale { version: &stale },
+            caller: &caller,
+            core: &core,
+        },
+    );
+    assert_eq!(log.0.len(), 1, "the effect, and no result");
+    log.1 = None;
+    assert_eq!(
+        Segments::reopen_lifecycle(&mut log, &Stranger, &clock(), &core),
+        Ok(0),
+        "nothing completed"
+    );
+    assert_eq!(log.0.len(), 1);
+}

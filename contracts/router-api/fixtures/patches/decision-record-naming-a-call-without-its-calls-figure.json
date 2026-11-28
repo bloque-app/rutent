@@ -4,6 +4,11 @@
     {
       "op": "remove",
       "path": "/statement/candidates/0/parts/0/operations/0/figures/3"
+    },
+    {
+      "op": "replace",
+      "path": "/signature/value",
+      "value": "b473FFGiVNTd-Lh58L2bIKl4EE6nikZ5KAqaGfvVFx5qyr5c8SzRBzIMJ0Y4tAtkr4gudD0eZO5eCwllDvwQCg"
     }
   ]
 }

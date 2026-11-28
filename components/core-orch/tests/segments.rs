@@ -1,0 +1,1216 @@
+//! The segments' rules the simulated providers can't show (`T-020-08`): a route across three providers whose
+//! withdrawal names a cross-module call, which no simulated provider's nodes admit and no simulated release declares,
+//! and a segment record's move mapped to the log's item.
+
+mod snapshot_support;
+
+use std::cell::Cell;
+use std::collections::BTreeMap;
+use std::path::Path;
+
+use ed25519_dalek::{Signer, SigningKey};
+use rutent_contracts::core_internal::calls::{
+    AppendFailure, Decisions, Evidence, Fetched, GeneralEntry, Kept, Log,
+};
+use rutent_contracts::core_internal::{
+    Actor, ActorKind, Answer, Decision, DecisionRequest, Destination, Effect, Entry, Outcome,
+    ReadCheck, Receipt, Role, RouteEnd, What,
+};
+use rutent_contracts::module_interface::{
+    CallRefusalReason, Declaration, Identifier, OperationKind, PlatformRefusal,
+};
+use rutent_contracts::provider_role::{Denomination, Operation, OuterNode, PublicKey, Statement};
+use rutent_contracts::router_api::{DecisionRecord, Id, Timestamp};
+use rutent_core_orch::rounds::{Fresh, Issued, OperatorKey};
+use rutent_core_orch::segments::{
+    Answered, Graded, Grading, Live, Modules, NoProxy, Parts, ProvidersWord, Ran, RecordWanted,
+    SegmentOutcome, Segments, Short, ToGrade,
+};
+use rutent_core_orch::snapshot::{Clock, Exposures, Reading, RouteRefusal};
+use rutent_prov::catalogue::{Catalogue, Instant};
+use rutent_prov::module::lifecycle::{LifecycleRefusal, Move, MoveReason, SegmentRecord};
+use rutent_prov::module::types::Events;
+use rutent_prov::proxy::{CallAsked, RouteCalls, RouteNotNamed, judge_call};
+use serde_json::{Value, json};
+
+fn id(text: &str) -> Id {
+    Id::new(text).unwrap()
+}
+
+fn read(path: &str) -> Value {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../contracts")
+        .join(path);
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+struct TestClock(Cell<Reading>);
+
+impl Clock for TestClock {
+    fn now(&self) -> Reading {
+        self.0.get()
+    }
+}
+
+struct TestKey(SigningKey);
+
+impl OperatorKey for TestKey {
+    fn key(&self) -> PublicKey {
+        PublicKey::new(base64url(self.0.verifying_key().as_bytes())).unwrap()
+    }
+
+    fn sign(&mut self, input: &[u8]) -> Option<[u8; 64]> {
+        Some(self.0.sign(input).to_bytes())
+    }
+}
+
+fn base64url(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, b)| n | u32::from(*b) << (16 - 8 * i));
+        for i in 0..=chunk.len() {
+            out.push(char::from(ALPHABET[(n >> (18 - 6 * i) & 63) as usize]));
+        }
+    }
+    out
+}
+
+#[derive(Default)]
+struct Ids(u64);
+
+impl Fresh for Ids {
+    fn id(&mut self) -> Id {
+        self.0 += 1;
+        id(&format!("id-{:04}", self.0))
+    }
+}
+
+fn receipt(index: usize) -> Receipt {
+    serde_json::from_value(json!({
+        "log": "log-1",
+        "index": index,
+        "entry": { "algorithm": "sha-256", "value": format!("{index:064x}") },
+    }))
+    .unwrap()
+}
+
+/// The log's entries, and whether it refuses the result entry of a read of a private node's record.
+#[derive(Default)]
+struct KeptLog(Vec<Entry>, bool);
+
+impl Log for KeptLog {
+    fn append(&mut self, entry: &GeneralEntry) -> Result<Receipt, AppendFailure> {
+        if self.1
+            && let Entry::Verified(v) = entry.entry()
+            && let What::Result { effect } = &v.what
+            && self.0.iter().enumerate().any(|(i, e)| {
+                matches!(e, Entry::Verified(v) if matches!(&v.what, What::Effect {
+                    action: rutent_contracts::core_internal::Action::ReadNodeRecord { .. }, ..
+                })) && format!("{:?}", receipt(i)) == format!("{effect:?}")
+            })
+        {
+            return Err(AppendFailure::Unavailable);
+        }
+        self.0.push(entry.entry().clone());
+        Ok(receipt(self.0.len() - 1))
+    }
+}
+
+#[derive(Default)]
+struct Store(usize);
+
+impl Evidence for Store {
+    fn keep(&mut self, _: &[u8]) -> Result<Kept, AppendFailure> {
+        self.0 += 1;
+        Ok(Kept {
+            commitment: serde_json::from_value(
+                json!({ "algorithm": "sha-256", "value": format!("{:064x}", self.0) }),
+            )
+            .unwrap(),
+            restates: None,
+        })
+    }
+
+    fn fetch(&mut self, _: &ReadCheck) -> Result<Fetched, AppendFailure> {
+        Ok(Fetched::Erased)
+    }
+}
+
+/// Policy that permits every move, its entry at a receipt of its own.
+struct Permitting(usize);
+
+impl Decisions for Permitting {
+    fn decide(&mut self, request: &DecisionRequest) -> Result<Decision, AppendFailure> {
+        self.0 += 1;
+        Ok(Decision {
+            request: request.request.clone(),
+            decision: id(&format!("dec-{}", self.0)),
+            outcome: Answer::Permit {},
+            receipt: receipt(10_000 + self.0),
+        })
+    }
+}
+
+/// The platform's routes and lifecycle, as Core uses them; each module refuses before it passes anything out.
+struct Fake {
+    routes: RouteCalls,
+    declaration: Declaration,
+    /// For each operation handed over: its transaction, and the route check of three calls its provider might make.
+    judged: Vec<(String, [Option<CallRefusalReason>; 3])>,
+    staged: Option<String>,
+    promoted: Vec<(String, String)>,
+    /// Each segment ends on 1.1.0, moved there from 1.0.0 when 1.0.0 was marked stale.
+    moved: bool,
+    /// The bytes the platform hands back for each operation, where set, in place of a refusal.
+    answer: Option<Vec<u8>>,
+    /// A withdrawal is answered as succeeded, signed by its provider, as the route's record states it.
+    settles_the_withdrawal: bool,
+    /// Core's clock, which the run reads: the answer's time moves it where `answers_at` says.
+    clock: std::rc::Rc<TestClock>,
+    /// Where Core's clock stands when the platform hands the answer back, in seconds, where set.
+    answers_at: Option<u64>,
+    /// The protocol version the settled answer is made under, where it isn't the current one.
+    answers_under: Option<String>,
+    /// The platform hands back nothing, and the operation ended with its outcome unknown.
+    unknown: bool,
+    /// How many questions of a private node's record were put, and whether the first is refused.
+    record_questions: usize,
+    /// The log refuses the result entry of a read of a private node's record.
+    refuse_read_results: bool,
+    /// How far Core's clock moves between one run of the part and the next, in seconds.
+    step_between_runs: u64,
+}
+
+impl Modules for Fake {
+    fn begin_segment(&mut self, _: &Id, _: &Identifier) -> Result<String, PlatformRefusal> {
+        Ok("1.0.0".into())
+    }
+
+    fn name_calls(
+        &mut self,
+        transaction: &Identifier,
+        record: &DecisionRecord,
+        at: (usize, usize),
+        segment: &Identifier,
+    ) -> Result<usize, RouteNotNamed> {
+        self.routes.name_segment(transaction, record, at, segment)
+    }
+
+    fn carry_out(
+        &mut self,
+        _: &Effect,
+        provider: &Id,
+        operation: &Statement<Operation>,
+    ) -> Answered {
+        let transaction = serde_json::to_value(&operation.statement).unwrap()["transaction"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let judged = |callee: &str, kind: OperationKind| {
+            judge_call(
+                &self.declaration,
+                &self.routes,
+                &CallAsked {
+                    caller: provider.as_str(),
+                    transaction: &transaction,
+                    callee,
+                    kind,
+                    claimed: Some(kind),
+                    in_flight: true,
+                },
+            )
+            .refusal
+        };
+        let judged = [
+            judged("exchange-a", OperationKind::Conversion),
+            judged("exchange-a", OperationKind::Withdrawal),
+            judged("reserve-wallet", OperationKind::Deposit),
+        ];
+        let withdrawal =
+            serde_json::to_value(&operation.statement).unwrap()["kind"] == "withdrawal";
+        self.judged.push((transaction.clone(), judged));
+        if self.settles_the_withdrawal && withdrawal {
+            let outcome = json!({
+                "status": "succeeded", "amount_in": "100000000", "amount_out": "99900000",
+                "fee": { "asset": "COP", "amount": "100000" },
+                "evidence": [{ "grade": 3, "reference": "reserve-bank-co:book-1", "by": "reserve-bank-co" }],
+            });
+            let body =
+                json!({ "kind": "withdrawal", "transaction": transaction, "outcome": outcome });
+            let mut envelope = snapshot_support::envelope(
+                &snapshot_support::deployment(),
+                rutent_contracts::provider_role::RESULT_SHAPE,
+                "reserve-bank-co",
+                1_794_200_000,
+                body,
+            );
+            if let Some(version) = &self.answers_under {
+                envelope["protocol_version"] = version.as_str().into();
+            }
+            if let Some(at) = self.answers_at {
+                self.clock.0.set(Reading::at(at));
+            }
+            return Answered::Bytes(snapshot_support::sign(
+                envelope,
+                &snapshot_support::statements_key("reserve-bank-co", 1),
+            ));
+        }
+        if self.unknown {
+            return Answered::Refused(PlatformRefusal::OutcomeUnknown);
+        }
+        match &self.answer {
+            Some(bytes) => Answered::Bytes(bytes.clone()),
+            None => Answered::Refused(PlatformRefusal::Unavailable),
+        }
+    }
+
+    fn ask_for_record(&mut self, _: &Effect, _: &Id, _: &Statement<Operation>) -> Answered {
+        self.record_questions += 1;
+        // The first is refused; the next come back.
+        if self.record_questions == 1 {
+            Answered::Refused(PlatformRefusal::Unavailable)
+        } else {
+            Answered::Bytes(b"{}".to_vec())
+        }
+    }
+
+    fn take_events(&mut self) -> Events {
+        Events::default()
+    }
+
+    fn end_segment(&mut self, transaction: &Identifier) -> Option<SegmentRecord> {
+        self.moved.then(|| SegmentRecord {
+            transaction: transaction.as_str().to_owned(),
+            provider: "reserve-bank-co".into(),
+            began_on: "1.0.0".into(),
+            runs_on: "1.1.0".into(),
+            moves: vec![Move {
+                from: "1.0.0".into(),
+                to: "1.1.0".into(),
+                reason: MoveReason::Stale,
+                at: Instant(1_794_200_000),
+            }],
+        })
+    }
+
+    fn end_calls(&mut self, transaction: &Identifier) {
+        self.routes.end(transaction);
+    }
+
+    fn staged(&self, _: &Id) -> Option<String> {
+        self.staged.clone()
+    }
+
+    fn promote(
+        &mut self,
+        _: &Effect,
+        provider: &Id,
+        by: &Id,
+        _: Instant,
+    ) -> Result<String, LifecycleRefusal> {
+        let staged = self.staged.take().ok_or(LifecycleRefusal::NotStaged)?;
+        self.promoted
+            .push((provider.as_str().to_owned(), by.as_str().to_owned()));
+        Ok(staged)
+    }
+}
+
+fn fake() -> Fake {
+    let mut artefact = read(
+        "module-interface/fixtures/valid/admission-artefact-of-a-first-release-freshly-accepted.json",
+    );
+    let declaration = &mut artefact["assertion"]["statement"]["declaration"];
+    declaration["provider"] = "reserve-bank-co".into();
+    declaration["outside"]["calls"] = json!([
+        { "callee": "exchange-a", "kinds": ["conversion", "withdrawal"] },
+        { "callee": "reserve-wallet", "kinds": ["deposit"] },
+    ]);
+    Fake {
+        routes: RouteCalls::default(),
+        declaration: serde_json::from_value(declaration.clone()).unwrap(),
+        judged: Vec::new(),
+        staged: None,
+        promoted: Vec::new(),
+        moved: false,
+        answer: None,
+        settles_the_withdrawal: false,
+        clock: std::rc::Rc::new(TestClock(Cell::new(Reading::at(1_794_200_000)))),
+        answers_at: None,
+        answers_under: None,
+        unknown: false,
+        record_questions: 0,
+        refuse_read_results: false,
+        step_between_runs: 0,
+    }
+}
+
+/// A catalogue in which the route's withdrawal may run (`T-020-09`): its reserve joined, declaring the grade of its
+/// evidence, its tuple's floor set, and its private node `ledger-in` with a holding account. The rest of the route's
+/// providers aren't in it, since no segment after the withdrawal is handed over here.
+fn admitting() -> Catalogue {
+    use rutent_contracts::provider_role::EvidenceGrade;
+    use rutent_prov::catalogue::tuples_of;
+    let mut ad = snapshot_support::reserve("reserve-bank-co", "bank-co");
+    let mut value = serde_json::to_value(&ad).unwrap();
+    value["offers"]["reserve"]["tuples"] = json!([{
+        "origin": { "network": "co-ach" }, "destination": "ledger-in", "asset": "COP",
+        "decimals": { "origin": 2, "destination": 2 },
+        "terms": { "bands": [{ "min": "1", "max": "1000000000000" }], "reporting": "gross", "required_inputs": [] },
+    }]);
+    value["private_nodes"] = json!(["ledger-in"]);
+    ad = serde_json::from_value(value).unwrap();
+    let mut catalogue = Catalogue::new();
+    catalogue.set_context(
+        snapshot_support::deployment(),
+        rutent_contracts::provider_role::VERSION,
+    );
+    catalogue
+        .grant(snapshot_support::grant("g-0", &ad, 5_000_000_000))
+        .unwrap();
+    catalogue
+        .trust_advertising_key(
+            "g-0",
+            snapshot_support::public_key(&snapshot_support::advertising_key("reserve-bank-co")),
+        )
+        .unwrap();
+    let keys = snapshot_support::keys_of(
+        "reserve-bank-co",
+        &[&snapshot_support::statements_key("reserve-bank-co", 1)],
+    );
+    catalogue
+        .join(
+            &snapshot_support::advertisement_bytes(&ad, keys, snapshot_support::JOINED_AT),
+            Instant(snapshot_support::JOINED_AT),
+        )
+        .unwrap();
+    for key in tuples_of(&ad) {
+        catalogue.set_evidence_floor(key, EvidenceGrade::Statement);
+    }
+    catalogue
+        .register_private_holding("ledger-in", "bank-co", "holding")
+        .unwrap();
+    catalogue
+}
+
+/// `admitting()`, with the route's final reserve, `reserve-wallet`, joined too: its deposit from `ledger-in` to
+/// `polygon`, declaring `payouts` as given (`None` for no declaration), at the same publisher as the first reserve.
+fn admitting_with_wallet(payouts: Option<&str>) -> Catalogue {
+    use rutent_contracts::provider_role::EvidenceGrade;
+    use rutent_prov::catalogue::tuples_of;
+    let ad = snapshot_support::reserve("reserve-wallet", "bank-co");
+    let mut value = serde_json::to_value(&ad).unwrap();
+    let mut tuple = json!({
+        "origin": "ledger-in", "destination": { "network": "polygon" }, "asset": "USDC",
+        "decimals": { "origin": 6, "destination": 6 },
+        "terms": { "bands": [{ "min": "1", "max": "1000000000000" }], "reporting": "gross", "required_inputs": [] },
+    });
+    if let Some(payouts) = payouts {
+        tuple["payouts"] = payouts.into();
+    }
+    value["offers"]["reserve"]["tuples"] = json!([tuple]);
+    value["private_nodes"] = json!(["ledger-in"]);
+    let ad: rutent_contracts::provider_role::Advertisement = serde_json::from_value(value).unwrap();
+    let mut catalogue = admitting();
+    catalogue
+        .grant(snapshot_support::grant("g-1", &ad, 5_000_000_000))
+        .unwrap();
+    catalogue
+        .trust_advertising_key(
+            "g-1",
+            snapshot_support::public_key(&snapshot_support::advertising_key("reserve-wallet")),
+        )
+        .unwrap();
+    let keys = snapshot_support::keys_of(
+        "reserve-wallet",
+        &[&snapshot_support::statements_key("reserve-wallet", 1)],
+    );
+    catalogue
+        .join(
+            &snapshot_support::advertisement_bytes(&ad, keys, snapshot_support::JOINED_AT),
+            Instant(snapshot_support::JOINED_AT),
+        )
+        .unwrap();
+    for key in tuples_of(&ad) {
+        catalogue.set_evidence_floor(key, EvidenceGrade::Statement);
+    }
+    catalogue
+}
+
+/// `catalogue` with `exchange-a` joined, its exchange at `ledger-in` allowed to be routed through.
+fn with_the_exchange(mut catalogue: Catalogue) -> Catalogue {
+    use rutent_contracts::provider_role::EvidenceGrade;
+    use rutent_prov::catalogue::{Category, Endpoint, TupleKey};
+    let ad = snapshot_support::reserve("exchange-a", "exchange-co");
+    catalogue
+        .grant(snapshot_support::grant("g-2", &ad, 5_000_000_000))
+        .unwrap();
+    catalogue
+        .trust_advertising_key(
+            "g-2",
+            snapshot_support::public_key(&snapshot_support::advertising_key("exchange-a")),
+        )
+        .unwrap();
+    let keys = snapshot_support::keys_of(
+        "exchange-a",
+        &[&snapshot_support::statements_key("exchange-a", 1)],
+    );
+    catalogue
+        .join(
+            &snapshot_support::advertisement_bytes(&ad, keys, snapshot_support::JOINED_AT),
+            Instant(snapshot_support::JOINED_AT),
+        )
+        .unwrap();
+    catalogue.set_evidence_floor(
+        TupleKey {
+            category: Category::Exchange,
+            origin: Endpoint::Inner("ledger-in".into()),
+            destination: Endpoint::Inner("ledger-in".into()),
+            asset: "COP".into(),
+            to_asset: Some("USDC".into()),
+        },
+        EvidenceGrade::Statement,
+    );
+    catalogue
+}
+
+fn core() -> Actor {
+    Actor {
+        party: id("rutent"),
+        acts: id("rutent-core"),
+        role: Role::Core,
+        kind: ActorKind::Component,
+    }
+}
+
+fn operator() -> Actor {
+    Actor {
+        party: id("operator"),
+        acts: id("ops-lead"),
+        role: Role::Operator,
+        kind: ActorKind::Person,
+    }
+}
+
+/// The router-api fixture's route, withdrawal, exchange and deposit, its withdrawal naming a call to the exchange
+/// for the conversion, from a calls figure of its release.
+fn record_naming_a_call() -> DecisionRecord {
+    let mut envelope = read("router-api/fixtures/valid/decision-record-split-of-one-part.json");
+    let record = &mut envelope["statement"];
+    let origin = record["snapshot"]["figures"][0]["origin"].clone();
+    record["snapshot"]["figures"].as_array_mut().unwrap().push(json!({
+        "figure_id": "f-w-calls",
+        "origin": origin,
+        "age_seconds": 0,
+        "value": { "kind": "calls", "calls": [{ "callee": "exchange-a", "kinds": ["conversion"] }] },
+    }));
+    let chosen = record["chosen"].as_str().unwrap().to_owned();
+    let candidate = record["candidates"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|c| c["candidate_id"] == chosen.as_str())
+        .unwrap();
+    let withdrawal = &mut candidate["parts"][0]["operations"][0];
+    assert_eq!(withdrawal["kind"], "withdrawal");
+    withdrawal["figures"]
+        .as_array_mut()
+        .unwrap()
+        .push("f-w-calls".into());
+    withdrawal["calls"] = json!([{ "callee": "exchange-a", "kind": "conversion" }]);
+    serde_json::from_value(record.clone()).expect("the record names its calls")
+}
+
+/// Runs the record's first part over `modules`, with a log, a store and policy permitting every move.
+fn run(modules: &mut Fake) -> (Ran, KeptLog) {
+    run_over(modules, admitting())
+}
+
+/// [`run`] over `catalogue`.
+fn run_over(modules: &mut Fake, catalogue: Catalogue) -> (Ran, KeptLog) {
+    let (mut ran, log) = run_over_each(modules, vec![catalogue]);
+    (ran.remove(0), log)
+}
+
+/// The part run once over each catalogue in turn, by one `Segments`, one log and one store: Core run again after the
+/// catalogue changed.
+fn run_over_each(modules: &mut Fake, catalogues: Vec<Catalogue>) -> (Vec<Ran>, KeptLog) {
+    run_over_each_with(modules, catalogues, &mut ProvidersWord, &mut Permitting(0))
+}
+
+/// [`run_over_each`] under `grading` and `policy`.
+fn run_over_each_with(
+    modules: &mut Fake,
+    catalogues: Vec<Catalogue>,
+    grading: &mut dyn Grading,
+    policy: &mut dyn Decisions,
+) -> (Vec<Ran>, KeptLog) {
+    let record = record_naming_a_call();
+    let clock = std::rc::Rc::clone(&modules.clock);
+    let modules_step = modules.step_between_runs;
+    let mut log = KeptLog(Vec::new(), modules.refuse_read_results);
+    let mut store = Store::default();
+    let mut key = TestKey(SigningKey::from_bytes(&[7; 32]));
+    let mut ids = Ids::default();
+    let issued = Issued::new();
+    let mut exposures = Exposures::new();
+    let mut segments = Segments::new();
+    let (order, part, auth, origin) = (id("ord-1"), id("p1"), id("auth-1"), id("reserve-bank-co"));
+    let plan = [id("p1-s1"), id("p1-s2"), id("p1-s3")];
+    let end = RouteEnd {
+        destination: Destination {
+            reserve: id("reserve-wallet"),
+            node: OuterNode {
+                network: "polygon".into(),
+            },
+            account: id("acct-2"),
+        },
+        to_asset: Denomination {
+            id: "USDC".into(),
+            decimals: 6,
+        },
+        delivers: rutent_contracts::router_api::Amount::new("1").unwrap(),
+    };
+    let (caller, core_actor, operator_actor) = (core(), core(), operator());
+    let session = id("session-1");
+    let inputs = BTreeMap::new();
+    let live = Live {
+        order: &order,
+        part: &part,
+        segments: &plan,
+        record: &record,
+        at: 0,
+        authorisation: &auth,
+        origin_reserve: &origin,
+        route: &end,
+        caller: &caller,
+        core: &core_actor,
+        operator: &operator_actor,
+        session: Some(&session),
+        inputs: &inputs,
+        floor: None,
+        record_entry: None,
+    };
+    let mut ran = Vec::new();
+    for catalogue in &catalogues {
+        let mut parts = Parts {
+            clock: &*clock,
+            catalogue,
+            log: &mut log,
+            evidence: &mut store,
+            decisions: &mut *policy,
+            modules: &mut *modules,
+            uses: &mut NoProxy,
+            grading: &mut *grading,
+            operator_key: &mut key,
+            fresh: &mut ids,
+            issued: &issued,
+            exposures: &mut exposures,
+            channel: &mut rutent_core_orch::notice::Unbuilt,
+        };
+        ran.push(segments.run_part(&mut parts, &live).unwrap());
+        let now = clock.0.get();
+        clock.0.set(Reading::at(now.seconds + modules_step));
+    }
+    (ran, log)
+}
+
+/// The part run over `run_over`, its first segment left with no outcome known, then a later statement about it judged over
+/// `late_over` with the clock at `lands_at`: Core's late answer, after the catalogue changed.
+fn run_then_late(
+    modules: &mut Fake,
+    run_over: Catalogue,
+    late_over: Catalogue,
+    late: impl FnOnce(&Fake) -> Vec<u8>,
+    lands_at: u64,
+) -> Result<rutent_core_orch::segments::Late, rutent_core_orch::segments::LateRefused> {
+    let record = record_naming_a_call();
+    let clock = std::rc::Rc::clone(&modules.clock);
+    let mut log = KeptLog(Vec::new(), modules.refuse_read_results);
+    let mut store = Store::default();
+    let mut policy = Permitting(0);
+    let mut key = TestKey(SigningKey::from_bytes(&[7; 32]));
+    let mut ids = Ids::default();
+    let issued = Issued::new();
+    let mut exposures = Exposures::new();
+    let mut segments = Segments::new();
+    let (order, part, auth, origin) = (id("ord-1"), id("p1"), id("auth-1"), id("reserve-bank-co"));
+    let plan = [id("p1-s1"), id("p1-s2"), id("p1-s3")];
+    let end = RouteEnd {
+        destination: Destination {
+            reserve: id("reserve-wallet"),
+            node: OuterNode {
+                network: "polygon".into(),
+            },
+            account: id("acct-2"),
+        },
+        to_asset: Denomination {
+            id: "USDC".into(),
+            decimals: 6,
+        },
+        delivers: rutent_contracts::router_api::Amount::new("1").unwrap(),
+    };
+    let (caller, core_actor, operator_actor) = (core(), core(), operator());
+    let session = id("session-1");
+    let inputs = BTreeMap::new();
+    let live = Live {
+        order: &order,
+        part: &part,
+        segments: &plan,
+        record: &record,
+        at: 0,
+        authorisation: &auth,
+        origin_reserve: &origin,
+        route: &end,
+        caller: &caller,
+        core: &core_actor,
+        operator: &operator_actor,
+        session: Some(&session),
+        inputs: &inputs,
+        floor: None,
+        record_entry: None,
+    };
+    {
+        let catalogue = &run_over;
+        let mut parts = Parts {
+            clock: &*clock,
+            catalogue,
+            log: &mut log,
+            evidence: &mut store,
+            decisions: &mut policy,
+            modules: &mut *modules,
+            uses: &mut NoProxy,
+            grading: &mut ProvidersWord,
+            operator_key: &mut key,
+            fresh: &mut ids,
+            issued: &issued,
+            exposures: &mut exposures,
+            channel: &mut rutent_core_orch::notice::Unbuilt,
+        };
+        segments.run_part(&mut parts, &live).unwrap();
+    }
+    clock.0.set(Reading::at(lands_at));
+    let late = late(modules);
+    let mut parts = Parts {
+        clock: &*clock,
+        catalogue: &late_over,
+        log: &mut log,
+        evidence: &mut store,
+        decisions: &mut policy,
+        modules: &mut *modules,
+        uses: &mut NoProxy,
+        grading: &mut ProvidersWord,
+        operator_key: &mut key,
+        fresh: &mut ids,
+        issued: &issued,
+        exposures: &mut exposures,
+        channel: &mut rutent_core_orch::notice::Unbuilt,
+    };
+    segments.late_statement(&mut parts, &live, &plan[0], &late)
+}
+
+/// The live withdrawal names its call to the exchange's conversion and no other: the route check lets that one
+/// through and refuses another kind to the same callee, and a call to another provider, while the segment is live;
+/// once it has ended, it names none. The exchange's segment, whose operation names no call, names none.
+// verifies: REQ-MDL-21, REQ-MDL-9
+#[test]
+fn call_the_live_segment_doesnt_name_is_refused() {
+    let mut modules = fake();
+    let (ran, log) = run(&mut modules);
+    let Ran::Segments(done) = &ran else {
+        panic!("{ran:?}");
+    };
+    assert!(matches!(done[0].outcome, SegmentOutcome::NotHandedOver(_)));
+    let (transaction, judged) = &modules.judged[0];
+    assert_eq!(
+        judged[0], None,
+        "the call the live segment names passes the route check"
+    );
+    assert_eq!(
+        judged[1],
+        Some(CallRefusalReason::NotNamedByRoute),
+        "another kind is refused"
+    );
+    assert_eq!(
+        judged[2],
+        Some(CallRefusalReason::NotNamedByRoute),
+        "another callee is refused"
+    );
+    assert!(
+        modules
+            .routes
+            .naming(
+                transaction,
+                "reserve-bank-co",
+                "exchange-a",
+                OperationKind::Conversion
+            )
+            .is_none(),
+        "the segment ended, and its calls with it"
+    );
+    // The effect was recorded before the operation was handed over, and its one result says it failed: the platform
+    // refused it before its module passed anything out.
+    let kinds: Vec<_> = log
+        .0
+        .iter()
+        .filter_map(|e| match e {
+            Entry::Verified(v) => Some((&v.what, &v.outcome)),
+            Entry::Stated(_) => None,
+        })
+        .filter(|(w, _)| matches!(w, What::Effect { .. } | What::Result { .. }))
+        .map(|(w, o)| (matches!(w, What::Effect { .. }), *o))
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            (true, Outcome::ToTakeEffect {}),
+            (false, Outcome::Failed {})
+        ]
+    );
+}
+
+/// The record of a segment that moved, from a version marked stale to the one in force, reaches the log when the
+/// segment ends, with its move.
+// verifies: REQ-MDL-5
+#[test]
+fn segment_record_reaches_the_log_with_each_move_when_it_ends() {
+    let mut modules = fake();
+    modules.moved = true;
+    let (_, log) = run(&mut modules);
+    let records: Vec<_> = log
+        .0
+        .iter()
+        .filter_map(|e| match e {
+            Entry::Verified(v) => match &v.what {
+                What::HandOver {
+                    item:
+                        rutent_contracts::core_internal::HandedOver::SegmentRecord {
+                            began_on,
+                            runs_on,
+                            moves,
+                            ..
+                        },
+                    ..
+                } => Some((began_on.clone(), runs_on.clone(), moves.clone())),
+                _ => None,
+            },
+            Entry::Stated(_) => None,
+        })
+        .collect();
+    assert_eq!(records.len(), 1, "the withdrawal's segment ended");
+    let (began_on, runs_on, moves) = &records[0];
+    assert_eq!((began_on.as_str(), runs_on.as_str()), ("1.0.0", "1.1.0"));
+    assert_eq!(
+        moves,
+        &vec![rutent_contracts::core_internal::Move {
+            from: id("1.0.0"),
+            to: id("1.1.0"),
+            reason: rutent_contracts::core_internal::MoveReason::Stale,
+            at: Timestamp::new(Instant(1_794_200_000).rfc3339().unwrap()).unwrap(),
+        }]
+    );
+}
+
+/// The stated entries the log holds claimed by `maker`, each with who it says relayed it.
+fn relays_of(log: &KeptLog, maker: &str) -> Vec<Option<Actor>> {
+    log.0
+        .iter()
+        .filter_map(|entry| match entry {
+            Entry::Stated(stated) if stated.attribution.maker().acts == id(maker) => {
+                Some(stated.relayed_by.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// A result of `maker`'s, signed by its statements key.
+fn result_of(maker: &str) -> Vec<u8> {
+    let body = json!({
+        "kind": "withdrawal",
+        "transaction": "tx-carried",
+        "outcome": { "status": "refused", "refusal": { "class": "final" } },
+    });
+    snapshot_support::sign(
+        snapshot_support::envelope(
+            &snapshot_support::deployment(),
+            rutent_contracts::provider_role::RESULT_SHAPE,
+            maker,
+            1_794_200_000,
+            body,
+        ),
+        &snapshot_support::statements_key(maker, 1),
+    )
+}
+
+/// The segment's provider hands back a result another provider signed: the entry is that maker's, unverified, and
+/// names the provider the platform asked as its relay; the provider's own result names none.
+// verifies: REQ-AUD-2
+#[test]
+fn segment_result_restated_by_a_relay_is_recorded_naming_the_relay() {
+    let mut modules = fake();
+    modules.answer = Some(result_of("exchange-a"));
+    let (_, log) = run(&mut modules);
+    let [relayed] = relays_of(&log, "exchange-a").try_into().unwrap();
+    assert_eq!(
+        relayed.expect("the relay is named").acts,
+        id("reserve-bank-co")
+    );
+
+    let mut modules = fake();
+    modules.answer = Some(result_of("reserve-bank-co"));
+    let (_, log) = run(&mut modules);
+    assert_eq!(relays_of(&log, "reserve-bank-co"), vec![None]);
+}
+
+/// The part's final deposit is at `reserve-wallet`, which declares `batched` payouts: one movement may pay several
+/// orders, and a movement evidences one order's close, so the part could never close. The route guard refuses it at
+/// the part's first segment, naming the deposit's place, and nothing is recorded as handed over or moved.
+// verifies: REQ-ORD-33
+#[test]
+fn route_chosen_to_end_on_a_reserve_that_batches_payouts_is_refused_before_anything_is_handed_over()
+{
+    let mut modules = fake();
+    let (ran, log) = run_over(&mut modules, admitting_with_wallet(Some("batched")));
+    let Ran::Refused { refused, .. } = &ran else {
+        panic!("{ran:?}");
+    };
+    assert_eq!(refused.reason, RouteRefusal::BatchedPayout(2));
+    assert!(modules.judged.is_empty(), "no segment was handed over");
+    assert!(
+        log.0.iter().all(|e| !matches!(
+            e,
+            Entry::Verified(v) if matches!(v.what, What::Effect { .. })
+        )),
+        "no effect was recorded"
+    );
+}
+
+/// The same route over a reserve that declares `per_order`, or nothing, is handed over as before.
+// verifies: REQ-ORD-33
+#[test]
+fn route_ending_on_a_reserve_that_pays_per_order_is_handed_over() {
+    for payouts in [Some("per_order"), None] {
+        let mut modules = fake();
+        let (ran, _) = run_over(&mut modules, admitting_with_wallet(payouts));
+        assert!(
+            matches!(ran, Ran::Segments(_)),
+            "{payouts:?} is routed through: {ran:?}"
+        );
+    }
+}
+
+/// The part's withdrawal settled while its reserve paid per order. The reserve then re-advertises its deposit as
+/// `batched`, and the next run, at the next segment (the exchange, not yet handed over), is refused before it:
+/// `closable` reads the deposit at every segment not yet in flight, so only a part whose own deposit is already handed
+/// over escapes the guard.
+// verifies: REQ-ORD-33
+#[test]
+fn reserve_that_turns_batched_mid_route_is_refused_at_the_next_segment() {
+    let mut modules = fake();
+    modules.settles_the_withdrawal = true;
+    // First run: the exchange isn't listed yet, so the part stops there, its withdrawal settled.
+    let before = admitting_with_wallet(Some("per_order"));
+    let after = with_the_exchange(admitting_with_wallet(Some("batched")));
+    let (ran, _) = run_over_each(&mut modules, vec![before, after]);
+    let Ran::Refused { refused, .. } = &ran[0] else {
+        panic!("{:?}", ran[0]);
+    };
+    assert_eq!(refused.reason, RouteRefusal::ProviderNotListed(1));
+    let Ran::Refused { refused, .. } = &ran[1] else {
+        panic!("{:?}", ran[1]);
+    };
+    assert_eq!(refused.reason, RouteRefusal::BatchedPayout(2));
+    assert_eq!(
+        modules.judged.len(),
+        1,
+        "only the withdrawal was handed over"
+    );
+}
+
+/// A grading that reads one private node's record at each grading of a segment and holds the segment for the first two
+/// (so it is graded three times), taking an answer as a record where one came back.
+struct ReadsTwiceOver {
+    graded: usize,
+    reads: Vec<bool>,
+}
+
+impl Grading for ReadsTwiceOver {
+    fn records_wanted(&mut self, _: &ToGrade<'_>) -> Vec<RecordWanted> {
+        vec![RecordWanted {
+            node: "ledger-in".into(),
+            provider: "reserve-bank-co".into(),
+            about: vec!["tx-about".into()],
+        }]
+    }
+
+    fn record_read(
+        &mut self,
+        _: &Id,
+        _: &RecordWanted,
+        answer: Option<(&Statement<Operation>, &[u8])>,
+        _: &rutent_contracts::router_api::Timestamp,
+    ) -> bool {
+        self.reads.push(answer.is_some());
+        answer.is_some()
+    }
+
+    fn grade(&mut self, settled: &ToGrade<'_>) -> Graded {
+        self.graded += 1;
+        if self.graded <= 2 {
+            return Graded::Waits(Short::Unreadable);
+        }
+        ProvidersWord.grade(settled)
+    }
+}
+
+/// Policy that refuses a read of a private node's record, counting how often it was asked, and permits everything else.
+struct RefusingReads {
+    permits: Permitting,
+    asked: usize,
+}
+
+impl Decisions for RefusingReads {
+    fn decide(&mut self, request: &DecisionRequest) -> Result<Decision, AppendFailure> {
+        if matches!(
+            request.action,
+            rutent_contracts::core_internal::Action::ReadNodeRecord { .. }
+        ) {
+            self.asked += 1;
+            return Ok(Decision {
+                request: request.request.clone(),
+                decision: id(&format!("refused-{}", self.asked)),
+                outcome: Answer::Refuse {
+                    class: rutent_contracts::core_internal::RefusalClass::NotPermitted,
+                },
+                receipt: receipt(20_000 + self.asked),
+            });
+        }
+        self.permits.decide(request)
+    }
+}
+
+/// A read of a private node's record that came to nothing is tried again when its segment is graded again once the retry
+/// cadence has passed (an hour: the runs here are an hour apart), and one that was taken is not; a read policy refused is not asked again either (`REQ-ORD-41`, `T-020-58`, the review's M1).
+// verifies: REQ-ORD-41
+#[test]
+fn a_read_that_failed_is_tried_again_and_one_taken_or_refused_is_not() {
+    // The first question gets no answer, the second is taken: asked twice over three gradings, and no third time.
+    let mut modules = fake();
+    modules.settles_the_withdrawal = true;
+    modules.step_between_runs = 3600;
+    let mut grading = ReadsTwiceOver {
+        graded: 0,
+        reads: Vec::new(),
+    };
+    run_over_each_with(
+        &mut modules,
+        vec![admitting(), admitting(), admitting()],
+        &mut grading,
+        &mut Permitting(0),
+    );
+    assert!(grading.graded >= 3, "the segment was graded again");
+    assert_eq!(modules.record_questions, 2, "retried once, then taken");
+    assert_eq!(grading.reads, [false, true]);
+
+    // Refused by policy: decided once, never asked, never decided again.
+    let mut modules = fake();
+    modules.settles_the_withdrawal = true;
+    modules.step_between_runs = 3600;
+    let mut grading = ReadsTwiceOver {
+        graded: 0,
+        reads: Vec::new(),
+    };
+    let mut policy = RefusingReads {
+        permits: Permitting(0),
+        asked: 0,
+    };
+    run_over_each_with(
+        &mut modules,
+        vec![admitting(), admitting(), admitting()],
+        &mut grading,
+        &mut policy,
+    );
+    assert!(grading.graded >= 3);
+    assert_eq!(modules.record_questions, 0, "nothing was asked");
+    assert_eq!(policy.asked, 1, "decided once");
+
+    // A log that can't take the result of a read: the answer, though it came back, is not used (`T-020-58`, L4), and the
+    // read is tried again next time.
+    let mut modules = fake();
+    modules.settles_the_withdrawal = true;
+    modules.step_between_runs = 3600;
+    modules.refuse_read_results = true;
+    let mut grading = ReadsTwiceOver {
+        graded: 0,
+        reads: Vec::new(),
+    };
+    run_over_each_with(
+        &mut modules,
+        vec![admitting(), admitting(), admitting()],
+        &mut grading,
+        &mut Permitting(0),
+    );
+    assert!(modules.record_questions >= 2, "asked again each time");
+    assert!(
+        grading.reads.iter().all(|taken| !taken),
+        "an answer is used only once its result is in the log: {:?}",
+        grading.reads
+    );
+}
+
+/// A grading that reads one private node's record at each grading, takes no answer as a record, and holds the segment.
+struct NeverTakes;
+
+impl Grading for NeverTakes {
+    fn records_wanted(&mut self, _: &ToGrade<'_>) -> Vec<RecordWanted> {
+        vec![RecordWanted {
+            node: "ledger-in".into(),
+            provider: "reserve-bank-co".into(),
+            about: vec!["tx-about".into()],
+        }]
+    }
+
+    fn record_read(
+        &mut self,
+        _: &Id,
+        _: &RecordWanted,
+        _: Option<(&Statement<Operation>, &[u8])>,
+        _: &rutent_contracts::router_api::Timestamp,
+    ) -> bool {
+        false
+    }
+
+    fn grade(&mut self, _: &ToGrade<'_>) -> Graded {
+        Graded::Waits(Short::Unreadable)
+    }
+}
+
+/// Over how many gradings, `step` seconds apart, a read that is never taken is put.
+fn questions_over(gradings: usize, step: u64) -> usize {
+    let mut modules = fake();
+    modules.settles_the_withdrawal = true;
+    modules.step_between_runs = step;
+    run_over_each_with(
+        &mut modules,
+        (0..gradings).map(|_| admitting()).collect(),
+        &mut NeverTakes,
+        &mut Permitting(0),
+    );
+    modules.record_questions
+}
+
+/// A read whose answer Core didn't take is asked again on the retry cadence, not at every grading: a segment graded ten
+/// times within the hour puts it once, and one graded ten times an hour apart puts it ten times (`REQ-ORD-41`, `NFR-5`,
+/// `T-020-67`).
+// verifies: REQ-ORD-41, NFR-5
+#[test]
+fn a_read_not_taken_is_asked_again_on_the_retry_cadence_and_not_at_every_grading() {
+    assert_eq!(questions_over(10, 0), 1, "within the hour: asked once");
+    assert_eq!(questions_over(10, 60), 1, "ten minutes on: still once");
+    assert_eq!(questions_over(10, 3600), 10, "an hour apart: each time");
+}
+
+/// A read whose answer Core never takes is asked no more than the cap, however long the segment waits (`REQ-ORD-41`,
+/// `NFR-5`, `T-020-67`).
+// verifies: REQ-ORD-41, NFR-5
+#[test]
+fn a_read_not_taken_is_asked_no_more_than_the_cap_however_long_the_segment_waits() {
+    let cap = rutent_core_orch::segments::MAX_RECORD_TRIES as usize;
+    assert_eq!(questions_over(cap + 10, 3600), cap);
+}
+
+/// How many withdrawals the log records as done: a result that counted.
+fn done_results(log: &KeptLog) -> usize {
+    log.0
+        .iter()
+        .filter(|entry| {
+            matches!(entry, Entry::Verified(v)
+                if matches!(v.what, What::Result { .. }) && v.outcome == rutent_contracts::core_internal::Outcome::Done {})
+        })
+        .count()
+}
+
+/// A segment begun before a cutover resolves the same whether its answer lands before or after the date, and one begun
+/// at or after it takes no statement under the old version (`REQ-PRT-2`, `REQ-PRT-4`, `T-020-54`): the withdrawal begins
+/// at 1 794 200 000 under 3.0.0 in force until 100 seconds later, and its answer lands at the platform's hand-back, the
+/// clock then where the case says. The result judge reads the version recorded when the segment began.
+// verifies: REQ-PRT-2, REQ-PRT-4
+#[test]
+fn result_of_a_segment_begun_before_a_cutover_counts_whenever_it_lands() {
+    let results = |cutover: u64, lands: u64| {
+        let mut modules = fake();
+        modules.settles_the_withdrawal = true;
+        modules.answers_under = Some("3.0.0".into());
+        modules.answers_at = Some(lands);
+        let mut catalogue = admitting();
+        catalogue.set_cutover("3.0.0", &Instant(cutover).rfc3339().unwrap());
+        let (_, log) = run_over(&mut modules, catalogue);
+        done_results(&log)
+    };
+    // Begun at 1 794 200 000, the date at 1 794 200 100: the answer lands before it, at it and long after.
+    for lands in [1_794_200_050, 1_794_200_100, 1_794_209_999] {
+        assert!(results(1_794_200_100, lands) > 0, "landing at {lands}");
+    }
+    // The date was already past when the segment began: the old version's answer counts for nothing, wherever it lands.
+    for lands in [1_794_200_000, 1_794_209_999] {
+        assert_eq!(results(1_794_199_000, lands), 0, "landing at {lands}");
+    }
+}
+
+/// A later answer to a segment whose outcome is unknown is taken by the version the segment began under, not by the
+/// cutovers as they stand when it lands (`REQ-PRT-2`, `T-020-54`): begun before the date, the old version's answer is
+/// taken after it, and the date moved to before the segment began since changes nothing; a segment begun after the date
+/// takes no old-version answer.
+// verifies: REQ-PRT-2, REQ-PRT-4
+#[test]
+fn late_answer_of_a_segment_begun_before_a_cutover_is_taken_whatever_the_cutovers_say_since() {
+    let late_for = |began_cutover: u64, now_cutover: u64, lands: u64| {
+        let mut modules = fake();
+        // The platform hands back no answer: the outcome of the withdrawal is not known.
+        modules.unknown = true;
+        let mut run_catalogue = admitting();
+        run_catalogue.set_cutover("3.0.0", &Instant(began_cutover).rfc3339().unwrap());
+        let mut late_catalogue = admitting();
+        late_catalogue.set_cutover("3.0.0", &Instant(now_cutover).rfc3339().unwrap());
+        run_then_late(
+            &mut modules,
+            run_catalogue,
+            late_catalogue,
+            |modules| {
+                // The provider's own answer, under 3.0.0, to the withdrawal it was handed.
+                let transaction = modules.judged[0].0.clone();
+                let outcome = json!({
+                    "status": "succeeded", "amount_in": "100000000", "amount_out": "99900000",
+                    "fee": { "asset": "COP", "amount": "100000" },
+                    "evidence": [{ "grade": 3, "reference": "reserve-bank-co:book-1", "by": "reserve-bank-co" }],
+                });
+                let body =
+                    json!({ "kind": "withdrawal", "transaction": transaction, "outcome": outcome });
+                let mut envelope = snapshot_support::envelope(
+                    &snapshot_support::deployment(),
+                    rutent_contracts::provider_role::RESULT_SHAPE,
+                    "reserve-bank-co",
+                    1_794_200_000,
+                    body,
+                );
+                envelope["protocol_version"] = "3.0.0".into();
+                snapshot_support::sign(
+                    envelope,
+                    &snapshot_support::statements_key("reserve-bank-co", 1),
+                )
+            },
+            lands,
+        )
+    };
+    // Begun at 1 794 200 000 with the date at 1 794 200 100; it lands after, and the date has since moved before the
+    // beginning: taken.
+    assert!(late_for(1_794_200_100, 1_794_200_100, 1_794_200_500).is_ok());
+    assert!(late_for(1_794_200_100, 1_794_199_000, 1_794_200_500).is_ok());
+    // Begun after the date: refused, wherever it lands and whatever the cutover says since.
+    assert!(late_for(1_794_199_000, 1_794_200_100, 1_794_200_500).is_err());
+    assert!(late_for(1_794_199_000, 1_794_999_999, 1_794_200_500).is_err());
+}

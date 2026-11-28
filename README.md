@@ -6,7 +6,7 @@ rutent is a Bloque open-source project, succeeding one of Bloque's existing serv
 
 ## Status
 
-Construction starts. The project's owner accepted `SPEC.md` v0.4.1 on 2026-11-05, and `ARCHITECTURE.md` with its fourteen ADRs on 2026-11-06. `PLAN.md`, accepted the same day, opens construction: its first milestone freezes the contracts and runs two experiments. Nothing is built yet.
+Construction starts. The project's owner accepted `SPEC.md` v0.4.1 on 2026-11-05 (now v0.4.2, which applies the owner's answers of 2026-11-18 and adds no identifier), and `ARCHITECTURE.md` with its fourteen ADRs on 2026-11-06. `PLAN.md`, accepted the same day, opens construction: its first milestone freezes the contracts and runs two experiments. Nothing is built yet.
 
 ## Read in this order
 

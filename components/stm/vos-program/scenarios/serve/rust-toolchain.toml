@@ -1,0 +1,3 @@
+# The client's toolchain (../../client/rust-toolchain.toml), which VOS's crates build with: the server links them.
+[toolchain]
+channel = "nightly-2025-07-14"

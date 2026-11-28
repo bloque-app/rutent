@@ -1,0 +1,16 @@
+{
+  "request": "req-104",
+  "decision": "dec-104",
+  "outcome": {
+    "answer": "refuse",
+    "class": "outside_authorisation"
+  },
+  "receipt": {
+    "log": "log-main",
+    "index": 43,
+    "entry": {
+      "algorithm": "sha-256",
+      "value": "1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c"
+    }
+  }
+}

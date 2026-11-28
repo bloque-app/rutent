@@ -1,0 +1,296 @@
+//! What survives a crash of the assembled Core: the log's store and the evidence store's shelf (`NFR-5`).
+//!
+//! A [`Disk`] holds both. The log and the evidence store each take a handle on it ([`LogDisk`], [`ShelfDisk`]), and
+//! when the Core holding them is dropped mid-step (the crash), the disk keeps every record and every statement that
+//! was durable, and nothing else: a record is durable once the log's store took it, as on a real disk. A Core
+//! opened again on the same disk reads both back, as the log and the store do after a restart (`T-022-01`,
+//! `T-022-03`).
+//!
+//! A [`Crash`] planted on the disk stops the process right after the store took a record of a given kind: the
+//! record is durable, and its writer never hears so. That is the crash between a record and its effect (`INV-7`):
+//! the effect waits on the log's answer, which never comes.
+
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
+use rutent_contracts::module_interface::Digest;
+use rutent_core_audit::log::{Store, StoreError};
+use rutent_core_audit::receipts::store::{MemoryShelf, Shelf, ShelfContents, ShelfError, Shelved};
+
+/// Where the crash falls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Crash {
+    /// Right after the log's store takes the `nth` record (from 0) whose `call` is `call`, before the log answers
+    /// the append.
+    AfterRecord {
+        /// The verified entry's `call`, such as `effect`, or a stated entry's statement shape.
+        call: &'static str,
+        /// Which one, counted from 0.
+        nth: usize,
+    },
+}
+
+/// The message a planted crash panics with, so a test tells it from any other panic.
+pub const CRASHED: &str = "the assembled core crashed (a planted fault)";
+
+/// The log's records and the evidence store's statements, as a disk holds them across a crash.
+#[derive(Clone, Default)]
+pub struct Disk {
+    records: Rc<RefCell<Vec<Vec<u8>>>>,
+    /// The checkpoint store's records, apart from the log's and the evidence store's (ADR-0005): what Core's
+    /// checkpointer published survives a crash as the log does (`REQ-AUD-14`, `T-020-48`).
+    checkpoints: Rc<RefCell<Vec<Vec<u8>>>>,
+    shelf: Rc<RefCell<MemoryShelf>>,
+    crash: Rc<Cell<Option<Crash>>>,
+    seen: Rc<RefCell<Vec<(String, usize)>>>,
+    /// Records of a call the store can't take now: its name and how many more appends it turns away.
+    refusing: Rc<Cell<Option<(&'static str, usize)>>>,
+    /// The result the store turns away once, of the next effect of an action kind: the kind, and, once that effect is
+    /// taken, its place in the log.
+    refusing_result_of: Rc<RefCell<Option<ResultRefusal>>>,
+    /// The statements kept that a Core reopened on this disk can't read back: the shelf keeps them, and the store
+    /// answers nothing under them to Core's reopening.
+    unreadable: Rc<RefCell<Vec<Digest>>>,
+}
+
+/// A refusal of one effect's result ([`Disk::refuse_result_of`]): the effect's action kind, and, once that effect is
+/// taken, how many more tries of its result's append are turned away.
+#[derive(Debug, Clone)]
+struct ResultRefusal {
+    kind: String,
+    left: Option<usize>,
+}
+
+impl std::fmt::Debug for Disk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Disk")
+            .field("records", &self.records.borrow().len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Disk {
+    /// An empty disk.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Plants `crash`: the process stops there, once.
+    pub fn plant(&self, crash: Crash) {
+        self.crash.set(Some(crash));
+    }
+
+    /// A fault the scenarios plant: the statement kept under `commitment` can't be read back by a Core reopened on
+    /// this disk, as `Core::intake_reopened_without` plants it for intake alone. The shelf keeps it, so the log opens.
+    pub fn unreadable_on_reopen(&self, commitment: &Digest) {
+        self.unreadable.borrow_mut().push(commitment.clone());
+    }
+
+    /// Whether the statement kept under `commitment` is one a reopened Core can't read back.
+    pub(crate) fn is_unreadable(&self, commitment: &Digest) -> bool {
+        self.unreadable.borrow().contains(commitment)
+    }
+
+    /// Takes back a planted crash that hasn't fallen, if one is planted: the process stops nowhere from now on
+    /// (`T-024-21`, a run that restarts where its crash never fell).
+    pub fn unplant(&self) {
+        self.crash.set(None);
+    }
+
+    /// Makes the log's store turn away the next `times` appends of a record whose `call` is `call` (or, for a stated
+    /// record, whose statement's shape is `call`), as a store that can't take them now does: nothing is written, and the
+    /// log may try again (`AppendFailure::Unavailable`).
+    pub fn refuse(&self, call: &'static str, times: usize) {
+        self.refusing.set(Some((call, times)));
+    }
+
+    /// Makes the log's store turn away the result of the next effect whose action is of `kind` (such as
+    /// `ask_status`): the effect is taken, and its result can't be now (`T-020-60` item (8)).
+    pub fn refuse_result_of(&self, kind: &str) {
+        *self.refusing_result_of.borrow_mut() = Some(ResultRefusal {
+            kind: kind.to_owned(),
+            left: None,
+        });
+    }
+
+    /// Whether `record` is the result [`Disk::refuse_result_of`] turns away: the first result after an effect of its
+    /// kind, which Core appends right after carrying the effect out, each of the tries of that one append.
+    fn result_refused(&self, record: &[u8]) -> bool {
+        let mut armed = self.refusing_result_of.borrow_mut();
+        let Some(ResultRefusal { kind, left: effect }) = armed.as_mut() else {
+            return false;
+        };
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(record) else {
+            return false;
+        };
+        match (*effect, value["what"]["call"].as_str()) {
+            (None, Some("effect")) if value["what"]["action"]["kind"].as_str() == Some(kind) => {
+                *effect = Some(SEGMENT_APPEND_TRIES);
+                false
+            }
+            // Core appends an effect's result right after it carries the effect out, with no other result between, and
+            // tries one append that many times: each try of that one append is turned away, and no later one.
+            (Some(left), Some("result")) => {
+                if left <= 1 {
+                    *armed = None;
+                } else {
+                    *effect = Some(left - 1);
+                }
+                true
+            }
+            (Some(_), _) => {
+                *armed = None;
+                false
+            }
+            _ => false,
+        }
+    }
+
+    fn refused(&self, record: &[u8]) -> bool {
+        let Some((call, left)) = self.refusing.get() else {
+            return false;
+        };
+        if left == 0 {
+            return false;
+        }
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(record) else {
+            return false;
+        };
+        // A verified record by its `call`, a stated one by the shape of the statement it names (`T-020-46`).
+        if value["what"]["call"].as_str() != Some(call)
+            && value["what"]["statement"].as_str() != Some(call)
+        {
+            return false;
+        }
+        self.refusing.set(Some((call, left - 1)));
+        true
+    }
+
+    /// Every record the log's store holds, oldest first.
+    pub fn records(&self) -> Vec<Vec<u8>> {
+        self.records.borrow().clone()
+    }
+
+    /// Every statement the evidence store's shelf keeps, as the shelf writes it (JSON, one each), and the commitments
+    /// erased, as one more entry.
+    ///
+    /// # Errors
+    ///
+    /// If the shelf can't be loaded: a shelf that couldn't be read is not an empty one.
+    pub fn shelved(&self) -> Result<Vec<Vec<u8>>, String> {
+        let contents = self
+            .shelf
+            .borrow_mut()
+            .load()
+            .map_err(|e| format!("the evidence shelf couldn't be loaded: {e:?}"))?;
+        let mut all: Vec<Vec<u8>> = contents
+            .kept
+            .iter()
+            .map(|kept| serde_json::to_vec(kept).expect("a kept statement is JSON"))
+            .collect();
+        all.push(format!("{:?}", contents.erased).into_bytes());
+        Ok(all)
+    }
+
+    /// The log's store on this disk.
+    pub(crate) fn log(&self) -> LogDisk {
+        LogDisk(self.clone())
+    }
+
+    /// The evidence store's shelf on this disk.
+    pub(crate) fn shelf(&self) -> ShelfDisk {
+        ShelfDisk(self.clone())
+    }
+
+    /// The checkpoint store on this disk.
+    pub(crate) fn checkpoint_store(&self) -> CheckpointDisk {
+        CheckpointDisk(self.clone())
+    }
+
+    fn took(&self, record: &[u8]) {
+        let Some(Crash::AfterRecord { call, nth }) = self.crash.get() else {
+            return;
+        };
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(record) else {
+            return;
+        };
+        // A verified record by its `call`, a stated one by the shape of the statement it names (`T-020-46`).
+        if value["what"]["call"].as_str() != Some(call)
+            && value["what"]["statement"].as_str() != Some(call)
+        {
+            return;
+        }
+        // A read of a private node's record is an effect too (`T-020-58`), and so is a read of a holding account's balance
+        // (`T-020-63`, which the test worlds' stand-in holder now answers for every node, `T-020-60`), but neither is a
+        // move: the plans count the moves.
+        if matches!(
+            value["what"]["action"]["kind"].as_str(),
+            Some("read_node_record" | "read_holding_balance")
+        ) {
+            return;
+        }
+        let mut seen = self.seen.borrow_mut();
+        let count = seen.iter().find(|(c, _)| c == call).map_or(0, |(_, n)| *n);
+        seen.retain(|(c, _)| c != call);
+        seen.push((call.to_owned(), count + 1));
+        if count == nth {
+            self.crash.set(None);
+            drop(seen);
+            panic!("{CRASHED}");
+        }
+    }
+}
+
+/// How many times Core's segments try one append to the log (`core-orch`'s `segments::journal::APPEND_TRIES`).
+const SEGMENT_APPEND_TRIES: usize = 3;
+
+/// The log's store, on a [`Disk`].
+pub struct LogDisk(Disk);
+
+impl Store for LogDisk {
+    fn append(&mut self, record: &[u8]) -> Result<(), StoreError> {
+        if self.0.refused(record) || self.0.result_refused(record) {
+            return Err(StoreError::Unavailable(
+                "the store can't take it now (a planted fault)".to_owned(),
+            ));
+        }
+        self.0.records.borrow_mut().push(record.to_vec());
+        self.0.took(record);
+        Ok(())
+    }
+
+    fn records(&mut self) -> Result<Vec<Vec<u8>>, StoreError> {
+        Ok(self.0.records.borrow().clone())
+    }
+}
+
+/// The checkpoint store, on a [`Disk`]: its own records, apart from the log's.
+pub struct CheckpointDisk(Disk);
+
+impl Store for CheckpointDisk {
+    fn append(&mut self, record: &[u8]) -> Result<(), StoreError> {
+        self.0.checkpoints.borrow_mut().push(record.to_vec());
+        Ok(())
+    }
+
+    fn records(&mut self) -> Result<Vec<Vec<u8>>, StoreError> {
+        Ok(self.0.checkpoints.borrow().clone())
+    }
+}
+
+/// The evidence store's shelf, on a [`Disk`].
+pub struct ShelfDisk(Disk);
+
+impl Shelf for ShelfDisk {
+    fn put(&mut self, shelved: &Shelved) -> Result<(), ShelfError> {
+        self.0.shelf.borrow_mut().put(shelved)
+    }
+
+    fn erase(&mut self, commitment: &Digest) -> Result<(), ShelfError> {
+        self.0.shelf.borrow_mut().erase(commitment)
+    }
+
+    fn load(&mut self) -> Result<ShelfContents, ShelfError> {
+        self.0.shelf.borrow_mut().load()
+    }
+}

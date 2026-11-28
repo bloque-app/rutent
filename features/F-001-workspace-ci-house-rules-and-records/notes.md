@@ -77,3 +77,39 @@ Readings taken where `PLAN.md` is silent, recorded per Narthex `REQ-SKL-24`.
 - The guard runs on a push against `github.event.before`, and on a new branch (all-zero `before`) against `origin/main`. The value reaches the shell through `env:` only.
 - `parse_contracts` rejects two contracts whose artefact or module directories are equal. Nesting stays legal, because owners are found by longest prefix.
 - A bullet names a decision only when `DEC-` is standalone (no letter, digit or underscore before it), digits follow, and the digits end the token. So `(see DEC-4x)` and `_DEC-4` name none.
+## T-001-06
+
+Every crate of rutent's own core stays MIT; a crate that must inherit a copyleft or source-available licence is its own separately licensed crate behind the runtime-host seam.
+
+Design.
+
+- `licences/RECORD` gains directive lines that start with `@`: `@holds <name> <version> <lockfile>[,...]` (the lockfiles a package outside the permissive set may be locked in), `@core <name>` (a crate of rutent's own core), `@noncore <name> <reason...>` (a root-workspace crate that is not core), `@artifact <lockfile> <name> <licence...>` (each artifact, with its licence) and `@exception <reference> <lockfile> <artifact> <core crate>[,...]` (held in that lock only). The `stm-inside-agpl-program` exception is named there.
+- A licence expression is permissive when it reads so under `spdx.rs`: the header's set plus `Apache-2.0 WITH LLVM-exception`; an `OR` passes on one permissive alternative, an `AND` needs every term, `/` reads as `OR`. An expression the reader cannot parse is not permissive.
+- The rule is every lock git ships, not every crate: the locks read are the set git would ship: `git ls-files --cached --others --exclude-standard`, filtered to `Cargo.lock` (chosen over honouring `.gitignore` in a walk, because git already applies every ignore rule). A lock in a new place is read; an ignored build artefact, such as the one the boundary check's docs test leaves beside its fixture, is not. The check fails closed if git cannot be run, if a listed lock is a symbolic link, if the listing holds a nested git repository, or if `git ls-files --stage` shows a mode-160000 entry (a submodule), which the error names. An unignored `target/` lock is listed, so it fails loud. A test compares the set with `git ls-files`.
+- Every crate of the root workspace is in exactly one of `@core` and `@noncore`, and every name in them is a root-workspace crate (read from the root lock's metadata): a new crate cannot be left out of the core list.
+- Per lock: a package outside the permissive set fails in a lock that its `@holds` line does not name (`NotHeld`), and in any lock outside `COPYLEFT_ROOTS` whatever the record says (`RefusedLock`). A permitted package outside the permissive set with no `@holds` line fails (`HoldsNothing`), and so does a `@holds` line naming a lock that refuses it (`HoldsRefused`).
+- Per artifact: the check runs `cargo metadata --format-version 1 --locked --all-features` for each lock (the cargo that runs the tool, so a workspace's own toolchain file installs nothing) and reads each workspace member's graph over normal and build edges. It fails on an unlisted artifact, a recorded licence that differs from the manifest's (for a dependency, the stricter of the record and the manifest decides; a path package takes the `@artifact` line of the lock that owns its directory, never a same-named one of another lock), a package whose licence the record cannot tell, an artifact holding a core crate and a package outside the permissive set unless an `@exception` names that artifact and that core crate, and `rutent-stm` or `rutent-contracts` with a package outside the permissive set in its own graph. The JSON is read by a small reader in the crate, so the tool still has no dependency.
+- The unit tests use fixture lockfiles and fixture metadata only: no network, no cargo.
+
+Defaults taken (reversible, fail closed).
+
+- `COPYLEFT_ROOTS` names two trees, `components/stm/vos-program/` and the experiment's `experiments/2026-11-06-runtime-host/vos-adapter/`; any other lock refuses. The `@holds` lines name each lock where a package is locked today, not the whole tree, so a new lock needs a deliberate line.
+- A non-permissive package here means any licence outside the permissive set, not only GPL and AGPL, so a source-available crate beside a core crate fails too.
+- `rutent-stm-vos-serve` (AGPL, the client's host server) is listed as an exception under the owner's decision `vos-serve-exception` (allowed, 2026-11-26), because it embeds the same two crates and the check must pass on its lock. It stays marked pending in the record until the owner confirms or removes it.
+- The experiment's artifacts that hold core crates beside VOS (`rutent-vos-adapter`, `rutent-vos-rt`, `rutent-vos-program`) carry exceptions under `DEC-6,counsel-licences`, the permission their manifests cite; they declare no `license` (the adapter and rt), so the record gives the adapter and rt `AGPL-3.0-or-later`, the licence of what they link.
+- The core list is `rutent-contracts`, `rutent-stm`, `rutent-core-audit`, `rutent-core-authz`, `rutent-core-orch`, `rutent-evidence`, `rutent-router`, `rutent-prov`, `rutent-conformance` and `rutent-scenarios`.
+- Dev dependencies are not part of an artifact.
+
+Gaps.
+
+- `rutent-vos-journal` and `rutent-vos-program` in the experiment declare MIT and hold VOS's AGPL crates in their graphs; no core crate is in the journal's graph, so the check passes it. Owner: the experiment's author, when the experiment closes.
+- Not run: the check under CI's pinned toolchain; it ran here under the local stable toolchain.
+## T-001-07
+
+The licence check's Lows from the milestone reviewer's check of `T-001-06`.
+
+- The rule for the locks is every lock git ships: every `Cargo.lock` that `git ls-files --cached --others --exclude-standard` lists, tracked, or untracked and not ignored. It is not every crate, and it is not a walk of the tree. `licences/RECORD`'s header says so too.
+- Every package in a lock's metadata whose record line differs from its manifest's `license` fails with `LicenceMismatch`, dependencies as well as artifacts, in every lock. The comparison is of the text with a `/` read as ` OR ` and whitespace collapsed (the record writes `Apache-2.0/MIT` as `Apache-2.0 OR MIT`), and of nothing else.
+- A package (artifact or dependency) whose manifest gives a `license-file` and no `license` is compared by the file's `SPDX-License-Identifier:` header; a file that cannot be read, has no header, or has more than one distinct header fails with `LicenceFileUnread`. `check_artifacts` (which reads no file) therefore fails such an artifact closed; the tool passes a reader that reads the file.
+- `check_core_lists` is an error when no input is the root lock, not a skip.
+- A tracked lock that `.gitignore` also matches is read: a fixture adds one with `git add -f`; `--cached` is what lists it.

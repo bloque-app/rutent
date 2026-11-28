@@ -1,0 +1,19 @@
+{
+  "provider": "kyc-check",
+  "order": "ord-17",
+  "measure": {
+    "kind": "answer",
+    "said": "no"
+  },
+  "cites": [
+    {
+      "log": "log-main",
+      "index": 62,
+      "entry": {
+        "algorithm": "sha-256",
+        "value": "6363636363636363636363636363636363636363636363636363636363636363"
+      }
+    }
+  ],
+  "at": "2026-11-10T09:00:00Z"
+}

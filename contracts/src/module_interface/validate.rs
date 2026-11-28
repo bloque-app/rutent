@@ -50,6 +50,14 @@ pub enum RuleViolation {
         /// Index into `outside.calls`.
         call: usize,
     },
+    /// A declared call lists `status_query`, `hold` or `inner_segments_query` among its kinds (5.0.0). Each is the
+    /// operator's own question, a status question about a transaction it handed the provider, a request to hold a quote
+    /// it chose or the question of a private node's record, so a module may not ask it of another module (`REQ-ORD-1`,
+    /// `REQ-QTE-15`, `REQ-ORD-41`).
+    DeclaredCallOfAnOperatorsQuestion {
+        /// Index into `outside.calls`.
+        call: usize,
+    },
     /// A pinned address block that overlaps a special-purpose range ([`SPECIAL_PURPOSE`]), so a connection could
     /// land on the platform's own network or nowhere routable (`REQ-MDL-7`, ADR-0004).
     SpecialPurposeAddressBlock {
@@ -344,6 +352,16 @@ pub fn validate_declaration(declaration: &Declaration) -> Result<(), Vec<RuleVio
         }
         if call.kinds.contains(&OperationKind::HoldingBalance) {
             violations.push(RuleViolation::DeclaredCallOfHoldingBalance { call: i });
+        }
+        if call.kinds.iter().any(|k| {
+            matches!(
+                k,
+                OperationKind::StatusQuery
+                    | OperationKind::Hold
+                    | OperationKind::InnerSegmentsQuery
+            )
+        }) {
+            violations.push(RuleViolation::DeclaredCallOfAnOperatorsQuestion { call: i });
         }
     }
     done(violations)

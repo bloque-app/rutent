@@ -1,0 +1,242 @@
+{
+  "claim": {
+    "kind": "stated",
+    "attribution": {
+      "signature": "unverified",
+      "claimed_by": {
+        "party": "acme-co",
+        "acts": "acme-co",
+        "role": "provider",
+        "kind": "component"
+      }
+    },
+    "what": {
+      "statement": "urn:rutent:provider-role:inner-segments"
+    },
+    "when": {
+      "at": "2026-11-06T15:04:05Z",
+      "source": "party_stated"
+    },
+    "received_at": "2026-11-06T15:04:06Z",
+    "outcome": {
+      "status": "stated"
+    },
+    "signed_with": {
+      "scheme": "ed25519",
+      "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+    },
+    "commitment": {
+      "algorithm": "sha-256",
+      "value": "463a5eb8f1be0c64c7990824bb7936b1ef526d5524177af4c6083664f41785fe"
+    },
+    "about": {
+      "node": "acme-card-book"
+    }
+  },
+  "kept": {
+    "commitment": {
+      "algorithm": "sha-256",
+      "value": "463a5eb8f1be0c64c7990824bb7936b1ef526d5524177af4c6083664f41785fe"
+    },
+    "salt": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    "bytes": "eyJkZXBsb3ltZW50Ijp7Im5hbWUiOiJydXRlbnQtdGVzdCIsIm9wZXJhdG9yX2tleSI6IkFRSURCQVVHQndnSkNnc01EUTRQRUJFU0V4UVZGaGNZR1JvYkhCMGVIeUEifSwicHJvdG9jb2xfdmVyc2lvbiI6IjIuMC4xIiwic2hhcGUiOiJ1cm46cnV0ZW50OnByb3ZpZGVyLXJvbGU6aW5uZXItc2VnbWVudHMiLCJtYWtlciI6ImFjbWUtY28iLCJtYWRlX2F0IjoiMjAyNi0xMS0wNlQxNTowNDowNVoiLCJzaWduYXR1cmUiOnsic2NoZW1lIjoiZWQyNTUxOSIsImtleSI6IlBUNF9RRUZDUTBSRlJrZElTVXBMVEUxT1QxQlJVbE5VVlZaWFdGbGFXMXciLCJ2YWx1ZSI6IkJ3Z0pDZ3NNRFE0UEVCRVNFeFFWRmhjWUdSb2JIQjBlSHlBaElpTWtKU1luS0NrcUt5d3RMaTh3TVRJek5EVTJOemc1T2pzOFBUNF9RRUZDUTBSRlJnIn0sInN0YXRlbWVudCI6eyJub2RlIjoiYWNtZS1sZWRnZXIiLCJwdWJsaXNoZXIiOiJhY21lLWNvIiwic3RhbmRpbmciOiJwdWJsaXNoZXJzX3dvcmQiLCJzZWdtZW50cyI6W3sidHJhbnNhY3Rpb24iOiJ0eC1wMS1zMiIsImFzc2V0X2luIjoiQ09QIiwiYW1vdW50X2luIjoiMTUwMDAwIiwiYXNzZXRfb3V0IjoiVVNEIiwiYW1vdW50X291dCI6IjM2MDAiLCJmZWUiOiIxNTAwIn1dfX0"
+  },
+  "deployment": {
+    "name": "rutent-test",
+    "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+  },
+  "keys": [
+    {
+      "maker": "acme-co",
+      "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w",
+      "at": "2026-11-06T15:04:05Z"
+    }
+  ],
+  "signature": true,
+  "expect": "unverified",
+  "history": [
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 110,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+        }
+      },
+      "entry": {
+        "kind": "stated",
+        "attribution": {
+          "signature": "verified",
+          "who": {
+            "party": "operator",
+            "acts": "operator",
+            "role": "provider",
+            "kind": "component"
+          }
+        },
+        "what": {
+          "statement": "urn:rutent:provider-role:operation"
+        },
+        "when": {
+          "at": "2026-11-06T15:04:05Z",
+          "source": "party_stated"
+        },
+        "received_at": "2026-11-06T15:04:06Z",
+        "outcome": {
+          "status": "stated"
+        },
+        "signed_with": {
+          "scheme": "ed25519",
+          "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+        },
+        "commitment": {
+          "algorithm": "sha-256",
+          "value": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        },
+        "about": {
+          "order": "ord-1",
+          "transaction": "tx-p1-s2",
+          "segment": "p1-s2"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 111,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c"
+        }
+      },
+      "entry": {
+        "kind": "stated",
+        "attribution": {
+          "signature": "verified",
+          "who": {
+            "party": "operator",
+            "acts": "operator",
+            "role": "provider",
+            "kind": "component"
+          }
+        },
+        "what": {
+          "statement": "urn:rutent:provider-role:operation"
+        },
+        "when": {
+          "at": "2026-11-06T15:04:05Z",
+          "source": "party_stated"
+        },
+        "received_at": "2026-11-06T15:04:06Z",
+        "outcome": {
+          "status": "stated"
+        },
+        "signed_with": {
+          "scheme": "ed25519",
+          "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+        },
+        "commitment": {
+          "algorithm": "sha-256",
+          "value": "a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2"
+        },
+        "about": {
+          "order": "ord-1",
+          "transaction": "tx-p1-s3",
+          "segment": "p1-s3"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 112,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d"
+        }
+      },
+      "entry": {
+        "kind": "stated",
+        "attribution": {
+          "signature": "verified",
+          "who": {
+            "party": "operator",
+            "acts": "operator",
+            "role": "provider",
+            "kind": "component"
+          }
+        },
+        "what": {
+          "statement": "urn:rutent:provider-role:operation"
+        },
+        "when": {
+          "at": "2026-11-06T15:04:05Z",
+          "source": "party_stated"
+        },
+        "received_at": "2026-11-06T15:04:06Z",
+        "outcome": {
+          "status": "stated"
+        },
+        "signed_with": {
+          "scheme": "ed25519",
+          "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+        },
+        "commitment": {
+          "algorithm": "sha-256",
+          "value": "a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3"
+        },
+        "about": {
+          "order": "ord-2",
+          "transaction": "tx-p2-s2",
+          "segment": "p2-s2"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 113,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
+        }
+      },
+      "entry": {
+        "kind": "stated",
+        "attribution": {
+          "signature": "verified",
+          "who": {
+            "party": "acme-co",
+            "acts": "acme-co",
+            "role": "provider",
+            "kind": "component"
+          }
+        },
+        "what": {
+          "statement": "urn:rutent:provider-role:result"
+        },
+        "when": {
+          "at": "2026-11-06T15:04:05Z",
+          "source": "party_stated"
+        },
+        "received_at": "2026-11-06T15:04:06Z",
+        "outcome": {
+          "status": "stated"
+        },
+        "signed_with": {
+          "scheme": "ed25519",
+          "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+        },
+        "commitment": {
+          "algorithm": "sha-256",
+          "value": "a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4"
+        },
+        "about": {
+          "order": "ord-1",
+          "transaction": "tx-unasked"
+        }
+      }
+    }
+  ]
+}

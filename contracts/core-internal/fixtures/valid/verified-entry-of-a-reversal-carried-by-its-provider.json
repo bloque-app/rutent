@@ -1,0 +1,22 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "rutent",
+    "acts": "core-orch",
+    "role": "core",
+    "kind": "component"
+  },
+  "what": {
+    "call": "reversal_carrier",
+    "order": "ord-1",
+    "segment": "p1-s2",
+    "carrier": "provider"
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "core_clock"
+  },
+  "outcome": {
+    "status": "observed"
+  }
+}

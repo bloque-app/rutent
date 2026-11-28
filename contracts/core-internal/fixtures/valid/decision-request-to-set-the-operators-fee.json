@@ -1,0 +1,26 @@
+{
+  "request": "req-102",
+  "caller": {
+    "party": "operator",
+    "acts": "op-login-2",
+    "role": "operator",
+    "kind": "person"
+  },
+  "action": {
+    "kind": "change_catalogue",
+    "change": "set_setting",
+    "provider": "operator",
+    "setting": {
+      "setting": "operator_fee",
+      "formula": {
+        "flat": "100",
+        "proportional": {
+          "numerator": "1",
+          "denominator": "1000"
+        },
+        "maximum": "5000"
+      }
+    }
+  },
+  "at": "2026-11-10T09:00:00Z"
+}

@@ -1,0 +1,33 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "operator",
+    "acts": "op-login-2",
+    "role": "operator",
+    "kind": "person"
+  },
+  "what": {
+    "call": "check_read",
+    "check": {
+      "request": "req-404",
+      "reader": {
+        "party": "operator",
+        "acts": "op-login-2",
+        "role": "operator",
+        "kind": "person"
+      },
+      "reads": {
+        "kind": "order",
+        "order": "ord-1"
+      },
+      "at": "2026-11-10T09:00:00Z"
+    }
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "core_clock"
+  },
+  "outcome": {
+    "status": "permitted"
+  }
+}

@@ -1,5 +1,23 @@
 # module-interface changelog
 
+## 5.0.0
+- Breaking, following provider-role 4.0.0 (`T-020-45`, findings 4 and 9 of `M3`'s milestone review of 2026-11-24): the
+  declaration's `handles` and a call's kinds take provider-role's operation kinds by reference, and provider-role's
+  major moved, so this contract's shapes changed with it. `OperationKind` gains `StatusQuery` (`status_query`) and
+  `Hold` (`hold`), provider-role's two new operations: a module whose `handles` lists `status_query` is handed the
+  operator's status question about a transaction it carried out and answers it moving nothing (`T-013-11` builds the
+  platform's half), and a reserve's module whose `handles` lists `hold` answers a hold request with its signed hold.
+  New variants of an exhaustive enum, so a major. A declaration's `calls` may not list either:
+  `validate_declaration` refuses it (`DeclaredCallOfAnOperatorsQuestion`), since each is the operator's own question,
+  as `holding_balance` is. Two invalid fixtures, `declaration-call-of-status-query` and `declaration-call-of-hold`.
+  (DEC-4, DEC-20, REQ-ORD-1, REQ-QTE-15, T-020-45)
+- `OperationKind` gains `InnerSegmentsQuery` (`inner_segments_query`), provider-role 4.0.0's question of a private
+  node's record (`T-020-58`, `REQ-ORD-41`): a module whose `handles` lists it is handed the operator's question and
+  answers with its record of the segments that ran inside the node, moving nothing. A new variant of an exhaustive
+  enum, in this unreleased major. A declaration's `calls` may not list it either (`DeclaredCallOfAnOperatorsQuestion`),
+  as it may not list `status_query` or `hold`. One invalid fixture, `declaration-call-of-inner-segments-query`.
+  Ignorable: no. (DEC-4, DEC-20, REQ-ORD-41, T-020-58)
+
 ## 4.0.0
 - Breaking: the refusal reasons `M2`'s tasks found missing, so no refusal stands in another's name. A cross-module
   call refused because its caller reached a limit on its calls is `limit_reached`, and one refused because too little

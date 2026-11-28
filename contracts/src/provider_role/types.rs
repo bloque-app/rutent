@@ -393,6 +393,29 @@ pub struct ReserveTuple {
     pub decimals: EndUnits,
     /// The tuple's terms.
     pub terms: Terms,
+    /// How a deposit tuple pays its deposits out: one movement per order, or several orders' in one batched
+    /// movement (`REQ-ORD-33`; item `shared-movement-reading`, `T-020-39`). Only a deposit tuple declares it, which
+    /// the Rust validation checks ([`RuleViolation::PayoutsOnAWithdrawal`](crate::provider_role::RuleViolation));
+    /// absent, it reads as per order ([`ReserveTuple::payouts`]), as reserves were built before it.
+    #[serde(
+        default,
+        deserialize_with = "crate::provider_role::types::present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub payouts: Option<Payouts>,
+}
+
+/// How a reserve pays out what a deposit tuple deposits (`REQ-ORD-33`, `T-020-39`). A final movement is evidence of
+/// one order's close (`movement-evidences-one-segment`), so a reserve that pays several orders with one movement
+/// could never close them all: routing drops a candidate whose part would end on a deposit at a `batched` tuple
+/// (router-api's `batched_payout`, `T-020-43`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Payouts {
+    /// Each order's deposit is paid out by a movement of its own.
+    PerOrder,
+    /// Several orders' deposits may be paid out by one movement.
+    Batched,
 }
 
 impl ReserveTuple {
@@ -404,6 +427,12 @@ impl ReserveTuple {
             (NodeRef::Inner(_), NodeRef::Outer(_)) => Some(ReserveDirection::Deposit),
             _ => None,
         }
+    }
+
+    /// How the tuple pays its deposits out: its declaration, or per order where it declares none, as reserves were
+    /// built before the declaration existed (`REQ-ORD-33`, `T-020-39`). A withdrawal tuple declares none.
+    pub fn payouts(&self) -> Payouts {
+        self.payouts.unwrap_or(Payouts::PerOrder)
     }
 }
 
@@ -480,7 +509,8 @@ pub struct Band {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Reporting {
-    /// Reported amounts include the charge.
+    /// Reported amounts include the charge. A segment that keeps its asset then delivers its `amount_out` less its
+    /// charge, the fee restated in the out unit ([`less_the_charge`](crate::provider_role::less_the_charge)).
     Gross,
     /// Reported amounts exclude the charge.
     Net,
@@ -591,18 +621,35 @@ pub enum Unbounded {
     Unbounded,
 }
 
-/// What a reserve declares at publishing (`urn:rutent:provider-role:reserve-declaration`, `REQ-CAT-6`).
+/// What a reserve declares at publishing (`urn:rutent:provider-role:reserve-declaration`, `REQ-CAT-6`). Unlike the
+/// contract's other shapes it reads a field it doesn't know and ignores it: a later version's optional field is one an
+/// older reader ignores, as that version's changelog entry says (`REQ-PRT-2`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ReserveDeclaration {
     /// Whether the reserve can require that the user initiate the withdrawal themselves.
     pub can_require_user_initiated_withdrawal: bool,
     /// Whether the reserve starts routes on automatic deposits (`REQ-ORD-13`).
     pub starts_routes_on_automatic_deposits: bool,
+    /// Whether the reserve answers the operator's hold requests (`Operation::Hold`), holding a chosen quote for a new
+    /// route before it starts (`REQ-QTE-15`; 4.0.0). Absent, it answers none, and the operator asks it for none
+    /// ([`ReserveDeclaration::answers_hold_requests`]).
+    #[serde(
+        default,
+        deserialize_with = "crate::provider_role::types::present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub answers_hold_requests: Option<bool>,
     /// The party the declaration is attributable to.
     pub maker: String,
     /// The provider version in which this declaration was made; a version that changes it declares again.
     pub declared_in_version: String,
+}
+
+impl ReserveDeclaration {
+    /// Whether the reserve answers hold requests: only where it says so, and never where it says nothing (`REQ-QTE-15`).
+    pub fn answers_hold_requests(&self) -> bool {
+        self.answers_hold_requests == Some(true)
+    }
 }
 
 /// Deserialises an optional field that, when present, holds a value: `null` is refused, as the schemas refuse it.

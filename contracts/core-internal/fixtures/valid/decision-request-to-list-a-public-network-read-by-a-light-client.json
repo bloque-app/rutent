@@ -1,0 +1,40 @@
+{
+  "request": "req-130",
+  "caller": {
+    "party": "operator",
+    "acts": "op-login-2",
+    "role": "operator",
+    "kind": "person"
+  },
+  "action": {
+    "kind": "change_catalogue",
+    "change": "list_public_network",
+    "provider": "operator",
+    "public_network": {
+      "network": "kreivo",
+      "listing": {
+        "identity": {
+          "kind": "genesis_hash",
+          "hash": "0xc710a5f16adc17bcd212cff0aedcbf1c1212a043cdc0fb2dcba861efe5305b01"
+        },
+        "endpoint": {
+          "host_setting": "reader-host-a",
+          "reader": "kreivo-reader"
+        },
+        "reader": {
+          "ca": {
+            "algorithm": "sha-256",
+            "value": "3b5d3c7d207e37dceeedd301e35e2e58c3a4d2b5e1a0f2c4b6d8e0f1a2b3c4d5"
+          },
+          "subject_name": "readers.rutent.internal",
+          "statement_key": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8"
+        },
+        "version": "0.1.0",
+        "trust": {
+          "rule": "light_client"
+        }
+      }
+    }
+  },
+  "at": "2026-11-27T09:00:00Z"
+}

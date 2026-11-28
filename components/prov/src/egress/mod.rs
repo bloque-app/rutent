@@ -30,6 +30,10 @@ mod layer;
 mod resolve;
 mod tls;
 
+/// How long a wait on a clock that does not follow wall time lasts before the clock is read again (`T-014-06`), so
+/// that a step of it is seen: the same 2 ms the platform polls with.
+pub(crate) const STEPPED_SLICE: std::time::Duration = std::time::Duration::from_millis(2);
+
 pub use connector::{
     CREDENTIALS, ConnectError, Connector, Dial, Header, InvalidRequest, Method, Request, Response,
 };

@@ -45,11 +45,11 @@ use rutent_contracts::module_interface::{
     validate_operator_assertion,
 };
 use rutent_contracts::provider_role::{
-    CanonicalError, ContextMismatch, PublicKey, ShapeMismatch, Statement, canonicalize,
+    Availability, CanonicalError, ContextMismatch, Deployment, ProtocolVersions, PublicKey,
+    ShapeMismatch, Statement, canonicalize,
 };
 
 use crate::catalogue::{Catalogue, CatalogueError, Instant, StatementRefusal};
-use crate::module::types::Envelope;
 
 /// Why the platform refused a release on its assertion, before reading its binaries. The module-interface
 /// contract's `AdmissionRefusal` has no reason for an assertion that doesn't verify, so the platform names its
@@ -114,6 +114,14 @@ pub enum Unverified {
 ///     ) -> Result<(), Unverified> {
 ///         Ok(())
 ///     }
+///
+///     fn safe_retry(&self, _: &str) -> Option<bool> {
+///         Some(true)
+///     }
+///
+///     fn evidence_window(&self, _: &str) -> Option<u64> {
+///         Some(0)
+///     }
 /// }
 /// ```
 pub trait ReleaseJudge: sealed::Sealed {
@@ -128,6 +136,17 @@ pub trait ReleaseJudge: sealed::Sealed {
 
     /// Records the statement key an admitted release declared.
     fn record_statement_key(&mut self, key: &PublicKey) -> Result<(), Unverified>;
+
+    /// Whether the provider declares a repeat safe (`REQ-CAT-10`), as the advertisement the judge holds says:
+    /// `None` where it holds none, or the advertisement declares nothing (a module the operator publishes, a
+    /// verifier). The platform reads `None` as no safe retry.
+    fn safe_retry(&self, provider: &str) -> Option<bool>;
+
+    /// How long, in seconds, evidence of the provider's outcomes stays available, as the advertisement the judge
+    /// holds declares it (`REQ-CAT-10`): `None` where it is unbounded, declared by none, or the judge holds no
+    /// advertisement. The platform keeps the record of an operation it carried out with no segment until this
+    /// has passed, and for as long as its record lasts where it is `None` (`T-013-10`).
+    fn evidence_window(&self, provider: &str) -> Option<u64>;
 }
 
 /// The seal: only the catalogue implements it, and it can't be named outside this module.
@@ -163,6 +182,17 @@ impl ReleaseJudge for Catalogue {
     fn record_statement_key(&mut self, key: &PublicKey) -> Result<(), Unverified> {
         Catalogue::record_statement_key(self, key).map_err(Unverified::StatementKey)
     }
+
+    fn safe_retry(&self, provider: &str) -> Option<bool> {
+        self.declared_by(provider)?.safe_retry
+    }
+
+    fn evidence_window(&self, provider: &str) -> Option<u64> {
+        match self.declared_by(provider)?.evidence.as_ref()?.availability {
+            Availability::Bounded(bounded) => Some(bounded.seconds.get()),
+            Availability::Unbounded(_) => None,
+        }
+    }
 }
 
 /// Judges the release of a module the operator publishes (`T-016-04`; `REQ-MDL-1`, `REQ-CAT-23`), which has no
@@ -196,18 +226,22 @@ fn judge_operators_release(
 }
 
 /// Reads an assertion from the bytes it arrived in: a release assertion statement, with a signing input, for the
-/// deployment and protocol version the platform serves (`REQ-PRT-1`, `THR-8`). The platform admits what these bytes
-/// say, and judges these same bytes.
+/// `deployment` and a protocol version in force, `versions` (`REQ-PRT-1`, `THR-8`), judged at `admitted_at`, the
+/// platform's clock when it admits the release, never the assertion's own `made_at`, so a release can't be dated back
+/// past a protocol version's cutover (`REQ-PRT-4`, `THR-64`). The platform admits what these bytes say, and judges
+/// these same bytes.
 pub fn read(
     received: &[u8],
-    envelope: &Envelope,
+    deployment: &Deployment,
+    versions: &ProtocolVersions,
+    admitted_at: &str,
 ) -> Result<Statement<ReleaseAssertion>, Unverified> {
     let assertion: Statement<ReleaseAssertion> =
         serde_json::from_slice(received).map_err(|_| Unverified::Unreadable)?;
     canonicalize(received).map_err(Unverified::NoSigningInput)?;
     assertion.check_shape().map_err(Unverified::WrongShape)?;
     assertion
-        .check_context(&envelope.deployment, &envelope.protocol_version)
+        .check_context(deployment, versions, admitted_at)
         .map_err(Unverified::WrongContext)?;
     Ok(assertion)
 }

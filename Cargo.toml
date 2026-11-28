@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "contracts",
     "conformance",
+    "conformance/scenarios",
     "components/router",
     "components/stm",
     "components/prov",
@@ -10,6 +11,7 @@ members = [
     "components/core-authz",
     "components/core-audit",
     "components/evidence",
+    "components/reader-host",
     "tools/boundary-check",
     "tools/records",
     "tools/licence-check",

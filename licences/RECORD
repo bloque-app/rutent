@@ -19,8 +19,9 @@
 # When the owner adopts it, the dependency enters Cargo.lock and its line needs a
 # real version and a decision.
 #
-# The check reads every Cargo.lock in the repository: the root one, and each one under experiments/ or components/,
-# found by walking those trees (a `target` directory is skipped). One record serves them all. A package locked at
+# The check reads every Cargo.lock that git lists (`git ls-files --cached --others --exclude-standard`): the root
+# one, and each one anywhere below it that is tracked, or untracked and not ignored. It does not walk the tree, so an
+# ignored build artefact is not read and a tracked lock that .gitignore also matches is. One record serves them all. A package locked at
 # the same name and version in several locks has one line; the same name at different versions has one line per
 # version.
 #
@@ -96,18 +97,31 @@ cpufeatures 0.2.17 MIT OR Apache-2.0 permitted licence-permissive-standing
 cpufeatures 0.3.0 MIT OR Apache-2.0 permitted licence-permissive-standing
 cpufeatures 0.3.1 MIT OR Apache-2.0 permitted licence-permissive-standing
 cranelift-assembler-x64 0.135.8 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
+cranelift-assembler-x64 0.135.9 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
 cranelift-assembler-x64-meta 0.135.8 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
+cranelift-assembler-x64-meta 0.135.9 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
 cranelift-bforest 0.135.8 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
+cranelift-bforest 0.135.9 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
 cranelift-bitset 0.135.8 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
+cranelift-bitset 0.135.9 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
 cranelift-codegen 0.135.8 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
+cranelift-codegen 0.135.9 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
 cranelift-codegen-meta 0.135.8 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
+cranelift-codegen-meta 0.135.9 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
 cranelift-codegen-shared 0.135.8 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
+cranelift-codegen-shared 0.135.9 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
 cranelift-control 0.135.8 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
+cranelift-control 0.135.9 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
 cranelift-entity 0.135.8 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
+cranelift-entity 0.135.9 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
 cranelift-frontend 0.135.8 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
+cranelift-frontend 0.135.9 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
 cranelift-isle 0.135.8 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
+cranelift-isle 0.135.9 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
 cranelift-native 0.135.8 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
+cranelift-native 0.135.9 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
 cranelift-srcgen 0.135.8 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
+cranelift-srcgen 0.135.9 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
 crc32fast 1.5.4 MIT OR Apache-2.0 permitted licence-permissive-standing
 critical-section 1.2.0 MIT OR Apache-2.0 permitted licence-permissive-standing
 crossbeam-deque 0.8.6 MIT OR Apache-2.0 permitted licence-permissive-standing
@@ -260,7 +274,9 @@ proc-macro2 1.0.106 MIT OR Apache-2.0 permitted licence-permissive-standing
 proc-macro2 1.0.107 MIT OR Apache-2.0 permitted licence-permissive-standing
 proptest 1.12.0 MIT OR Apache-2.0 permitted licence-permissive-standing
 pulley-interpreter 48.0.8 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
+pulley-interpreter 48.0.9 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
 pulley-macros 48.0.8 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
+pulley-macros 48.0.9 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
 quick-error 1.2.3 MIT/Apache-2.0 permitted licence-permissive-standing
 quick_cache 0.6.24 MIT permitted licence-permissive-standing
 quinn 0.11.12 MIT OR Apache-2.0 permitted licence-permissive-standing
@@ -431,17 +447,29 @@ wasmparser 0.258.3 Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT permitted
 wasmparser 0.262.0 Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT permitted licence-llvm-exception
 wasmprinter 0.254.2 Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT permitted licence-llvm-exception
 wasmtime 48.0.8 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
+wasmtime 48.0.9 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
 wasmtime-environ 48.0.8 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
+wasmtime-environ 48.0.9 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
 wasmtime-internal-component-macro 48.0.8 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
+wasmtime-internal-component-macro 48.0.9 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
 wasmtime-internal-component-util 48.0.8 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
+wasmtime-internal-component-util 48.0.9 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
 wasmtime-internal-core 48.0.8 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
+wasmtime-internal-core 48.0.9 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
 wasmtime-internal-cranelift 48.0.8 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
+wasmtime-internal-cranelift 48.0.9 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
 wasmtime-internal-fiber 48.0.8 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
+wasmtime-internal-fiber 48.0.9 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
 wasmtime-internal-jit-debug 48.0.8 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
+wasmtime-internal-jit-debug 48.0.9 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
 wasmtime-internal-jit-icache-coherence 48.0.8 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
+wasmtime-internal-jit-icache-coherence 48.0.9 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
 wasmtime-internal-unwinder 48.0.8 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
+wasmtime-internal-unwinder 48.0.9 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
 wasmtime-internal-versioned-export-macros 48.0.8 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
+wasmtime-internal-versioned-export-macros 48.0.9 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
 wasmtime-internal-wit-bindgen 48.0.8 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
+wasmtime-internal-wit-bindgen 48.0.9 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
 wast 262.0.0 Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT permitted licence-llvm-exception
 wat 1.262.0 Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT permitted licence-llvm-exception
 web-time 1.1.0 MIT OR Apache-2.0 permitted licence-permissive-standing
@@ -490,3 +518,111 @@ vos not-adopted AGPL-3.0-or-later permitted DEC-26,vos-licence-v0
 # linked, so it is not a dependency and no BUSL-1.1 code ships; the resolver speaks the API through a transport
 # (T-014-01).
 vault not-adopted BUSL-1.1 permitted DEC-9,ADR-0004,vault-busl
+
+# ---------------------------------------------------------------------------------------------------------------
+# Per-lock and per-artifact licences (T-001-06). Lines that start with @ are directives, not packages.
+#
+# Every crate of rutent's own core stays MIT; a crate that must inherit a copyleft or source-available licence is
+# its own separately licensed crate behind the runtime-host seam.
+#
+#   @holds <name> <version> <lockfile>[,<lockfile>...]
+#       A package whose licence is outside the permissive set (the header's list, with Apache-2.0 WITH
+#       LLVM-exception; an OR is permissive when one alternative is) may be locked only in the lockfiles its
+#       @holds line names, and every such permitted package needs one. A lock outside components/stm/vos-program/
+#       and the experiment's experiments/2026-11-06-runtime-host/vos-adapter/ refuses such a package whatever this
+#       record says, the root Cargo.lock first: an @holds line naming one fails.
+#   @core <name>
+#       A crate of rutent's own core.
+#   @noncore <name> <reason...>
+#       A crate of the root workspace that is not core. Every crate of the root workspace is in exactly one of the
+#       two lists, and every name in them is a crate of the root workspace, so a new crate cannot be left out.
+#   @artifact <lockfile> <name> <licence...>
+#       An artifact rutent builds: a workspace member of that lock, with its licence. Every member of every lock is
+#       listed, and the licence matches the one its manifest declares.
+#   @exception <reference> <lockfile> <artifact> <core crate>[,<core crate>...]
+#       The core crates an artifact of that lock may hold in its dependency graph beside a package outside the
+#       permissive set; an artifact of the same name in another lock does not inherit it.
+#       Without one, such an artifact fails. rutent-stm's and rutent-contracts' own dependency graphs hold
+#       permissive crates only, whatever is listed here.
+#
+# The artifacts are read from `cargo metadata` for each lock, with all features, over normal and build dependencies.
+
+@holds rutent-stm-vos-program 0.0.0 components/stm/vos-program/Cargo.lock,components/stm/vos-program/client/Cargo.lock
+@holds vos-api 0.1.0 components/stm/vos-program/client/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/adapter/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/rt/Cargo.lock
+@holds vos-exec 0.1.0 components/stm/vos-program/client/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/rt/Cargo.lock
+@holds vos-http 0.1.0 components/stm/vos-program/client/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/adapter/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/rt/Cargo.lock
+@holds vos-net 0.1.0 components/stm/vos-program/client/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/adapter/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/rt/Cargo.lock
+@holds vos-node 0.1.0 components/stm/vos-program/client/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/adapter/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/rt/Cargo.lock
+@holds vos-node-prover 0.1.0 components/stm/vos-program/client/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/adapter/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/rt/Cargo.lock
+@holds vos-raft 0.1.0 components/stm/vos-program/client/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/adapter/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/rt/Cargo.lock
+@holds vos-sdk 0.1.0 components/stm/vos-program/Cargo.lock,components/stm/vos-program/client/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/adapter/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/journal/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/program/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/rt/Cargo.lock
+@holds vos-sdk-macros 0.1.0 components/stm/vos-program/Cargo.lock,components/stm/vos-program/client/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/adapter/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/journal/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/program/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/rt/Cargo.lock
+@holds vos-tree 0.1.0 components/stm/vos-program/Cargo.lock,components/stm/vos-program/client/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/adapter/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/journal/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/program/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/rt/Cargo.lock
+@holds vos-venue 0.1.0 components/stm/vos-program/client/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/adapter/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/rt/Cargo.lock
+@holds vos-wire 0.1.0 components/stm/vos-program/Cargo.lock,components/stm/vos-program/client/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/adapter/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/journal/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/program/Cargo.lock,experiments/2026-11-06-runtime-host/vos-adapter/rt/Cargo.lock
+
+@core rutent-contracts
+@core rutent-stm
+@core rutent-core-audit
+@core rutent-core-authz
+@core rutent-core-orch
+@core rutent-evidence
+@core rutent-router
+@core rutent-prov
+@core rutent-conformance
+@core rutent-scenarios
+@core rutent-reader-host
+@noncore rutent-boundary-check a tool of the repository's own checks
+@noncore rutent-records a tool of the repository's own checks
+@noncore rutent-licence-check a tool of the repository's own checks
+@noncore rutent-contract-guard a tool of the repository's own checks
+
+# The owner's decision stm-inside-agpl-program (allow): the AGPL VOS program and its client may embed rutent-stm
+# and rutent-contracts.
+@exception stm-inside-agpl-program components/stm/vos-program/Cargo.lock rutent-stm-vos-program rutent-stm,rutent-contracts
+@exception stm-inside-agpl-program components/stm/vos-program/client/Cargo.lock rutent-stm-vos rutent-stm,rutent-contracts
+# The owner's decision vos-serve-exception (allow, 2026-11-26): the client's host server rutent-stm-vos-serve (AGPL,
+# in the client's lock) may embed the same two crates under the same exception.
+@exception vos-serve-exception components/stm/vos-program/client/Cargo.lock rutent-stm-vos-serve rutent-stm,rutent-contracts
+# The experiment's VOS adapter (EXP-1), which the owner permitted to link VOS's AGPL crates (DEC-6, counsel-licences).
+@exception DEC-6,counsel-licences experiments/2026-11-06-runtime-host/vos-adapter/adapter/Cargo.lock rutent-vos-adapter rutent-stm,rutent-contracts,rutent-conformance
+@exception DEC-6,counsel-licences experiments/2026-11-06-runtime-host/vos-adapter/rt/Cargo.lock rutent-vos-rt rutent-stm,rutent-contracts,rutent-conformance
+@exception DEC-6,counsel-licences experiments/2026-11-06-runtime-host/vos-adapter/program/Cargo.lock rutent-vos-program rutent-contracts
+
+@artifact Cargo.lock rutent-contracts MIT
+@artifact Cargo.lock rutent-conformance MIT
+@artifact Cargo.lock rutent-scenarios MIT
+@artifact Cargo.lock rutent-core-audit MIT
+@artifact Cargo.lock rutent-evidence MIT
+@artifact Cargo.lock rutent-prov MIT
+@artifact Cargo.lock rutent-router MIT
+@artifact Cargo.lock rutent-stm MIT
+@artifact Cargo.lock rutent-core-authz MIT
+@artifact Cargo.lock rutent-core-orch MIT
+@artifact Cargo.lock rutent-reader-host MIT
+@artifact Cargo.lock rutent-boundary-check MIT
+@artifact Cargo.lock rutent-records MIT
+@artifact Cargo.lock rutent-licence-check MIT
+@artifact Cargo.lock rutent-contract-guard MIT
+@artifact components/prov/guests/plain-wallet/Cargo.lock rutent-plain-wallet MIT
+@artifact components/prov/module-guests/Cargo.lock rutent-wasm-guests MIT
+@artifact components/prov/module-guests/Cargo.lock rutent-wasm-standin MIT
+@artifact components/prov/module-guests/Cargo.lock rutent-wasm-role-standin MIT
+@artifact components/prov/module-guests/Cargo.lock rutent-sim-provider MIT
+@artifact components/stm/vos-program/Cargo.lock rutent-stm-vos-program AGPL-3.0-or-later
+@artifact components/stm/vos-program/Cargo.lock rutent-probe-nostd MIT
+@artifact components/stm/vos-program/client/Cargo.lock rutent-stm-vos AGPL-3.0-or-later
+@artifact components/stm/vos-program/client/Cargo.lock rutent-scenarios-vos MIT
+@artifact components/stm/vos-program/client/Cargo.lock rutent-stm-vos-wire MIT
+@artifact components/stm/vos-program/client/Cargo.lock rutent-stm-vos-serve AGPL-3.0-or-later
+@artifact experiments/2026-11-06-runtime-host/vos-adapter/adapter/Cargo.lock rutent-vos-adapter AGPL-3.0-or-later
+@artifact experiments/2026-11-06-runtime-host/vos-adapter/journal/Cargo.lock rutent-vos-journal MIT
+@artifact experiments/2026-11-06-runtime-host/vos-adapter/program/Cargo.lock rutent-vos-program MIT
+@artifact experiments/2026-11-06-runtime-host/vos-adapter/program/Cargo.lock rutent-probe-nostd MIT
+@artifact experiments/2026-11-06-runtime-host/vos-adapter/rt/Cargo.lock rutent-vos-rt AGPL-3.0-or-later
+@artifact experiments/2026-11-07-module-format/pvm-binding/Cargo.lock rutent-pvm-binding MIT
+@artifact experiments/2026-11-07-module-format/pvm-binding/Cargo.lock dirs MIT
+@artifact experiments/2026-11-07-module-format/pvm-binding/guests/rust/Cargo.lock rutent-pvm-guest MIT
+@artifact experiments/2026-11-07-module-format/wasm-binding/Cargo.lock rutent-wasm-sandbox MIT
+@artifact experiments/2026-11-07-module-format/wasm-binding/Cargo.lock rutent-wasm-binding MIT
+@artifact experiments/2026-11-07-module-format/wasm-binding/guests/rust/Cargo.lock rutent-wasm-standin MIT

@@ -9,11 +9,15 @@
 //! - [`proxy`]: the shared credential proxy and its resolvers (`F-014`).
 //! - [`egress`]: the outside part's egress (`F-014`).
 //! - [`holding`]: holding-account modules at public nodes (`F-016`).
+//! - [`confine`] and [`keys`]: the provider's jail and the statement keys' resolver, re-exported for the reader host,
+//!   which may name the provider system only through them and [`egress`] (`T-015-04`).
 //!
 //! This file belongs to `T-012-01`; a later feature fills its own module path and edits nothing here.
 
 pub mod catalogue;
+pub mod confine;
 pub mod egress;
 pub mod holding;
+pub mod keys;
 pub mod module;
 pub mod proxy;

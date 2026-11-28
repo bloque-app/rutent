@@ -11,20 +11,39 @@ name: STM on VOS
 # this workflow is the only place the package under components/stm/vos-program is built and run. A change to this file is a DEC-20 path.
 # T-010-06 adds a step that damages the frame holding the last acknowledged append, on one node and on the leader of
 # three, and records what VOS did (G-54). It records and need not pass, so the step continues on error.
+# T-024-02 adds, as steps of the vos job, the assembled Core's scenarios with the state machine on three VOS replicas
+# (rutent-scenarios-vos and its host server, scenarios.sh), and their format and lint. The scenarios build with VOS's
+# guest toolchain, which therefore gains the simulated providers' wasm32 target, and need the runner to allow
+# unprivileged user namespaces, as the ci job's module tests do.
+# T-025-03 adds a step after them: the threat re-check's scan (EXP-1's G-26, THR-79). After full runs on three VOS
+# replicas it searches the state machine's journal, Core's log and the nodes' own files for a provider credential,
+# a secret's plaintext and a module's private state that the run was planted with, and shows it can see by letting
+# each kind through the boundary once. A hit, or a scan that can't see the nodes' files, fails the job. That step is a
+# DEC-20 path, like the rest of this file.
 # GitHub runs a workflow_dispatch only for a workflow file on the default branch, so until this file reaches main
-# the run is the push of this task's branch; the run id goes in F-010's notes.
+# the run is the push of this task's branch; the run id goes in F-010's notes (F-024's for T-024-02's steps).
 on:
   push:
     branches:
       - "f-010/t-010-05-vos-program"
       - "f-010/t-010-06-g54-damaged-frame"
       - "f-010/t-010-08-production-host-check"
+      - "f-024/t-024-02-assembly"
+      - "f-025/t-025-03-secrets-scan-vos"
       - "m*"
       - "develop"
     paths:
       - "components/stm/**"
+      - "components/core-orch/**"
+      - "components/core-authz/**"
+      - "components/core-audit/**"
+      - "components/prov/**"
+      - "components/router/**"
+      - "components/evidence/**"
       - "contracts/**"
       - "conformance/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - ".github/workflows/stm-vos.yml"
   workflow_dispatch:
 
@@ -83,8 +102,8 @@ jobs:
 
       - name: Toolchains
         run: |
-          rustup toolchain install "$NODE_TOOLCHAIN" --profile minimal --component rust-src --target wasm32-unknown-unknown
-          rustup toolchain install "$GUEST_TOOLCHAIN" --profile minimal --component rust-src
+          rustup toolchain install "$NODE_TOOLCHAIN" --profile minimal --component rust-src,rustfmt,clippy --target wasm32-unknown-unknown
+          rustup toolchain install "$GUEST_TOOLCHAIN" --profile minimal --component rust-src,rustfmt,clippy --target wasm32-unknown-unknown
           {
             rustup run "$NODE_TOOLCHAIN" rustc --version
             rustup run "$GUEST_TOOLCHAIN" rustc --version
@@ -144,6 +163,79 @@ jobs:
         run: |
           set -o pipefail
           G54_OUT="$OUT/g54.txt" RUST_TEST_NOCAPTURE=1 $PROGRAM/test.sh "$BUILD" --test damaged_frame 2>&1 | tee "$OUT/g54-tests.txt"
+
+      # A runner setting, not part of the platform: the assembled Core's module platform starts every provider in user
+      # namespaces of its own, which Ubuntu 24.04 restricts through AppArmor (as in the ci job).
+      - name: Allow unprivileged user namespaces on this runner
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      # Each from its own directory, so rustup picks its toolchain: the host server the client's, the scenarios VOS's
+      # guest one.
+      - name: The scenarios', their host server's and its wire's format and lint (T-024-02)
+        run: |
+          # Exported on its own line: an assignment before `.` lasts only while the file is sourced, and the
+          # functions it defines read SOURCES after.
+          export SOURCES="$GITHUB_WORKSPACE/$PROGRAM/sources"
+          . "$GITHUB_WORKSPACE/$PROGRAM/sources.sh"
+          sources_git_config "$VOS_DIR"
+          (cd "$PROGRAM/scenarios/serve" && cargo fmt --check &&
+            CARGO_TARGET_DIR="$BUILD/client-target" cargo clippy --locked --all-targets --features vos -- -D warnings)
+          (cd "$PROGRAM/scenarios" && cargo fmt --check &&
+            CARGO_TARGET_DIR="$BUILD/scenarios-target" cargo clippy --locked --all-targets --features vos -- -D warnings)
+          (cd "$PROGRAM/scenarios/wire" && cargo fmt --check &&
+            CARGO_TARGET_DIR="$BUILD/scenarios-target" cargo clippy --locked --all-targets -- -D warnings)
+
+      # The documentation lint of the two workspaces of their own here (T-024-24, NFR-7), which the ci job's `cargo doc
+      # --workspace` never sees: the program, for VOS's guest target as build.sh builds it, and the client's workspace
+      # (the client, the scenarios, their host server and its wire). Like the step above, it needs VOS's sources. A change
+      # to this file is a DEC-20 path, allowed on m3 with the owner's click at the release into main.
+      - name: Documentation check, the client's workspace (T-024-24)
+        run: |
+          export SOURCES="$GITHUB_WORKSPACE/$PROGRAM/sources"
+          . "$GITHUB_WORKSPACE/$PROGRAM/sources.sh"
+          sources_git_config "$VOS_DIR"
+          # Each member from its own directory, as the lint step above does, so rustup picks its toolchain: the client
+          # and the host server build on the node's nightly, the scenarios and their wire on the guest one (the
+          # scenarios link the conformance crate and wasmtime, which need a newer rustc than the node's).
+          (cd components/stm/vos-program/client && CARGO_TARGET_DIR="$BUILD/client-target" \
+            cargo doc --locked --no-deps --features vos)
+          (cd "$PROGRAM/scenarios/serve" && CARGO_TARGET_DIR="$BUILD/client-target" \
+            cargo doc --locked --no-deps --features vos)
+          (cd "$PROGRAM/scenarios" && CARGO_TARGET_DIR="$BUILD/scenarios-target" \
+            cargo doc --locked --no-deps --features vos)
+          (cd "$PROGRAM/scenarios/wire" && CARGO_TARGET_DIR="$BUILD/scenarios-target" \
+            cargo doc --locked --no-deps)
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: Documentation check, the program (T-024-24)
+        run: |
+          export SOURCES="$GITHUB_WORKSPACE/$PROGRAM/sources"
+          . "$GITHUB_WORKSPACE/$PROGRAM/sources.sh"
+          sources_git_config "$VOS_DIR"
+          (cd components/stm/vos-program && CARGO_INCREMENTAL=0 CARGO_TARGET_DIR="$BUILD/program-doc-target" \
+            CARGO_TARGET_RISCV64EM_VOS_RUSTFLAGS="-Zunstable-options -Clink-arg=-T$VOS_DIR/pvm/guest/pvm.ld" \
+            cargo doc --locked --no-deps --target "$VOS_DIR/pvm/guest/riscv64em-vos.json" -Zjson-target-spec \
+              -Zbuild-std=core,alloc,compiler_builtins -Zbuild-std-features=compiler-builtins-mem)
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+      - name: The assembled Core's scenarios on three VOS replicas (T-024-02)
+        run: |
+          set -o pipefail
+          echo "scenario seeds: ${RUTENT_SCENARIO_SEEDS}, run ${GITHUB_RUN_ID}" | tee "$OUT/scenarios-seeds.txt"
+          VOS_DIR="$VOS_DIR" $PROGRAM/scenarios.sh "$BUILD" --test scenarios --test wire 2>&1 | tee "$OUT/scenarios-tests.txt"
+        env:
+          RUTENT_SCENARIO_SEEDS: "1,2,3"
+
+      # The scan of a run's journal and of the nodes' files for a credential, a secret and module state, with its
+      # controls (the same values let through the state machine's boundary, which it must find in both).
+      - name: No credential, secret or module state in the journal or the nodes' files of three VOS replicas (T-025-03)
+        run: |
+          set -o pipefail
+          echo "scan seeds: ${RUTENT_SCENARIO_SEEDS}, run ${GITHUB_RUN_ID}" | tee "$OUT/secrets-scan-seeds.txt"
+          RUST_TEST_NOCAPTURE=1 VOS_DIR="$VOS_DIR" $PROGRAM/scenarios.sh "$BUILD" --test secrets 2>&1 | tee "$OUT/secrets-scan-tests.txt"
+        env:
+          RUTENT_SCENARIO_SEEDS: "1,2,3"
 
       - name: Upload the notes
         if: always()

@@ -1,0 +1,42 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "rutent",
+    "acts": "core-orch",
+    "role": "core",
+    "kind": "component"
+  },
+  "what": {
+    "call": "arrival",
+    "reserve": "us-bank",
+    "node": {
+      "network": "us-ach"
+    },
+    "asset": {
+      "id": "USD",
+      "decimals": 2
+    },
+    "amount": "99000",
+    "order": "ord-24",
+    "matched": "differs",
+    "report": {
+      "log": "log-main",
+      "index": 80,
+      "entry": {
+        "algorithm": "sha-256",
+        "value": "8181818181818181818181818181818181818181818181818181818181818181"
+      }
+    },
+    "notice": {
+      "algorithm": "sha-256",
+      "value": "8181818181818181818181818181818181818181818181818181818181818181"
+    }
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "core_clock"
+  },
+  "outcome": {
+    "status": "observed"
+  }
+}

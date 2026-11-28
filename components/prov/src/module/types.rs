@@ -86,6 +86,8 @@ pub struct StateEvent {
     pub provider: String,
     /// The part that read.
     pub part: PartName,
+    /// The transaction of the operation it was handling, so the read is recorded for it (`REQ-MDL-8`).
+    pub transaction: String,
     /// The entry asked for.
     pub key: String,
     /// Whether the read found a value.
@@ -138,3 +140,8 @@ pub struct Events {
 
 /// An operating-system process, as the platform names it.
 pub type ProcessId = u64;
+
+/// One start of a module's process, as the platform names it: minted at each start, never the operating system's
+/// process id, which a later start may be given again (`T-024-21`, `REQ-ORD-43`). A module seen at one start and found
+/// at another restarted in between, whatever process ids the two had.
+pub type StartId = String;

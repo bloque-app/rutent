@@ -13,10 +13,11 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use common::{Net, WIDE, bounds, endpoint, fee, outer, parse, request, routed, shortlist};
 use rutent_conformance::router::recompute;
 use rutent_contracts::router_api::{
-    CallKind, CatalogueSnapshot, DecisionRecord, DeclaredCall, FigureValue, Id, NonEmpty,
-    OperationKind, PolicyBounds, Request, Router,
+    CallKind, CatalogueSnapshot, DecisionRecord, DeclaredCall, FeeFormula, FigureValue, Id,
+    NonEmpty, OperationKind, PolicyBounds, Request, Router,
 };
 use rutent_router::RouteFinder;
+use rutent_router::quote::{PriceRefused, quoted_price};
 use rutent_router::shortlist::{Question, Refusal, Wanted, asks};
 use serde_json::{Value, json};
 
@@ -372,7 +373,8 @@ fn policy(draw: &mut Draw, network: &Network, shape: Shape) -> PolicyBounds {
             "amount": 10u128.pow(from.decimals as u32 + draw.below(4) as u32).to_string(),
         }]);
     }
-    parse("bounds", bounds)
+    // Every exchange limited, with no draw, so the other draws are unchanged (`REQ-QTE-9`).
+    common::limited(parse("bounds", bounds), &network.snapshot, 50)
 }
 
 /// A request from where some tuple starts to where another ends, of some whole number of assets.
@@ -1428,4 +1430,118 @@ fn every_path_the_search_reaches_is_ranked_or_dropped_with_a_reason() {
             "too few {reason} drops: {named:?}"
         );
     }
+}
+
+/// What the customer receives from a candidate after the operator's `formula`, by the price shown; nothing where
+/// the fee is above what arrives, which can't be shown.
+fn received(candidate: &rutent_contracts::router_api::Candidate, formula: &FeeFormula) -> u128 {
+    match quoted_price(candidate, formula) {
+        Ok(shown) => number(shown.shown_out.as_str()),
+        Err(PriceRefused::OperatorFeeAboveArrival { .. }) => 0,
+        Err(other) => panic!("{other:?}"),
+    }
+}
+
+fn arrives(candidate: &rutent_contracts::router_api::Candidate) -> u128 {
+    candidate
+        .parts
+        .iter()
+        .map(|p| number(p.operations.last().amount_out.as_str()))
+        .sum()
+}
+
+// verifies: REQ-QTE-11, REQ-QTE-2, DEC-18
+#[test]
+fn one_operator_formula_at_the_destination_ranks_candidates_the_same_before_and_after_its_fee() {
+    // The default reading (`T-020-02`): ranking stays on the providers' amounts before the operator's fee. With one
+    // formula taken from every candidate at the destination, its proportion at most one, a candidate that arrives
+    // with more never leaves the customer less after the fee, so ranking after it could only turn a difference
+    // into a tie, which goes to the lowest `candidate_id` as before.
+    let mut pairs = 0;
+    for (seed, network, request, bounds) in generated(300, ANY) {
+        let record = RouteFinder::route(&request, &network.snapshot, &bounds);
+        // Every candidate that reaches the destination, kept or not, so that many pairs are compared.
+        let kept: Vec<_> = record
+            .candidates
+            .iter()
+            .filter(|c| {
+                c.parts
+                    .iter()
+                    .all(|p| p.operations.last().to == record.request.to)
+            })
+            .collect();
+        let mut draw = Draw(seed ^ 0x0FEE);
+        for _ in 0..8 {
+            let denominator = 1 + draw.below(10_000);
+            let numerator = draw.below(denominator + 1);
+            let digits = 1 + draw.below(8) as u32;
+            let flat = draw.below(10u64.pow(digits));
+            let mut formula = json!({
+                "flat": flat.to_string(),
+                "proportional": { "numerator": numerator.to_string(), "denominator": denominator.to_string() },
+            });
+            if draw.one_in(3) {
+                let digits = 1 + draw.below(8) as u32;
+                formula["maximum"] = json!(draw.below(10u64.pow(digits)).to_string());
+            }
+            let formula: FeeFormula = parse("operator fee", formula);
+            for a in &kept {
+                for b in &kept {
+                    if arrives(a) > arrives(b) {
+                        pairs += 1;
+                        assert!(
+                            received(a, &formula) >= received(b, &formula),
+                            "seed {seed}: {} arrives with more than {} but leaves less after {formula:?}",
+                            a.candidate_id,
+                            b.candidate_id
+                        );
+                    }
+                }
+            }
+        }
+    }
+    assert!(pairs > 400, "only {pairs} pairs compared");
+
+    // And the choice itself: in a lowest-total-cost choice round under bounds carrying a drawn operator's fee, the
+    // chosen candidate leaves the customer at least as much after that fee as every other eligible one.
+    let mut choices = 0;
+    for (seed, network, request, bounds) in generated(300, ANY) {
+        let mut draw = Draw(seed ^ 0xC40);
+        let denominator = 1 + draw.below(10_000);
+        let numerator = draw.below(denominator + 1);
+        let digits = 1 + draw.below(8) as u32;
+        let flat = draw.below(10u64.pow(digits));
+        let mut charged = serde_json::to_value(&bounds).unwrap();
+        charged["operator_fee"] = json!({
+            "flat": flat.to_string(),
+            "proportional": { "numerator": numerator.to_string(), "denominator": denominator.to_string() },
+        });
+        let bounds: PolicyBounds = parse("charged bounds", charged);
+        let request = under(&request, "lowest_total_cost");
+        let shortlisted = routed(&request, &network.snapshot, &bounds);
+        if shortlisted.shortlist().is_empty() {
+            continue;
+        }
+        let (choice, snapshot) = choice_round(&mut draw, &network, &shortlisted);
+        let record = routed(&choice, &snapshot, &bounds);
+        let Some(chosen) = record.chosen() else {
+            continue;
+        };
+        let formula = &record.bounds.operator_fee;
+        for other in record.candidates.iter().filter(|c| {
+            matches!(
+                c.dropped,
+                Some(rutent_contracts::router_api::DropReason::Outranked { .. })
+            )
+        }) {
+            assert!(
+                received(chosen, formula) >= received(other, formula),
+                "seed {seed}: {} is chosen but {} leaves more after {formula:?}",
+                chosen.candidate_id,
+                other.candidate_id
+            );
+        }
+        choices += 1;
+    }
+    assert!(choices > 50, "only {choices} choices");
 }

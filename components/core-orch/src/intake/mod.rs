@@ -1,0 +1,2297 @@
+//! Order intake and acceptance: requester, beneficiary and payer recorded apart, one order per request identifier, a
+//! stable class of cause, the quote shown and the acceptance recorded, the destination resolved at acceptance.
+//!
+//! Declared by `T-020-01`; `T-020-03` owns it, and only its owning row edits it (`PLAN.md` §4.4).
+//!
+//! One [`Intake`] takes an order from its request to its start, in three calls, each on the one contract humans and
+//! agents share (`REQ-OPS-5`): the caller is an [`Actor`], whose `kind` says whether a person or an agent acts, and
+//! nothing else differs. Only the requester's own actors are served: an actor in the customer's role that the
+//! register of actors ([`Actors`], policy's `ActsFor`) says acts for the party it states. To anyone else an order
+//! doesn't exist ([`IntakeError::NoSuchOrder`]).
+//!
+//! 1. **[`Intake::open`]** takes an [`OrderRequest`] under the caller's request identifier, which is the
+//!    requester's own: one party's identifiers say nothing of another's. A request that breaks the deployment's
+//!    rules, or whose session policy's register ([`SessionRegister`]) doesn't hold open for the requester, is
+//!    refused with nothing created: an `order_refusal` naming no order, and the caller is told [`Told::Refused`].
+//!    Any other opens one order, told [`Told::Exists`] with its outcome to come. The same request again under the
+//!    same identifier, from any actor of the requester's, opens nothing and is told the same (`REQ-OPS-5`);
+//!    another request under it is refused as [`IntakeError::Conflicting`], with nothing recorded (`REQ-ORD-19`,
+//!    `INV-8`). Its destination is resolved, and the owner it resolves to kept, so a later change of owner shows.
+//!    The order is kept before anything is appended, so an append that failed is carried on, under the same
+//!    order, by the same request again.
+//! 2. **[`Intake::quote`]** runs one routing ([`rounds::route`]). Every question to a provider, the reserve's
+//!    request for its yes among them, is the rounds': asked under a fresh transaction for the order, signed with the
+//!    operator's key and appended about that order and transaction before it is sent, its answer appended with
+//!    that transaction in its `about` (`REQ-ORD-32`, `REQ-ORD-38`). An offered route is shown as a [`Quote`] and
+//!    recorded as a `shown` entry, labelled a quote, by its digest. A routing that offers nothing is recorded as an
+//!    `order_refusal` of its class (`REQ-ORD-18`).
+//! 3. **[`Intake::accept`]** takes the customer's or its agent's acceptance of the quote shown, by its digest. The
+//!    destination is resolved again: "not yet" waits, "no" ends the order, and a change of owner, refused of its class,
+//!    waits for the customer, whose next acceptance names that owner to confirm it (`REQ-ORD-24`). The order's
+//!    authorisation, naming its destination with the account the requester gave (`REQ-ORD-35`, `REQ-AUZ-3`) and the
+//!    actor that accepted (`REQ-AUZ-9`), goes to policy. A refusal about the order itself ends it; one about the caller
+//!    leaves it as it stood. Only on policy's permit is the `acceptance` recorded, its `who` the actor that accepted,
+//!    an agent as an agent (`REQ-ORD-10`), naming its parties apart (`REQ-ORD-17`), the quote shown, the origin
+//!    reserve's yes for each part of the route and the user's session (`REQ-ORD-32`). Only then is the order started:
+//!    the `route_chosen` input, recorded once (`REQ-ORD-34`, `REQ-ORD-19`). Both entries are built once and appended as
+//!    built. Where the log couldn't be written now, the next acceptance by the actor policy permitted, and by no other,
+//!    carries them on, without asking policy or resolving the destination again; where the log refuses one, the order
+//!    ends, of a class. The order is told accepted only once it has started. An acceptance may name the hold of the
+//!    quote it accepts ([`Intake::accept_holding`], `REQ-QTE-15`): intake redeems it for this order, in the session
+//!    it verified for the acceptance and for the request's origin reserve, once the statement kept behind the hold's
+//!    entry is held to the entry's commitment, and cites the hold's receipt as the acceptance's `held`; a hold that
+//!    isn't redeemed refuses the acceptance with nothing recorded for it, and an acceptance naming none redeems none.
+//!
+//! **What the caller is told of an order's status is read first** (`REQ-AUZ-8`, `REQ-AUZ-7`; `T-020-52`). Each of
+//! the three calls, and [`Intake::told`], tells a status only once policy's read check ([`StatusReads`]) allows it:
+//! `Reads::FiledOrder` naming the requester intake's own record of the filed request holds, never the caller's word,
+//! until the order's acceptance is in the log, and `Reads::OrderState` from then on, the reader the caller as
+//! authentication established it. A caller policy refuses, an agent its party didn't scope for reading among them, is
+//! told [`IntakeError::ReadRefused`] and no more, as a refused reader is (`T-023-01`); what the call did stands. The
+//! register of actors binds the caller's role too ([`Actors::acts_for`]), as policy's does (`T-021-14`).
+//!
+//! **What the caller is told holds no provider's text** (`REQ-ORD-18`). [`Told`] carries identifiers, a class from
+//! a closed list and the quote Core built from the router's record; a provider's words stay in its stated entry.
+//!
+//! **What intake keeps** (every request identifier and its answer) is in memory; keeping it across a restart is the
+//! deployment's (`F-030`), as with the rounds' `Issued`.
+
+mod class;
+mod hold;
+pub mod linked;
+mod record;
+mod started;
+
+pub use hold::HOLD_SECONDS;
+pub use started::{
+    Begun, Placed, Started, accepted_authorisation, held_record, kept_bytes, start_in, started_on,
+};
+
+use std::collections::BTreeMap;
+
+use rutent_contracts::core_internal::calls::{
+    AppendFailure, Authorisations, Decisions, KeptStatements, Log, Reads as ReadPort,
+};
+use rutent_contracts::core_internal::{
+    AcceptanceBasis, Actor, ActorKind, Answer, Authorisation, Destination, DestinationOutcome,
+    Entry, ORDER_INPUTS_SHAPE, OrderInputs, OrderRefusalClass, PartYes, Parties, ReadCheck,
+    ReadOutcome, Reads as Read, Receipt, RefusalClass, Role, ShownAs, What,
+};
+use rutent_contracts::module_interface::Digest;
+use rutent_contracts::provider_role::{NodeRef, to_canonical};
+use rutent_contracts::router_api::{
+    Amount, Candidate, DecisionRecord, Endpoint, Id, PolicyBounds, PositiveAmount, Request, Router,
+    Timestamp,
+};
+use rutent_contracts::state_machine::{
+    self as stm, Observed, PartPlan, RecordId, RecordedInput, SegmentPlan, Source, SourceKind,
+    Standing, Subject,
+};
+use rutent_prov::catalogue::Catalogue;
+use serde::{Deserialize, Serialize};
+
+use crate::quote::{AcceptedQuote, HoldError, Holds, Recorded, Redemption, TakesTerms};
+use crate::rounds::{self, History, Need, Offer, Order, Parts, Presence, Routing, RoutingError};
+use crate::snapshot::{Price, check_part};
+
+/// The input a reserve's deposit names the account or address it deposits to (provider-role's
+/// `beneficiary.address`): intake sets it from the order's destination, so the deposit asked is the one authorised
+/// (`REQ-ORD-35`).
+pub const DESTINATION_INPUT: &str = "beneficiary.address";
+
+/// What a destination resolves to now (`REQ-ORD-24`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resolution {
+    /// It resolves, to this owner, by reference.
+    Owner(Id),
+    /// No answer yet, which is not a no.
+    NotYet,
+    /// It doesn't resolve: the reserve can't deposit there.
+    Refused,
+}
+
+/// Where a destination is resolved. No provider-role operation resolves one or names its owner, so the assembly
+/// answers it, from the destination reserve's own register; Core records each answer as a `destination_check`.
+pub trait Destinations {
+    /// Resolves `destination` now.
+    fn resolve(&mut self, destination: &Destination) -> Resolution;
+}
+
+/// The register of actors policy reads (`F-021`'s `ActsFor`): whether an actor, as external authentication
+/// established it, acts for the party it states, as the kind of actor it states and in the role it states. The
+/// assembly answers it from the same register policy does, which binds the kind (`T-021-05`) and the role
+/// (`T-021-14`), so an agent's login stating itself a person is no one's here either, and a customer's login stating
+/// itself the operator, or a reserve's login stating the operator's role, acts in no role it isn't listed in
+/// (`T-020-52`).
+pub trait Actors {
+    /// Whether `acts` acts for `party` as `kind`, in `role`; no answer is no.
+    fn acts_for(&mut self, acts: &Id, party: &Id, kind: ActorKind, role: Role) -> bool;
+}
+
+/// A session as policy's register holds it (`REQ-CAT-3`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldSession {
+    /// The party that holds the account it speaks for.
+    pub holder: Id,
+    /// When it ends, by Core's clock.
+    pub expires_at: Timestamp,
+}
+
+/// Policy's session register, as intake reads it before the reserve is asked anything in a session.
+pub trait SessionRegister {
+    /// The session `session`, if policy opened it.
+    fn held(&mut self, session: &Id) -> Option<HeldSession>;
+
+    /// Whether policy's register is unread: it was never read from the log, or couldn't be, so `held` answers none
+    /// of what it would hold (`T-021-17`). A request in a session of it is refused for its missing input, not as one
+    /// whose session isn't held (`T-020-52`).
+    fn unread(&mut self) -> bool;
+}
+
+/// What intake reaches to ask policy whether a caller may be told an order's status (`REQ-AUZ-8`, `REQ-AUZ-7`;
+/// finding 6 of `M3`'s milestone review): policy's read check, and the one place intake hands over its own record of
+/// a filed request.
+pub trait StatusReads: ReadPort {
+    /// Intake's own record of the order a request just opened, handed over before policy is asked to read the order:
+    /// policy's `Requester` source answers from it, never from the read's word (`T-021-16`'s round 4). It is the
+    /// deployment's to keep, as it keeps a filed order's (`FiledOrders::opened`).
+    fn filed(&mut self, record: &OrderRecord);
+
+    /// The record handed over by [`StatusReads::filed`] for `order` is dropped: intake hands over one for a request
+    /// refused with no order only for the read and withdraws it as soon as the check returns, so the deployment's map of
+    /// filed orders never grows with the identifiers callers choose (`T-020-64`).
+    fn withdrawn(&mut self, order: &Id);
+}
+
+/// An order request, as a person or an agent makes it (`REQ-OPS-5`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrderRequest {
+    /// The caller's identifier for the request: one order per identifier (`REQ-ORD-19`).
+    pub request: Id,
+    /// Who asks: the requester's person or agent, in the customer's role.
+    pub caller: Actor,
+    /// The order's three parties, recorded apart (`REQ-ORD-17`). A settlement account's reserve, where named, is
+    /// the destination's.
+    pub parties: Parties,
+    /// The reserve the value leaves from, where the holder's account is.
+    pub origin_reserve: Id,
+    /// The user's session at the origin reserve, opened through policy: the reserve's yes is asked in it
+    /// (`REQ-ORD-32`).
+    pub session: Id,
+    /// Where the value arrives, its account or address the requester's own if it gives one (`REQ-ORD-35`).
+    pub destination: Destination,
+    /// The route asked for: its `from`, its `to` (the destination's node and the to asset), its amount, its
+    /// objective and any floor. Its `request_id` and `round` are Core's to set for each round.
+    pub route: Request,
+    /// The inputs the order carries for tuples that require them. The destination's account goes as
+    /// [`DESTINATION_INPUT`], set by intake; one named here must be that account.
+    pub inputs: BTreeMap<String, String>,
+    /// The judgements the route's tuples need.
+    pub needs: Vec<Need>,
+}
+
+/// The quote shown to the customer: the route Core offers, built from the router's record, and nothing a provider
+/// wrote (`REQ-ORD-10`, `REQ-ORD-18`). Its digest is what the `shown` entry and the acceptance name. Its `price` is
+/// `T-020-07`'s: the operator's fee shown apart, each segment's slippage limit, and a quote without a firm rate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Quote {
+    /// The order.
+    pub order: Id,
+    /// The choice round's decision record, by id, that chose the route.
+    pub decision_record: Id,
+    /// The chosen candidate.
+    pub candidate: Id,
+    /// Where the value starts.
+    pub from: Endpoint,
+    /// Where it arrives.
+    pub to: Endpoint,
+    /// What leaves `from`, in its unit.
+    pub amount: PositiveAmount,
+    /// What arrives at `to`, in its unit, before the operator's fee: the price's `arrives`, the sum of its parts' last
+    /// segments' outputs less any charge a segment reports within what it gives out (`T-020-07`'s review).
+    pub delivers: Amount,
+    /// How it is shown: always a quote before execution, without a firm rate where a segment is over three days
+    /// (`REQ-QTE-7`, `REQ-QTE-10`).
+    pub shown_as: ShownAs,
+    /// What is shown of its price, line by line ([`crate::quote::show`], `REQ-QTE-2`, `REQ-QTE-9`).
+    pub price: crate::quote::Shown,
+}
+
+/// Why an order waits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Wait {
+    /// Its destination isn't resolved yet (`destination_not_yet_resolved`): accept again later.
+    DestinationNotYetResolved,
+    /// Its destination's owner changed since it was asked for: the customer confirms the new owner, then accepts
+    /// anew (`REQ-ORD-24`).
+    OwnerChanged,
+    /// Policy couldn't decide its authorisation: nothing moves on it (`REQ-AUZ-5`).
+    PolicyNotKnown,
+}
+
+/// Where an order stands, as its caller is told.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum Status {
+    /// Opened; no quote shown yet.
+    OutcomeToCome,
+    /// A quote is shown, to accept or decline.
+    Quoted {
+        /// The quote.
+        quote: Box<Quote>,
+        /// Its digest: what an acceptance names.
+        digest: Digest,
+        /// Until when it is valid, where anything bounds it: the earliest expiry of the figures its route cites, and,
+        /// where a reserve holds it, no later than its hold (`REQ-QTE-15`, `T-020-57`): a held quote's acceptance
+        /// redeems its hold, so a quote is never shown as valid past the hold that would refuse it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        valid_until: Option<rutent_contracts::router_api::Timestamp>,
+    },
+    /// It waits.
+    Waiting {
+        /// Why.
+        wait: Wait,
+    },
+    /// It can't proceed, for this class.
+    CantProceed {
+        /// The class.
+        class: OrderRefusalClass,
+    },
+    /// Accepted and started.
+    Accepted {
+        /// The acceptance's id.
+        acceptance: Id,
+    },
+}
+
+/// What a caller is told about its request: refused with nothing existing, or an order that exists with its outcome
+/// to come (`REQ-ORD-19`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "told", rename_all = "snake_case")]
+pub enum Told {
+    /// Refused: no order exists.
+    Refused {
+        /// The class.
+        class: OrderRefusalClass,
+    },
+    /// An order exists.
+    Exists {
+        /// The order.
+        order: Id,
+        /// Where it stands.
+        status: Status,
+    },
+}
+
+/// An order's record, as the assembly answers policy's sources from it: who requested it, its three parties and
+/// its origin reserve (`F-021`'s notes: a customer authorises only an order its party requested).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrderRecord {
+    /// The order.
+    pub order: Id,
+    /// The request identifier it was opened under.
+    pub request: Id,
+    /// Its parties.
+    pub parties: Parties,
+    /// Its origin reserve.
+    pub origin_reserve: Id,
+}
+
+/// Why a call answered nothing to tell. Nothing after the failing step was recorded, unless the error says so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IntakeError {
+    /// The requester made another request under this identifier: it opens nothing.
+    Conflicting {
+        /// The order the identifier opened, if it opened one.
+        order: Option<Id>,
+    },
+    /// No order of that id that the caller may see: none exists, or the caller isn't its requester, a person or
+    /// an agent acting for its party in the customer's role.
+    NoSuchOrder,
+    /// The caller isn't acting for the party it states, in the customer's role: it makes no request.
+    NotTheRequester,
+    /// Policy refused the caller the order's status, or couldn't be asked and nothing was told: no more is said
+    /// than a refused reader is told (`T-023-01`'s `CurrentError::Refused`), neither the order's state nor a class.
+    /// What the call did stands as it was recorded.
+    ReadRefused,
+    /// An acceptance under way is carried on only by the actor whose authorisation policy permitted.
+    OtherActor,
+    /// Policy refused the caller, of this class; the order stands as it was.
+    Refused {
+        /// The class.
+        class: OrderRefusalClass,
+    },
+    /// The acceptance names no quote shown for the order, or one since replaced.
+    NotTheQuoteShown,
+    /// The order isn't at the step the call needs: no quote to accept, no owner change to confirm or one left
+    /// unconfirmed, or nothing to quote once it is accepted, ended or being accepted.
+    NotNow,
+    /// The routing stopped.
+    Routing(RoutingError),
+    /// The log, or policy, refused or failed. Where the log couldn't be written now
+    /// ([`AppendFailure::Unavailable`]), the same call again carries on from where it stopped.
+    Log(AppendFailure),
+    /// A fresh identifier was one Core used before.
+    Fresh,
+    /// The offered route has no reserve's yes to cite, or a part Core can't run.
+    Unofferable,
+    /// The hold the acceptance names is not redeemed, for this reason: nothing was recorded for the acceptance and
+    /// the order stands as it was, quoted (`REQ-QTE-15`).
+    Hold(HoldError),
+}
+
+impl From<AppendFailure> for IntakeError {
+    fn from(failure: AppendFailure) -> Self {
+        IntakeError::Log(failure)
+    }
+}
+
+impl From<RoutingError> for IntakeError {
+    fn from(error: RoutingError) -> Self {
+        IntakeError::Routing(error)
+    }
+}
+
+/// What intake reaches: the rounds' parts (the log, the clock, the providers, fresh identifiers), the destination
+/// register, policy's authorisations, the register of actors and policy's session register, and what the router
+/// runs under. The assembly builds it.
+pub struct Desk<'a, 'p> {
+    /// What the rounds reach.
+    pub parts: &'a mut Parts<'p>,
+    /// Where destinations resolve.
+    pub destinations: &'a mut dyn Destinations,
+    /// Policy's authorisations.
+    pub authorisations: &'a mut dyn Authorisations,
+    /// Policy's decisions: the actions it decides beyond an order's authorisation, an arrival's refiling among them
+    /// (`T-020-52`).
+    pub decisions: &'a mut dyn Decisions,
+    /// The register of actors.
+    pub actors: &'a mut dyn Actors,
+    /// Policy's session register.
+    pub sessions: &'a mut dyn SessionRegister,
+    /// Policy's read check, which every status intake tells is held to (`REQ-AUZ-8`, `T-020-52`).
+    pub reads: &'a mut dyn StatusReads,
+    /// The bounds the router runs under.
+    pub bounds: &'a PolicyBounds,
+    /// The prices Core holds.
+    pub prices: &'a [Price],
+    /// Core, acting on its own account: who writes intake's own records.
+    pub core: &'a Actor,
+    /// The operator, in whose name Core signs its questions and records.
+    pub operator: &'a Actor,
+    /// The quotes reserves hold, which an acceptance may redeem (`REQ-QTE-15`).
+    pub holds: &'a mut Holds,
+    /// The log's own read of what the evidence store kept under a commitment: what a hold is held to before it is
+    /// redeemed, and a provider's terms before they are kept.
+    pub kept: &'a mut dyn KeptStatements,
+    /// The log's recorded entries, read back by receipt: a provider's terms and a reserve's hold are read back as the
+    /// log attributed them, once appended (`T-020-56`).
+    pub recorded: &'a dyn Recorded,
+    /// Where the terms each of Core's own dry runs handed back are taken for the segments that start after them
+    /// (`Segments::take_terms`, `REQ-QTE-6`, `T-020-56`).
+    pub terms: &'a mut dyn TakesTerms,
+}
+
+/// The route offered, kept until it is accepted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Offered {
+    quote: Quote,
+    digest: Digest,
+    candidate: Candidate,
+    /// Each part's yes, in part order.
+    reserve_yes: Vec<Receipt>,
+    session: Id,
+    /// The transaction of the reserve's hold of this quote, where Core asked for one and holds it: what its acceptance
+    /// redeems where it names no other (`REQ-QTE-15`, `T-020-56`).
+    hold: Option<Id>,
+}
+
+/// An acceptance under way, once policy permitted its authorisation: who policy permitted, and the entries built,
+/// each appended as built, so a retry after an append that failed, or whose answer was lost, makes nothing twice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Accepting {
+    /// The actor who accepted, whose authorisation policy is asked. Another login of the requester's party carries it on
+    /// too, once the acceptance is logged and policy hasn't decided the authorisation.
+    by: Actor,
+    /// The acceptance's id.
+    acceptance: Id,
+    /// The `route_chosen` input the start records.
+    input: RecordedInput,
+    /// The `acceptance` entry and then the `route_chosen` one, those not yet appended.
+    pending: Vec<Entry>,
+    /// The authorisation the acceptance gives, until policy permits it: asked once the acceptance is in the log, so
+    /// policy reads the order's parties from it (the payer among them), and before the start is appended.
+    authorisation: Option<Authorisation>,
+    /// The authorisation as policy permitted it: the terms the order's route runs on once it starts (`T-020-61`).
+    permitted: Option<Authorisation>,
+}
+
+/// One request identifier's record, under its requester.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Kept {
+    /// The request as the caller made it: a repeat is the same request only if it equals this, but for who acts.
+    asked: OrderRequest,
+    /// The request as intake runs it, the destination's account set as the deposit's input.
+    request: OrderRequest,
+    /// Absent where the request was refused with nothing created.
+    order: Option<Id>,
+    status: Status,
+    history: History,
+    /// The entries the request's opening built and hasn't appended yet: a retry appends these, as built.
+    opening: Vec<Entry>,
+    /// The owner the destination resolved to, as the customer last accepted it.
+    owner: Option<Id>,
+    /// The owner it resolved to since, waiting for the customer's confirmation.
+    changed_owner: Option<Id>,
+    offered: Option<Offered>,
+    accepting: Option<Accepting>,
+    /// The order ended after policy permitted its authorisation: nothing is quoted or accepted again.
+    ended: bool,
+    /// The `route_chosen` input the log took: the order's start, once it has one.
+    started: Option<RecordedInput>,
+    /// What the order runs on, once it started ([`Started`], `T-020-61`): built on its acceptance, rebuilt from the log
+    /// on reopening. `None` where its record isn't held to the log's digest: nothing runs on it.
+    run: Option<Box<Started>>,
+    /// The order's acceptance is in the log, though the order may have ended since: its parties are the log's to
+    /// say, so its status is read as `Reads::OrderState`, not as a filed order's (`T-020-52`).
+    logged: bool,
+    /// Rebuilt from the log by a Core that reopened (`T-020-46`): `asked` holds what the log holds of the request,
+    /// and a repeat is held to that.
+    reopened: bool,
+}
+
+impl Kept {
+    /// Whether the log holds the order's acceptance: told accepted, or its entry appended, or ended after it was.
+    fn acceptance_logged(&self) -> bool {
+        self.logged
+            || matches!(self.status, Status::Accepted { .. })
+            || self
+                .accepting
+                .as_ref()
+                .is_some_and(|accepting| accepting.pending.len() <= 1)
+    }
+
+    fn told(&self) -> Told {
+        match (&self.order, &self.status) {
+            (Some(order), status) => Told::Exists {
+                order: order.clone(),
+                status: status.clone(),
+            },
+            (None, Status::CantProceed { class }) => Told::Refused { class: *class },
+            (None, _) => Told::Refused {
+                class: OrderRefusalClass::MalformedRequest,
+            },
+        }
+    }
+}
+
+/// The prefix of the name intake gives a refused request's record for its read (`T-020-64`). `Id` allows no character
+/// outside the order-id space for a key beyond it, so no order's identifier is let begin with it instead: every order
+/// Core opens, by intake or by the arrival filing, draws its identifier through [`draw_order`].
+pub(crate) const REQUEST_NAME: &str = "request-";
+
+/// A fresh identifier for an order: one that doesn't begin with `request-`, the prefix of a refused request's record's name, so a refused request's record can never
+/// take an order's name in the deployment's map. A source that draws only such names gives none, and the call is
+/// refused as an identifier Core used before is.
+pub fn draw_order(fresh: &mut dyn crate::rounds::Fresh) -> Option<Id> {
+    (0..16)
+        .map(|_| fresh.id())
+        .find(|id| !id.as_str().starts_with(REQUEST_NAME))
+}
+
+/// A request identifier, under the party that requested it: one party's identifiers say nothing of another's.
+type Key = (String, String);
+
+fn key(party: &Id, request: &Id) -> Key {
+    (party.as_str().to_owned(), request.as_str().to_owned())
+}
+
+/// Core's intake: every request identifier each requester gave, and the order each opened.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Intake {
+    requests: BTreeMap<Key, Kept>,
+    orders: BTreeMap<String, Key>,
+    /// The orders a Core that reopened couldn't read the inputs of (`T-020-46`): the statement `order_opened` names is
+    /// gone, unreadable, of another shape or of another order. They are held: never run again with inputs missing.
+    held: std::collections::BTreeSet<String>,
+    /// What each order Core started that intake didn't open runs on (`T-020-61`): an order filed on an automatic
+    /// deposit, or a linked order a hand-on started. Core's run builds each from the log as it builds intake's own.
+    others: BTreeMap<String, Started>,
+    /// The decision records of the routes Core recalculated since an order started, by id, each held to the log's
+    /// digest when it was taken (`T-020-61`): what a part's current route runs on.
+    records: BTreeMap<String, DecisionRecord>,
+}
+
+impl Intake {
+    /// No request taken yet.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// What `caller` is told now about its request `request`: nothing unless the caller acts for the party it
+    /// states, in the customer's role, that party used the identifier, and policy lets the caller read the order's
+    /// status (`REQ-AUZ-8`): a caller policy refuses, or can't be asked, is told nothing, as one that has no such
+    /// request is.
+    pub fn told(&self, desk: &mut Desk<'_, '_>, caller: &Actor, request: &Id) -> Option<Told> {
+        if caller.role != Role::Customer
+            || !desk
+                .actors
+                .acts_for(&caller.acts, &caller.party, caller.kind, caller.role)
+        {
+            return None;
+        }
+        let kept = self.requests.get(&key(&caller.party, request))?;
+        if !kept.opening.is_empty() {
+            return None;
+        }
+        self.read(desk, caller, kept.told(), Some(request)).ok()
+    }
+
+    /// `told`, once policy lets `caller` read the order's status it names, which is asked of the order's record in
+    /// intake: a filed order's, by the requester intake's own record names, until the acceptance is in the log, and
+    /// the order's state after it (`REQ-AUZ-8`, `REQ-AUZ-7`; finding 6 of `M3`'s milestone review). Every check is
+    /// policy's to record, allowed or refused. A request refused with no order has none to read: a person is told it as
+    /// it is, an agent is told [`IntakeError::ReadRefused`], as its repeat is (`T-020-62`). A refusal, or a check that
+    /// couldn't be made, tells nothing of the order.
+    fn read(
+        &self,
+        desk: &mut Desk<'_, '_>,
+        caller: &Actor,
+        told: Told,
+        request: Option<&Id>,
+    ) -> Result<Told, IntakeError> {
+        let Told::Exists { order, .. } = &told else {
+            // A request refused with no order: a person is told its class as it is. An agent is told it where policy's
+            // read check lets it read the request's party's request, the scope an order's read uses, and
+            // [`IntakeError::ReadRefused`] where not, as its repeat is (`T-020-62`, `T-020-64`).
+            if caller.kind != ActorKind::Agent {
+                return Ok(told);
+            }
+            return match request {
+                Some(request) => self.read_request(desk, caller, request).map(|()| told),
+                None => Err(IntakeError::ReadRefused),
+            };
+        };
+        self.read_order(desk, caller, order)?;
+        Ok(told)
+    }
+
+    /// Asks policy whether `caller`, an agent, may read the status of its party's request `request`, refused with no
+    /// order: a refused request has no order but has a requester, so intake hands over its own record of the request
+    /// under an identifier of its own naming ("request-" and the request's), and the read is a filed order's of that
+    /// record by the requester the request states, which policy's `Requester` source confirms against the record: the
+    /// same scope an order's read uses (`T-020-64`). [`IntakeError::ReadRefused`] where it may not, or where intake
+    /// holds no such request or already holds an order of the name; a check that couldn't be made is the log's failure,
+    /// nothing told. The record is withdrawn as soon as the check returns.
+    fn read_request(
+        &self,
+        desk: &mut Desk<'_, '_>,
+        caller: &Actor,
+        request: &Id,
+    ) -> Result<(), IntakeError> {
+        let kept = self
+            .requests
+            .get(&key(&caller.party, request))
+            .ok_or(IntakeError::ReadRefused)?;
+        let named = Id::new(format!("{REQUEST_NAME}{}", request.as_str()))
+            .ok_or(IntakeError::ReadRefused)?;
+        // Never a name an order of intake's already has: the record handed over would overwrite that order's, and its
+        // withdrawal would drop it. No order is drawn a name beginning [`REQUEST_NAME`] ([`draw_order`]), so this is a
+        // second line that cannot be reached; an agent is refused, failing closed (`T-020-64`).
+        if self.orders.contains_key(named.as_str()) {
+            return Err(IntakeError::ReadRefused);
+        }
+        let at = record::now(desk.parts.clock)?;
+        desk.reads.filed(&OrderRecord {
+            order: named.clone(),
+            request: request.clone(),
+            parties: kept.asked.parties.clone(),
+            origin_reserve: kept.asked.origin_reserve.clone(),
+        });
+        let checked = desk.reads.check_read(&ReadCheck {
+            request: desk.parts.fresh.id(),
+            reader: caller.clone(),
+            reads: Read::FiledOrder {
+                order: named.clone(),
+                requester: kept.asked.parties.requester.clone(),
+            },
+            permission: None,
+            at,
+        });
+        // Withdrawn as soon as the check returns, whatever it answered.
+        desk.reads.withdrawn(&named);
+        match checked?.outcome {
+            ReadOutcome::Allowed {} => Ok(()),
+            ReadOutcome::Refused { .. } => Err(IntakeError::ReadRefused),
+        }
+    }
+
+    /// Asks policy whether `caller` may read the status of `order`, as [`Intake::read`] does, recording the check.
+    /// [`IntakeError::ReadRefused`] where it may not, or where intake holds no order of that name; a check that
+    /// couldn't be made is the log's failure, nothing told. A held order (`T-020-46`) hands its record to nobody
+    /// (`T-020-52`).
+    fn read_order(
+        &self,
+        desk: &mut Desk<'_, '_>,
+        caller: &Actor,
+        order: &Id,
+    ) -> Result<(), IntakeError> {
+        let kept = self
+            .orders
+            .get(order.as_str())
+            .and_then(|key| self.requests.get(key))
+            .ok_or(IntakeError::ReadRefused)?;
+        let reads = if kept.acceptance_logged() {
+            Read::OrderState {
+                order: order.clone(),
+            }
+        } else {
+            // Intake's own record of the filed request goes to the deployment first: policy asks the order's record
+            // who its requester is, never the read's word. A held order's goes to nobody (`T-020-46`): the log's own
+            // `order_opened` is what policy reads it from.
+            if !self.held.contains(order.as_str()) {
+                desk.reads.filed(&OrderRecord {
+                    order: order.clone(),
+                    request: kept.request.request.clone(),
+                    parties: kept.request.parties.clone(),
+                    origin_reserve: kept.request.origin_reserve.clone(),
+                });
+            }
+            Read::FiledOrder {
+                order: order.clone(),
+                requester: kept.request.parties.requester.clone(),
+            }
+        };
+        let answer = desk.reads.check_read(&ReadCheck {
+            request: desk.parts.fresh.id(),
+            reader: caller.clone(),
+            reads,
+            permission: None,
+            at: record::now(desk.parts.clock)?,
+        })?;
+        match answer.outcome {
+            ReadOutcome::Allowed {} => Ok(()),
+            ReadOutcome::Refused { .. } => Err(IntakeError::ReadRefused),
+        }
+    }
+
+    /// What a failed call tells `caller`: the error itself, unless it shows the state or the identifier of an order the
+    /// caller may not read, in which case the same read check is asked first and a refused reader is told
+    /// [`IntakeError::ReadRefused`] alike whatever the order's state (`T-023-01`). Every error about an existing order
+    /// shows something of it, so each goes, for an agent, through the check but the few that show nothing: `NoSuchOrder` and
+    /// `NotTheRequester` (the register of actors answered them before any order was looked at), `ReadRefused` (already
+    /// the refused reader's answer) and `Fresh` (a draw of Core's, no order's). A `Hold`, `Unofferable`, `Routing`,
+    /// `Log` or `Refused` would tell an agent its party didn't scope to read that the order stands quoted, where it
+    /// stands or that it exists at all (`T-020-62`). An error with no order behind it (a request refused
+    /// before one existed, `order` is `None`) names no order: a repeat of it differing from the first is told an agent
+    /// [`IntakeError::ReadRefused`], and a failure of the log on opening is told as it is, for it shows no order.
+    ///
+    /// An unscoped agent probing its own party's order identifiers is told `ReadRefused` of an order that exists and
+    /// `NoSuchOrder` of one that doesn't ([`Intake::kept_for`]); that reaches only its own party's identifiers, which are
+    /// Core's fresh draws, so it is a probe of nothing an agent could guess (`T-020-62`). Its timing differs too: the call runs before it
+    /// answers `ReadRefused`, where a missing id answers at once; that falls under the timing residual the owner accepted
+    /// for v0 (`cat5-timing-residual`).
+    fn told_error(
+        &self,
+        desk: &mut Desk<'_, '_>,
+        caller: &Actor,
+        order: Option<&Id>,
+        error: IntakeError,
+    ) -> IntakeError {
+        let named = match &error {
+            IntakeError::Conflicting { order: Some(named) } => Some(named),
+            // Its one source is `open_inner`, through `open`, which names no order and has held an agent to the request's
+            // read check already (`T-020-64`): returned as it is. Were it ever to come with an order named, it is checked
+            // as any error about that order (fail closed, `T-020-66`).
+            IntakeError::Conflicting { order: None } => match order {
+                None => return error,
+                Some(order) => Some(order),
+            },
+            IntakeError::NoSuchOrder
+            | IntakeError::NotTheRequester
+            | IntakeError::ReadRefused
+            | IntakeError::Fresh => return error,
+            // These three show an order's state, and are checked for every caller, as they always were (`T-020-52`).
+            IntakeError::NotNow | IntakeError::NotTheQuoteShown | IntakeError::OtherActor => {
+                match order {
+                    Some(order) => Some(order),
+                    None => return error,
+                }
+            }
+            // The rest are asked of an agent only, whose party's scope for reading can lack. A person's login is held by
+            // `kept_for` to the order's requester in the customer's role, which is all `REQ-AUZ-7` and `REQ-AUZ-8` let
+            // read, and policy's check allows exactly that party: a check would withhold nothing from it, and `accept_inner`
+            // answers a held order `NotNow` before any of these arise. (The success path asks anyway: the status is told.)
+            // `T-020-62`.
+            _ if caller.kind != ActorKind::Agent => return error,
+            _ => match order {
+                Some(order) => Some(order),
+                None => return error,
+            },
+        };
+        match named.map(|o| self.read_order(desk, caller, o)) {
+            Some(Ok(())) | None => error,
+            Some(Err(refused)) => refused,
+        }
+    }
+
+    /// Intake rebuilt from `history`, the log's own entries, as a Core that reopens reads it (`T-020-46`): each order
+    /// an `order_opened` names, under its requester's request identifier, with the request it holds: its inputs read
+    /// back through `reading` from the operator's statement of them, kept behind the commitment `order_opened` names
+    /// (`REQ-AUD-6`), held to the order the statement names, and its destination's account set as the deposit's input,
+    /// as intake sets it; its last decision record's receipt for the next routing to chain to,
+    /// and its standing: accepted and started where the log holds its acceptance and its `route_chosen`, refused where
+    /// it holds the order's refusal, and its outcome to come otherwise, so a quote shown before is shown again on a
+    /// new routing. A repeat of the request is held to the fields the log holds of it.
+    pub fn reopened(
+        history: &[(Receipt, Entry)],
+        reading: &mut dyn crate::segments::Reopening,
+    ) -> Self {
+        let mut intake = Intake::new();
+        let verified = || {
+            history.iter().filter_map(|(receipt, entry)| match entry {
+                Entry::Verified(v) => Some((receipt, &v.what)),
+                Entry::Stated(_) => None,
+            })
+        };
+        for (_, what) in verified() {
+            let What::OrderOpened {
+                order,
+                request,
+                caller,
+                parties,
+                origin_reserve,
+                session,
+                destination,
+                route,
+                inputs,
+            } = what
+            else {
+                continue;
+            };
+            let read = inputs.as_ref().map(|commitment| {
+                reading
+                    .kept(commitment)
+                    .and_then(|bytes| {
+                        serde_json::from_slice::<
+                            rutent_contracts::provider_role::Statement<OrderInputs>,
+                        >(&bytes)
+                        .ok()
+                    })
+                    .filter(|s| s.shape == ORDER_INPUTS_SHAPE && &s.statement.order == order)
+                    .map(|s| s.statement.inputs)
+            });
+            // Failing closed: an order whose inputs statement can't be read back is held, never run again with its
+            // inputs missing.
+            if matches!(read, Some(None)) {
+                intake.held.insert(order.as_str().to_owned());
+            }
+            let stated = read.flatten().unwrap_or_default();
+            let asked = OrderRequest {
+                request: request.clone(),
+                caller: (**caller).clone(),
+                parties: (**parties).clone(),
+                origin_reserve: origin_reserve.clone(),
+                session: session.clone(),
+                destination: (**destination).clone(),
+                route: (**route).clone(),
+                inputs: stated
+                    .iter()
+                    .filter(|(name, _)| name.as_str() != DESTINATION_INPUT)
+                    .map(|(name, value)| (name.clone(), value.clone()))
+                    .collect(),
+                needs: Vec::new(),
+            };
+            let mut ran = asked.clone();
+            ran.inputs.insert(
+                DESTINATION_INPUT.to_owned(),
+                destination.account.as_str().to_owned(),
+            );
+            let acceptance = verified().find_map(|(_, w)| match w {
+                What::Acceptance {
+                    acceptance,
+                    order: o,
+                    ..
+                } if o == order => Some(acceptance.clone()),
+                _ => None,
+            });
+            let started = history.iter().find_map(|(_, entry)| match entry {
+                Entry::Verified(v) => match &v.what {
+                    What::Input { input }
+                        if input.subject.order.as_str() == order.as_str()
+                            && matches!(input.observed, Observed::RouteChosen { .. }) =>
+                    {
+                        Some(input.clone())
+                    }
+                    _ => None,
+                },
+                Entry::Stated(_) => None,
+            });
+            let refused = verified().find_map(|(_, w)| match w {
+                What::OrderRefusal {
+                    order: Some(o),
+                    class,
+                    ..
+                } if o == order => Some(*class),
+                _ => None,
+            });
+            let logged = acceptance.is_some();
+            let status = match (&acceptance, &started, refused) {
+                (Some(acceptance), Some(_), _) => Status::Accepted {
+                    acceptance: acceptance.clone(),
+                },
+                (_, _, Some(class)) => Status::CantProceed { class },
+                _ => Status::OutcomeToCome,
+            };
+            let previous = history
+                .iter()
+                .rev()
+                .find(|(_, e)| {
+                    matches!(e, Entry::Verified(v)
+                        if matches!(&v.what, What::DecisionRecord { order: o, .. } if o == order))
+                })
+                .map(|(receipt, _)| receipt.clone());
+            // What the order runs on, rebuilt from the log as its acceptance built it (`T-020-61`): the record held to
+            // the log's digest, the authorisation its acceptance names as policy holds it in force, and the order's own
+            // origin, session and inputs. A held order runs on nothing (`T-020-46`, `T-020-52`).
+            let run = match (&started, intake.held.contains(order.as_str()), logged) {
+                (Some(start), false, true) => {
+                    accepted_authorisation(history, order).and_then(|authorisation| {
+                        let authorised = reading.in_force(order, &authorisation)?;
+                        let begun = Begun {
+                            origin: origin_reserve.clone(),
+                            session: Some(session.clone()),
+                            inputs: ran.inputs.clone(),
+                            delivers: None,
+                        };
+                        started_on(
+                            history,
+                            &mut |commitment| reading.kept(commitment),
+                            order,
+                            start,
+                            &authorised,
+                            begun,
+                        )
+                    })
+                }
+                _ => None,
+            };
+            let key = key(&caller.party, request);
+            intake.orders.insert(order.as_str().to_owned(), key.clone());
+            intake.requests.insert(
+                key,
+                Kept {
+                    asked,
+                    request: ran,
+                    order: Some(order.clone()),
+                    status,
+                    history: previous
+                        .map_or_else(History::new, |p| History::recorded(p, Vec::new())),
+                    opening: Vec::new(),
+                    owner: None,
+                    changed_owner: None,
+                    offered: None,
+                    accepting: None,
+                    ended: false,
+                    started,
+                    run: run.map(Box::new),
+                    logged,
+                    reopened: true,
+                },
+            );
+        }
+        intake
+    }
+
+    /// Every order intake holds, by id.
+    pub fn orders(&self) -> impl Iterator<Item = &str> {
+        self.orders.keys().map(String::as_str)
+    }
+
+    /// The request `order` runs under, as intake runs it: its destination's account set as the deposit's input.
+    /// `None` for an order a reopened Core holds because it couldn't read its inputs back (`T-020-46`).
+    pub fn request_of(&self, order: &Id) -> Option<&OrderRequest> {
+        if self.held.contains(order.as_str()) {
+            return None;
+        }
+        Some(&self.requests.get(self.orders.get(order.as_str())?)?.request)
+    }
+
+    /// Whether a reopened Core holds `order` because it couldn't read its inputs back (`T-020-46`).
+    pub fn held(&self, order: &Id) -> bool {
+        self.held.contains(order.as_str())
+    }
+
+    /// What `order` runs on, once it started (`T-020-61`): built on its acceptance and held here, or held for an order
+    /// intake didn't open ([`Intake::hold_started`]). `None` for an order that didn't start, one a reopened Core holds
+    /// ([`Intake::held`]), and one whose record the log doesn't hold to its digest.
+    pub fn started(&self, order: &Id) -> Option<&Started> {
+        if self.held.contains(order.as_str()) {
+            return None;
+        }
+        self.orders
+            .get(order.as_str())
+            .and_then(|key| self.requests.get(key))
+            .and_then(|kept| kept.run.as_deref())
+            .or_else(|| self.others.get(order.as_str()))
+    }
+
+    /// Whether an order quoted and neither started nor ended has a node of its quoted route that `names` (`T-020-60`:
+    /// a network's standing doesn't change under a quoted order that uses it, as a node's doesn't).
+    pub fn quoted_over(&self, names: &mut dyn FnMut(&NodeRef) -> bool) -> bool {
+        self.requests.values().any(|kept| {
+            !kept.ended
+                && kept.started.is_none()
+                && kept.offered.as_ref().is_some_and(|offered| {
+                    route_of(&offered.candidate).any(|(_, node)| names(node))
+                })
+        })
+    }
+
+    /// Every order Core started that runs on something, by id, in order.
+    pub fn started_orders(&self) -> Vec<Id> {
+        let mut orders: Vec<Id> = self
+            .orders
+            .keys()
+            .filter_map(Id::new)
+            .filter(|order| self.started(order).is_some())
+            .chain(self.others.keys().filter_map(Id::new))
+            .collect();
+        orders.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        orders.dedup();
+        orders
+    }
+
+    /// Holds what `order` runs on, for an order Core started that intake didn't open (`T-020-61`): one filed on an
+    /// automatic deposit, or a linked order. An order intake opened, or one already held, is left as it is; an order
+    /// a reopened Core holds is never given anything to run on.
+    pub fn hold_started(&mut self, order: &Id, started: Started) {
+        if self.held.contains(order.as_str()) || self.started(order).is_some() {
+            return;
+        }
+        if let Some(kept) = self
+            .orders
+            .get(order.as_str())
+            .and_then(|key| self.requests.get_mut(key))
+        {
+            if kept.started.is_some() {
+                kept.run = Some(Box::new(started));
+            }
+            return;
+        }
+        self.others.insert(order.as_str().to_owned(), started);
+    }
+
+    /// What `order` runs on, to change: a fault a scenario plants on what Core holds (`T-020-63`'s unpriced route).
+    pub fn started_mut(&mut self, order: &Id) -> Option<&mut Started> {
+        if self.held.contains(order.as_str()) {
+            return None;
+        }
+        if let Some(key) = self.orders.get(order.as_str()) {
+            return self
+                .requests
+                .get_mut(key)
+                .and_then(|kept| kept.run.as_deref_mut());
+        }
+        self.others.get_mut(order.as_str())
+    }
+
+    /// Holds `record`, the decision record of a route Core recalculated, held to the log's digest (`T-020-61`).
+    pub fn hold_record(&mut self, record: DecisionRecord) {
+        self.records
+            .insert(record.record_id().as_str().to_owned(), record);
+    }
+
+    /// Forgets the decision record `id` of a route Core recalculated, as a Core whose evidence store no longer gives it back
+    /// would hold none: a fault a scenario plants (#316's round-3 L7), which Core's run fails closed on.
+    pub fn forget_record(&mut self, id: &Id) {
+        self.records.remove(id.as_str());
+    }
+
+    /// The decision record `id` a started order runs on: the one its route was chosen by, or one of a route Core
+    /// recalculated since ([`Intake::hold_record`]).
+    pub fn decision_record(&self, id: &Id) -> Option<&DecisionRecord> {
+        self.records.get(id.as_str()).or_else(|| {
+            self.started_orders().into_iter().find_map(|order| {
+                self.started(&order)
+                    .map(|s| &s.record)
+                    .filter(|r| r.record_id() == id)
+            })
+        })
+    }
+
+    /// The record of `order`, for the assembly to answer policy's sources from.
+    pub fn record(&self, order: &Id) -> Option<OrderRecord> {
+        // An order held because its inputs can't be read back answers nothing to policy's sources, failing closed
+        // (`T-020-46`, `T-020-52`).
+        if self.held.contains(order.as_str()) {
+            return None;
+        }
+        let kept = self.requests.get(self.orders.get(order.as_str())?)?;
+        Some(OrderRecord {
+            order: order.clone(),
+            request: kept.request.request.clone(),
+            parties: kept.request.parties.clone(),
+            origin_reserve: kept.request.origin_reserve.clone(),
+        })
+    }
+
+    /// The `route_chosen` input that started `order`, as the log took it: what `T-020-08`'s segments follow
+    /// (`Segments::follow`), and the only start of an order they act on. An order whose acceptance the log took but
+    /// whose start it refused has none: it ended half-accepted, and nothing acts on it.
+    pub fn start(&self, order: &Id) -> Option<&RecordedInput> {
+        // A held order never starts: one accepted before a restart whose inputs can't be read back after it is
+        // followed by nothing (`T-020-46`, `T-020-52`).
+        if self.held.contains(order.as_str()) {
+            return None;
+        }
+        self.requests
+            .get(self.orders.get(order.as_str())?)?
+            .started
+            .as_ref()
+    }
+
+    /// The record of `order`, if `caller` speaks for its requester; to anyone else it doesn't exist.
+    fn kept_for(
+        &mut self,
+        actors: &mut dyn Actors,
+        caller: &Actor,
+        order: &Id,
+    ) -> Result<&mut Kept, IntakeError> {
+        let key = self
+            .orders
+            .get(order.as_str())
+            .ok_or(IntakeError::NoSuchOrder)?;
+        let kept = self.requests.get_mut(key).ok_or(IntakeError::NoSuchOrder)?;
+        if !speaks_for(actors, &kept.request, caller) {
+            return Err(IntakeError::NoSuchOrder);
+        }
+        Ok(kept)
+    }
+
+    /// Takes `request` (see the module's docs, step 1). The caller is told the order's status only once policy lets it
+    /// read it ([`IntakeError::ReadRefused`] otherwise, the order opened all the same: the same request again is
+    /// asked again).
+    pub fn open(
+        &mut self,
+        desk: &mut Desk<'_, '_>,
+        request: OrderRequest,
+    ) -> Result<Told, IntakeError> {
+        let caller = request.caller.clone();
+        let request_id = request.request.clone();
+        let told = match self.open_inner(desk, request) {
+            Ok(told) => told,
+            Err(error) => {
+                // Another request under the identifier of one refused with no order names no order: an agent is told
+                // what the request's own status is told it, ReadRefused where its party didn't scope it (`T-020-64`).
+                if matches!(error, IntakeError::Conflicting { order: None })
+                    && caller.kind == ActorKind::Agent
+                {
+                    return Err(match self.read_request(desk, &caller, &request_id) {
+                        Ok(()) => error,
+                        Err(refused) => refused,
+                    });
+                }
+                return Err(self.told_error(desk, &caller, None, error));
+            }
+        };
+        self.read(desk, &caller, told, Some(&request_id))
+    }
+
+    fn open_inner(
+        &mut self,
+        desk: &mut Desk<'_, '_>,
+        request: OrderRequest,
+    ) -> Result<Told, IntakeError> {
+        let caller = &request.caller;
+        if caller.role != Role::Customer
+            || !desk
+                .actors
+                .acts_for(&caller.acts, &caller.party, caller.kind, caller.role)
+        {
+            return Err(IntakeError::NotTheRequester);
+        }
+        let key = key(&caller.party, &request.request);
+        if let Some(kept) = self.requests.get_mut(&key) {
+            let same = if kept.reopened {
+                same_logged_request(&kept.asked, &request)
+            } else {
+                same_request(&kept.asked, &request)
+            };
+            if !same {
+                return Err(IntakeError::Conflicting {
+                    order: kept.order.clone(),
+                });
+            }
+            flush(&mut *desk.parts.log, &mut kept.opening)?;
+            return Ok(kept.told());
+        }
+        let kept = opened(desk, request)?;
+        if let Some(order) = &kept.order {
+            // A fresh identifier is never one an order already has.
+            if self.orders.contains_key(order.as_str()) {
+                return Err(IntakeError::Fresh);
+            }
+            self.orders.insert(order.as_str().to_owned(), key.clone());
+        }
+        // Kept before anything is appended, so a retry carries on with the same order.
+        let kept = self.requests.entry(key).or_insert(kept);
+        flush(&mut *desk.parts.log, &mut kept.opening)?;
+        Ok(kept.told())
+    }
+
+    /// Routes `order` with router `R` and shows its quote, or records why it can't proceed (step 2). Only the
+    /// order's requester quotes it, and is told the order's status once policy lets it read it.
+    pub fn quote<R: Router>(
+        &mut self,
+        desk: &mut Desk<'_, '_>,
+        caller: &Actor,
+        order: &Id,
+    ) -> Result<Told, IntakeError> {
+        let told = match self.quote_inner::<R>(desk, caller, order) {
+            Ok(told) => told,
+            Err(error) => return Err(self.told_error(desk, caller, Some(order), error)),
+        };
+        self.read(desk, caller, told, None)
+    }
+
+    fn quote_inner<R: Router>(
+        &mut self,
+        desk: &mut Desk<'_, '_>,
+        caller: &Actor,
+        order: &Id,
+    ) -> Result<Told, IntakeError> {
+        // An order a reopened Core holds, its inputs statement unreadable, is never quoted again with its inputs
+        // missing (failing closed, `T-020-46`).
+        let held = self.held.contains(order.as_str());
+        let kept = self.kept_for(desk.actors, caller, order)?;
+        if let Status::Accepted { .. } = kept.status {
+            return Ok(kept.told());
+        }
+        if held {
+            return Err(IntakeError::NotNow);
+        }
+        if !kept.opening.is_empty() || kept.ended || kept.accepting.is_some() {
+            // Not yet open, ended, or an acceptance under way on the quote shown, carried on by accepting again.
+            return Err(IntakeError::NotNow);
+        }
+        if let Status::CantProceed { class } = kept.status
+            && class != OrderRefusalClass::NoRouteRightNow
+        {
+            return Err(IntakeError::NotNow);
+        }
+        let routing_order = Order {
+            order: order.clone(),
+            caller: kept.request.caller.clone(),
+            origin_reserve: kept.request.origin_reserve.clone(),
+            presence: Presence::User {
+                session: kept.request.session.clone(),
+            },
+            inputs: kept.request.inputs.clone(),
+            needs: kept.request.needs.clone(),
+        };
+        let routing = Routing {
+            request: &kept.request.route,
+            bounds: desk.bounds,
+            prices: desk.prices,
+            order: &routing_order,
+            core: desk.core,
+            operator: desk.operator,
+        };
+        let routed = rounds::route::<R>(desk.parts, routing, &mut kept.history)?;
+        // The terms the providers handed back in their answers, stated before any segment of the order starts, are
+        // held for the segments that do (`REQ-QTE-6`).
+        take_terms(desk, &routed.terms)?;
+        kept.offered = None;
+        let (candidate, reserve_yes, session) = match &routed.offer {
+            Offer::NotOffered(why) => {
+                let class = class::not_offered(&routed, why);
+                refuse(desk, &kept.request.request, Some(order), class)?;
+                kept.status = Status::CantProceed { class };
+                return Ok(kept.told());
+            }
+            Offer::Offered {
+                candidate,
+                reserve_yes,
+                session,
+            } => (candidate, reserve_yes, session),
+        };
+        let chosen = routed.choices.last().ok_or(IntakeError::Unofferable)?;
+        let candidate = chosen
+            .record
+            .candidates()
+            .iter()
+            .find(|c| &c.candidate_id == candidate)
+            .cloned()
+            .ok_or(IntakeError::Unofferable)?;
+        // A part Core can't run is refused before it is shown (`REQ-ORD-16`).
+        for part in candidate.parts.iter() {
+            if let Err(refused) = check_part(part) {
+                refuse(desk, &kept.request.request, Some(order), refused.class)?;
+                kept.status = Status::CantProceed {
+                    class: refused.class,
+                };
+                return Ok(kept.told());
+            }
+        }
+        // The acceptance cites each part's yes, in part order, each its own receipt (`REQ-ORD-32`). Two parts the
+        // rounds answered with one yes, an even split at one reserve, would cite one statement twice: not offered.
+        let mut distinct = reserve_yes.clone();
+        distinct.sort_by_key(|r| r.index.get());
+        distinct.dedup_by_key(|r| r.index.get());
+        if reserve_yes.len() != candidate.parts.len() || distinct.len() != reserve_yes.len() {
+            let class = OrderRefusalClass::NoRouteRightNow;
+            refuse(desk, &kept.request.request, Some(order), class)?;
+            kept.status = Status::CantProceed { class };
+            return Ok(kept.told());
+        }
+        let reserve_yes = reserve_yes.clone();
+        let session = session.clone().ok_or(IntakeError::Unofferable)?;
+        // Its price, by the bounds its record ran under; a price the route can't deliver is never shown
+        // (`T-020-07`).
+        let floor = kept.request.route.floor.clone();
+        let price = match crate::quote::show(&chosen.record, &candidate, floor.as_ref()) {
+            Ok(price) => price,
+            Err(not_shown) => {
+                let class = not_shown.class();
+                refuse(desk, &kept.request.request, Some(order), class)?;
+                kept.status = Status::CantProceed { class };
+                return Ok(kept.told());
+            }
+        };
+        let shown_as = price.shown_as;
+        let quote = Quote {
+            order: order.clone(),
+            decision_record: chosen.record.record_id().clone(),
+            candidate: candidate.candidate_id.clone(),
+            from: kept.request.route.from.clone(),
+            to: kept.request.route.to.clone(),
+            amount: kept.request.route.amount.clone(),
+            delivers: price.arrives.clone(),
+            shown_as,
+            price,
+        };
+        let digest = digest_of(&quote).ok_or(IntakeError::Unofferable)?;
+        record::append(
+            &mut *desk.parts.log,
+            desk.parts.clock,
+            desk.core,
+            What::Shown {
+                order: order.clone(),
+                shown: digest.clone(),
+                shown_as,
+                awaiting: None,
+            },
+        )?;
+        kept.status = Status::Quoted {
+            quote: Box::new(quote.clone()),
+            digest: digest.clone(),
+            valid_until: None,
+        };
+        // The reserve the route starts at is asked to hold the quote shown, where it declares that it answers hold
+        // requests; any failure leaves the quote shown unheld (`REQ-QTE-15`, `T-020-56`).
+        let held = hold::ask(
+            desk,
+            order,
+            &kept.request.origin_reserve,
+            chosen,
+            &candidate,
+            &session,
+        );
+        // The quote is valid no longer than its figures, nor than the hold its acceptance redeems (failing closed).
+        let validity = quote_validity(
+            chosen.record.earliest_expiry(&candidate),
+            held.as_ref()
+                .and_then(|h| desk.holds.held(h))
+                .map(|h| h.valid_until()),
+        );
+        if let Status::Quoted { valid_until, .. } = &mut kept.status {
+            *valid_until = validity;
+        }
+        kept.offered = Some(Offered {
+            quote,
+            digest,
+            candidate,
+            reserve_yes,
+            session,
+            hold: held,
+        });
+        Ok(kept.told())
+    }
+
+    /// `by` accepts the quote of `order` shown with digest `quote` (step 3). Where the order waits on its
+    /// destination's new owner, `owner` is that owner, which the acceptance confirms; otherwise it is `None`.
+    /// Accepting again what was accepted, or what ended, records nothing more and is told the same.
+    pub fn accept(
+        &mut self,
+        desk: &mut Desk<'_, '_>,
+        order: &Id,
+        by: &Actor,
+        quote: &Digest,
+        owner: Option<&Id>,
+    ) -> Result<Told, IntakeError> {
+        self.accept_holding(desk, order, by, quote, owner, None)
+    }
+
+    /// [`Intake::accept`], where the acceptance names `hold`, the transaction of a reserve's hold of the quote shown
+    /// (`REQ-QTE-15`): intake redeems it for this order through [`Holds::redeem`], in the session it verified for the
+    /// acceptance and for the origin reserve of the request, never a session or a reserve the caller names, and the
+    /// acceptance cites the receipt of the hold's stated entry as its `held`. A hold that is not redeemed (not
+    /// held, for another order or session, redeemed by another order, not a hold of this quote, kept bytes that
+    /// are not the hold, past its validity) is [`IntakeError::Hold`], with the acceptance not recorded and the hold
+    /// not redeemed. Naming no hold redeems the hold Core took of the quote shown, where it took one (`T-020-56`), and
+    /// otherwise records an acceptance that cites none and redeems none.
+    ///
+    /// An acceptance carried on from where it stopped is already built and cites what it cited: `hold` is read
+    /// only when the acceptance is built.
+    ///
+    /// What is told is the order's status once policy lets `by` read it, as the order's state where the acceptance
+    /// is in the log; a refused read leaves the acceptance as recorded ([`IntakeError::ReadRefused`]).
+    pub fn accept_holding(
+        &mut self,
+        desk: &mut Desk<'_, '_>,
+        order: &Id,
+        by: &Actor,
+        quote: &Digest,
+        owner: Option<&Id>,
+        hold: Option<&Id>,
+    ) -> Result<Told, IntakeError> {
+        let told = match self.accept_inner(desk, order, by, quote, owner, hold) {
+            Ok(told) => told,
+            Err(error) => return Err(self.told_error(desk, by, Some(order), error)),
+        };
+        self.read(desk, by, told, None)
+    }
+
+    fn accept_inner(
+        &mut self,
+        desk: &mut Desk<'_, '_>,
+        order: &Id,
+        by: &Actor,
+        quote: &Digest,
+        owner: Option<&Id>,
+        hold: Option<&Id>,
+    ) -> Result<Told, IntakeError> {
+        // An order a reopened Core holds, its inputs statement unreadable, is never accepted: what it would run on
+        // can't be read back (failing closed, `T-020-46`).
+        let held = self.held.contains(order.as_str());
+        let kept = self.kept_for(desk.actors, by, order)?;
+        if matches!(kept.status, Status::Accepted { .. }) || kept.ended {
+            return Ok(kept.told());
+        }
+        if held {
+            return Err(IntakeError::NotNow);
+        }
+        // A quote shown before Core reopened, its acceptance not in the log, is the log's to rebuild while its validity
+        // stands (`T-020-61`, item 7): the same quote, held to the digest the `shown` entry named, on the record the log
+        // holds to its digest, with the reserve's yes and its hold as the log holds them. Past its validity it is gone, and
+        // the order is quoted again on a new routing (`T-020-46`'s default); the hold it named lapses with it.
+        if kept.reopened
+            && kept.offered.is_none()
+            && kept.accepting.is_none()
+            && matches!(kept.status, Status::OutcomeToCome)
+            && let Some((offered, valid_until)) =
+                shown_in_the_log(desk, order, &kept.request, quote)
+        {
+            kept.status = Status::Quoted {
+                quote: Box::new(offered.quote.clone()),
+                digest: offered.digest.clone(),
+                valid_until,
+            };
+            kept.offered = Some(offered);
+        }
+        if let Some(accepting) = kept.accepting.as_mut() {
+            // Carried on from where it stopped, by the actor that accepted; the destination isn't resolved again,
+            // since policy permitted on it. Where the acceptance is in the log and policy hasn't decided its
+            // authorisation, another login of the requester's own party carries it on too: it asks policy for the
+            // same authorisation again, given by itself, and appends no second acceptance, so the order isn't pinned
+            // to a login whose session may be over. Policy refusing that login ends nothing: the order stays as it
+            // was, for the login that accepted or another. A login of another party never does.
+            if &accepting.by != by {
+                let logged = accepting.pending.len() <= 1;
+                let Some(mut authorisation) = accepting.authorisation.clone() else {
+                    return Err(IntakeError::OtherActor);
+                };
+                if !(logged && by.party == accepting.by.party) {
+                    return Err(IntakeError::OtherActor);
+                }
+                authorisation.given_by = by.clone();
+                authorisation.at = record::now(desk.parts.clock)?;
+                let decision = desk.authorisations.authorise(&authorisation)?;
+                if decision.permit().is_some() {
+                    accepting.authorisation = None;
+                    accepting.permitted = Some(authorisation);
+                    accepting.by = by.clone();
+                } else if matches!(decision.outcome, Answer::NotKnown { .. }) {
+                    kept.status = Status::Waiting {
+                        wait: Wait::PolicyNotKnown,
+                    };
+                    return Ok(kept.told());
+                } else if matches!(
+                    decision.outcome,
+                    Answer::Refuse {
+                        class: RefusalClass::OutsideAuthorisation
+                    }
+                ) {
+                    // A refusal about the order, not the login: a route the authorisation doesn't cover has nothing
+                    // to wait for, so the order ends with that refusal's class shown, and nothing starts
+                    // (`REQ-AUZ-3`, `REQ-ORD-18`).
+                    return ended(
+                        desk,
+                        kept,
+                        class::refused(RefusalClass::OutsideAuthorisation),
+                    );
+                } else {
+                    // A refusal about the login: the order stays as it was, for the login that accepted or another.
+                    return Err(IntakeError::OtherActor);
+                }
+            }
+            return carry_on(desk, kept);
+        }
+        if !matches!(kept.status, Status::Quoted { .. } | Status::Waiting { .. }) {
+            return Err(IntakeError::NotNow);
+        }
+        let offered = kept.offered.clone().ok_or(IntakeError::NotNow)?;
+        if &offered.digest != quote {
+            return Err(IntakeError::NotTheQuoteShown);
+        }
+        // A change of owner is confirmed only by naming the owner it changed to.
+        if kept.changed_owner.as_ref() != owner {
+            return Err(IntakeError::NotNow);
+        }
+        let request = kept.request.clone();
+        // A route is accepted only on the standing it was chosen on: each inner node it names still on the operator's
+        // public list, or still the private node of its segment's publisher, as the catalogue's snapshot admits a
+        // tuple. A node unlisted since the quote leaves no route right now: the quote shown is gone, and the order is
+        // quoted again on the standing that holds (`REQ-CAT-22`, #346's review, L2).
+        if unlisted_on(&*desk.parts.catalogue, route_of(&offered.candidate)).is_some() {
+            let class = OrderRefusalClass::NoRouteRightNow;
+            refuse(desk, &request.request, Some(order), class)?;
+            kept.status = Status::CantProceed { class };
+            kept.offered = None;
+            kept.changed_owner = None;
+            return Ok(kept.told());
+        }
+
+        // The destination, resolved when the route is accepted (`REQ-ORD-24`), against the owner the customer
+        // accepted: the first resolved, or the one it now confirms.
+        let accepted_owner = kept.changed_owner.clone().or_else(|| kept.owner.clone());
+        let resolution = desk.destinations.resolve(&request.destination);
+        let (outcome, resolved) = match resolution {
+            Resolution::Owner(now) => match &accepted_owner {
+                Some(owner) if owner != &now => (DestinationOutcome::OwnerChanged, Some(now)),
+                _ => (DestinationOutcome::Resolved, Some(now)),
+            },
+            Resolution::NotYet => (DestinationOutcome::NotYet, None),
+            Resolution::Refused => (DestinationOutcome::Refused, None),
+        };
+        check_destination(desk, order, &request.destination, outcome)?;
+        match outcome {
+            DestinationOutcome::Resolved => {}
+            DestinationOutcome::NotYet => {
+                let class = OrderRefusalClass::DestinationNotYetResolved;
+                refuse(desk, &request.request, Some(order), class)?;
+                kept.status = Status::Waiting {
+                    wait: Wait::DestinationNotYetResolved,
+                };
+                return Ok(kept.told());
+            }
+            DestinationOutcome::OwnerChanged => {
+                // The order waits for the customer: refused, of its class, until the customer confirms the owner.
+                let class = OrderRefusalClass::DestinationOwnerChanged;
+                refuse(desk, &request.request, Some(order), class)?;
+                kept.changed_owner = resolved;
+                kept.status = Status::Waiting {
+                    wait: Wait::OwnerChanged,
+                };
+                return Ok(kept.told());
+            }
+            DestinationOutcome::Refused => {
+                let class = OrderRefusalClass::DestinationRefused;
+                refuse(desk, &request.request, Some(order), class)?;
+                kept.status = Status::CantProceed { class };
+                kept.offered = None;
+                kept.changed_owner = None;
+                return Ok(kept.told());
+            }
+        }
+
+        // The acceptance, then the order's start, each built once, here, and appended as built: the acceptance first,
+        // then the authorisation it gives is asked of policy, which reads the order's parties from it, the payer among
+        // them (the coordinator's ruling on the payer gap), and only on policy's permit the start. Both are built and
+        // checked before anything is appended, so an acceptance that fails its own shape records nothing. The acceptance names each part of the start's plan with its yes and its origin reserve, the
+        // provider of its first move, and the authorisation it gives.
+        let authorisation_id = desk.parts.fresh.id();
+        let input = route_chosen(desk, order, by, &offered)?;
+        let Observed::RouteChosen { parts, .. } = &input.observed else {
+            return Err(IntakeError::Unofferable);
+        };
+        let yeses = parts
+            .iter()
+            .zip(&offered.reserve_yes)
+            .map(|(part, yes)| {
+                let first = part.segments.first().ok_or(IntakeError::Unofferable)?;
+                Ok(PartYes {
+                    part: Id::new(part.part_id.as_str()).ok_or(IntakeError::Unofferable)?,
+                    origin_reserve: Id::new(first.provider.as_str())
+                        .ok_or(IntakeError::Unofferable)?,
+                    reserve_yes: yes.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>, IntakeError>>()?;
+        // The hold the acceptance names, redeemed for this order only: in the session the acceptance is given in
+        // (`offered.session`, the one the reserve's yes was asked in) and for the request's origin reserve, never a
+        // session or reserve the caller says. Last before the acceptance is built, so a refusal leaves nothing behind.
+        // The hold the caller names, or else the one Core took of the quote shown.
+        let held = match hold.or(offered.hold.as_ref()) {
+            None => None,
+            Some(transaction) => {
+                let now = record::now(desk.parts.clock)?;
+                let redeemed = desk
+                    .holds
+                    .redeem(
+                        Redemption {
+                            transaction,
+                            reserve: &request.origin_reserve,
+                            order,
+                            session: Some(&offered.session),
+                            quote: AcceptedQuote {
+                                record: &offered.quote.decision_record,
+                                candidate: &offered.quote.candidate,
+                            },
+                            now: &now,
+                        },
+                        &mut *desk.kept,
+                    )
+                    .map_err(IntakeError::Hold)?;
+                Some(redeemed.hold.clone())
+            }
+        };
+        let acceptance = desk.parts.fresh.id();
+        let accepted = record::build(
+            desk.parts.clock,
+            by,
+            What::Acceptance {
+                acceptance: acceptance.clone(),
+                order: order.clone(),
+                request: request.request.clone(),
+                quote: offered.digest.clone(),
+                authorisation: authorisation_id.clone(),
+                basis: AcceptanceBasis::Given,
+                parties: request.parties.clone(),
+                origin_reserve: request.origin_reserve.clone(),
+                yeses,
+                session: Some(offered.session.clone()),
+                held,
+            },
+        )?;
+        let start = record::build(
+            desk.parts.clock,
+            desk.core,
+            What::Input {
+                input: input.clone(),
+            },
+        )?;
+
+        // The authorisation, naming the destination with the account the requester gave (`REQ-ORD-35`) and the
+        // actor that accepted (`REQ-AUZ-9`), held by policy to the register of actors.
+        let authorisation = Authorisation {
+            authorisation: authorisation_id,
+            order: order.clone(),
+            origin_reserve: request.origin_reserve.clone(),
+            // The payer's account at the origin reserve, as the order's inputs name it: where a stuck resolution may
+            // return the value (`delivery-goes-to-the-parts-ends`). None where the order names none, and then no
+            // delivery back to the origin is admitted.
+            origin_account: request
+                .inputs
+                .get(crate::stuck::PAYER_ACCOUNT)
+                .and_then(|account| Id::new(account.as_str())),
+            destination: request.destination.clone(),
+            to_asset: request.route.to.asset.clone(),
+            floor: request
+                .route
+                .floor
+                .as_ref()
+                .and_then(|f| PositiveAmount::new(f.as_str())),
+            parts: None,
+            given_by: by.clone(),
+            at: record::now(desk.parts.clock)?,
+        };
+        kept.owner = resolved;
+        kept.changed_owner = None;
+        kept.accepting = Some(Accepting {
+            by: by.clone(),
+            acceptance,
+            input,
+            pending: vec![accepted, start],
+            authorisation: Some(authorisation),
+            permitted: None,
+        });
+        carry_on(desk, kept)
+    }
+}
+
+/// The quote of `order` shown under `digest` before Core reopened, rebuilt from the log while its validity stands
+/// (`T-020-61`, item 7): the order's last `shown` entry of that digest, the choice round's record before it (read back from
+/// the evidence store and held to the log's digest), its chosen candidate and its price as intake shows them, held to the
+/// digest; each part's origin reserve's yes, its verified statement about the order before the quote was shown; and the
+/// reserve's hold of it, where the log holds one. `None` where any of it isn't there, the quote rebuilt isn't the one
+/// shown, or its validity has passed (fails closed: the order is quoted again).
+fn shown_in_the_log(
+    desk: &mut Desk<'_, '_>,
+    order: &Id,
+    request: &OrderRequest,
+    digest: &Digest,
+) -> Option<(Offered, Option<Timestamp>)> {
+    use rutent_contracts::core_internal::Attribution;
+    let history = desk.recorded.history();
+    let shown_at = history.iter().rposition(|(_, e)| {
+        matches!(e, Entry::Verified(v) if matches!(&v.what,
+            What::Shown { order: o, shown, awaiting: None, .. } if o == order && shown == digest))
+    })?;
+    let record_id = history[..shown_at]
+        .iter()
+        .rev()
+        .find_map(|(_, e)| match e {
+            Entry::Verified(v) => match &v.what {
+                What::DecisionRecord {
+                    decision_record,
+                    order: o,
+                    ..
+                } if o == order => Some(decision_record.clone()),
+                _ => None,
+            },
+            Entry::Stated(_) => None,
+        })?;
+    let store = &mut *desk.kept;
+    let record = held_record(
+        &history,
+        &mut |commitment| kept_bytes(store, commitment),
+        &record_id,
+    )?;
+    let candidate = record.chosen()?.clone();
+    let price = crate::quote::show(&record, &candidate, request.route.floor.as_ref()).ok()?;
+    let quote = Quote {
+        order: order.clone(),
+        decision_record: record_id,
+        candidate: candidate.candidate_id.clone(),
+        from: request.route.from.clone(),
+        to: request.route.to.clone(),
+        amount: request.route.amount.clone(),
+        delivers: price.arrives.clone(),
+        shown_as: price.shown_as,
+        price,
+    };
+    if digest_of(&quote).as_ref() != Some(digest) {
+        return None;
+    }
+    // Each part's yes, by its shape and transaction, never guessed (the review of #355, L3): the last verified result its
+    // origin reserve stated about the order before the quote was shown, answering a question Core stated about the
+    // order under that transaction (its dry run). A hold, or any other statement of the reserve's, is no yes.
+    let asked: Vec<&Id> = history[..shown_at]
+        .iter()
+        .filter_map(|(_, e)| match e {
+            Entry::Stated(s)
+                if s.what.statement.as_str()
+                    == rutent_contracts::provider_role::OPERATION_SHAPE
+                    && s.about.as_ref().and_then(|a| a.order.as_ref()) == Some(order) =>
+            {
+                s.about.as_ref().and_then(|a| a.transaction.as_ref())
+            }
+            _ => None,
+        })
+        .collect();
+    let mut reserve_yes = Vec::new();
+    for part in candidate.parts.iter() {
+        let reserve = &part.operations.first().provider;
+        let yes = history[..shown_at].iter().rev().find_map(|(receipt, e)| match e {
+            Entry::Stated(s)
+                if s.what.statement.as_str() == rutent_contracts::provider_role::RESULT_SHAPE
+                    && matches!(&s.attribution, Attribution::Verified { who } if &who.acts == reserve)
+                    && s.about.as_ref().and_then(|a| a.order.as_ref()) == Some(order)
+                    && s
+                        .about
+                        .as_ref()
+                        .and_then(|a| a.transaction.as_ref())
+                        .is_some_and(|t| asked.contains(&t)) =>
+            {
+                Some(receipt.clone())
+            }
+            _ => None,
+        })?;
+        reserve_yes.push(yes);
+    }
+    // The reserve's hold of this quote: one Core keeps (`Holds::reopened`) of the record the quote was chosen by, and
+    // redeemed by no order.
+    let hold = history.iter().rev().find_map(|(_, e)| match e {
+        Entry::Stated(s)
+            if s.what.statement.as_str() == rutent_contracts::provider_role::HOLD_SHAPE =>
+        {
+            let transaction = s.about.as_ref()?.transaction.clone()?;
+            let held = desk.holds.held(&transaction)?;
+            (held.record() == &quote.decision_record
+                && desk.holds.redeemed_by(&transaction).is_none())
+            .then_some(transaction)
+        }
+        _ => None,
+    });
+    let validity = quote_validity(
+        record.earliest_expiry(&candidate),
+        hold.as_ref()
+            .and_then(|h| desk.holds.held(h))
+            .map(|h| h.valid_until()),
+    );
+    let now = record::now(desk.parts.clock).ok()?;
+    if validity
+        .as_ref()
+        .is_some_and(|until| until.unix_nanos() <= now.unix_nanos())
+    {
+        // Past its validity the quote is gone, and the hold it named lapses with it: Core holds it no more (item 7).
+        if let Some(lapsed) = &hold {
+            desk.holds.drop_hold(lapsed);
+        }
+        return None;
+    }
+    Some((
+        Offered {
+            quote,
+            digest: digest.clone(),
+            candidate,
+            reserve_yes,
+            session: request.session.clone(),
+            hold,
+        },
+        validity,
+    ))
+}
+
+/// What the order `kept` runs on, from its start `input` the log took and the authorisation policy permitted
+/// (`T-020-61`): built as a reopened Core rebuilds it ([`started_on`]), the record read back from the evidence store and
+/// held to the log's digest.
+fn run_on(
+    desk: &mut Desk<'_, '_>,
+    kept: &Kept,
+    input: &RecordedInput,
+    authorised: &Authorisation,
+) -> Option<Started> {
+    let order = kept.order.as_ref()?;
+    let history = desk.recorded.history();
+    let begun = Begun {
+        origin: kept.request.origin_reserve.clone(),
+        session: Some(kept.request.session.clone()),
+        inputs: kept.request.inputs.clone(),
+        delivers: kept.offered.as_ref().map(|o| o.quote.delivers.clone()),
+    };
+    let store = &mut *desk.kept;
+    started_on(
+        &history,
+        &mut |commitment| kept_bytes(store, commitment),
+        order,
+        input,
+        authorised,
+        begun,
+    )
+}
+
+/// Appends an acceptance's entries not yet appended, as built. The order is told accepted only once its start is
+/// appended. Where the log can't be written now, the next acceptance by the same actor carries on; where it refuses
+/// an entry, no retry can succeed, so the order ends, of the class `no_route_right_now`.
+fn carry_on(desk: &mut Desk<'_, '_>, kept: &mut Kept) -> Result<Told, IntakeError> {
+    // Carried on from where it stopped, the route is held again to the standing it was chosen on, as its acceptance was:
+    // a node unlisted since leaves no route right now, and nothing starts (#346's review, L2).
+    let unlisted = kept.accepting.as_ref().is_some_and(|accepting| {
+        let Observed::RouteChosen { parts, .. } = &accepting.input.observed else {
+            return false;
+        };
+        let route = parts.iter().flat_map(|part| {
+            part.segments.iter().flat_map(|segment| {
+                [&segment.from.node, &segment.to.node]
+                    .into_iter()
+                    .map(|node| (segment.provider.as_str(), node))
+            })
+        });
+        !accepting.pending.is_empty() && unlisted_on(&*desk.parts.catalogue, route).is_some()
+    });
+    if unlisted {
+        return ended(desk, kept, OrderRefusalClass::NoRouteRightNow);
+    }
+    let accepting = kept.accepting.as_mut().ok_or(IntakeError::NotNow)?;
+    if let Some(authorisation) = accepting.authorisation.clone() {
+        // The acceptance first, alone, where it isn't in the log yet: policy reads the order's parties from it. The
+        // start stays pending behind it until policy permits.
+        if accepting.pending.len() > 1 {
+            let mut acceptance: Vec<Entry> = accepting.pending.drain(..1).collect();
+            let appended = flush(&mut *desk.parts.log, &mut acceptance);
+            accepting.pending.splice(0..0, acceptance);
+            match appended {
+                Ok(()) => {}
+                Err(AppendFailure::Refused(_)) => {
+                    return ended(desk, kept, OrderRefusalClass::NoRouteRightNow);
+                }
+                Err(failure) => return Err(IntakeError::Log(failure)),
+            }
+        }
+        let decision = desk.authorisations.authorise(&authorisation)?;
+        if decision.permit().is_some() {
+            accepting.authorisation = None;
+            accepting.permitted = Some(authorisation);
+        } else if matches!(decision.outcome, Answer::NotKnown { .. }) {
+            // Not known: the order waits, and accepting again asks the same authorisation of policy again.
+            kept.status = Status::Waiting {
+                wait: Wait::PolicyNotKnown,
+            };
+            return Ok(kept.told());
+        } else {
+            // Refused once the acceptance is in the log, the order ends with its refusal recorded, of the class
+            // policy's refusal gives its caller: no part starts and nothing moves.
+            let class = match decision.outcome {
+                Answer::Refuse { class } => class::refused(class),
+                _ => OrderRefusalClass::RefusedByPolicy,
+            };
+            return ended(desk, kept, class);
+        }
+    }
+    let accepting = kept.accepting.as_mut().ok_or(IntakeError::NotNow)?;
+    match flush(&mut *desk.parts.log, &mut accepting.pending) {
+        Ok(()) => {
+            kept.status = Status::Accepted {
+                acceptance: accepting.acceptance.clone(),
+            };
+            let (input, permitted) = (accepting.input.clone(), accepting.permitted.clone());
+            // What the order runs on, built and held now, on the start the log took (`T-020-61`, item 1): the record
+            // read back from the evidence store and held to the log's digest, the authorisation as policy permitted it,
+            // and the order's own origin, session, inputs and what its quote delivers.
+            kept.run = permitted
+                .and_then(|authorised| run_on(desk, kept, &input, &authorised))
+                .map(Box::new);
+            kept.started = Some(input);
+            Ok(kept.told())
+        }
+        Err(AppendFailure::Refused(_)) => ended(desk, kept, OrderRefusalClass::NoRouteRightNow),
+        Err(failure) => Err(IntakeError::Log(failure)),
+    }
+}
+
+/// Each segment of `candidate`'s route, as its provider and the nodes it moves between.
+fn route_of(candidate: &Candidate) -> impl Iterator<Item = (&str, &NodeRef)> {
+    candidate.parts.iter().flat_map(|part| {
+        part.operations.iter().flat_map(|operation| {
+            [&operation.from.node, &operation.to.node]
+                .into_iter()
+                .map(|node| (operation.provider.as_str(), node))
+        })
+    })
+}
+
+/// The first inner node of `route`, each named with its segment's provider, that the catalogue no longer admits for
+/// that provider as its snapshot admits a tuple: on the operator's public list, or the private node of the provider's
+/// publisher (`REQ-CAT-22`, #346's review, L2). An outer node's standing is its publisher's declaration, which no
+/// unlist changes.
+fn unlisted_on<'a>(
+    catalogue: &Catalogue,
+    route: impl IntoIterator<Item = (&'a str, &'a NodeRef)>,
+) -> Option<String> {
+    route.into_iter().find_map(|(provider, node)| {
+        let NodeRef::Inner(id) = node else {
+            return None;
+        };
+        let publishers = catalogue.publishers();
+        let publisher = publishers
+            .publisher_of_provider(provider)
+            .unwrap_or_default();
+        let listed = catalogue.nodes().is_public(id.as_str())
+            || publishers.publisher_of_node(id.as_str()) == Some(publisher);
+        (!listed).then(|| id.as_str().to_owned())
+    })
+}
+
+/// Ends `kept`'s order, accepted or not, with its refusal of `class` recorded: nothing started, nothing moved.
+fn ended(
+    desk: &mut Desk<'_, '_>,
+    kept: &mut Kept,
+    class: OrderRefusalClass,
+) -> Result<Told, IntakeError> {
+    let order = kept.order.clone().ok_or(IntakeError::NotNow)?;
+    refuse(desk, &kept.request.request, Some(&order), class)?;
+    kept.logged = kept.acceptance_logged();
+    kept.status = Status::CantProceed { class };
+    kept.ended = true;
+    kept.offered = None;
+    kept.accepting = None;
+    Ok(kept.told())
+}
+
+/// Appends `pending`, in order, each as built, taking each off once the log took it.
+fn flush(log: &mut dyn Log, pending: &mut Vec<Entry>) -> Result<(), AppendFailure> {
+    while let Some(entry) = pending.first() {
+        record::append_entry(log, entry)?;
+        pending.remove(0);
+    }
+    Ok(())
+}
+
+/// A request's record before anything is appended: the entries its opening appends, and where it stands once they
+/// are.
+fn opened(desk: &mut Desk<'_, '_>, request: OrderRequest) -> Result<Kept, IntakeError> {
+    let asked = request.clone();
+    let mut kept = Kept {
+        request: asked.clone(),
+        asked,
+        order: None,
+        status: Status::OutcomeToCome,
+        history: History::new(),
+        opening: Vec::new(),
+        owner: None,
+        changed_owner: None,
+        offered: None,
+        accepting: None,
+        ended: false,
+        started: None,
+        run: None,
+        logged: false,
+        reopened: false,
+    };
+    let refused = |desk: &mut Desk<'_, '_>, kept: &mut Kept, class| {
+        let what = refusal(&kept.asked.request, None, class);
+        kept.opening = vec![record::build(desk.parts.clock, desk.core, what)?];
+        kept.status = Status::CantProceed { class };
+        Ok::<(), IntakeError>(())
+    };
+    let Some(request) = well_formed(request) else {
+        refused(desk, &mut kept, OrderRefusalClass::MalformedRequest)?;
+        return Ok(kept);
+    };
+    // The reserve is asked about the holder's funds in this session: it must be the requester's, and open.
+    let now = record::now(desk.parts.clock)?;
+    if let Some(class) = session_refusal(
+        desk.sessions,
+        &request.session,
+        &request.parties.requester,
+        &now,
+    ) {
+        refused(desk, &mut kept, class)?;
+        return Ok(kept);
+    }
+    let order = draw_order(&mut *desk.parts.fresh).ok_or(IntakeError::Fresh)?;
+    kept.request = request;
+    kept.order = Some(order.clone());
+    // The order as opened, the log's one record of it before its acceptance, for a Core that reopens to read its open
+    // orders from (`T-020-46`). The tuples' inputs stay out of the log (`REQ-AUD-6`).
+    // The order's inputs, which may carry accounts, as the operator's statement of them, kept in the evidence store:
+    // the log holds its salted commitment alone, which `order_opened` names (`T-020-46`, `REQ-AUD-6`).
+    let inputs = if kept.request.inputs.is_empty() {
+        None
+    } else {
+        let made_at = record::now(desk.parts.clock)?;
+        let bytes = crate::rounds::sign_statement(
+            desk.parts.operator_key,
+            desk.bounds,
+            ORDER_INPUTS_SHAPE,
+            &desk.operator.acts,
+            &made_at,
+            OrderInputs {
+                order: order.clone(),
+                inputs: kept.request.inputs.clone(),
+            },
+        )
+        .map_err(|_| IntakeError::Unofferable)?;
+        let stated = crate::segments::stated_entry(
+            desk.parts.evidence,
+            &made_at,
+            &bytes,
+            desk.operator.clone(),
+            desk.operator,
+            None,
+        )
+        .map_err(|why| match why {
+            crate::segments::Unappended::Append(failure) => IntakeError::Log(failure),
+            crate::segments::Unappended::Unrecordable => IntakeError::Unofferable,
+        })?;
+        let Entry::Stated(entry) = &stated else {
+            return Err(IntakeError::Unofferable);
+        };
+        let commitment = entry.commitment.clone();
+        kept.opening.push(stated);
+        Some(commitment)
+    };
+    let opened_as = What::OrderOpened {
+        order: order.clone(),
+        request: kept.request.request.clone(),
+        caller: Box::new(kept.request.caller.clone()),
+        parties: Box::new(kept.request.parties.clone()),
+        origin_reserve: kept.request.origin_reserve.clone(),
+        session: kept.request.session.clone(),
+        destination: Box::new(kept.request.destination.clone()),
+        route: Box::new(kept.request.route.clone()),
+        inputs,
+    };
+    kept.opening
+        .push(record::build(desk.parts.clock, desk.core, opened_as)?);
+    let outcome = match desk.destinations.resolve(&kept.request.destination) {
+        Resolution::Owner(owner) => {
+            kept.owner = Some(owner);
+            DestinationOutcome::Resolved
+        }
+        Resolution::NotYet => DestinationOutcome::NotYet,
+        Resolution::Refused => DestinationOutcome::Refused,
+    };
+    let check = What::DestinationCheck {
+        order: order.clone(),
+        destination: kept.request.destination.clone(),
+        outcome,
+    };
+    kept.opening
+        .push(record::build(desk.parts.clock, desk.core, check)?);
+    if outcome == DestinationOutcome::Refused {
+        let class = OrderRefusalClass::DestinationRefused;
+        let what = refusal(&kept.request.request, Some(&order), class);
+        kept.opening
+            .push(record::build(desk.parts.clock, desk.core, what)?);
+        kept.status = Status::CantProceed { class };
+    }
+    Ok(kept)
+}
+
+/// Why the request's session isn't one policy opened for its requester, still open by Core's clock: `None` where it
+/// is. The class is `refused_by_policy` for a session the register doesn't hold, holds for another party, or that has
+/// ended, and `missing_input` where the register is unread, as policy answers it (`T-021-17`, `T-020-52`).
+pub(crate) fn session_refusal(
+    sessions: &mut dyn SessionRegister,
+    session: &Id,
+    holder: &Id,
+    now: &Timestamp,
+) -> Option<OrderRefusalClass> {
+    // Asked first, so a register that is unread refuses whatever sessions its adapter still answers (fail closed).
+    if sessions.unread() {
+        return Some(OrderRefusalClass::MissingInput);
+    }
+    let held = sessions.held(session).is_some_and(|held| {
+        &held.holder == holder && held.expires_at.unix_nanos() > now.unix_nanos()
+    });
+    if held {
+        None
+    } else {
+        Some(OrderRefusalClass::RefusedByPolicy)
+    }
+}
+
+/// Whether `again` repeats `first`: the same request in every field but who acts for the party, which the key
+/// already holds, so any actor of the requester's, a person or an agent, repeating it is told the same
+/// (`REQ-OPS-5`, `REQ-ORD-19`).
+fn same_request(first: &OrderRequest, again: &OrderRequest) -> bool {
+    let caller = Actor {
+        acts: first.caller.acts.clone(),
+        kind: first.caller.kind,
+        ..again.caller.clone()
+    };
+    first
+        == &OrderRequest {
+            caller,
+            ..again.clone()
+        }
+}
+
+/// [`same_request`], for a request rebuilt from the log (`T-020-46`): `logged` holds its inputs as the operator's
+/// statement of them names them, the destination's account apart, which intake sets, and no needs, which the log
+/// doesn't hold, so `again` repeats it where it is the same in every field the log holds.
+fn same_logged_request(logged: &OrderRequest, again: &OrderRequest) -> bool {
+    same_request(
+        logged,
+        &OrderRequest {
+            inputs: again
+                .inputs
+                .iter()
+                .filter(|(name, _)| name.as_str() != DESTINATION_INPUT)
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect(),
+            needs: Vec::new(),
+            ..again.clone()
+        },
+    )
+}
+
+/// Whether `caller` speaks for the request's requester: an actor for its party, in the customer's role, a person or
+/// an agent alike (`REQ-OPS-5`), that the register of actors says acts for that party.
+fn speaks_for(actors: &mut dyn Actors, request: &OrderRequest, caller: &Actor) -> bool {
+    is_requester(request, caller)
+        && actors.acts_for(&caller.acts, &caller.party, caller.kind, caller.role)
+}
+
+/// Whether `by` acts for the order's requester, in the customer's role, a person or an agent alike (`REQ-OPS-5`).
+fn is_requester(request: &OrderRequest, by: &Actor) -> bool {
+    by.role == Role::Customer && by.party == request.parties.requester
+}
+
+/// The request with the destination's account set as the deposit's input, or `None` where it breaks the
+/// deployment's rules for one: a caller not the requester in the customer's role, a route not ending at the
+/// destination's node, a deposit input naming another account, or a settlement account held at another reserve
+/// than the destination's.
+fn well_formed(mut request: OrderRequest) -> Option<OrderRequest> {
+    if !is_requester(&request, &request.caller) {
+        return None;
+    }
+    // Only Core recalculates: a request's route never follows another routing (`REQ-ORD-2`, `T-020-10`).
+    if request.route.follows.is_some() {
+        return None;
+    }
+    if request.route.to.node != NodeRef::Outer(request.destination.node.clone()) {
+        return None;
+    }
+    if let Some(at) = &request.parties.settlement_account_at
+        && at != &request.destination.reserve
+    {
+        return None;
+    }
+    let account = request.destination.account.as_str().to_owned();
+    match request.inputs.get(DESTINATION_INPUT) {
+        Some(given) if given != &account => return None,
+        _ => {}
+    }
+    request.inputs.insert(DESTINATION_INPUT.to_owned(), account);
+    Some(request)
+}
+
+/// An `order_refusal` of `class`, naming the order where one exists.
+fn refusal(request: &Id, order: Option<&Id>, class: OrderRefusalClass) -> What {
+    What::OrderRefusal {
+        request: request.clone(),
+        order: order.cloned(),
+        class,
+    }
+}
+
+/// Records an `order_refusal` of `class`, naming the order where one exists.
+/// Takes each of `terms`, a provider's own terms one of Core's dry runs handed back ([`rounds::Routed::terms`]),
+/// through the desk's [`TakesTerms`] (`crate::quote::take_handed_back`, `REQ-QTE-6`, `T-020-56`).
+pub(crate) fn take_terms(desk: &mut Desk<'_, '_>, terms: &[Vec<u8>]) -> Result<(), IntakeError> {
+    crate::quote::take_handed_back(
+        &mut *desk.terms,
+        crate::quote::HandedBack {
+            evidence: &mut *desk.parts.evidence,
+            log: &mut *desk.parts.log,
+            kept: &mut *desk.kept,
+            recorded: desk.recorded,
+            clock: desk.parts.clock,
+            catalogue: desk.parts.catalogue,
+        },
+        terms,
+    )
+    .map_err(IntakeError::Log)
+}
+
+fn refuse(
+    desk: &mut Desk<'_, '_>,
+    request: &Id,
+    order: Option<&Id>,
+    class: OrderRefusalClass,
+) -> Result<Receipt, AppendFailure> {
+    record::append(
+        &mut *desk.parts.log,
+        desk.parts.clock,
+        desk.core,
+        refusal(request, order, class),
+    )
+}
+
+/// Records a `destination_check`.
+fn check_destination(
+    desk: &mut Desk<'_, '_>,
+    order: &Id,
+    destination: &Destination,
+    outcome: DestinationOutcome,
+) -> Result<Receipt, AppendFailure> {
+    record::append(
+        &mut *desk.parts.log,
+        desk.parts.clock,
+        desk.core,
+        What::DestinationCheck {
+            order: order.clone(),
+            destination: destination.clone(),
+            outcome,
+        },
+    )
+}
+
+/// The digest of what was shown: SHA-256 of its RFC 8785 canonical JSON, the recorded decision's own rule.
+/// A quote's validity: the earlier of `expiry`, its figures' earliest expiry in nanoseconds (to the whole second below
+/// it), and `hold`, the validity of the hold its acceptance would redeem; `None` where neither bounds it.
+fn quote_validity(
+    expiry: Option<i128>,
+    hold: Option<&rutent_contracts::router_api::Timestamp>,
+) -> Option<rutent_contracts::router_api::Timestamp> {
+    let figures = expiry.and_then(|nanos| {
+        let seconds = u64::try_from(nanos.div_euclid(1_000_000_000)).ok()?;
+        rutent_contracts::router_api::Timestamp::new(
+            rutent_prov::catalogue::Instant(seconds).rfc3339()?,
+        )
+    });
+    match (figures, hold) {
+        (Some(figures), Some(hold)) if hold.unix_nanos() < figures.unix_nanos() => {
+            Some(hold.clone())
+        }
+        (Some(figures), _) => Some(figures),
+        (None, hold) => hold.cloned(),
+    }
+}
+
+fn digest_of(quote: &Quote) -> Option<Digest> {
+    let canonical = to_canonical(quote).ok()?;
+    let value = rutent_prov::module::wire::sha256(&canonical);
+    serde_json::from_value(serde_json::json!({ "algorithm": "sha-256", "value": value })).ok()
+}
+
+/// The `route_chosen` input that opens the order: the chosen candidate's parts as the state machine plans them,
+/// each part and segment under a fresh identifier, citing the choice round's decision record, stated by the
+/// customer who accepted.
+fn route_chosen(
+    desk: &mut Desk<'_, '_>,
+    order: &Id,
+    by: &Actor,
+    offered: &Offered,
+) -> Result<RecordedInput, IntakeError> {
+    let fresh = &mut *desk.parts.fresh;
+    let mut stm_id = || stm::Id::new(fresh.id().as_str()).ok_or(IntakeError::Fresh);
+    let mut parts = Vec::new();
+    for part in offered.candidate.parts.iter() {
+        let part_id = stm_id()?;
+        let mut segments = Vec::new();
+        for operation in part.operations.iter() {
+            segments.push(SegmentPlan {
+                segment_id: stm_id()?,
+                provider: stm::Id::new(operation.provider.as_str())
+                    .ok_or(IntakeError::Unofferable)?,
+                kind: operation.kind,
+                from: operation.from.clone(),
+                to: operation.to.clone(),
+            });
+        }
+        parts.push(PartPlan { part_id, segments });
+    }
+    let record_id = RecordId::new(desk.parts.fresh.id().as_str()).ok_or(IntakeError::Fresh)?;
+    let recorded_at = stm::Timestamp::new(record::now(desk.parts.clock)?.as_str())
+        .ok_or(IntakeError::Unofferable)?;
+    let input = RecordedInput {
+        record_id,
+        recorded_at,
+        time_source: stm::Id::new("core_clock").ok_or(IntakeError::Unofferable)?,
+        source: Source {
+            kind: SourceKind::Customer,
+            id: stm::Id::new(by.acts.as_str()).ok_or(IntakeError::Unofferable)?,
+        },
+        standing: Standing::Stated,
+        subject: Subject {
+            order: stm::Id::new(order.as_str()).ok_or(IntakeError::Unofferable)?,
+            part: None,
+            segment: None,
+        },
+        observed: Observed::RouteChosen {
+            decision_record: stm::Id::new(offered.quote.decision_record.as_str())
+                .ok_or(IntakeError::Unofferable)?,
+            parts,
+            handed_on_from: None,
+        },
+    };
+    input.check().map_err(|_| IntakeError::Unofferable)?;
+    Ok(input)
+}

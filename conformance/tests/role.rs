@@ -469,9 +469,29 @@ impl<P: RoleProvider> RoleProvider for Reformatting<P> {
     fn status(&mut self, transaction: &str) -> Option<Received<ResultBody>> {
         self.0.status(transaction).map(|r| reformat(&r))
     }
+
+    // A reserve is asked what arrived (`T-024-18`): the wrapper that stood between the suite and the question left it
+    // unasked, which the suite now reports as uncovered, so the answers and the notices pass through, reformatted.
+    fn arrival(
+        &mut self,
+        question: &Statement<rutent_contracts::provider_role::ArrivalQuestion>,
+    ) -> Option<Received<rutent_contracts::provider_role::ArrivalAnswer>> {
+        self.0.arrival(question).map(|r| reformat(&r))
+    }
+
+    fn arrival_notice(
+        &mut self,
+        reference: &str,
+    ) -> Option<Received<rutent_contracts::provider_role::ArrivalNotice>> {
+        self.0.arrival_notice(reference).map(|r| reformat(&r))
+    }
 }
 
 impl<P: RoleHarness> RoleHarness for Reformatting<P> {
+    fn credit_arrival(&mut self, credit: &rutent_conformance::role::BankCredit) -> bool {
+        self.0.credit_arrival(credit)
+    }
+
     fn force_outcome_unknown(&mut self) -> bool {
         self.0.force_outcome_unknown()
     }

@@ -1,0 +1,2397 @@
+# F-021 notes
+
+Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per Narthex `REQ-SKL-24`.
+
+## T-021-01
+
+- **What the engine is.** `Engine<L, P, S>` in `components/core-authz/src/engine/` holds the log, the fixed rules
+  (`Fixed`), the deployment's policy service (`P: Policy`) and the sources of a decision's inputs (`S: Sources`:
+  verifiers' judgements, providers' answers). Every policy call reaches one consultation, `consult`, through
+  `Asked`, which names each call's request. `Decisions::decide` is built here; each other policy trait is its own
+  row's.
+- **How a decision is reached.** The fixed rules are asked first, then the deployment's service, each in three
+  steps: what the call needs, each input asked of its source in that order, then the ruling over the inputs given.
+  An unreachable service gives not known (`policy_unreachable`), an unreachable source not known
+  (`verifier_unreachable`), and either answering without the input a refusal (`missing_input`). Within one policy
+  the first that fails decides, and later inputs are not asked. A yes is an input the service may refuse on, never
+  the decision (`REQ-CPL-3`).
+- **A refusal beats not known.** Between the fixed rules and the deployment's service, among the fixed rules, and
+  in a pair `(A, B)` of policies, a refusal or a missing input from either is the answer even where the other can't
+  be reached, and the first refusal asked is the one given. The deployment's service isn't asked once a fixed rule
+  refused.
+- **The fixed rules are the engine's.** `Engine::new` puts `Fixed` in front of the deployment's policy, so no
+  assembly can leave a rule out. `FIXED` in `engine/mod.rs` lists them in order; `T-021-01` adds none, since its
+  rules are the consultation itself. Each later row (`T-021-02` to `T-021-07`) adds its own entry there, and the lead
+  sequences those edits, as `PLAN.md` §4.4 has it for a type two rows share.
+- **One permit site.** `consult` is the only place in Core that writes `Answer::Permit`, and the other permitting
+  answers (`SessionOutcome::Opened`, `ReadOutcome::Allowed`, `ChargeOutcome::Within`, `PersonOutcome::Allowed`) may
+  be written only in `engine/`. A later row that answers a permitting session, read, charge or question takes it
+  from the engine's verdict.
+- **Authentication says who.** The engine reads nothing of the caller to permit; it hands the caller to policy as it
+  came (`REQ-AUZ-1`, `AC-25`).
+- **The log answers first.** The decide entry is appended before the answer is given, so an entry the log refuses
+  (a `post_route` whose decision record isn't in the log, say) comes back as `Err` and no answer is issued. `decide`
+  permits `move_value` on the rulings alone; holding it to a registered authorisation that covers it is
+  `T-021-04`'s fixed rule, and until then the log refuses the effect (`move-rests-on-its-authorisation`).
+- **`AC-17` against `REQ-AUZ-5`.** `AC-17` says an unreachable verifier gives a refusal; `REQ-AUZ-5` and
+  core-internal's README make it not known, never a refusal and never a permit. The engine answers not known, and
+  nothing moves either way. Pending on the owner's form as `spec-ac17-not-known`, default "not known"; the test
+  keeps its `AC-17` tag. Unless the owner amends `AC-17`, `T-024-07`'s scenario test "unreachable verifier gives a
+  refusal and nothing moves" (`PLAN.md` §4.4) contradicts the engine: the engine gives not known, so that test, as
+  named, expects a refusal it won't get.
+- **An unreachable provider** gives `verifier_unreachable`: core-internal's `NotKnownCause` has no cause of its own
+  for a provider, and a provider answering eligibility stands where a verifier would (`REQ-CPL-6`). A cause of its
+  own is a core-internal bump, `F-020`'s.
+- **A decision's id is its request's**, as `T-020-01`'s stubs had it.
+- **Sources hand over what is there to be had**: a judgement its holder presented (ADR-0012), or a provider's answer
+  to a question policy allowed. The engine asks no one about a person; that goes through `ask_about_person` first
+  (`T-021-07`).
+- **`Unbuilt<L>` is `Engine<L, Absent, Absent>`**, a type alias, so the other rows' stubs, on `Unbuilt<L>` in their
+  own modules, build unchanged and still permit nothing. A row that builds its call implements it on
+  `Engine<L, P, S>`, reusing `consult` and `answer`, deletes its stub, and moves its line of the table in
+  `every_policy_call_reaches_the_one_consultation_or_is_marked_unbuilt` from unbuilt to built.
+- **The scan is a tripwire.** `engine/entry_points.rs` reads Core's three crates' source with syn (a dev-dependency,
+  already locked): one permit site, effects and the outer libraries' carrying-out methods only in core-orch and only
+  where a permit or the effect is in hand, no rename, alias or bare import of a watched name, no file mounted with a
+  `path` attribute or `include!`. Names are matched without types. `CARRY_OUT` is pinned against every `&mut self`
+  method of prov's platform and catalogue: each is listed as carrying out a decided action or as carrying out none,
+  with why. The guard is the log: `T-020-01`'s split of its append surface (c60eb61) lets a decision's entry reach it
+  only through policy's handle, `PolicyLog`, which the assembly hands to the engine alone, and orchestration's
+  `Log` takes no decision kind. What the scan can't see (a value read through serde, where an effect's receipt came
+  from) is that handle's, `T-020-08`'s and `T-025-05`'s.
+- **The engine appends only through policy's handle.** `Engine<L, P, S>` asks only `L: PolicyLog`, so it holds no
+  general handle and can't write anything but a decision. `record` builds the entry, checks it, makes it a
+  `DecisionEntry`, which refuses any kind but a decision's, and appends it with `append_decision`, in that order, then
+  answers. The engine with no policy is still `Unbuilt::new(log)`, as the scenario assembly builds it around a
+  `PolicyHandle`; the engine with a deployment's policy is `Engine::with_policy(log, policy, sources)`, which puts the
+  fixed rules first.
+
+## T-021-02
+
+- **What it builds.** `Sessions` and `Reads` on `Engine<L, P, S>` in `components/core-authz/src/session/`, each
+  through `consult` and appended through `PolicyLog` before it answers. One entry joins `FIXED`; its two functions
+  live in `session/`. The engine edits are the shared type's, made in this row's turn: three `Source` variants, the
+  `FIXED` entry, the engine's `register` field, the two functions that take an open session and an allowed read from
+  the verdict, the four rows of the table moved to built, two lines of the unbuilt test, and the scan's pin of
+  permit sites.
+- **A delegate is another party the holder names on that account.** core-internal's fixture
+  `session-request-of-a-delegate` has the delegate as a party other than the holder. No contract call registers a
+  delegation, so the fixed rule asks the holder, as an input (`Source::Holder { account, holder }`, the input the
+  requester's party), and only a yes lets it through. A holder that says nothing gives a refusal, one out of reach not
+  known (`verifier_unreachable`, the only cause core-internal has for an input's source). The requester's role isn't
+  held to anything: the party is what holds the account.
+- **The named holder must hold the account** (review of `d2604d3`, B1). The request names its holder, so the holder
+  is held to the account's record (`Source::Account(account)`, the input the named holder), asked of every session,
+  the holder's own included. Without it a party opened a session on another's account by naming itself, or an
+  accomplice who vouched for it, the holder. The record is the reserve's, or the deployment's register of accounts,
+  which the assembly answers.
+- **Bounded in time, from Core's clock** (review of `d2604d3`, S1). An open session ends at its request's `until`,
+  which must fall after Core's now and no more than `LONGEST_SESSION_SECS`, 15 minutes, after it, whoever asks. The
+  bound was first measured from the request's `at`, so a request stating a moment a year on opened a session ending
+  then. The engine now reads its own clock (`session::Clock`, the host's `SystemClock` unless `Engine::set_clock`
+  hands it another), never a time the request states, before the consultation, as it reads the register. The trait
+  mirrors `T-020-05`'s `snapshot::Clock`, which core-authz can't import (`DEC-2`); the assembly can hand both the one
+  clock. Default: the bound a constant; a deployment's own bound is its policy service's to add, which can refuse
+  shorter sessions but never open a longer one. A session's id is its request's, as a decision's is, so a retry opens
+  the same session and the log takes one entry. An id already issued opens no other session, for another account,
+  holder or end: the catalogue holds one session per id, so a second would take the first one's place and speak for
+  an account its holder never opened it on. The rule reads the register, so it runs before the consultation, as the
+  permissions' does. The register is in memory, so an id issued before a restart is the deployment's to keep
+  (`F-030`).
+- **The register the catalogue reads.** The engine keeps each session it opened, the account it speaks for and its
+  end in its `Register`; `Register::open_in` hands them to the catalogue's `open_session`, its end taken down to the
+  whole second, so the catalogue never holds a session past its end. Core's three crates import none of one another,
+  so the assembly (`rutent-scenarios`, and `F-030`'s in production) calls it; that hand-off is `T-024-02`'s to wire.
+  The register is in memory: what survives a restart is the deployment's (`F-030`).
+- **Reads are held to what the log admits.** The fixed rule refuses on its face a regulator's or a checker's read
+  naming no permission, a provider's of an order or the trail, or of a segment naming another provider, and a
+  customer's of the trail. A customer's read of an order or its segment asks the order's record whether the reader
+  is its requester, beneficiary or payer (`Source::OrderParties`), and a provider's of its segment asks the segment's
+  record whether value moved through it (`Source::SegmentProvider`). The assembly answers both from the log, which
+  holds the acceptance and the effect; were it to say yes wrongly, the log still refuses the read as allowed
+  (`customer-read-is-of-its-own-order`, `provider-read-is-of-its-own-segment`), and the engine records and answers
+  it as refused (review of `d2604d3`, S2: it first answered `Err` and recorded nothing on that path).
+- **Before the assembly answers the sources** (`T-024-02`; review of `d2604d3`, S3). Fail-closed only where an input
+  is needed. Every session needs one (`Source::Account`), so none opens, and these reads need one, so each is
+  refused: a customer's of an order or a segment, a provider's of its segment, any segment read by a permission
+  (`SegmentOrder`), and any read of a kept statement without a permission (`Statement`). The reads that need no
+  input are decided by the register and the deployment's policy alone, and the deployment's policy may allow them:
+  a customer's or a provider's read of who the checker is, and a regulator's or a checker's read by a permission granted
+  through policy of the trail, an order or a kept statement.
+- **A segment is read as one of the order the read names** (review of `d2604d3`, B2). A segment read names its
+  order and segment apart, and neither the customer's rule nor `covers` tied the two, so a customer naming its own
+  order beside another order's segment was allowed, and a permission over one order covered another's segments. A
+  segment read now asks the segment's record (`Source::SegmentOrder(segment)`, the input the named order) whether it
+  belongs to that order, for every reader but a provider, whose record (`SegmentProvider`) already names both. The
+  log's half, `customer-read-is-of-its-own-order` and `covers` checking the order alone, is a core-internal change,
+  `F-020`'s, raised with the contract's author.
+- **A read is refused unless a rule lets its reader make it** (review of `d2604d3`, B3). The read rule listed the
+  customer, the provider, the regulator and the checker and let every other role through, so the operator, a
+  verifier and Core's own parts read the trail, any order and any segment, and any role read any kept statement.
+  The rule now refuses by default. A customer and a provider read who the deployment's checker is, the `checker`
+  resource (`REQ-AUD-10`: named to customers and providers), and no other resource without a permission: any name
+  was let through at first, a made-up `operator_keys` included, and left to the deployment's policy. Any party
+  reads, without a permission, a kept statement the evidence store's record says is its own
+  (`Source::Statement(commitment)`, the input the reader's party: its maker, or the party it was told to about its
+  own part of an order, `REQ-AUD-5`), and a checker reads one by a permission over it. Every other read rests on a
+  permission. A permission is granted only to a regulator or a checker (core-internal's `PermissionChange`), and held
+  to the reader's party, so the operator reads the trail only where its party holds such a grant. Whether the
+  operator may read the trail with no permission is on the owner's form, default no.
+- **A read naming a permission is held to the register.** The permission was granted, through `grant_permission`,
+  to the reader's party over a scope that covers the read, and isn't revoked: the log's rows
+  `permitted-read-rests-on-its-grant` and `permitted-read-is-not-revoked`, held by policy first. That rule reads what
+  the engine itself decided, which a fixed rule, a plain function of the request, can't, so it runs before the
+  consultation, beside the fixed rules: its refusal is the answer, and the deployment's policy isn't asked. A
+  revocation is held to it the same way (`revocation-revokes-a-grant`). Grants are mirrored as the log takes them: a
+  permission id granted twice holds both grants, and one revoked stays revoked.
+- **A read is allowed or refused.** core-internal's `ReadOutcome` has no not known, so a read policy can't decide is
+  refused, `not_permitted`. A cause of its own is a core-internal bump, `F-020`'s.
+- **Two more permit sites, both taken from the verdict.** `SessionOutcome::Opened` and `ReadOutcome::Allowed` are
+  written in `engine/mod.rs`, in `session_outcome` and `read_outcome`, each only on `Answer::Permit`, and the scan
+  pins the three sites by name. A later row that answers a permitted charge or question adds its own the same way.
+- **A refused revocation can't be recorded** (an item for `F-020`). `revocation-revokes-a-grant` cites every
+  `revoke_permission`, whatever its outcome, so the log takes no entry of a revocation of a permission never granted,
+  refused or not, and the call answers `Err`, nothing recorded. The read rows cite only permitted reads. Reading:
+  the row should cite only a permitted revocation, which is a core-internal change, so it is `F-020`'s; until then
+  the engine refuses it and the log keeps it out.
+
+## T-021-03
+
+- **What it builds.** One entry of `FIXED`, its two functions in `components/core-authz/src/roles/`, over
+  `decide` (built by `T-021-01`) and `authorise` (`T-021-04`'s). No call of its own: `T-021-03` owns no trait method
+  of core-internal, so no row of the built and unbuilt table in `every_policy_call_reaches_the_one_consultation_or_is_marked_unbuilt`
+  moves. The engine edits are the shared type's, made in this row's turn: two `Source` variants appended
+  (`Permissions`, `Declarations`), the `FIXED` entry after `T-021-02`'s, `promote` moved in the scan from
+  `CARRIES_OUT_NOTHING` to `CARRY_OUT`, and `T-021-01`'s tests given the inputs the new rule asks for (below).
+- **Only the operator posts a route** (`REQ-AUZ-2`). A `post_route` asked in any other role is refused before the
+  deployment's policy or any source is asked. A suggestion has no call of its own: it reaches a route only as the
+  operator's post naming its suggester (`suggested_by`), which the decide entry holds whole beside the operator as
+  `who`. Whether the operator names a suggestion it posts is orchestration's to keep; the engine can't see a
+  suggestion that never reached it (`THR-90`).
+- **Each permission is held actor by actor.** The operator's permissions (`roles::Permission`: posting a route and
+  each `CatalogueChange`, ten with promotion) are asked of the deployment's register (`Source::Permissions { party,
+  permission }`, the input the actor, `acts`), one input per decision, for a caller in the operator's role only.
+  Keyed by party, every login of the operator would hold every permission, which is the insider of `THR-88` and no
+  separation at all. A caller in any other role is refused a catalogue change outright, the publisher's included
+  (`REQ-MDL-5`). A register that says no refuses, one that says nothing gives a missing input, one out of reach not
+  known. Default: posting a route needs the register's yes too, since the role is only what the caller's request
+  says; reversible by dropping that one input.
+- **The role is the request's, and never enough alone.** The engine, as `T-021-01` and `T-021-02` read it, takes the
+  caller's role as the assembly hands it from external authentication. Wherever this rule lets a role through, a
+  record binds the actor to it: the register's yes, by `acts`, for an operator's permission or Core's actor, and the
+  order's record for its requester; a caller stating a role without one is refused (review of `f7df0c2`, S4: a
+  provider stating the operator's role against a register listing only the operator's logins). A source that
+  checked a party's roles in general would be the deployment's to add (`F-030`).
+- **Acting for a user: no role stands on the request's word** (`REQ-AUZ-9`; review of `f7df0c2`, B1, S1, S2). The
+  rule first let a stated role decide alone: the operator's login stating Core's role moved value with no declaration,
+  stating a customer's gave an authorisation, and a customer stating the operator's role moved value. Each actor is
+  now held to a record:
+  - a customer, or its agent, moves value on and authorises only an order its party requested
+    (`Source::Requester(order)`, the input the party). `T-021-02`'s `OrderParties` answers requester, beneficiary or
+    payer, which would let a beneficiary authorise, so this is a source of its own;
+  - Core moves value only through an actor the register lists as carrying the authorisation onward
+    (`Permission::CarryOnward`, by `acts`);
+  - the operator acts only through a login the register lists for it (`Permission::ActForUser`, by `acts`), at the
+    order's own origin reserve (`Source::OrderOrigin(order)`, the input the reserve the request names), and only where
+    that reserve declared it can't require the user's own withdrawal (`cannot_require_user_withdrawal`). It files an
+    authorisation also where the reserve declared it starts routes on automatic deposits
+    (`starts_on_automatic_deposit`, `REQ-ORD-13`, `AC-11`), the two declarations kept apart. Any listed login may act
+    so at a reserve that declared it: `ActForUser` is one permission, not one per reserve (N2);
+  - the origin reserve itself authorises its order's withdrawal, with no user present, where its party is the order's
+    origin and it declared it starts routes on automatic deposits (`REQ-ORD-13`). It moves no value of its own asking.
+
+  No other role acts for the user. A reserve answers both declarations, as `REQ-CAT-6` has it make both at publishing;
+  never declared is a missing input, declared the other way a no, and either refuses. The decide entry's `who` is who
+  acted; an authorisation's giver is `given_by`, recorded by `T-021-04`'s call.
+- **No party stands on the request's word either** (review of `07c4be9`, S5). External authentication establishes
+  only `acts`, and the rules read the stated `party`: `cust-9` stating `cust-1` moved value on and authorised
+  `cust-1`'s order, and `evil-pay` stating `us-bank` authorised `us-bank`'s automatic deposit. One fixed rule, first in
+  `FIXED`, now asks the deployment's register of actors (`Source::ActsFor { acts, party }`, answered by `acts`)
+  whether each actor a request names acts for the party it states: the caller, the giver, the decider, the mover,
+  the requester, the reader, the asker, a permission's granter and grantee, and a route's suggester. A no refuses as
+  `no_accountable_party`, nothing a missing input, on every call. It is fixed once at the engine, so `T-021-02`'s
+  session and read rules, which read the stated party, now read a bound one too; `session/` is unchanged but for its
+  tests' source, which answers that word. It serves `REQ-AUZ-8`, every agent acting for an identified accountable
+  party, and `T-021-05` builds its limits on it rather than adding its own.
+- **What the assembly answers.** Before `T-024-02` wires the sources, every move and every authorisation needs an
+  input, so none is permitted: fail-closed, and every policy call now needs the register of actors too. The register
+  lists who each actor acts for, Core's actors and the operator's logins; the order's
+  record, the log's acceptance or Core's intake, its requester and origin reserve; the catalogue, each reserve's two
+  declarations, a no for one a reserve that published didn't make (N3). Who is listed, and each change to it, is the
+  deployment's to record (`F-030`, N4). An authorisation asked before its order's record exists gets a missing input
+  and is refused.
+- **A permit to promote doesn't pin the version** (review of `f7df0c2`, S3). The permit names the version decided on,
+  but the platform's `promote` puts whatever is staged in force. core-internal's doc says so, and `T-020-08`'s row in
+  `PLAN.md` now has Core compare `lifecycle().staged(provider)` with the permit's version before it calls `promote`,
+  refusing on a mismatch, with its own test.
+- **The rule on an authorisation waits for `T-021-04`.** Its stub answers not known without consulting, so the rule
+  holds from when that row builds `authorise` through `consult`. The test drives the rule through `consult` directly
+  until then.
+- **Promotion** (the review of PR #60, hand-off from `retrospectives/M2.md`). The platform's `promote` put a staged
+  release in force for any caller, and no decided action carried it. `T-021-03` adds `promote` to core-internal's
+  `CatalogueChange`, about one release so it names the staged version, folded into 1.0.0 (core-internal isn't on
+  `develop` yet), with one valid fixture; `PLAN.md` §4.4 gives `contracts/` to `T-020-01` and `T-020-02` alone in
+  `M3`, and this edit is the one exception, made because the brief gave this row promotion and no action existed for
+  it. The alternative was a new `F-020` row. The row's Work and Tests in `PLAN.md` name it now. The scan lists the
+  platform's `promote` as carrying out `change_catalogue: promote`, so core-orch reaches it only holding its effect.
+- **The lifecycle hand-off is closed in the scan, not in `platform.rs`.** `accept`, `withdraw`, `revoke`,
+  `declare_exploited`, `mark_stale` and now `promote` are each reached only by core-orch holding the effect of a
+  permitted decision for that change. The platform still takes any `by`: `T-020-08` must pass it the permitting
+  decision's caller, so the platform's records name the same actor as the log's.
+- **Left as they are.** `roll_back` ends a staging and keeps the version in force (ADR-0014); no row names it a
+  permission, so it stays in `CARRIES_OUT_NOTHING`, an item for the owner's form beside promotion. `admit` starts
+  only a release that needs no fresh acceptance (`REQ-MDL-3`'s automated acceptance); a widened one waits for
+  `accept`, which is decided. Its reason in the scan said "before acceptance", which was inaccurate, and now says so.
+  Whether an automated acceptance should itself be a decision is the same item.
+- **`T-021-01`'s tests, given their inputs.** `every_decided_action` lists `promote` (13 actions); the request of a
+  post or a catalogue change is the operator's login, and the sources say yes to every input the fixed rules name,
+  so the deployment's ruling is what is decided. `authenticated_caller_is_still_decided_by_policy` now expects the
+  deployment's policy to see each caller the fixed rules let through, as it came, and the rest refused by the fixed
+  rule, and its known operator holds the permission the rule asks for, so the refusal of the other login stays the
+  deployment's. Since the review of `f7df0c2`, Core's move needs the register to list its actor: the engine tests' sources
+  answer that one word for `core-orch` themselves, outside the inputs they count, and the unbuilt engine's move is
+  not known for that unreachable input (`verifier_unreachable`) rather than for its absent policy. Since the review
+  of `07c4be9`, the sources of `T-021-01`'s and `T-021-02`'s tests also answer the register's yes, for every
+  actor they name, outside what they count, and the unbuilt engine's grant is not known for that input.
+
+### T-021-02, the operator's read of an order's state and age
+
+- **What it builds.** `REQ-ORD-5` makes an order's state and age visible to its customer and the operator, and
+  `T-021-02`'s refuse-by-default had left the operator only reads by a permission, which core-internal grants only to
+  a regulator or a checker. core-internal 1.0.0 now has a read of an order's state and age alone
+  (`Reads::OrderState`, `T-020-01`, folded in at `dfe8a45`). The read rule lets the operator make it without a
+  permission, through a login the deployment's register of permissions lists for it; every other operator read
+  still needs a permission. A customer's read of it asks the order's record, as a read of the order does, and a
+  provider never reads it.
+- **Through the roles register, keyed by `acts`.** The login is held to a new permission of `T-021-03`'s register,
+  `Permission::ReadOrderState`, asked by the actor's `acts` within its party (`Source::Permissions`), as every
+  operator power is: posting a route, each catalogue change, acting for a user. Reading an order's state isn't
+  acting for a user, so it doesn't ride on `ActForUser`. The variant is `T-021-03`'s type, added in this row's turn;
+  the rule that asks it is in `session/`. `T-021-03`'s rule that every actor acts for the party it states still runs
+  first.
+- **T-020-08's read asks the state.** `Segments::status` asked a full read of the order (`Reads::Order`), which the
+  operator can't make without a permission; it now asks `Reads::OrderState`, the read `REQ-ORD-5` names, for the
+  customer and the operator alike. Its scenario test,
+  `orders_state_and_age_are_readable_by_its_customer_and_the_operator`, takes back the operator's read, which waited
+  on this row, and the kit's register lists the operator's login for it.
+
+## T-021-04
+
+- **What it builds.** `Authorisations::authorise` on `Engine<L, P, S>` in `components/core-authz/src/funds/`,
+  decided through `consult` and recorded through `PolicyLog` before it answers. The unbuilt stub is gone; `authorise`
+  moved from unbuilt to built in `every_policy_call_reaches_the_one_consultation_or_is_marked_unbuilt`. The engine
+  edits are the shared type's, made in this row's turn: one field (`authorised`), and `decide` holding a move's
+  verdict to the register. No `FIXED` entry and no `Source` variant: the rules read what the log holds as permitted,
+  which a fixed rule, a plain function of the request, can't.
+- **The register is the log's** (review of `d3de45a`, finding 1; hardened on its re-review, finding 1). It was first
+  kept in memory, so a fresh engine, after a restart or beside another over the same log, held nothing and failed
+  open: the operator's own destination was permitted, and a replaced authorisation given again. The register now
+  holds nothing of its own. Before every `authorise` and every move the engine reads every authorisation the log holds
+  as permitted, in log order, and decides on that alone; its own permit reaches the register only through the log.
+  The read is on policy's handle itself, `L: PolicyLog + funds::Recorded`, one wire and not two: a separate setter
+  (`set_record`, now gone) let the assembly hand a snapshot, a filtered read or another log's, which failed open the
+  same way. "Permitted" is defined once, `funds::permitted_in`, core-internal's own reading of a permitted entry (its
+  private `permitted` in `relations.rs`). The engine refuses `missing_input` a read that fails, one that doesn't
+  extend the read before it, and one that lacks the engine's own last permitted append, keeping the register it read
+  last. What it can't detect is the trait's doc: a first read, or one frozen after the engine's last append, that is
+  of another log or misses another engine's appends, passes both checks, and that the read is the very log the handle
+  appends to, whole and current, is the assembly's word. The coordinator's default, on the owner's form: the register
+  rebuilt from the log's permitted `authorise` entries, and an engine that can't read refusing. This row reads it
+  before every call rather than once when the engine opens, since one rebuild leaves two engines over one log apart.
+  This row's own defaults, reversible and not on the form: the read is a core-authz trait over the log's own
+  `entries()` (core-audit's `AuditLog` has it, so nothing was added there), not a read on core-internal's
+  `PolicyLog`, which is the contract author's to add if wanted; and the whole log is read each time, O(n) in its
+  entries, with no index kept across reads, since a v0 log is small.
+- **The failure code** (re-review, finding 4). An unreadable log, or one whose read the engine can't trust, is
+  `REQ-AUZ-5`'s unreachable case: an input out of reach. The engine answers `missing_input`, a refusal, as the default;
+  `not_known` with `verifier_unreachable` would read closer to `REQ-AUZ-5`. Both fail closed: nothing moves on either.
+- **A move acts only inside the authorisation in force.** A `move_value` is permitted only where the authorisation
+  it names is in force for its order and its route ends inside it: the destination (reserve, node and account), the
+  to asset, and at least the floor. Anything else is refused `outside_authorisation`. These are the four fields the
+  log's `move-rests-on-its-authorisation` holds an effect to; the register adds what the log can't see, that an
+  authorisation replaced covers nothing more. The move's `origin_reserve` isn't held here: `REQ-AUZ-3` names four
+  things, and the operator's origin is `T-021-03`'s rule (`Source::OrderOrigin`).
+- **Held after `consult`, not before** (unlike `T-021-02`'s grant rule). A refusal of the fixed rules or of the
+  deployment's policy stands, so a mover acting for no accountable party is refused as such (`REQ-AUZ-8`, held
+  before any other rule); otherwise the register's refusal is the answer, since a refusal beats not known. The
+  register only refuses; `funds::held` never writes a permit, so the scan's permit sites are unchanged.
+- **A new authorisation.** An order's terms in force are set by its first permitted authorisation. After it, one with
+  the same order, destination, to asset and floor joins them, and the moves under either stay inside. One naming
+  anything else, the floor included, replaces them, and the ids under them, only where the customer gave it (role
+  `customer`, its person or its agent, whose party `T-021-03`'s rule holds to the order's requester): the customer's
+  own choice after a failed final deposit is such a new authorisation (`REQ-ORD-43`, `INV-10`). The operator acting
+  for the user and the origin reserve authorise the order at its origin where the roles let them, and change nothing
+  of it after: refused `not_permitted`, never `outside_authorisation`, which intake reads as ending the order. Their
+  authorisation only ever joins the terms in force, even where engines racing over one log left one of other terms
+  there (re-review, finding 3): two engines both read `auth-17` in force, one permits the customer's `auth-18`, the
+  other the operator's restatement `auth-70` of `auth-17`, appended after it; `auth-70` sets nothing and is in force
+  under no terms, so the old destination isn't back by the operator's hand. Terms given again after others replaced
+  them are in force under their new id alone. An authorisation's id names that authorisation only: the same again,
+  while in force, is decided again; anything else under the id, or the id once replaced, is refused, so the log never
+  holds as permitted one the register holds as replaced. The contract author is asked for the matching log row.
+- **Defaults taken** (reversible):
+  - a new authorisation with the same terms (a restatement, as intake's retry would bring) is permitted to whoever
+    the roles let authorise, and keeps the earlier id in force beside it;
+  - a new authorisation changing only the floor is the customer's too, with no failed deposit needed, since
+    `REQ-ORD-27` has the order wait for the customer past its floor and `INV-10` restricts only the destination and
+    the to asset;
+  - an authorisation replaced covers no move asked after it, the in-flight ones under it included. That holds only
+    because the state machine changes a destination solely from `waiting_for_customer`, where nothing of the part is
+    in flight: a move permitted before the replacement still holds its permit, and its effect can still land under
+    the old authorisation, which the log admits (`move-rests-on-its-authorisation` cites the authorisation the move
+    named, not the one in force);
+  - a customer's agent gives a new authorisation as its person does. Until `T-021-05` builds an agent's scope, an
+    agent of the customer can change the destination with no check of the scope its party set: a dependency on
+    `T-021-05`.
+- **Gap: policy doesn't see the failed final deposit.** The rule holds who gives a new destination, not when. It is
+  safe only while orchestration calls `authorise` with new terms only for an order in `waiting_for_customer` after a
+  failed final deposit, a condition `T-020-13` owns and must hold. Downstream, the state machine takes
+  `destination_changed` only from `waiting_for_customer`, the log admits it only on its acceptance
+  (`changed-destination-rests-on-its-acceptance`), a move's segment must be in a plan the log holds
+  (`move-segment-is-in-its-orders-plan`), and a recalculation keeps the part's destination
+  (`recalculation_keeps_destination`). Holding it in policy too would take a `Source` for the order's state, which
+  every assembly's sources would have to answer: `T-020-13` builds that path, and `T-024-02` would answer the source.
+  An item for the owner, default no.
+- **Gap: two engines in separate processes.** Reading the log before each decision closes a restart and two engines
+  in one process, and an operator's authorisation raced past a customer's never sets the terms. What still races
+  between the read and the append is a move: one engine permits a move under `auth-17` on its read, the other has just
+  appended the customer's `auth-18`, and the move's permit stands, its effect admitted by the log, which holds it to
+  the authorisation the move named. Closing that takes the log holding the rule as an admission row of its own,
+  `F-022`'s or the contract author's. It doesn't block while Core is one process.
+- **Pending: a split order's other part** (review of `d3de45a`, finding 2). When one part's final deposit fails and the
+  customer's new authorisation replaces the order's only one, a part still heading to the first destination is
+  refused under both. The coordinator's default: an authorisation names the parts it covers, and a replacement
+  replaces the earlier one only for those parts. It waits on a `part` field in core-internal 1.0.0's authorisation,
+  the contract author's; `customers_new_destination_after_a_failed_deposit_is_authorised_anew` is marked as the
+  single-part case until then.
+- **The switch in the assembly (`T-024-02`).** `T-024-02` merged into m3 first, and this row carried the switch when
+  it merged m3 (`970828a`). `PolicySide::authorise`, which answered beside the engine and wrote on policy's handle
+  outside `consult`, where the permit scan doesn't look, now forwards to the engine's `authorise`. `AuditLog`, and so
+  the assembly's `PolicyHandle<CoreLog>`, reads its entries for the engine through `Entries`, owned, the log's borrow
+  dropped before the engine appends. The assembly's `Records` already answered what `authorise` asks, so no source
+  changed. Its start of an order looked up the acceptance's authorisation as the first permitted `authorise` of that
+  id and order (T-024-02's L2 fix); it agreed with the register for a first authorisation, but not once one was
+  replaced. It now reads through the register (`Authorised::of`, `in_force_as`, the view the engine holds a move to),
+  so an order starts only under an authorisation in force. A Core opened again over a `durable::Disk` rebuilds its
+  register from the log, which closes the register's part of the restart hand-off to `F-030`. Tests in the assembly:
+  `authorisation given again with other terms is refused by the engine`, which the stand-in would have permitted, and
+  `order starts under no authorisation the customer replaced`. Rule-offs, `cargo test -p rutent-scenarios --lib
+  assembly::tests`: the stand-in put back turned the first red, the first-permitted lookup put back the second.
+- **The segments kit, and the scenarios' handle.** `conformance/scenarios/tests/segments_support/` seeded the order's
+  authorisation as a permitted `authorise` entry straight into the log, so every move of `T-020-08`'s and
+  `T-020-10`'s scenario tests was refused. The kit now gives the customer's authorisation through the engine
+  (`Policy` implements `Authorisations`), its policy handle (`PolicyPath`) reads its `TestLog`, its `Register` answers
+  `Requester` for the customer, and the seeding functions take the kit's `Policy`. The entry it leaves is the
+  engine's: by the customer, its decision id the authorisation's. `conformance/scenarios/src/lib.rs`'s `PolicyHandle`
+  reads its log through a trait of the assembly's, `Entries`, which `log-handles.rs`'s recording log and core-audit's
+  `Unbuilt` (no read: refused) implement.
+- **Other rows' tests, given the authorisation.** `T-021-01`'s and `T-021-03`'s tests decide the fixtures' move
+  (`auth-17` for `ord-17`); their logs read as permitted that authorisation, held before the test began, and then what
+  they took, so what they decide is still their own rules. The unbuilt engine's move and authorisation are not known
+  again, as before this row (`verifier_unreachable`).
+- **`roles/`'s doc** said the rule on an authorisation held "from when `T-021-04` builds `authorise`"; it now says it
+  holds on every `authorise`.
+- **Rule-offs.** Each rule switched off once, the file restored and touched, `cargo test -p rutent-core-authz --lib`.
+  Tests written for rules already there (findings 3 and 4 of the first review, the failed read) passed when written
+  and went red under their mutation; the tests of the re-review's findings 1 and 3 went red before the fix.
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | destination held | the property; `route outside ...`; `customer's new destination ...` |
+  | to asset held | the property; `route outside the authorisation needs a new one` |
+  | floor held | the property; `route outside the authorisation needs a new one` |
+  | order held | the property; `route outside the authorisation needs a new one` |
+  | new terms reset the ids in force (an authorisation replaced covers nothing; M2) | the property; `route outside ...`; `earlier terms given again ...`; `register is rebuilt ...`; `replaced authorisation given again ...` |
+  | an authorisation never permitted covers nothing | the property and six named tests |
+  | new terms only from the customer | the property; `customer's new destination ...`; `new floor ...`; `register is rebuilt ...`; `two engines ...` |
+  | an id names one authorisation | the property; `route outside ...`; `register is rebuilt ...`; `replaced authorisation given again ...`; `operator's restatement raced ...` |
+  | the fixed rules' refusal stands (register after `consult`) | `route outside the authorisation needs a new one` |
+  | the register's refusal beats not known | `route outside the authorisation needs a new one` |
+  | `decide` holds a move to the register | the property and ten named tests |
+  | `authorise` decided through `consult` | `route outside ...`; the built and unbuilt table; the entry-point scan; the unbuilt engine's test |
+  | the register read before an authorisation | the property and seven named tests |
+  | the register read before a move | the property; nine of this row's; seven of `T-021-01`'s; four of `T-021-03`'s |
+  | only a `permitted` entry is read as permitted | the property; four named tests |
+  | the floor is one of the terms | `new floor from anyone but the customer is refused`; `route outside ...` |
+  | a failed read gives an empty register | `register that cannot be read refuses every authorisation and move` |
+  | a failed read keeps the last register | `register that cannot be read refuses every authorisation and move` |
+  | a read extends the one before it | `truncated read of the log is refused`; `reordered read of the log is refused` |
+  | M7: the extension check weakened to a read no shorter | `reordered read of the log is refused` |
+  | a read holds the engine's own last permit | `snapshot read missing the engine's own permit is refused`; `read over another log is refused` |
+  | another's new terms never set them (the race) | `operator's restatement raced past a new destination is not in force` |
+  | M6: that rule narrowed to the operator, the origin reserve let set terms | `operator's restatement raced past a new destination is not in force` |
+  | a restatement joins the ids in force (M3) | the property; `restatement keeps the earlier id in force beside it` |
+  | a same-id retry held to being in force (M5) | the property; `register is rebuilt ...`; `replaced authorisation given again ...`; `operator's restatement raced ...` |
+
+### T-021-04, per part (finding 2 of the review of `d3de45a`)
+
+Branch `f-021/t-021-04b-per-part`, from `m3` at `8cac73f`, with core-internal's `Authorisation.parts`
+(`41257db`) in it.
+
+- **The register is keyed by part.** An authorisation speaks for the parts it names, or every part where it names
+  none; the order as a whole, which the order's start reads, only one naming no part speaks for. Each part's terms in force fold the authorisations that speak for it, by the same rules as before: the
+  first sets them, the same terms join, the customer's other terms replace, and anyone else's other terms set nothing
+  (the race rule, kept). A replacement naming `p1` replaces nothing for `p2`, which goes on under `auth-17`.
+- **A move is held to its own part.** The move doesn't name its part, so the engine reads it, on the same read, from
+  the plans the log holds: `Recorded::part_of`, one definition, `funds::part_in`, core-internal's own reading
+  (`part_of_segment`, private in `relations.rs`): a `route_chosen` part listing the segment, or the part a
+  `route_recalculated` or `destination_changed` gave it to, the first plan listing it winning, as the contract's
+  `find_map` does. A part that can't be read is `missing_input`. A segment no plan lists is in no part and refused
+  `outside_authorisation`, as the log admits no such move (`move-segment-is-in-its-orders-plan`): first it was held to
+  the order as a whole, which let `auth-17`, replaced for `p1`, move such a segment (approval of `8556f36`, low 1).
+  Every
+  read implements it: the core-authz test logs, the segments kit's `PolicyPath`, and the scenarios' `PolicyHandle`
+  through `Entries`. That the part is the plan's is the assembly's word, as the rest of the read is; the trait's docs
+  say so.
+- **An authorisation is held to every part it speaks for.** One naming no part is held to the order as a whole and
+  to every part an authorisation of the order names. A new id is a new authorisation where it names other terms than
+  those in force for any of those, and only the customer gives one. An id given again is decided again only while it
+  is in force for every one of them: the order's `auth-17`, replaced for `p1`, still speaks for `p2`, but given
+  again it is refused, since permitted again it would set `p1`'s old destination anew.
+- **The terms are the log's.** `same_terms` now compares the origin reserve too, as core-internal's `terms` does
+  (destination, to asset, floor, origin reserve): an authorisation from another origin reserve is a new one.
+- **Where the register is stricter than the log** (a reading, unchanged): the log's `in_force` takes a part's
+  latest customer authorisation and admits a move under any authorisation of the same terms; the engine also holds a
+  move to an id in force, so an id replaced covers nothing more even once its terms are given again under another.
+- **The assembly's start of an order** reads the acceptance's authorisation for the order as a whole
+  (`in_force_as(order, None, ..)`): an order starts before any part has an authorisation of its own.
+- **`Stuck::follow` (core-orch, `T-020-11`'s; not edited here).** It already takes the in-force authorisation per
+  part, by the log's own rule (the first covering the part, then each later one its customer gave), so it agrees
+  with the register on each part's terms: items (1), (2) and (4) of `T-020-11`'s list are met. Item (3) isn't: the
+  ends first followed for a part stand, and following again with others is refused for the whole order
+  (`found.iter().any(..)` returns `NotItsAuthorisation`), so once `p1`'s new destination is in force, following the
+  order again refuses `p2` too, and `p1`'s new ends are never taken. The change, for `T-020-11`'s owner: record per
+  part whether its authorisation in force is a later one its customer gave (`replaced`, set where `current` was
+  already some when a customer's covering one is taken); refuse only a part whose held ends differ and which wasn't
+  so replaced; and where it was, replace its held ends (`insert`, not `or_insert`). One more difference, for the same
+  owner: `follow` names the customer by the acceptance's requester, the engine by the giver's role (the roles rule
+  holds a customer's party to the requester); and `origin_account` isn't one of the terms, so two authorisations of
+  the same terms with different origin accounts are one for the engine and the log, and two ends for `follow`.
+- **Tests, each red before the change:** `split order's other part moves on under its authorisation after one part's
+  new destination` (the reviewer's sequence, a restart included), `move on another part under a part's replacement
+  is refused`, and the property test's sequences, now over two parts, for the whole order or one part, with moves of
+  either part's segments and of one no plan lists. Written for rules the change brought and seen red under their
+  rule-off: `segment's part is read from the plans the log holds`, `authorisation from another origin reserve is a new
+  one`, `authorisation replaced for one part given again is refused`, `move whose part cannot be read is refused`.
+- **Rule-offs**, each red:
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | a part named is the part spoken for | the property; the split order's test; `move on another part ...` |
+  | the order as a whole only by one naming no part | the property; `move on another part ...` |
+  | a move held to its own part | the property; the split order's test |
+  | one naming no part held to every part named | the property |
+  | a segment whose part can't be read refuses | `move whose part cannot be read is refused` |
+  | the origin reserve is a term | `authorisation from another origin reserve is a new one` |
+  | `part_in` reads a `route_chosen` | `segment's part is read from the plans the log holds` |
+  | `part_in` reads a `destination_changed` | `segment's part is read from the plans the log holds` |
+  | `part_in` of the order alone | `segment's part is read from the plans the log holds` |
+  | an id given again held to being in force for every part | `authorisation replaced for one part given again is refused`; the property |
+  | the order held (rechecked on the new path) | the property; `route outside the authorisation needs a new one` |
+  | a segment no plan lists is refused (low 1) | `move of a segment no plan lists is refused`; the property |
+  | the first plan listing a segment wins (low 2) | `segment two plans list is of the part the first places it in` |
+
+- **The lows of the approval of `8556f36`.** The two tests above are new: the reviewer's sequence (`auth-17` for the
+  whole order, `auth-18` naming `p1`, a move of `s-unplanned` under either) went red before the fix; the first-plan
+  test passed when written and went red with `part_in` reading the last plan. `T-021-01`'s, `T-021-03`'s and
+  `T-021-05`'s test logs now read a plan placing the fixtures' move's segment, `seg-2`, in a part
+  (`funds::plan_of_the_fixtures_move`, test-only), and the funds tests' log places it in `p0`; the property's model
+  refuses a move of a segment no plan lists. Rechecked on the new path, each red: the order as a whole only by one
+  naming no part, a move held to its own part, one naming no part held to every part named.
+
+## T-021-05
+
+- **What it builds.** `Charges::charge` on `Engine<L, P, S>` in `components/core-authz/src/parties/`, decided through
+  `consult`, held to the party's bound and appended through `PolicyLog` before it answers; and one fixed rule, the
+  second in `FIXED`, right after `T-021-03`'s `ActsFor` rule, its two functions in `parties/`. The unbuilt stub is
+  gone, and `charge` moved from unbuilt to built in
+  `every_policy_call_reaches_the_one_consultation_or_is_marked_unbuilt`. The engine edits are the shared type's,
+  made in this row's turn: one `Source` variant appended (`AgentScope`), the `FIXED` entry, one field (`charged`) in
+  the two constructors, and `charge_outcome`, the one function that writes `ChargeOutcome::Within`, from the verdict,
+  which the scan now pins as a fourth permit site. The engine's imports are unchanged, to keep the merge with
+  `T-021-04` small.
+- **An agent without an accountable party** (`REQ-AUZ-8`). `T-021-03`'s rule already refuses an actor the register
+  of actors lists for another party (`no_accountable_party`) and one it says nothing of (a missing input). This row
+  adds what the register can't hold: an agent (`kind: agent`) that states itself its own party (`party == acts`)
+  answers to no one, and is refused `no_accountable_party` on every call, with no input asked, whatever the
+  register would say. Default: a person or a component may be its own party (a person customer is), an agent may
+  not.
+- **An agent acts within the scope its party set** (`REQ-AUZ-8`). Each call an agent makes is a `parties::Scope`:
+  one per policy call, one per decided action (a catalogue change by its kind), a charge by its kind of work. The
+  rule asks the party's register of its agents (`Source::AgentScope { party, scope }`, the input the agent's `acts`,
+  as `Permissions` answers by the actor): a no refuses `not_permitted`, nothing gives a missing input, out of reach
+  not known. A person and a component are asked no scope. Who a party's agents are and what each may do is the
+  deployment's register to keep and record (`F-030`). Default: the scope is a set of calls, not of amounts or
+  destinations; a finer scope is the deployment's policy service's to add, which can only refuse more.
+- **`authorise` is in the scope, with no hook** (`T-021-04`'s dependency). `T-021-04`'s `authorise` goes through
+  `consult(Asked::Authorise)`, so this fixed rule holds an agent's authorisation, the customer's new destination
+  after a failed final deposit included, to `Scope::Authorise` as soon as both rows are in. Until `T-021-04` merges,
+  the test drives the rule through `consult` directly, as `T-021-03`'s did. Gap: a party can't let its agent
+  authorise an order at its origin but not give it new terms after, since telling the two apart needs
+  `T-021-04`'s register of authorisations in force, which runs after the consultation, where no source is asked.
+  If the owner wants that, the hook is `funds::Authorised::refuses`, where `anew` is computed: a new authorisation by
+  an agent would also need the party's word on a `Scope` of its own, which means asking a source there. Not built;
+  owner: `T-021-04`'s author at the merge, default no (review of `b63af67`).
+- **Limits bind at the party** (`REQ-AUZ-8`, `REQ-OPS-1`, `AC-18`). Two limits, each counted per party, never per
+  actor: work (`Limit::Work`: `request` and `fan_out` together, so the requests an order fans out to providers count
+  against its caller's own) and questions about people (`Limit::People`: `person_question`). A charge that fits is
+  counted only after its entry is in the log; one over the bound counts nothing and its work is not done. A charge's
+  id names one charge: the same charge again answers within and counts once, anything else under a counted id is
+  refused, as `T-021-02`'s session ids are. An id is its party's own: the counter keys a charge by its party and its
+  id, so two parties' charges under one id are two (review of `b63af67`). Default: the ids counted are kept for the
+  window now only, so the same charge given again in a later window counts again there. The party is the charge's
+  own (`Charge::check` holds it to its caller's), bound to the actor by `T-021-03`'s rule.
+- **The window is Core's clock's.** A fixed window, `WINDOW_SECS` (one hour), aligned to the epoch, read from the
+  engine's clock (`session::Clock`, the one sessions are bounded by), never from a charge's `at`: a charge stating a
+  later moment still counts in the window now (`T-021-02`'s review, S1). Defaults, reversible: one hour; 10 000
+  pieces of work and 1 000 questions about people per party per window (`Uniform`), the same for every party, until
+  the assembly hands the deployment's own (`Engine::set_bounds`, a `parties::Bounds` answering per party and
+  limit). The window only moves forward: Core's clock moving back keeps counting in the latest window (review of
+  `b63af67`). A fixed window lets a party spend its bound at the end of one window and again at the start of the
+  next, twice the bound in a moment; accepted, and a sliding window is the deployment's to ask for.
+- **The counter is the log's** (review of `b63af67`, finding 6; built at the merge of `T-021-04`, `85386b8`). Held in
+  memory alone, the counter failed open after a restart. Before every charge the engine now reads the log on its
+  policy handle, through `T-021-04`'s `funds::Recorded`, which gains `charged()` beside `permitted()`
+  (`parties::charged_in` over the log's entries: each verified `charge` entry whose outcome is `permitted`), and
+  rebuilds the counter from what it read (`Charged::rebuild`): the latest window's charges, each once under its
+  party's id, what it held before dropped. A log that can't be read refuses the charge (`missing_input`, so over a
+  bound of 0). The window is keyed by Core's clock with no contract change: the engine records each charge's entry
+  at the moment Core's clock counted it (`Charged::counted_at`, the latest window's start where the clock stood
+  back), and the charge's own `at` stays inside the entry's `what`. An entry's `when` is Core's clock by contract
+  (`TimeSource::CoreClock`), and nothing in core-internal ties a charge entry's time to its request's. Default,
+  reversible: so the time field the coordinator asked the contract author for isn't needed for this; if it lands,
+  `charged_in` reads it instead of `when`. The whole log is read each time, O(n) in its entries, as `T-021-04`'s
+  register is. Gap: two engines in separate processes race between the read and the append, as `T-021-04`'s note
+  says of its own; F-022's or the contract author's to close with an admission row.
+- **A refused charge is over a bound of 0** (contract gap, not made). core-internal's `ChargeOutcome` has only
+  `within` and `over`, so a charge policy refuses or can't decide is answered `over { bound: 0 }`, its entry
+  `refused { class: over_bound }`, and the refusal's own class (`no_accountable_party`, `not_permitted`,
+  `missing_input`) or not known is lost from the record. The stub and the assembly's stand-in answered the same.
+  The change, for core-internal's single writer: add `refused { class }` and `not_known { cause }` to
+  `ChargeOutcome` (Rust `types.rs`, and `charge-answer.schema.json`'s `outcome`), mapped by `ChargeOutcome::outcome`
+  to `refused { class }` and `not_known { cause }`, as `PersonOutcome` already is, with a valid fixture of each and
+  the README's "How each answer is recorded" row updated. Then `charge_outcome` gives the verdict's own answer.
+- **Person questions are charged as such** (review of `b63af67`, finding 7). `core-orch`'s `rounds::Run::charge`
+  charged a round's providers' questions and its person questions together as one `fan_out`, so nothing reached the
+  party's limit on asking about people. It now charges the person questions as `person_question` first, then the
+  providers' as `fan_out`, each before any is asked, and over either bound none is sent (`NotOffered::OverBound`).
+  Where the first fits and the second doesn't, the first stays counted though nothing was asked: accepted, as a
+  charge that fits is work committed. The edit is to `T-020-06`'s module, merged, at the coordinator's instruction.
+- **For `T-021-06` and `T-021-07`.** `parties::accountable(&Actor)` and `parties::same_accountable_actor(a, b)` are
+  the one definition of an actor's accountable party and of two actors being one there: two agents of one party, its
+  person and its agent, or one login stating two parties, since a login may act for more than one (review of
+  `b63af67`, finding 2: `op-login-2` deciding as `operator` and moving as `operator-desk-b`). Two actors are distinct
+  only where both their parties and their logins differ. `T-021-06` compares the decider and the mover with it. Each reads a party the
+  consultation bound, so only of a call the fixed rules let through. `T-021-07` bounds questions about people at the
+  asker's party through `Charges::charge` with `Work::PersonQuestion` (`Limit::People`), or reuses
+  `Charged::standing` and `Charged::take` inside `ask_about_person`; `REQ-CPL-5`'s bound per order is its own.
+- **Other rows' tests.** Every agent the fixtures name now needs its party's scope: the sources of `T-021-01`'s
+  (`Given`), `T-021-02`'s (`Says`) and `T-021-03`'s (`Register`) tests answer `AgentScope` yes outside what they count,
+  as they answer `ActsFor`. `provider_posting_a_route_is_refused` named an agent `bridge-pay` acting for
+  `bridge-pay`; it now names `bridge-pay-agent`, since an agent is never its own party.
+- **Hand-offs at merge** (both carried out at the merge of `T-021-04`, `85386b8`, below).
+  - `T-024-02`: its `ActsFor` arm must bind the kind (`Source::ActsFor { acts, party, kind }`, yes only for the kind
+    the register lists for the login). `Records::supply` matches every `Source` with no catch-all, so it needs an
+    `AgentScope` arm too (the
+    deployment's register of agents' scopes; until there is one, yes for the agents the scenarios name, or `Missing`,
+    which refuses every agent's call). `PolicySide::charge` becomes `self.engine.borrow_mut().charge(c)`, and
+    `CHARGE_BOUND` goes; the assembly may hand the engine its bounds (`set_bounds`).
+  - `T-021-04`: its `authorised` field and constructor lines sit beside `charged`, and both rows rewrite the unbuilt
+    list in `every_policy_call_reaches_the_one_consultation_or_is_marked_unbuilt`: after both it is
+    `["T-021-06", "T-021-07"]`. Its tests' sources (`Sayings`) say yes to every input, `AgentScope` included, so they
+    need nothing.
+- **Rule-offs.** Each rule switched off once, the file restored and touched, `cargo test -p rutent-core-authz --lib`.
+  Switching the whole row off first (the fixed rule passing everything and every charge the stub's `over`) turned
+  all six of this row's charge and scope tests red, and the built and unbuilt table.
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | an agent that is its own party refused | `agent without an accountable party is refused`; `scope rule takes an input it was not given as missing` |
+  | a scope asked of an agent | `agent outside its party's scope is refused` |
+  | a scope's no refuses | `agent outside its party's scope is refused`; `scope rule takes an input ...` |
+  | a scope that says nothing is missing (the rule's arm) | `scope rule takes an input it was not given as missing`, which calls the rule directly: through the engine no test reaches the arm, since `verdict` refuses a missing input before any rule rules, so the arm is a second guard |
+  | a scope asked only of an agent | this row's scope, accountable-party and thousand-agent tests; 23 of `T-021-02`'s and `T-021-03`'s; the built and unbuilt table |
+  | each call its own scope | `agent outside its party's scope is refused` |
+  | the rule in `FIXED` | `agent without an accountable party ...`; `agent outside its party's scope ...` |
+  | a charge decided through `consult` | `agent without an accountable party ...`; `agent outside ...`; the unbuilt engine's test; the built and unbuilt table; the entry-point scan |
+  | a charge policy doesn't permit is over 0 | `agent without an accountable party ...`; `agent outside ...`; `bound is held over core clock's window ...`; the unbuilt engine's test; the table; the scan |
+  | counted by the party, not the actor | `thousand agents under one party hit one limit`; `requests fanned out ...`; `bound is held ...` |
+  | a fan-out counts | `requests fanned out to providers count against the caller's party` |
+  | a fan-out on the work bound | `requests fanned out to providers count against the caller's party` |
+  | questions about people on a bound of their own | `thousand agents ...`; `requests fanned out ...` |
+  | a charge over its bound counts nothing | `agent without ...`; `thousand agents ...`; `requests fanned out ...`; `bound is held ...` |
+  | the bound held | `thousand agents ...`; `requests fanned out ...`; `bound is held ...` |
+  | the same charge counts once | `bound is held over core clock's window and a charge counts once` |
+  | another charge under a counted id refused | `bound is held over core clock's window and a charge counts once` |
+  | the window from Core's clock, not the charge's `at` | `bound is held over core clock's window and a charge counts once` |
+  | the window starts again | `bound is held over core clock's window and a charge counts once` |
+  | counted only after the log takes it | `charge the log does not take counts nothing` |
+  | `same_party` by the party, not the actor (now `same_accountable_actor`) | `actors are compared at their accountable party` |
+
+### T-021-05, the review of `b63af67`
+
+- **The kind of actor is bound by the register** (finding 1, critical). Nothing held `Actor.kind`: `ActsFor` checked
+  the login and the party, so `agent-7`, scoped to `charge: request`, was refused `move_value` as an agent and
+  permitted it stating `kind: person`, and the rule that an agent is never its own party fell the same way.
+  `Source::ActsFor` now carries `kind`, and the register answers by the login, the party and the kind together, so a
+  login stating a kind the register doesn't list for it acts for no one (`no_accountable_party`). The edit is to
+  `T-021-03`'s rule in `roles/`, merged, kept to the one field; every test source that answers `ActsFor` was updated
+  (`roles/tests.rs` and `T-021-01`'s and `T-021-02`'s answer it whatever the kind, since no test of theirs turns on
+  it; `parties/tests.rs` and the segments kit bind it). Intake's own `Actors` register (`T-020-03`) still answers by
+  login and party: it decides only whether intake serves the caller, and every action it serves is decided by
+  policy, which now binds the kind.
+- **One login is one actor** (finding 2, high). `same_party` is now `same_accountable_actor`, true where the parties
+  or the logins are the same.
+- **The window moves forward only** (finding 3), and **a charge's id is its party's** (the nit).
+- **A refused or not-known charge is logged as `over_bound`** (finding 4, high). Waits on core-internal's
+  `ChargeOutcome` gaining `refused { class }` and `not_known { cause }`, which the contract author is adding;
+  `contracts/` is untouched here. Once it is in `m3`, `charge_outcome` gives the verdict's own answer and core-orch's
+  `rounds::Run::charge` maps the two new outcomes (each, like `over`, sends nothing).
+- **Each call's scope is pinned** (finding 5) by `each_scope_permits_its_own_call_alone`: for each scope, an agent
+  scoped to it alone is permitted its call and refused every other, the table naming each call's scope by hand.
+- **The counter is the log's** (finding 6): above, built at the merge of `T-021-04`.
+- **Person questions are charged against the people limit** (finding 7): above.
+- **A route's suggester asks no scope** (the nit): it doesn't act in the call; the operator who posts does, and the
+  suggester is still held to `ActsFor`, kind included.
+- **Rule-offs of the fixes.** Each switched off once, the file restored and touched; core-authz's lib tests, or
+  core-orch's `rounds` for its edit. The new tests went red before the fixes (`each_scope_permits_its_own_call_alone`
+  passed, pinning a mapping that was already right; it goes red under each mapping mutation below).
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | the register told the stated kind (a fixed kind sent) | `agent stating another kind acts for no one`; `agent without an accountable party ...`; `agent outside its party's scope ...`; `thousand agents ...` |
+  | one login is one actor | `actors are compared at their accountable party` |
+  | the window moves forward only | `clock moving back keeps counting in the latest window` |
+  | a charge counted back is counted at the latest window's start | `clock moving back keeps counting in the latest window` |
+  | `decide_stuck` its own scope (made `move_stuck`'s) | `each scope permits its own call alone` |
+  | `check_read` its own scope (made `move_value`'s) | `each scope permits its own call alone` |
+  | `resolve_stuck` a stuck move (made `move_value`'s) | `each scope permits its own call alone` |
+  | a catalogue change scoped by its kind | `each scope permits its own call alone` |
+  | a charge's id its party's | `charge ids are each party's own`; `counter is rebuilt from the charges counted` |
+  | rebuild: only the latest window's charges | `counter is rebuilt from the charges counted` |
+  | rebuild: the latest window, a later charge's included | `counter is rebuilt from the charges counted` |
+  | rebuild: what the counter held dropped | `counter is rebuilt from the charges counted` |
+  | person questions charged as `person_question` | `person questions are charged against the caller's people limit` |
+- **The first table, again.** Every rule-off of `T-021-05`'s first table was run again on the fixed code: each still
+  turns red, now often under more tests than listed there (the review's new tests among them).
+
+### T-021-05, merging `T-021-04` (`85386b8`)
+
+- **The engine's lines.** `authorised` and `charged` sit side by side in the struct and both constructors; the
+  unbuilt list in `every_policy_call_reaches_the_one_consultation_or_is_marked_unbuilt` is `["T-021-06", "T-021-07"]`.
+- **`Recorded` reads charges too.** Every implementer answers `charged()`: the test logs of `T-021-01`, `T-021-03`
+  and `T-021-04` by `charged_in` over what they hold (the log that takes nothing fails its read), the assembly's
+  `PolicyHandle` and the segments kit's `PolicyPath` over their logs' entries. `Charges` on the engine needs
+  `L: PolicyLog + Recorded`, as `decide` and `authorise` do.
+- **The agent scope covers `authorise` for real.** `agent_outside_its_partys_scope_is_refused` now drives the
+  engine's `authorise`: an agent its party didn't scope for it is refused and recorded so, another agent of the party
+  scoped for it authorises. `funds/tests.rs`'s one `ActsFor` need names the kind (`component`).
+- **The assembly** (`conformance/scenarios/src/assembly/policy.rs`, `T-024-02`'s). Its register of actors keeps each
+  login's kind (`Registers::list`), and its sources answer `ActsFor` by login, party and kind (`acts_as`; intake's
+  `Actors` still asks `acts_for`, login and party). It keeps each agent's scope (`Registers::scope`, `in_scope`): a
+  party that set none for an agent gives a missing input; no scenario names an agent yet.
+  `PolicySide::charge` is the engine's, and `CHARGE_BOUND` is gone. `policys_sources_answer_from_the_records`
+  checks the kind and the scope.
+- **Rule-offs of the merge work** (core-authz's lib tests):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | the counter rebuilt from the log before a charge | `bound is held ...`; `clock moving back ...`; `counter is the log's across a restart` |
+  | a log that can't be read refuses | `counter is the log's across a restart` |
+  | a charge's entry at Core's clock, not its own `at` | `clock moving back ...`; `bound is held ...` |
+  | only a permitted charge entry counted | `bound is held ...`; `clock moving back ...`; `agent without ...`; `counter is the log's ...`; `requests fanned out ...`; `thousand agents ...` |
+  | the agent scope on the engine's `authorise` (the rule out of `FIXED`) | `agent outside its party's scope is refused`; `agent stating another kind ...`; `agent without ...` |
+
+### T-021-05, the re-review
+
+- **A stale read starts no bound again** (item 1). The read of charges is held to the same two checks as `T-021-04`'s
+  (`funds::Authorised::read`): it must extend the read the counter was last rebuilt from, and hold the engine's own
+  last charge counted within its bound, as its entry holds it (`Charged::stands`). Otherwise the counter is an input
+  the decision doesn't have, `missing_input`, over a bound of 0, and the counter stays as it was read last. As with
+  `T-021-04`'s, a first read of another log, or one frozen after the engine's last charge, passes: that the read is of
+  the very log the handle appends to is the assembly's word. Besides, no rebuild counts a window below the engine's own
+  charges in it (`Charged::counted`, `own`), a floor behind the two checks.
+- **A jump of the clock freezes no window** (item 2; revised in round 3, below). A charge counted more than one
+  window ahead of Core's now doesn't choose the window, and is set apart: `Charged::ahead()` lists them after each
+  read. The entry stays in the log, so a fresh engine over it is not frozen either. One window ahead still chooses the
+  window, so a clock stepping back less than a window keeps the latest window.
+- **A time no entry can hold is refused** (item 3). Where Core's clock gives a moment RFC 3339 can't hold, the charge is
+  refused as `Err(AppendFailure::Refused)`, nothing recorded and nothing counted, never recorded at the time the charge
+  states.
+- **Intake binds the kind; reads of its status are a hand-off** (item 4). `intake::Actors::acts_for` takes the stated
+  kind, and the assembly answers it from the register policy reads (`Registers::acts_as`), so an agent's login stating
+  itself a person, or a person's stating itself an agent, is told nothing, quotes nothing and opens nothing. Routing
+  `told` and `kept_for` through `check_read`, so an agent outside its party's `check_read` scope reads none of its
+  party's orders, is not contained: intake answers an order's status from `open`, `quote` and `accept` before the log
+  holds the order's acceptance, and a customer's read of an order asks the log's record of its parties
+  (`Source::OrderParties`), so through `check_read` every customer would be refused its own new order. It needs either
+  a read of an order's status that policy decides on intake's own record, or intake answering status only once the
+  acceptance is in the log. Owner: `T-020-03`'s, raised with the coordinator. Until then, an agent its party didn't
+  scope for `check_read` learns its party's orders' status through intake, though it can't move, authorise or charge
+  outside its scope, each of which policy decides.
+- **The cost of reading the whole log** (the nit). Every charge reads every permitted `charge` entry and rebuilds the
+  counter, and the read check compares it with the last read: O(n) in the log's charge entries per charge, so O(n^2)
+  over a run (`thousand_agents_under_one_party_hit_one_limit`, two thousand charges, runs in about three seconds in
+  debug). Accepted for v0, as `T-021-04`'s read is; an index kept by the log, or a read of the entries after a given
+  receipt, is `F-022`'s or `F-030`'s to add.
+- **Rule-offs** (core-authz's lib tests, core-orch's `intake` for its edit):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | a read extends the one before | `stale read of the log starts no bound again` (the truncated read) |
+  | a read holds the engine's own last charge | `stale read of the log starts no bound again` (the empty read) |
+  | no window counted below the engine's own | `rebuild counts no window below the engine's own` |
+  | the engine's own of a window gone left out | `rebuild counts no window ...`; `bound is held ...`; `clock jumping far ahead freezes no window` |
+  | a charge far ahead neither chooses the window nor counts | `clock jumping far ahead freezes no window` |
+  | a charge far ahead set apart for the operator | `clock jumping far ahead freezes no window` |
+  | a time no entry holds is refused | `charge at a time no entry can hold is refused` |
+  | intake's `told` holds the kind | `actor stating another kind is not the requester` |
+  | intake's `open` holds the kind | `actor stating another kind is not the requester` |
+  | intake's own order's record (`speaks_for`) holds the kind | `actor stating another kind is not the requester` |
+
+### T-021-05, round 3 (approved, before the merge)
+
+- **A step back of more than a window gives no fresh bound** (low 1, the reviewer's fix). A charge ahead of Core's now
+  by more than a window still never chooses the window, but it now counts in the window chosen. A clock stepping back
+  more than a window (1 h 1 s after the bound was spent: the next charge is over), or two engines over one log whose
+  clocks are further apart than a window, give the party no second bound; a jump forward and back takes off the bound
+  only what was charged during the glitch, in every window until Core's clock reaches it, which fails closed. The 2030
+  jump still recovers: the window follows Core's now, now's charges leave it at the next window, the glitch's stay.
+  Tests: `clock_stepping_back_more_than_a_window_gives_no_fresh_bound`,
+  `engines_with_skewed_clocks_hold_a_party_to_one_bound`, and `clock_jumping_far_ahead_freezes_no_window` as revised.
+- **Who surfaces `ahead()`** (low 2). Nothing calls `Charged::ahead()` yet. Owner: `T-023-01`, the operator's notices.
+  It must surface to the operator, after a charge whose read set any apart, each charge counted ahead of Core's now
+  by more than a window: its party, its request id, its kind of work and count, and the moment it was counted at
+  beside Core's now, so the operator sees a clock that jumped and what it cost the party. The assembly reaches it as
+  `engine.charged().ahead()`.
+- **The intake hand-off is tracked** (item 3): recorded in `F-020`'s notes under `T-020-03`, for its owner, due before
+  `M4`, with the reviewer's severity: low, the agent's own party only, read only.
+- **Rule-offs** (core-authz's lib tests):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | a charge far ahead still counts in the window | `clock stepping back more than a window ...`; `engines with skewed clocks ...`; `clock jumping far ahead ...` |
+  | a charge far ahead chooses no window | `clock jumping far ahead freezes no window` |
+
+### T-021-05, at integration (contract head `acde1cf`)
+
+- **Finding 4 is closed.** core-internal's `ChargeOutcome` now has `refused { class }` and `not_known { cause }`.
+  `charge_outcome` answers a charge policy refuses with its own class and one it can't decide as not known, so the
+  log holds the real answer, never `over_bound` for a bound not passed. core-orch's `rounds::Run::charge` says it
+  too: `NotOffered::ChargeRefused { class }` and `NotOffered::ChargeNotKnown { cause }`, nothing sent on either.
+  Intake and arrivals map them to `RefusedByPolicy` and `NoRouteRightNow` (two arms each, added in rounds' commit
+  under the coordinator's one-off exception to file ownership).
+- **`counted_at`.** A charge counted within its bound says when Core's clock counted it in the contract's own field,
+  `What::Charge::counted_at`, present exactly where the entry is `permitted`; the entry's time is the charge's own
+  again, as every call's is. `charged_in` rebuilds by `counted_at`. This replaces the earlier default of recording the
+  counting moment as the entry's `when`.
+- **The two new decision kinds.** `report_outcome` and `confirm_outcome` are policy calls of the engine (`Asked`
+  variants, each a `Scope` of its own, held to `ActsFor` by its reporter or confirmer) and rows of the unbuilt table,
+  `T-021-06`'s to build. `StuckOrders` is implemented on every engine, not only `Engine<L, Absent, Absent>`, so the
+  assembly's `PolicySide` forwards all four of its calls to the engine, each answered not known until then.
+  core-audit's exhaustive kind list names `report_outcome`.
+- **What the log refused, classified.** One history in this row's tests: `report_outcome` and `confirm_outcome` of
+  the contract's fixture requests through the assembly, refused as "an outcome's report is of a move of this log whose
+  outcome is unknown" and its confirmation's twin. Unrealistic test history: the accepted order has no move whose
+  outcome is unknown, and the rows hold rightly. The test now asserts the refusal leaves nothing recorded; driving a
+  real unknown outcome is `T-021-06`'s and the stuck scenarios'.
+- **Rule-offs** (each switched off once, the file restored and touched):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | a refused charge answers refused for its class | five of `parties`' tests, `agent without ...` and `stale read ...` among them |
+  | a charge not known answers not known | `the unbuilt engine permits nothing ...`; `agent outside its party's scope ...` |
+  | the rebuild reads `counted_at` | `a counted charge says when Core counted it`, and eleven others of the counter's |
+  | a charge's entry at its own time | `a counted charge says when Core counted it` |
+  | rounds: a refused charge says refused | `a charge policy refuses or cannot decide sends nothing and says why` |
+  | rounds: a charge not known says not known | `a charge policy refuses or cannot decide sends nothing and says why` |
+  | the assembly's charge is the engine's | all five of `assembly_policy` |
+  | the assembly's outcome report is the engine's | `a move's outcome reported or confirmed reaches the engine and its log` |
+
+## T-021-06
+
+- **What it builds.** `StuckOrders` on `Engine<L, P, S>` in `components/core-authz/src/stuck/`, for
+  `L: PolicyLog + Receipted`, `P: Policy`, `S: Sources`: `decide_stuck`, `move_stuck`, `report_outcome` and
+  `confirm_outcome`, each decided through `consult` and recorded through `PolicyLog` before it answers. All four left
+  the unbuilt table of `every_policy_call_reaches_the_one_consultation_or_is_marked_unbuilt`, which is now
+  `["T-021-07"]`; each is driven there on the contract's own coherent world (`fixtures/admission/world--sd`, `--sm`,
+  `--report_es`, `--settled_es`), through the guarded log, consulted once and ruled once. Two layers: a fixed rule, the fifth in `FIXED`, over what the request alone says; and rules read from the log on
+  policy's handle, held to the consultation's verdict after it, as `T-021-04`'s register is, since a move names the
+  decision it carries out and not its decider, and a confirmation names its report and its move by receipt.
+- **Reading of "the ownership row".** Taken as the rows that name `core-authz` `stuck` (`T-021-06`) as their
+  implementer or owner: core-internal's call table (`decide_stuck`, `move_stuck`), the `StuckOrders` trait as a whole
+  (`report_outcome`, `confirm_outcome` too), and the README's hand-off rows naming `T-021-06` (the evidence relied on,
+  the decide step's transaction, the outcome reported and confirmed, the `ActsFor` chains), with `DEC-14`'s "separate
+  decide and move permissions". Every permission they name is built: deciding, moving and confirming, one each.
+  The transaction row needs nothing of policy's beyond recording the decide request whole: the log holds the
+  transaction fresh (`stuck-resolution-transaction-is-its-own`) and the effect under it. A hand-on
+  (`resolution: hand_on`) and a delivery are decided and moved on the same two permissions. Reversible.
+- **One accountable actor: "reaches", never "meets"** (the coordinator's ruling on the review of `fa19450`,
+  reversible, on the owner's form). Two actors count as one where they share a login, share a party, or either's
+  `ActsFor` chain reaches the other's party (`Source::Reaches { from, to }`). Two whose chains only meet at a party
+  both reach, two desks of the operator, are distinct: ADR-0011's separate staff within one party. One rule
+  (`Engine::one_actor`) holds the decider against the mover and the reporter against the confirmer. The same reading
+  holds an actor to a party (`Engine::of_party`): it is the party's where its login or party is that party, or its
+  chain reaches it. That is how the order's customer, the provider holding the funds and the deployment's operator
+  are each told. It replaces `fa19450`'s `Source::CommonParty`, which refused chains that met, and its default 7,
+  which compared decide and move by `same_accountable_actor` alone.
+- **The fixed rule** (`stuck::needs`, `stuck::rule`), asked after every earlier row's, so each actor is bound to its
+  party and kind (`T-021-03`) and an agent to its scope (`T-021-05`) first:
+  - deciding needs `Permission::DecideStuck`, moving `Permission::MoveStuck`, confirming
+    `Permission::ConfirmOutcome`, each asked of the register by login (`Source::Permissions`), so one alone allows
+    only its own step (`REQ-AUZ-4`, `DEC-14`, the `REQ-AUZ-6` pattern);
+  - deciding and moving are the operator's (`REQ-ORD-28`: the operator resolves and bears a stuck order). A decider
+    or a mover must state the operator's role, or it is refused `not_permitted` before an input is asked, and must be
+    the deployment operator's by the register, in its party or reaching it (`Source::OfOperator`), since a role is
+    only the request's word. Default, reversible: a confirmer may act in any role the register gives the permission
+    to, since the README's silent `move_value` has Core report and "one person" confirm, and a checker might;
+    reporting needs no permission, since only the move's own mover reports, which the log holds
+    (`outcome-report-rests-on-its-move`), so `report_outcome` has no rule of this row's beyond the fixed rules every
+    call is held to;
+  - the provider holding the funds never decides (`THR-70`): a decider that is the decision's `resolution.by` by its
+    party or login is refused outright, and one whose chain reaches it is refused (`Source::Reaches` must say no);
+  - neither the decider nor the confirmer acts for a party of the order, its requester, beneficiary or payer
+    (`Source::OrderParties` must say no). Asked by party, not by role: `ActsFor` binds a login's party and kind but
+    not its role, so a customer's login stating `operator` is still the customer. Default: "the order's customer" is
+    any of its three parties. Their chains are held below;
+  - each evidence commitment the decision names is one the store keeps, about the order or about no order in
+    particular (`Source::Kept`), and at least one is about the order itself (`Source::KeptAbout`), or the decision is
+    refused `missing_input`: a digest the store keeps nothing under names no evidence, and evidence about no order
+    alone names none of this order's (`REQ-AUZ-4`, `F-020`'s hand-off "the evidence digests checked against the
+    store"; the second half is the coordinator's ruling, replacing default 6). A decision naming none at all still
+    fails its contract check and is refused unrecorded, as the callee rule says.
+- **Rules read from the log** (`stuck::Receipted`, a trait of this module, on policy's handle: every entry with its
+  receipt, in log order; steps are found by receipt equality, as the contract's rows find them):
+  - neither the decider nor the confirmer reaches any party the log's acceptance of the order names, refused
+    `not_permitted` (`THR-70`); an order the log has no acceptance of refuses `missing_input`;
+  - a move carries out a decision the log holds as permitted, answering the request it names, with the decision id
+    it names, of its own order, or it is refused `not_permitted`; every such decision must pass;
+  - its mover and that decider are one actor, refused `same_actor` (`REQ-AUZ-4`, `REQ-AUZ-8`: two agents of one party,
+    its person and its agent, one login under two parties, a desk's bot whose party acts for the desk);
+  - a confirmation cites a report the log holds as permitted, of its own move (effect), order and outcome, or it is
+    refused `not_permitted`; its confirmer and the reporter are one actor, refused `same_actor` (core-internal's
+    README hand-off: the log reads no register, so it can't see along the chains);
+  - neither the mover nor the confirmer is the desk of the provider holding the funds (`THR-70`): the resolution's
+    `by` for a `resolve_stuck`, the move's `provider` for a segment's `move_value`. An actor is that desk where its
+    party or its login is the provider, or its own chain reaches it, refused `not_permitted`. Chains that meet the
+    holder's only above it don't count: with `operator-desk-b -> operator` and `bank-co -> operator`, `op-login-5`
+    moves;
+  - a log that can't be read refuses `missing_input`; a register of chains out of reach leaves the answer not known
+    (`verifier_unreachable`, as an unreachable source gives in `consult`); a register that says nothing refuses
+    `missing_input`. These rules run only where the consultation didn't refuse, and never permit
+    (`stuck::held`): a refusal stands, a refusal of theirs beats not known, and their not known replaces a permit.
+- **What "reaches" does to the contract's world.** The world pairs a decider and a confirmer in `operator` with a
+  mover and reporter on `operator-desk-b`. Where the register lists `operator-desk-b` as acting for `operator`, the
+  mover's chain reaches the decider's party, so the two are one actor. This row's tests put the decider and the
+  confirmer on `operator-desk-a`, a sibling desk, and the engine's table answers the world's pair with a register
+  that links neither. The world's fixtures are the contract's and are left as they are.
+- **Stale reads.** Every rule here looks a step up and refuses where it isn't found, so a stale or truncated read
+  fails closed. `T-021-04`'s two read checks (the read extends the last; it holds the engine's own last append) are
+  not applied: nothing here counts or replaces, so a read missing entries can only refuse. What a read of another log
+  could do, name another decider or reporter, is the assembly's word that the read is of the very log the handle
+  appends to, as `T-021-04`'s and `T-021-05`'s notes say. Reversible.
+- **Refusal classes.** `same_actor` (core-internal's own class for `REQ-AUZ-4`) for one actor at both steps or at
+  both words; `not_permitted` for a role, a permission, a customer, the holder's desk, or no step behind the call;
+  `missing_input` for evidence the store doesn't keep and a log that can't be read. No contract change was needed.
+- **Edits outside this row's module**, each the smallest that lets the rules be asked, as `T-021-05`'s were:
+  - `engine/` (`T-021-01`'s): four `Source` variants appended (`Kept`, `KeptAbout`, `Reaches`, `OfOperator`; the
+    review of `fa19450` replaced `CommonParty`); the fifth `FIXED` entry;
+    `Engine::not_known` removed, since no stub uses it now, and the `Unbuilt` doc says a built call answers on it as
+    it rules; in its tests, `Receipted` on `Taking`, `Guarded`, `Seen` and `PolicysHandleOnly` (`Taking` and
+    `PolicysHandleOnly` giving each entry a receipt of its own, `nth_receipt`), the four calls built in the table with
+    the world's histories (`world_before`, `say`), and the unbuilt engine's test expecting a report not known (an
+    actor's register out of reach) and a decision, a move and a confirmation refused (an order with no acceptance,
+    nothing permitted behind them; a refusal beats not known).
+  - `roles/` (`T-021-03`'s): three `Permission` variants appended (`DecideStuck`, `MoveStuck`, `ConfirmOutcome`).
+  - `parties/tests.rs` (`T-021-05`'s): `Calls::by` takes the stuck steps in the operator's role, and its register
+    answers `OrderParties` yes only for the read fixture's order, so no caller is a party of the stuck fixtures', and
+    `Reaches` no, so each caller is its own party's alone.
+  - `conformance/scenarios/` (`F-024`'s): `Entries::receipted` (provided, `None` by default, the audit log's
+    entries as it holds them), `Receipted` on `PolicyHandle` and on the kit's `PolicyPath` (`receipt_at`), the
+    assembly's `Records` answering `Kept` and `KeptAbout` from the log's stated entries, `Reaches` from its register
+    (`Registers::chain`, `Registers::reaches`) and `OfOperator` as reaching the kit's operator party, two stale doc
+    lines in `assembly/policy.rs`, and `policys_sources_answer_from_the_records` checking each.
+- **Hand-offs naming `T-021-06`, checked off.**
+  - `F-020`'s "Gap for `T-021-06`: policy's stuck rules are unbuilt" (`T-020-11`): built. Its questions answered: a
+    customer never decides; the desk of the provider holding the funds never moves; neither confirms; the evidence
+    digests are checked against the store (`Source::Kept`).
+  - `F-020`'s `T-020-11` review answers, finding 5 (the roles a decider and a mover may hold) and round 4's S1 (the
+    confirmer's roles): built as above.
+  - This file's `T-021-05` hand-off (`same_accountable_actor` for the decider and the mover): used, and for the
+    reporter and the confirmer too.
+  - This file's `T-021-05` integration note (`report_outcome`, `confirm_outcome`, `T-021-06`'s to build; a real unknown
+    outcome to drive): built; a real unknown outcome, the world's silent `resolve_stuck` and its silent withdrawal,
+    is driven through the engine in this module's tests. Through the assembly it is `T-024-06`'s scenario.
+  - core-internal's README: the call table's two rows, the hand-off rows on the evidence, the transaction, the
+    outcome reported and confirmed, and the `ActsFor` chains (and the CHANGELOG's two entries naming `T-021-06`):
+    built. No contract change.
+  - `PLAN.md`'s `T-024-06` depends on this row: its `AC-6` scenario (`failed segment with no route left is resolved
+    under policy by two actors`) can now run on the engine. Owner: `T-024-06`. No test yet drives the assembly's
+    `PolicySide` through a permitted decide, move and confirm; for one to pass, the scenario must list each login
+    (`Registers::list`) and give it its permission (`Registers::permit` with `DecideStuck`, `MoveStuck` or
+    `ConfirmOutcome`); name decision evidence whose commitment the log holds as a stated entry about the order or
+    about no order, at least one about the order itself (the kit's `"ab"`×32 digest is refused `missing_input`); use a mover whose party, login and chain
+    don't reach the resolution's `by`; a decider and a mover the register gives the operator (`Registers::list` along a
+    chain to the kit's `operator` party); a decider and a confirmer that are none of the order's parties and whose
+    chains reach none; and a confirmer that neither reaches its reporter's party nor is reached by it. For a
+    `resolve_stuck`, sibling desks under `operator` (`desk-a -> operator`, `desk-b -> operator`) satisfy every one of
+    these: one decides and confirms, the other moves and reports; a person listed in `operator` itself does not pair
+    with a desk under it. For a segment's silent `move_value` (`AC-6`'s other path), whose reporter is Core, they
+    do too since round 2 of the review: Core acts for a party of its own (`kit::CORE_PARTY`, `rutent`), so a desk
+    under `operator` neither reaches it nor meets it below the operator. Two desks under one of the operator's
+    divisions, not directly under it, meet there and are one actor (round 2).
+- **Hand-offs left, each to its owner** (doc lines this row made stale, in files it doesn't own):
+  - `T-020-11`'s `components/core-orch/src/stuck/mod.rs`: the module's **Gaps** paragraph and the doc comments of
+    `known_outcome` and `confirm_outcome` still say policy's stuck rules are unbuilt and the roles `T-021-06`'s to rule.
+  - `F-024`'s `conformance/scenarios/tests/segments_support/resolving.rs` (`staff`, `PermitsEveryStep`),
+    `tests/assembly_policy.rs` (`a_moves_outcome_reported_or_confirmed_reaches_the_engine_and_its_log`) and
+    `tests/stuck.rs` (`outcome_report_under_policys_unbuilt_rules_settles_nothing`, whose name and doc read
+    "unbuilt"): the engine there is `Unbuilt`, the one with no policy service and no sources, and still answers not
+    known, so each test holds; only their words are stale.
+- **Gaps, each with its owner.**
+  - The deployment's registers of permissions, of chains and of what each login acts for are the deployment's to keep
+    and record (`F-030`). The assembly's register lists one party per login, so its chains are a login's party and
+    that party's own; a login listed for several parties is `F-030`'s.
+  - The evidence store's word (`Source::Kept`): the assembly answers it from the log's stated entries, which name each
+    kept statement by its commitment; production answers it from the store itself (`KeptStatements`, `T-022-03`),
+    wired by `F-030`. Only that the store keeps the evidence, about the order, is checked; whether it bears the
+    decision out is the decider's judgement, recorded with the decision, and the reviewer's to read.
+  - Two engines over one log in separate processes race between the read and the append, as `T-021-04`'s and
+    `T-021-05`'s reads do; `F-022`'s or the contract author's to close with an admission row. Here the log's own rows hold
+    part of it after: `outcome-confirmation-rests-on-its-report` compares the reporter's and the confirmer's party and
+    login, but `stuck-move-carries-out-its-decide-step` compares the decider's and the mover's party only, so a race
+    could put one login under two parties at both steps through the log (corrected on the review of `fa19450`).
+    Contract item, queued by the coordinator with the contract author: add a `login` field to
+    `stuck-move-carries-out-its-decide-step`, refusing a stuck move whose mover's `acts` is its decide step's
+    decider's.
+  - The read is O(n) in the log's entries per move or confirmation, as `T-021-04`'s is; an index is `F-022`'s or
+    `F-030`'s.
+- **Rule-offs of `fa19450`.** Each rule switched off once by a scratch script, the file restored and touched; core-authz's lib
+  tests, or `rutent-scenarios`' `assembly_wiring` for the assembly's. Every test of this module was written first and
+  seen red against the stub (all nine failed). Four rule-offs first turned nothing red: the holder's desk by party or
+  login and the reporter and confirmer as one actor, each masked by the chain rule behind it, and only a permitted
+  report and a report of the confirmation's own move, which no case drove; a case was added for each (a register
+  whose chains are all apart, a refused report, a report cited for another move), and each then went red.
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | decider in the operator's role | `deciding moving and confirming are separate permissions` |
+  | mover in the operator's role | `deciding moving and confirming are separate permissions` |
+  | deciding its own permission (asks the move's) | `every policy call reaches the one consultation or is marked unbuilt`; `deciding moving and confirming are separate permissions` |
+  | moving its own permission (asks the decide's) | `deciding moving and confirming are separate permissions`; `every policy call reaches the one consultation or is marked unbuilt` |
+  | confirming its own permission (asks the move's) | `deciding moving and confirming are separate permissions`; `every policy call reaches the one consultation or is marked unbuilt` |
+  | the decider no party of the order | `neither the customer nor the holders desk resolves its order` |
+  | the confirmer no party of the order | `neither the customer nor the holders desk resolves its order` |
+  | each evidence one the store keeps | `resolution naming no evidence is refused`; `step with nothing permitted behind it is refused` |
+  | the rule in FIXED | `deciding moving and confirming are separate permissions`; `resolution naming no evidence is refused`; `step with nothing permitted behind it is refused`; `neither the customer nor the holders desk resolves its order` |
+  | a move carries out a decision the log holds | `the unbuilt engine permits nothing on any call and records first`; `step with nothing permitted behind it is refused` |
+  | only a permitted decision | `step with nothing permitted behind it is refused` |
+  | a decision of the move's own order | `step with nothing permitted behind it is refused` |
+  | decider and mover not one accountable actor | `one actor attempting both decide and move is refused`; `two agents of one party count as one actor` |
+  | the holder's desk by party or login | `neither the customer nor the holders desk resolves its order` |
+  | the holder's desk by chain | `neither the customer nor the holders desk resolves its order` |
+  | the mover not the holder's desk | `neither the customer nor the holders desk resolves its order` |
+  | only a permitted report | `step with nothing permitted behind it is refused` |
+  | a report of the confirmation's own move | `step with nothing permitted behind it is refused` |
+  | a report of the same outcome | `step with nothing permitted behind it is refused` |
+  | reporter and confirmer not one accountable actor | `two agents of one party count as one actor` |
+  | reporter's and confirmer's chains apart | `confirmer whose chain meets the reporters is refused` |
+  | the confirmer not the holder's desk | `neither the customer nor the holders desk resolves its order` |
+  | a move_value's holder its provider | `neither the customer nor the holders desk resolves its order` |
+  | a resolve_stuck's holder its resolution's | `neither the customer nor the holders desk resolves its order`; `every policy call reaches the one consultation or is marked unbuilt` |
+  | an unread log refuses the move | `unread log or unreached register moves nothing` |
+  | an unread log refuses the confirmation | `unread log or unreached register moves nothing` |
+  | a register of chains out of reach is not known | `unread log or unreached register moves nothing` |
+  | a read rule's refusal held to the verdict | `the unbuilt engine permits nothing on any call and records first`; `neither the customer nor the holders desk resolves its order`; `step with nothing permitted behind it is refused`; `one actor attempting both decide and move is refused`; `two agents of one party count as one actor`; `unread log or unreached register moves nothing`; `confirmer whose chain meets the reporters is refused` |
+  | a read rule's not known held to a permit | `unread log or unreached register moves nothing` |
+  | the assembly: chains answered from the register | `policys sources answer from the records` |
+  | the assembly: a chain followed past its first link | `policys sources answer from the records` |
+  | the assembly: kept evidence about its order | `policys sources answer from the records` |
+  | the assembly: unkept evidence says no | `policys sources answer from the records` |
+
+### T-021-06, the review of `fa19450`
+
+The reviewer confirmed each security finding with a probe; findings 1 and 2 blocked. The coordinator ruled on each
+(reversible defaults, on the owner's form), and m3 at `066b2a7` (`T-021-04b`) was merged in the same round, cleanly.
+The rules and the tests above describe the code after this round.
+
+| # | Finding | Answer | Test |
+|---|---|---|---|
+| 1 | High: `alice` (`operator-desk-a`) decides and `alice-bot` (`desk-a-bots -> operator-desk-a`) moves | One accountable actor is "reaches, never meets": one login, one party, or either's chain reaching the other's party (`Source::Reaches`, replacing `CommonParty`), for the decider against the mover | `one actor attempting both decide and move is refused` (the bot, and a person of `operator`, which the decider's chain reaches) |
+| 2 | Medium: `cust-1-ops -> cust-1` decides | A decider or confirmer whose chain reaches any party the log's acceptance of the order names is refused; an order with no acceptance is a missing input | `neither the customer nor the holders desk resolves its order`; `unread log or unreached register moves nothing` |
+| 3 | Medium: `bank-co-desk` states the operator's role | A decider or mover must also be the operator's by the register (`Source::OfOperator`); the holder never decides, by its party or login, or by its chain reaching `resolution.by` | `deciding moving and confirming are separate permissions` (`acme-staff`); `neither the customer ...` |
+| 4 | Medium: the holder check refused chains that met | Refused only where the actor's own chain reaches the holder: with `operator-desk-b -> operator` and `bank-co -> operator`, `op-login-5` moves | `neither the customer ...` |
+| 5 | Reporter against confirmer | The same rule; siblings under `operator` confirm. The test is renamed `confirmer_whose_chain_reaches_the_reporters_is_refused` | `confirmer whose chain reaches the reporters is refused` |
+| 6 | Low: the race note said the log's stuck-move row holds the login | Corrected above; a `login` field on `stuck-move-carries-out-its-decide-step` is a contract item, queued by the coordinator | — |
+| 7 | Low: the `T-024-06` hand-off | The chain conditions added, and that sibling desks under `operator` satisfy them | — |
+| 8 | Default 6, evidence | At least one evidence item about the order itself (`Source::KeptAbout`) | `resolution naming no evidence is refused` |
+| 9 | Nits | `Taking` and `PolicysHandleOnly` give each entry its own receipt (`nth_receipt`); cases for a move naming another request than its decision answered and for a confirmation of another order than its report's | `step with nothing permitted behind it is refused` |
+
+- **Tests first, this round.** The `CommonParty` source was replaced, so the old rules and the new tests share no
+  API to run red against; each new rule's test was instead seen red by switching that rule off (below), every one of
+  them. Five rule-offs first turned nothing red, or weren't applied: the holder deciding by party or login, masked
+  by its chain; the customer by the order's record, directly, masked by the log's acceptance read after; and the
+  assembly's two evidence rules, whose text formatting moved. Cases were added (a register whose chains reach nothing;
+  the fixed rule asked alone through `consult`; a statement about no order) and the scripts' strings fixed, and each
+  then went red.
+- **Rule-offs of this round** (core-authz's lib tests, or `rutent-scenarios`' `assembly_wiring` for the assembly's;
+  each switched off once, the file restored and touched):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | decider in the operator's role | `deciding moving and confirming are separate permissions` |
+  | the holder never decides, by party or login | `neither the customer nor the holders desk resolves its order` |
+  | the holder never decides, by chain | `neither the customer nor the holders desk resolves its order` |
+  | the decider the operator's by the register | `deciding moving and confirming are separate permissions` |
+  | mover in the operator's role | `deciding moving and confirming are separate permissions` |
+  | the mover the operator's by the register | `deciding moving and confirming are separate permissions` |
+  | deciding its own permission (asks the move's) | `every policy call reaches the one consultation or is marked unbuilt`; `deciding moving and confirming are separate permissions` |
+  | moving its own permission (asks the decide's) | `deciding moving and confirming are separate permissions`; `every policy call reaches the one consultation or is marked unbuilt` |
+  | confirming its own permission (asks the move's) | `deciding moving and confirming are separate permissions`; `every policy call reaches the one consultation or is marked unbuilt` |
+  | the decider no party of the order, directly | `neither the customer nor the holders desk resolves its order` |
+  | the confirmer no party of the order, directly | `neither the customer nor the holders desk resolves its order` |
+  | each evidence one the store keeps | `resolution naming no evidence is refused` |
+  | one evidence about the order itself | `resolution naming no evidence is refused` |
+  | the rule in FIXED | `deciding moving and confirming are separate permissions`; `neither the customer nor the holders desk resolves its order`; `step with nothing permitted behind it is refused`; `resolution naming no evidence is refused` |
+  | the decider reaches no party of the order | `the unbuilt engine permits nothing on any call and records first`; `neither the customer nor the holders desk resolves its order`; `unread log or unreached register moves nothing` |
+  | an order the log has no acceptance of is missing | `the unbuilt engine permits nothing on any call and records first`; `unread log or unreached register moves nothing` |
+  | an unread log refuses the decision | `unread log or unreached register moves nothing` |
+  | a move carries out a decision the log holds | `the unbuilt engine permits nothing on any call and records first`; `step with nothing permitted behind it is refused` |
+  | only a permitted decision | `step with nothing permitted behind it is refused` |
+  | a decision answering the move's request | `step with nothing permitted behind it is refused` |
+  | a decision of the move's own order | `step with nothing permitted behind it is refused` |
+  | one actor: one login or one party | `two agents of one party count as one actor` |
+  | one actor: the first's chain reaches the second's party | `one actor attempting both decide and move is refused`; `confirmer whose chain reaches the reporters is refused` |
+  | one actor: the second's chain reaches the first's party | `one actor attempting both decide and move is refused`; `confirmer whose chain reaches the reporters is refused` |
+  | decider and mover not one actor | `one actor attempting both decide and move is refused`; `two agents of one party count as one actor` |
+  | an actor is a party's by its party or login | `neither the customer nor the holders desk resolves its order` |
+  | an actor is a party's by its chain | `neither the customer nor the holders desk resolves its order` |
+  | the mover not the holder's desk | `neither the customer nor the holders desk resolves its order` |
+  | only a permitted report | `step with nothing permitted behind it is refused` |
+  | a report of the confirmation's own move | `step with nothing permitted behind it is refused` |
+  | a report of the confirmation's own order | `step with nothing permitted behind it is refused` |
+  | a report of the same outcome | `step with nothing permitted behind it is refused` |
+  | reporter and confirmer not one actor | `confirmer whose chain reaches the reporters is refused`; `two agents of one party count as one actor` |
+  | the confirmer reaches no party of the order | `neither the customer nor the holders desk resolves its order` |
+  | the confirmer not the holder's desk | `neither the customer nor the holders desk resolves its order` |
+  | a move_value's holder its provider | `neither the customer nor the holders desk resolves its order` |
+  | a resolve_stuck's holder its resolution's | `neither the customer nor the holders desk resolves its order`; `every policy call reaches the one consultation or is marked unbuilt` |
+  | an unread log refuses the move | `unread log or unreached register moves nothing` |
+  | an unread log refuses the confirmation | `unread log or unreached register moves nothing` |
+  | a register of chains out of reach is not known | `unread log or unreached register moves nothing` |
+  | a read rule's refusal held to the verdict | `the unbuilt engine permits nothing on any call and records first`; `confirmer whose chain reaches the reporters is refused`; `neither the customer nor the holders desk resolves its order`; `one actor attempting both decide and move is refused`; `step with nothing permitted behind it is refused`; `two agents of one party count as one actor`; `unread log or unreached register moves nothing` |
+  | a read rule's not known held to a permit | `unread log or unreached register moves nothing` |
+  | the assembly: reaches answered from the register | `policys sources answer from the records` |
+  | the assembly: a chain followed past its first link | `policys sources answer from the records` |
+  | the assembly: the operator's along its chain | `policys sources answer from the records` |
+  | the assembly: kept evidence about its order | `policys sources answer from the records` |
+  | the assembly: evidence about the order itself | `policys sources answer from the records` |
+  | the assembly: unkept evidence says no | `policys sources answer from the records` |
+
+### T-021-06, round 2 of the review
+
+All four round-1 probes were refused; the coordinator refined the ruling, and these are its points as built
+(reversible defaults, on the owner's form). The tests were written first this round and seen red against the round-1
+rules: the three probes' tests failed (`one actor attempting both ...`, `neither the customer ...`,
+`confirmer whose chain reaches ...`) and the assembly's source test (Core's party), before any rule changed.
+
+| # | Point | Answer | Test |
+|---|---|---|---|
+| 1 | High: chains meeting below the operator were two actors (`alice1` on `desk-a1` and `alice2` on `desk-a2`, both under `alice-person` under `operator`; `alice-d` and `alice-m` in two bot parties under `operator-desk-a`) | One actor also where the two chains meet at any party below the deployment operator's own party (`Source::MeetsBelowOperator`), for decider against mover and reporter against confirmer. Only desks directly under the operator, meeting nowhere below it, are two | `one actor attempting both decide and move is refused`; `confirmer whose chain reaches the reporters is refused` |
+| 2 | Medium: the customer and holder checks looked one way | A decider or confirmer is refused where its chain reaches a party of the order or where that party's chain reaches its party (the customer's holding company); a confirmer the same against the holder (`bank-group` over `bank-co`); the mover's holder check stays one way (`REQ-CAT-20`) | `neither the customer nor the holders desk resolves its order` |
+| 3 | Core gets a party of its own | `kit::CORE_PARTY` (`rutent`) for `kit::core()`, and for Core's actors in core-orch's tests (`closing.rs`, `segments.rs`, `snapshot_support`, `intake_support`'s policy actor), so the decide caller and the reporter carry one party; the assembly's register lets nothing but Core's own components act for Core's party or a party reaching it; Core passes no `OfOperator`, so it never decides or moves | `core never decides or moves`; `policys sources answer from the records` |
+
+- **Reading of "below the operator".** Each chain is cut where it reaches the operator's party, which is not compared,
+  nor anything above it, so a party above the operator (its holding company) doesn't make every pair of its staff one
+  actor. Default, reversible.
+- **The holder never decides, both ways** (default, not ruled). The decider is also refused where the holder's chain
+  reaches its party, as the confirmer is, since only the mover was ruled one way (`REQ-CAT-20`). A fixed rule
+  (`Source::Reaches { from: by, to: decider's party }` must say no).
+- **Only the parties a chain names count.** Either way, an actor is a party's only along the chains: a desk hanging
+  under one of that party's parents, its sibling, is not the party's (the meeting rule is for two actors, not for an
+  actor and the customer or the holder).
+- **The contract's fixtures.** No test of this row relies on the world's actor shape: each puts the decider and the
+  confirmer on `operator-desk-a` and the world's mover and reporter on `operator-desk-b`, siblings directly under the
+  operator. The world's own pair, a decider in `operator` and a mover on `operator-desk-b`, is one actor under the
+  register these tests give it; `contracts/` is not this row's to edit, so the fixtures stay as they are and the
+  engine's table answers the world's pair on a register that links neither.
+- **Hand-offs to `F-030`** (the production registers):
+  - the register of actors and parties must be complete: `Reaches` and `MeetsBelowOperator` answer no for a link the
+    register doesn't hold, so a missing link lets two actors pass as two;
+  - the chain `MeetsBelowOperator` compares is defined as the parties reachable from the login without passing through
+    the operator's party (round 3). A register that links a party above the operator by another path, around it,
+    makes that party part of the chains below, so every two staff reaching it meet there and are refused as one actor:
+    an over-refusal, failing closed, and the known result of such a register, not a bug;
+  - a provider's desk listed under the operator rests on a `REQ-CAT-20` record that the operator and that provider
+    are one legal party;
+  - Core's own party, apart from the operator's, with nothing but Core's components acting for it or reaching it, is a
+    deployment requirement;
+  - the assembly's register maps each login and party to one parent (`Registers::actors`), a known limit: a party
+    acting for two parents is the production register's.
+
+- **Rule-offs of round 2** (core-authz's lib tests, or `rutent-scenarios`' `assembly_wiring` for the assembly's and
+  the kit's; each switched off once, the file restored and touched). The round-1 table's rules were not run again: this
+  round only added cases to their tests. The arm of `MeetsBelowOperator` out of reach is a second guard, as
+  `Reaches`' is, and no test reaches it on its own, since a confirmation asks `Reaches` first.
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | one actor: chains meeting below the operator | `one actor attempting both decide and move is refused`; `confirmer whose chain reaches the reporters is refused` |
+  | chains meeting below the operator refuse | `one actor attempting both decide and move is refused`; `confirmer whose chain reaches the reporters is refused` |
+  | the holder never decides, its chain reaching the decider's party | `neither the customer nor the holders desk resolves its order` |
+  | a party of the order reaching the decider's or confirmer's party | `neither the customer nor the holders desk resolves its order` |
+  | the holder reaching the confirmer's party | `neither the customer nor the holders desk resolves its order` |
+  | either way: the party's chain reaching the actor's party | `neither the customer nor the holders desk resolves its order` |
+  | the decider the operator's by the register (Core) | `deciding moving and confirming are separate permissions`; `core never decides or moves` |
+  | the mover the operator's by the register (Core) | `deciding moving and confirming are separate permissions`; `core never decides or moves` |
+  | the assembly: chains meeting below the operator | `policys sources answer from the records` |
+  | the assembly: a chain cut at the operator's party | `policys sources answer from the records` |
+  | the assembly: none but Core's components under Core's party | `policys sources answer from the records` |
+  | the assembly: Core's own components act for it | `assembled order closes on the public record and the reserves statement`; `policy the log core and the world read one clock`; `policys sources answer from the records`; `silent provider records its deposit failed and moves nothing for it`; `rounds transactions are kept across routings and no segment runs under one` |
+  | the kit: Core's own party | `policy the log core and the world read one clock`; `policys sources answer from the records`; `assembled order closes on the public record and the reserves statement`; `rounds transactions are kept across routings and no segment runs under one`; `a tuples id is the digest of its canonical json`; `evidence store is bound to cores own log`; `reserve a settlement account is at is not one of the orders parties`; `staging is the one the scenario sets`; `silent provider records its deposit failed and moves nothing for it`; `catalogues grant is the one the log records` |
+
+### T-021-06, round 3 of the review (approved)
+
+Approved, with one medium finding fixed before the merge, and two lows in these notes.
+
+| # | Finding | Answer | Test |
+|---|---|---|---|
+| 1 | Medium: the customer's or the holder's sister company decides or confirms (`cust-1 -> cust-holdco` and `cust-sister -> cust-holdco`; `bank-co` and `bank-sister` under `bank-group`) | A decider or confirmer is also refused where its chain and the order party's, or the holder's, meet below the operator (`MeetsBelowOperator`, now over logins or parties): in `of_party_either_way`, for the customer and the confirmer's holder, and in the fixed rule, for the decider's holder. The mover's holder check stays one way: the holder's sister moves | `neither the customer nor the holders desk resolves its order` (all three probes, and the sister's move) |
+| 2 | Low: the `F-030` hand-off on chains | Sharpened above: the parties reachable without passing through the operator's party; the bypass over-refusal recorded as the known result of such a register | — |
+| 3 | Low: the contract world's `world--sd` and `world--sm` put the decider in `operator` and the mover on `operator-desk-b`, a pair refused under a realistic register | Contract item, for the contract author through the coordinator: put the world's decider on a desk, a sibling of `operator-desk-b` directly under `operator` | — |
+
+- **Test first.** The sister probes were written first and seen red against round 2's rules (the customer's sister's
+  decision was permitted), then the rule built.
+- **Rule-offs of round 3** (core-authz's lib tests; each switched off once, the file restored and touched):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | a decider or confirmer meeting the customer or the holder below the operator | `neither the customer nor the holders desk resolves its order` |
+  | a decider meeting the holder below the operator (the fixed rule) | `neither the customer nor the holders desk resolves its order` |
+
+
+## T-021-07
+
+- **What it builds.** `PersonQuestions::ask_about_person` on `Engine<L, P, S>` in `components/core-authz/src/cpl/`, for
+  `L: PolicyLog + stuck::Receipted`, decided through `consult`, held to rules read from the log after it, and recorded
+  through `PolicyLog` before it answers. The stub is gone; `ask_about_person` moved to built in
+  `every_policy_call_reaches_the_one_consultation_or_is_marked_unbuilt`, and the unbuilt list is empty, so the table's
+  `Call::Unbuilt` arm is gone. The engine edits are the shared type's, made in this row's turn: one `Source` variant
+  appended (`Consent`), the sixth `FIXED` entry, `person_outcome`, the one function that writes
+  `PersonOutcome::Allowed`, from the verdict, which the scan pins as a fifth permit site, and `UNREACHABLE` removed, since
+  no stub uses it. The assembly's `PolicySide` forwards to the engine and answers nothing beside it any more.
+- **Identified** (`REQ-CPL-2`). Already held: `T-021-03`'s rule binds the asker to its party and kind, and `T-021-05`'s
+  holds an agent to its party's `Scope::AskAboutPerson`. This row's tests drive both.
+- **On the person's own authority.** The fixed rule asks the person's record of consents (`Source::Consent { person,
+  consent }`, the input the asker's party): yes lets it through, no refuses `not_permitted`, nothing is a missing
+  input, out of reach not known. Default, reversible: a consent is held to the party asking, not to whom it asks;
+  where the order has a shortlist, everyone asked must be on it (round 1, finding 3, below); the set asked is bounded
+  either way. The assembly has no register of consents, so it answers a missing input and every such question is refused
+  there; no flow of Core's asks on a consent yet (rounds asks on the shortlisted route only).
+- **On a shortlisted route** (read from the log). The shortlist cited must be the order's **latest** shortlist round's
+  `decision_record`, so a recalculation's shortlist puts the providers the old one named off the route (`REQ-CPL-6`);
+  the authority's providers must be among its `shortlisted`, its verifiers among its `verifiers`, and everyone asked
+  among the two. Otherwise `not_permitted`. The log's own row holds the cited record, not the latest, so the latest is
+  policy's alone.
+- **Bounded at the party, without counting twice** (`REQ-CPL-2`, `REQ-AUZ-8`). Rounds charges questions about people
+  before it asks them (`Work::PersonQuestion`, `T-021-05`'s finding 7). `ask_about_person` counts nothing; it holds
+  each question to those charges: the permitted questions of the order by the asker's party, this one among them,
+  must not outnumber the permitted `person_question` units charged to that party for that order, or it is refused
+  `over_bound`. The same request asked again counts once. Default, reversible: per order, not per window, since a
+  charge already passed the window's bound when it was counted. A direct caller that skips the charge is refused.
+- **The set asked** (`REQ-CPL-5`). The union of everyone the log's permitted questions of the order asked, the
+  question's `asked_before` and its `ask`. Past `ASKED_BOUND` the answer is `PastBound`, recorded `refused { class:
+  over_bound }`; rounds read it as `NotOffered::PersonQuestionsPastBound`, and recalculation as no route left
+  (`recalc`, any routing that offered no route). Default, reversible: `ASKED_BOUND` is 8, the same for every order; a
+  deployment's lower bound is its policy service's to add. Taking the union means a stale read can't undercount below
+  what the request itself claims. Intake maps `PersonQuestionsPastBound` to `refused_by_policy`, not to no route: a
+  gap, below.
+- **Order of the rules.** A refusal of the consultation stands; then the shortlist, then the party's charges, each
+  refusing; then the bound, only where the verdict permits. A log that can't be read refuses `missing_input`. The rules
+  read from the log never permit, and a refusal of theirs beats not known.
+- **The verifiers asked by the advertisements** (core-internal's README, "The verifiers asked"). Not built, a gap:
+  provider-role 3.0.0's tuples declare no verifier need (`Terms` lists `required_inputs`, never a verifier), so no
+  advertisement can say which verifiers a tuple needs; the needs come with the order (`rounds::Need`). Policy holds the
+  verifiers asked to the shortlist record's `verifiers`, which `T-020-06` fills from the order's needs over the router's
+  record. Owner: `F-053` with verifiers (`DEC-16`), which adds a tuple's verifier need to provider-role.
+- **Contract item, not made** (for core-internal's single writer, through the coordinator). The three rows on
+  `ask_about_person` cite every question, whatever its outcome: `shortlisted-authority-cites-its-shortlist`,
+  `provider-asked-before-was-asked` and `asked-before-is-complete`. So a question policy refuses for a forged or other
+  order's shortlist, or for an `asked_before` short of the log's, can't be recorded even as a refusal: the call
+  answers `Err(Refused)` and nothing is recorded, as `T-021-02`'s refused revocation once was. It fails closed, and
+  each test asserts both the log's `Err` and, on a log that takes what policy answers, policy's own refusal. The change:
+  each row's `cites` matches only an `ask_about_person` whose outcome is `permitted`, as `revocation-revokes-a-grant`
+  now does, with a fixture of a refused question that would fail each row today, and the README's rows updated.
+  Classified as a contract gap, not a Core bug: Core asks no one on the `Err`.
+- **Histories the log refused, classified.** One in this row's tests: the shortlisted question first asked
+  `kyc-check`, which wasn't on its route, so the contract's own `check` refused it before policy saw it; it hid the
+  admitting log's case behind the same `Err`. A test artefact: the case now asks `bank-co`, and asserts the refusal is
+  the log's shortlist row. The off-shortlist cases' `Err`s are the contract item above.
+- **The switch in the assembly.** Until now every shortlisted question through the assembly came back not known. No
+  scenario order carries needs (`base_request`'s `needs` is empty), so none drives the path; one assembly test now does
+  it through `PolicySide` (`question_about_a_person_on_the_orders_shortlist_reaches_the_engine_and_its_log`). `History`
+  is handed in by its caller (`History::recorded`), so the `asked_before` of a routing after a restart is the
+  caller's to rebuild from the log; nothing in the assembly does it yet, and a short one is refused by the log's row
+  (fails closed). Owner: `T-020-10`'s recalculation and `F-030`'s restart, once orders with needs are routed.
+- **The rows that rest on records**, in new test files outside this module (`components/core-orch/tests/eligibility.rs`
+  over `T-020-06`'s kit, `conformance/scenarios/tests/person_records.rs` over `T-020-08`'s), each passing when written,
+  since the behaviour was there, and each seen red under its rule-off below:
+  - `REQ-CPL-6`, a no brings a recalculation: in v0 a shortlisted provider checks eligibility itself (`DEC-16`), and
+    its no is its own refusal; the router drops its candidate (`DryRunRefused`) and a further choice round chooses
+    another route.
+  - `REQ-CPL-8`, a reserve's proof: its signed answer is attributed to it; the same bytes with the maker swapped for
+    another's name count for nothing (`NoResult(Unattributable)`) and nothing settles.
+  - `REQ-CPL-9`, presence (a partial; `REQ-CPL-9` is not closed on it): the reserve's `waits_on_person` is reported
+    as its own statement, attributed to it, with no
+    input of Core's after the segment's start and no decision after the move's. **No agent acts in this test**: the
+    segments kit's caller is Core and its customer a person. Core passes the reserve nothing of the actor's kind on
+    this path, so the outcome is the same function of the reserve's answer whoever acts, but the plan's test names an
+    agent. A bounded attempt through the assembly stopped on its harness: it can script a reserve's silence
+    (`Fault::Silence`) but not its `waits_on_person`, and `Core::fleet()` lends the fleet only shared. Gap, owner
+    `F-024`: a `Fault` that scripts a reserve's act, and an order requested, quoted and accepted by the customer's
+    agent, listed and scoped in `Registers`, run to the reserve's demand. Closed by `T-024-11`
+    (`conformance/scenarios/tests/presence.rs`; `F-024`'s notes).
+  - `REQ-CPL-11`, a third-party payer: an order paid by `payer-ref-9` and carrying a personal detail of the payer
+    (`payer.name`), run through the assembly: the payer appears only in the acceptance's `parties.payer`, by
+    reference, and the detail in no entry. Over the segments kit, whose evidence store can be read, the same detail
+    reaches neither the log nor the store, while the account reference the reserve's tuple requires
+    (`payer.bank_account`) is in the operation Core signed and kept: Core hands a provider only the inputs its tuple
+    requires (`segments/mod.rs`, `required_inputs`), the rule switched off below. Residual, for the owner's review
+    (`T-025-05`): a tuple that **requires** a payer's personal detail gets it through Core, and the evidence store then
+    keeps a copy in the signed operation, where `REQ-CPL-11` wants it with the provider alone; v0's tuples require only
+    account references, and the erasure path (`REQ-AUD-13`, `T-022-03`) reaches a kept statement. Owner: `F-020`
+    (what Core may carry) with `F-022` (what the store keeps), raised with the coordinator.
+  - `REQ-CPL-12`, reliance (a partial; `REQ-CPL-12` is not closed on it): the contract's world admits the `reliance` record naming its judge and the provider that
+    relied on it, and refuses one naming another judge. Gap: nothing in Core writes a `reliance` entry; it is a general
+    entry, so core-authz can't. No v0 flow has a provider rely on a reserve's judgement. Owner: `F-053` for verifiers;
+    for the reserve half, the row that first has a provider rely on a reserve's statement (`F-020`), raised with the
+    coordinator.
+- **Tests first.** The four core-authz tests were written against a skeleton of the call that answered as the stub
+  did, and all four failed; the rules were built after. The assembly's test and the record-level tests passed when
+  written. The assembly's is seen red with `PolicySide` answering `Err` in place of the engine (not the old stand-in's
+  not-known answer), the rest under the rule behind each. Correction to `82cd17d`'s body, which says each
+  record-level test was seen red under its rule-off: `REQ-CPL-11`'s first version wasn't, and its scan for detail keys
+  could not fail, since no order carried one; it was made real in the next commit (above) and its rule-off added.
+- **`REQ-CPL-5`'s "no route left", through intake.** The core-authz test shows `PastBound`; rounds give
+  `NotOffered::PersonQuestionsPastBound` and recalculation no route left. Intake maps it to `refused_by_policy`
+  (`intake/class.rs`), while `REQ-CPL-5` reads "past the bound, the order counts as having no route left
+  (`REQ-ORD-28`)". Gap, owner `T-020-03`: map it to the no-route class intake gives an order with no route.
+- **Rule-offs.** Each rule switched off once by `t-021-07-ruleoffs.py`, the file restored and touched; core-authz's lib
+  tests, `rutent-scenarios`' `assembly_policy` or `person_records`, or core-orch's `eligibility`. Four first turned
+  nothing red: the shortlist being the record cited, its providers, and its verifiers, each masked by the clause on
+  everyone asked; and the router's drop, switched off at the wrong branch (`DryRunRefused`, where a ramp's refusal
+  leaves its step unconfirmed). Cases were added (the replaced shortlist cited for a provider still on the route; an
+  authority naming a provider or verifier off the shortlist while asking one on it) and the router switched off at its
+  `Unconfirmed` drop, and each then went red. One stays a second guard: everyone asked among the shortlist's providers
+  and verifiers, which the contract's own `check` (`ask` within the authority's lists) and the two clauses before it
+  already imply, so no test reaches it.
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | the consent rule in `FIXED` | `question about a person with no authority is refused` |
+  | a consent's no refuses | `question about a person with no authority is refused` |
+  | a consent held to the asker's party | `question about a person ...`; `unread log asks no one about a person`; the built and unbuilt table |
+  | a shortlisted route needs a shortlist of the order | `question about a person with no authority is refused` |
+  | the latest shortlist, not an earlier one | `provider off the shortlist is never asked about eligibility` |
+  | the shortlist cited is that record | `provider off the shortlist is never asked about eligibility` |
+  | the authority's providers among the shortlisted | `provider off the shortlist is never asked about eligibility` |
+  | the authority's verifiers among those needed | `provider off the shortlist is never asked about eligibility` |
+  | everyone asked among them | none: a second guard, as above |
+  | bounded at the party (the charge rule) | `question about a person ...`; `the unbuilt engine permits nothing on any call and records first` |
+  | only questions about people's charges cover | `question about a person with no authority is refused` |
+  | only the asker's party's charges cover | `question about a person with no authority is refused` |
+  | only the order's charges cover | `question about a person with no authority is refused` |
+  | the same question counts once | `question about a person with no authority is refused` |
+  | the set asked is the log's too | `providers asked past the bound leave no route` |
+  | past the bound | `providers asked past the bound leave no route` |
+  | a log that can't be read refuses | `unread log asks no one about a person` |
+  | the consultation's refusal stands | `question about a person ...`; `no public entry point of core reaches an effect without a decision` |
+  | allowed only on a permit (`person_outcome`) | `question about a person ...`; `no public entry point of core reaches an effect without a decision` |
+  | the assembly's question is the engine's | `question about a person on the orders shortlist reaches the engine and its log` |
+  | an unconfirmed candidate dropped in the choice round (router) | `eligibility no brings a recalculation` |
+  | an answer counted only as its maker's (segments) | `reserves proof in anothers name is refused` |
+  | a demand of presence reported as the reserve's (segments) | `presence demanded of an agent is reported as the reserves outcome` |
+  | a reliance's judgement is its judge's (the contract's row, switched off locally and restored) | `record names whose judgement was relied on and by whom` |
+  | a provider handed only the inputs its tuple requires (segments) | `records after a third party payment hold a reference at most` |
+- **Hand-offs, in files this row doesn't own.** `F-024`'s notes ("Policy calls answered beside the engine") still say
+  questions about people are answered beside the engine: they no longer are, and `PolicySide` answers nothing beside
+  it. `T-025-05` no longer needs to review a stand-in.
+
+### T-021-07, round 1 of the review
+
+Not approved; three gaps reproduced, one low. Fixed one commit per finding, each with a test seen red first on the
+fact the reviewer found (an assertion, not a compile failure). The rules and the tests above describe the code after
+this round.
+
+| # | Finding | Commit | Answer | Test |
+|---|---|---|---|---|
+| 1 | High: a question on a shortlisted route wasn't tied to the order's requester or the person (`THR-45`, `REQ-CPL-2`); an unrelated provider party, charged for `ord-17`, citing the latest shortlist about anyone, was allowed | `1cfe921` | The sixth fixed rule holds a question on the route to the order's own: its asker acts for the order's requester (`Source::Requester`, the input the asker's party), or, stating Core's role, the register lists its login as carrying the order's authority onward (`Permission::CarryOnward`, as Core's moves are held); and the person is one of the order's parties (`Source::OrderParties`, the input the person). A no refuses `not_permitted`, nothing is a missing input | `question on a shortlisted route is the orders own about one of its parties` |
+| 2 | Medium: the charge bound left out every question under the same request id, so one charge of 1 let five questions through under `req-same` | `ce9304c` | An id the log holds as permitted for another question refuses this one `not_permitted`; the same question again still counts once | `request id reused for another question is refused` |
+| 3 | Medium: a question on the person's own consent wasn't held to the shortlist | `8940f9b` | The coordinator's ruling, reversible: `REQ-CPL-6`'s letter. Where the order has a shortlist, everyone a consent question asks must be among its latest shortlist's providers and the verifiers its tuples need; before any shortlist, the consent and the set asked bound it | `question on a consent asks no provider off the orders shortlist` |
+| 6 | Low: the latest-shortlist lookup ignored the entry's outcome, leaning on the contract's `check` | `82d1a6c` | Only a `decision_record` whose outcome is `observed` is a shortlist | `shortlist record not observed is no shortlist` |
+
+- **Findings 4 and 5, no code.** The presence and reliance tests stay as honest partials (marked so above); the
+  coordinator adds `F-024` rows for the agent's scenario and for a writer of `reliance` entries. The three
+  `ask_about_person` rows are queued for contract round 3 and on `T-025-05`'s list.
+- **Scope.** The edit to `conformance/scenarios/src/assembly/policy.rs` (`F-024`'s file) was the lead's exception, as
+  `T-021-04`'s and `T-021-05`'s switches were: forwarding a built call to the engine. `PolicySide::new` keeps its
+  `records` and `deployment` arguments, unused, because its one caller is `assembly/mod.rs`, outside the exception;
+  dropping them is a two-line edit there for `F-024`'s owner, with no change of behaviour.
+- **`REQ-CPL-5` at intake** (for `T-020-03`). Ruled a matter of wording: intake's `refused_by_policy` for
+  `PersonQuestionsPastBound` stands; `T-020-03` may reword its comment so it says that past the bound the order has no
+  route left (`REQ-CPL-5`, `REQ-ORD-28`), as rounds and recalculation read it.
+- **Defaults of this round**, reversible: Core asks on the route only through a login listed with `CarryOnward`,
+  the permission Core's moves already need, rather than a permission of its own; the person must be one of the
+  order's parties on the route always, not only where a tuple names the parties its rules check.
+- **Rule-offs of this round** (core-authz's lib tests; each switched off once by `t-021-07-ruleoffs-r1.py`, the file
+  restored and touched; the earlier shortlist rule-offs run again on the moved code):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | the route's asker acts for the order's requester | `question on a shortlisted route is the orders own about one of its parties` |
+  | Core asks on the route only through a login listed as carrying onward | `question on a shortlisted route is the orders own ...` |
+  | the person is one of the order's parties | `question on a shortlisted route is the orders own ...` |
+  | a fixed rule's no refuses (consent, requester, person) | `question about a person with no authority is refused`; `question on a shortlisted route is the orders own ...` |
+  | a request id names one question | `request id reused for another question is refused` |
+  | a consent question held to the order's shortlist | `question on a consent asks no provider off the orders shortlist` |
+  | only an observed shortlist record is a shortlist | `shortlist record not observed is no shortlist` |
+  | again: a shortlisted route needs a shortlist of the order | `question about a person with no authority is refused` |
+  | again: the latest shortlist | `provider off the shortlist is never asked about eligibility` |
+  | again: the shortlist cited is that record | `provider off the shortlist is never asked about eligibility` |
+  | again: the authority's providers among the shortlisted | `provider off the shortlist is never asked about eligibility` |
+  | again: the authority's verifiers among those needed | `provider off the shortlist is never asked about eligibility` |
+  | again: a consent held to the asker's party | `question about a person ...`; `question on a consent asks no provider ...`; `unread log asks no one ...`; the built and unbuilt table |
+  | again: bounded at the party (the charge rule) | `question about a person ...`; `the unbuilt engine permits nothing on any call and records first` |
+
+### T-021-07, round 2 of the review
+
+Findings 1, 2 and 6 closed; one new medium finding, fixed in one commit with a test seen red first on the reviewer's
+probe.
+
+| # | Finding | Answer | Test |
+|---|---|---|---|
+| 7 | Medium: on the consent path nothing tied the order a question names to its asker or person, so naming an order with no shortlist (`ord-fake`, charged for by the asker itself) escaped round 1's shortlist hold: the same off-shortlist question refused on `ord-17` was allowed on `ord-fake` | The coordinator's ruling: the consent path is held to the same needs as the route, one list serving both, so they can't drift apart. Its asker acts for the order's requester (`Source::Requester`), or, stating Core's role, is listed with `CarryOnward`; the person is one of the order's parties (`Source::OrderParties`). An order the records don't know answers nothing, a missing input, so a fabricated id is refused. A real order with no shortlist yet is still asked on its requester's consent | `question on a consent names an order its asker acts for` |
+
+- **Other rows' tests.** `T-021-05`'s register (`parties/tests.rs`) now answers the consent fixture's person,
+  `person-ref-8`, as one of its order's parties, an input no caller there is, so its scope tests still drive
+  `ask_about_person` through the consultation; the engine's table gives the same word for the fixture.
+- **Rule-offs of this round** (core-authz's lib tests; each switched off once by `t-021-07-ruleoffs-r2.py`, the file
+  restored and touched):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | a consent question is the order's own (the shared needs on the consent path) | `question on a consent names an order its asker acts for` |
+  | the route keeps the shared needs (the moved code) | `question on a shortlisted route is the orders own about one of its parties` |
+
+
+## Rows added after review (`plan/m3-owed-rows`)
+
+- The agent's `REQ-CPL-9` scenario is `T-024-11`. The writer of `reliance` entries is `T-020-23` for a reserve's
+  judgement and `T-024-12` for the verifier stand-in at the assembly; the production verifier half stays `F-053`'s
+  (`M5`, `DEC-16`). Policy's answer to an unreachable order-record source (`funds`) is `T-021-08`.
+
+## T-021-08
+
+Branch `f-021/t-021-08-unreachable-record`, from `m3` at `b8c416e0`. Edits `components/core-authz/src/funds/` only.
+
+- **What changed.** `held_to_the_register` reads an order's parties from the log's acceptance and, where the log holds
+  none, from `Sources::order_record`. Its three replies are now told apart: `Given` supplies the parties, `Missing`
+  (the source says nothing of the order) leaves none and the order is refused `not_permitted` as another's is
+  (`REQ-AUZ-3`), and `Unreachable` answers not known with `VerifierUnreachable`, the cause an unreachable account
+  register already gives, and nothing is recorded as permitted (`REQ-AUZ-5`, `AC-17`). A refusal the consultation made
+  already stands, as this function is reached only with none; a not known from the consultation stays as it is.
+- **Callers.** The only reader of `order_record` is this check. Every caller of `authorise` already treats a not
+  known as "nothing moves, show the cause": the filing (`arrival/filing.rs`, both sites) and intake (both sites)
+  wait with `PolicyNotKnown`, and hand-on returns the decision to its caller. None falls through to an allow: each
+  proceeds only on `decision.permit().is_some()`. No change outside `core-authz` was needed.
+- **Defaults, reversible.** The cause is `VerifierUnreachable`, as the account register's unreachable gives (the
+  contract has no cause of its own for an order record); an order the log holds an acceptance of never asks the record,
+  so its source being out of reach changes nothing there.
+- **Gaps.** None found.
+- **Tests, written first.** The fix landed in the working tree while the first test run waited on the shared lock for
+  about an hour, so the tests were not seen red before it; the rule-off below is the red run. The existing
+  `an_order_filed_before_its_acceptance_is_known_by_its_record` is renamed to the row's third test, and the test
+  source's record becomes a `Reply` so it can be made unreachable.
+- **Rule-off** (`cargo test -p rutent-core-authz --lib funds::`, file restored and touched):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | an unreachable order record is not known (read as no record again) | `unreachable_order_record_gives_not_known_and_nothing_moves` |
+  | a record the source says nothing of stays a refusal | not switched off: it is the behaviour before this row, held by `order_record_the_source_knows_nothing_of_is_refused_as_anothers` |
+
+## T-021-09
+
+Branch `f-021/t-021-09-decline-and-status-policy`, from `m3` at `4b306ca9`. Edits `components/core-authz/` only
+(`stuck/`, `roles/`, `parties/`, the engine's `Asked` and its tests).
+
+- **What changed.**
+  1. `OutcomeDeclines::decline_outcome` is built on every `Engine`, as `confirm_outcome` is: one consultation
+     (`Asked::DeclineOutcome`), then the log's rules on policy's handle, then the entry is recorded, then the answer
+     is given. The fixed rule asks the decliner's login for a permission of its own, `Permission::DeclineOutcome`
+     (confirming alone doesn't give it), and holds it to a party that is none of the order's. The log's rules are the
+     confirmation's (`second_word_check`, shared): the report cited is a permitted one of the same effect and order,
+     its reporter is not the decliner's accountable actor (same login, same party, either chain reaching the other's
+     party, or chains meeting below the operator), the decliner is, or reaches, no party of the order, and it is not
+     the desk of the provider holding the funds. An agent declines within `Scope::DeclineOutcome`. `core-authz`'s
+     guard now holds `OutcomeDeclines` (`true`).
+  2. `Action::AskStatus` is asked by an operator's login the register lists for `Permission::AskStatus`, or by one of
+     Core's own actors listed for `CarryOnward`, as `ask_reversal` is. Customer, provider, verifier, regulator and
+     checker are refused before the deployment's policy is asked; an unknown role fails closed (the match has no
+     catch-all).
+- **Rulings.** A failed outcome on a stuck order frees it only once someone of another party confirms it (2026-11-14):
+  a decline settles and frees nothing, and policy lets only another party decline. Core is its own party
+  (2026-11-16): Core never counts as the operator's, so its decline needs its own listing like any actor. The operator
+  may deliver, return to origin or hand on (2026-11-16) concerns the decide step, untouched here.
+- **Defaults, reversible, each failing closed.**
+  - a permission apart from `ConfirmOutcome` for declining (a login that may confirm may not decline until the
+    register lists it);
+  - the decline's actors, customer and holder checks are the confirmation's, one reading (`second_word_check`);
+  - the late-status ask has its own operator permission, `AskStatus`, not `AskReversal`; Core's goes through
+    `CarryOnward`, as the reversal's does;
+  - an operator holding every permission but `AskStatus` is refused; so is one holding `AskReversal`.
+- **Gaps, with owners.**
+  1. `conformance/scenarios/src/assembly/policy.rs`'s `PolicySide` does not forward `decline_outcome` yet (an `F-024`
+     file; `T-020-20` needs it to call policy through the assembly). Owner: the lead, with `T-024-14` or a row of
+     `F-024`'s; no edit made here.
+  2. The deployment's register must list `DeclineOutcome` and `AskStatus` for its logins: configuration, owner
+     `F-021`'s register docs / the deployment.
+  3. Policy doesn't read whether a report is already settled: a decline after a confirmation, a second decline, a
+     confirmation after a decline. These rest on the contract rows `outcome-decline-rests-on-its-report` and
+     `outcome-confirmation-rests-on-its-report`; the log's refusal comes back as `Err(AppendFailure::Refused)`.
+     `T-020-20` must treat that `Err` as a refusal, not a crash. Owner: `T-020-20`.
+  4. `CarryOnward` now also carries Core's status ask: any provider, any order, bound to the segment's provider only
+     by the log's `status-is-asked-of-the-segments-provider`. A widening of that permission, for the register's docs
+     and the deployment's listing of Core's logins. Owner: the deployment and F-021's register docs.
+- **Red first.** The five named tests and the guard were written before the code. Against a stub that refused every
+  decline and an `AskStatus` role arm of `None`, `decline of an outcome report ...is permitted and recorded first`,
+  `decline by the reporters own party or login is refused` (answered `not_permitted` for `same_actor`), `decline by an
+  actor whose acts for chain reaches ...`, `late status asked by core ...is permitted` failed on assertions; the guard
+  failed on `the table holds every policy call` once flipped to `true`. `late status asked by a customer or a
+  provider is refused` passes against the stub (the behaviour before the row) and is held by its rule-off.
+- **Rule-off** (`cargo test -p rutent-core-authz --lib`, each file restored):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | the decline's permission | `decline_is_held_to_its_permission_its_customer_and_holder_checks_and_its_report` |
+  | the fixed not-the-order-party rule, on the decline, on `confirm_outcome` and on `decide_stuck` (the review's probe: the order's record names a party its acceptances don't) | `decider_confirmer_and_decliner_of_a_party_the_orders_record_names_are_refused` for each; the confirm and decide switch-offs also turn `neither_the_customer_nor_the_holders_desk_resolves_its_order` red. Before the probe, T-021-06's two had the same gap |
+  | reporter and decliner one actor | `decline_by_the_reporters_own_party_or_login_is_refused`, `decline_by_an_actor_whose_acts_for_chain_reaches_the_reporters_party_is_refused` (and the confirmation's two) |
+  | the customer along its chain (log) | `decline_is_held_to_...` (the holding company case), `neither_the_customer_nor_the_holders_desk_resolves_its_order` |
+  | the holder's desk either way | `decline_is_held_to_...`, `neither_the_customer_nor_the_holders_desk_resolves_its_order` |
+  | the report is of the same order | `decline_is_held_to_...`, `step_with_nothing_permitted_behind_it_is_refused` |
+  | every log rule on the decline | the three decline tests above and `the_unbuilt_engine_permits_nothing_on_any_call_and_records_first` |
+  | the decline's agent scope (mapped to confirm's) | `decline_is_held_to_...` |
+  | the engine guard marks `OutcomeDeclines` unbuilt | `every_policy_call_reaches_the_one_consultation_or_is_marked_unbuilt` |
+  | ask_status: Core refused | `late_status_asked_by_core_for_a_segment_is_permitted`, `authenticated_caller_is_still_decided_by_policy`, `every_value_moving_action_is_refused_when_policy_denies` |
+  | ask_status: operator refused | `late_status_asked_by_core_for_a_segment_is_permitted`, `authenticated_caller_is_still_decided_by_policy` |
+  | ask_status: customer, provider and others permitted | `late_status_asked_by_a_customer_or_a_provider_is_refused`, `authenticated_caller_is_still_decided_by_policy` |
+  | ask_status: operator needs no permission | `late_status_asked_by_core_for_a_segment_is_permitted`, `late_status_asked_by_a_customer_or_a_provider_is_refused` |
+
+## T-021-10
+
+Branch `f-021/t-021-10-erase-permission`, from `m3` at `430b73dd`. Edits `components/core-authz/` only (`roles/`, and the
+engine's list of decided actions and its counts).
+
+- **What changed.** `Permission::EraseStatement` joins the operator's permissions, held login by login as each
+  catalogue change is. `Action::EraseStatement` is asked by an operator's login the register lists for it
+  (`operator_holds`), and by no other role, Core's own actors included; a register that says nothing gives a missing
+  input and so a refusal. The contract's action shape already names what is erased (`commitment`, `reason`) and the
+  decision's entry records the request whole, so the decision names the commitment and the actor: no contract edit.
+  `Scope::EraseStatement` (agent scope) was already in `parties/` and its table row is unchanged. The engine's
+  `every_decided_action` now lists the erasure (replacing the `unreachable!`), its caller is the operator's, and the
+  counts of `every_value_moving_action_is_refused_when_policy_denies` (15 to 16) and
+  `authenticated_caller_is_still_decided_by_policy` (`3 * 15` to `3 * 16`) follow: the only edits to `T-021-01`'s tests.
+  `every_permission` and the tests that count it are untouched.
+- **Defaults, reversible, each failing closed.**
+  - a permission apart from every catalogue change and from `PostRoute`: an operator holding all of those is refused;
+  - Core's own actors may not erase (no `CarryOnward` path): erasing is an operator's act, never one carried onward;
+  - the `reason` is a label policy never branches on, as the contract says.
+- **Gaps, with owners.**
+  1. The deployment's register must list `EraseStatement` for the operator logins that may erase: configuration,
+     owner `F-021`'s register docs / the deployment.
+  2. Policy doesn't read that the commitment names a statement the store keeps, nor that nothing rests on it: the
+     log's rows `erasure-waits-while-anything-rests-on-the-statement` and `erasure-is-carried-out-on-its-decision`
+     hold those. Owner: `T-020-37` (Core carrying out the erasure).
+  3. Core doesn't carry the erasure out yet. Owner: `T-020-37`.
+- **Red first.** Both named tests were written against `Permission::EraseStatement` with the arm still `None`: the
+  permitted test failed on its outcome assertion (`Refuse` for `Permit`); the refused test passes against that stub
+  (the behaviour before the row) and is held by its rule-offs.
+- **Rule-off** (`cargo test -p rutent-core-authz --lib`, file restored each time):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | the erase arm answers no rule (`None`) | `operator_with_the_erase_permission_is_permitted_to_erase_a_statement`, `every_value_moving_action_is_refused_when_policy_denies`, `authenticated_caller_is_still_decided_by_policy` |
+  | the operator-only restriction (any listed role may erase) | `caller_without_the_erase_permission_is_refused`, `authenticated_caller_is_still_decided_by_policy`, `every_value_moving_action_is_refused_when_policy_denies` |
+  | another permission (`PostRoute`) stands for it | `caller_without_the_erase_permission_is_refused`, `operator_with_the_erase_permission_is_permitted_to_erase_a_statement`, `every_value_moving_action_is_refused_when_policy_denies` |
+  | no permission asked of the operator | `caller_without_the_erase_permission_is_refused`, `every_value_moving_action_is_refused_when_policy_denies` |
+
+## T-021-11
+
+Branch `f-021/t-021-11-origin-held`, from `m3` at `4a48ac54`. Edits `components/core-authz/` only (`funds/`), a `DEC-20`
+path: it waits for the owner's click at the release into `main`.
+
+- **Design.** The origin account is the first one a permitted authorisation speaking for the part names, held from then:
+  `origin_in_force` no longer follows later authorisations the payer gave. `refuses` answers `not_permitted` for any
+  authorisation naming another account than the one in force for a part it covers (naming none included), whoever
+  gives it, the payer too. Where the authorisations so far name none (`Some(None)`), an account may be named once,
+  and only by the payer's authorisation; from then it is held. Restating the account in force stays permitted, from
+  any giver the other rules let through. `sets_account` and its register check (the payer holds the account) are
+  unchanged, minus the payer argument. Core-internal's `only-the-payer-moves-the-origin-account` is untouched.
+- **Defaults, reversible, each failing closed.**
+  - Naming a first account on a part with none yet is the payer's alone, not "any giver policy otherwise permits":
+    the log's rule refuses any other's, so a wider policy would permit what the log then refuses to admit. To widen
+    it, widen the log's rule with it.
+  - An authorisation naming no account where one is in force counts as a move and is refused (as it was for a
+    non-payer before).
+  - A log that already holds a payer's move (core-internal admits it; policy wrote none) is read as holding the first
+    account: policy does not follow the move.
+- **Gaps, with owners.**
+  1. In such a log, policy and core-internal's `origin_account_in_force` disagree on the account in force, so a delivery
+     back to the origin (`resolved_to`) follows the log's account, not policy's. No log policy wrote has one. Owner:
+     the later widening of both items, or a contract round that narrows the log's rule.
+  2. The widening later: lift the refusal in `refuses`, restore the payer's moves in `origin_in_force`, and give a
+     third-party payer a way to authorise (`third-party-payer-authorises`). Owner: the owner's later word.
+  3. Test seeding of the log-holds-a-move case uses the register's frozen snapshot, not entries run through
+     `admit_entry`; the pair is admitted by the log's rule by reading, not by run. Owner: `T-021-11`'s reviewer.
+  4. Policy doesn't hold `origin_reserve`: today `hand_on/rule.rs` refuses a change of it (`ChangesOrigin`), and the later
+     widening owns it.
+- **Red first.** The changed `only the payer moves the origin account` and the two named tests of moving and of naming
+  once failed on their outcome assertions (`Permit` for `Refuse`); the restating test passes before and after, and
+  is held by the rule-offs below (the first of them).
+- **Rule-off** (`cargo test -p rutent-core-authz --lib`, file restored each time):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | a move is refused where an account is in force | `authorisation_moving_the_origin_account_once_one_is_in_force_is_refused_even_from_the_payer`, `only_the_payer_moves_the_origin_account`, `origin_account_named_for_the_first_time_is_set_once_and_then_held`, `a_move_the_log_already_holds_is_not_followed`, `reopened_engine_still_refuses_a_move_of_the_origin_account`, `split_orders_parts_each_hold_their_origin_account` |
+  | the first naming is the payer's alone | `origin_account_named_for_the_first_time_is_set_once_and_then_held` |
+  | the account is held from the first naming (later ones followed) | `a_move_the_log_already_holds_is_not_followed` |
+
+## T-021-12
+
+Branch `f-021/t-021-12-13-rollback-override`, from `m3` at `a3bc16b4`. Edits `components/core-authz/` (`roles/`, the
+engine's scan and its list of decided actions) and, from fix round 1, `components/core-orch/src/segments/roll_back.rs`
+with one `pub mod roll_back;` line in `segments/mod.rs`, a `DEC-20` path: it waits for the owner's click at the release into
+`main`.
+
+- **What changed.** `CatalogueChange::RollBack` is answered by the one arm every catalogue change has: an operator's
+  login the register lists for `Permission::Change(RollBack)`, a permission of its own, apart from promotion's and every
+  other. The special arm that answered no rule is gone. Core's own actors, and every other role, are refused before the
+  deployment's policy is asked; the decision's entry records the request whole, so it names the actor and the change
+  (`REQ-AUD-8`). The scan (`engine/entry_points.rs`) moves `roll_back` from `CARRIES_OUT_NOTHING` to `CARRY_OUT`
+  (`change_catalogue: roll_back`), so in orchestration it may be called only where the effect it rests on is in hand
+  (rule 3). `engine/mod.rs`'s note that `AC-17`'s reading is pending now says the owner settled it as "not known"
+  (`spec-ac17-not-known`, 2026-11-18).
+- **Tests.** `roll_back_is_refused_while_no_rule_answers_it` is replaced by `roll back without its permission is
+  refused` (`roll_back_without_its_permission_is_refused`), which also holds the permitted case: the operator's login
+  holding the one permission is permitted, recorded with its actor and action, and the log admits the effect; the same
+  permission held by Core's actor, and every other permission held by the operator, are refused. `every_permission` lists
+  `RollBack` (its `unreachable!` is gone), so `each_permission_alone_allows_only_its_own_action` runs over it (11 to 12)
+  and the erase and promotion tests' loops over `every_permission` take it in unchanged. `every_decided_action` lists
+  it, so `T-021-01`'s two counts move by the one action (16 to 17, `3 * 16` to `3 * 17`): the only edits to them.
+  `staging_is_rolled_back_only_on_a_permitted_decisions_effect` pins the scan's side; the seam's own tests are
+  `core-orch`'s `tests/roll_back.rs` (a permitted roll back ends the staging and records its effect and result; a refused or
+  not-known decision, a log that can't take the effect, another version or nothing staged, ends nothing; the platform's
+  refusal records `failed`; an effect of another action rolls nothing back).
+- **Defaults, reversible, each failing closed.**
+  - The permission is an operator's alone: Core's own actors don't roll a staging back, even holding it (there is no
+    `CarryOnward` path), as for the erasure.
+  - Policy reads nothing of the release or the staging (that one is in force, that a staging is open): `roll_back`
+    keeps the version in force and the platform answers a roll back with nothing staged.
+- **The seam (fix round 1, the reviewer's finding 1).** `segments/roll_back.rs` carries `roll_back` out as `promote` is, in
+  a file of its own so `segments/mod.rs` takes only its `mod` line. `Segments::roll_back` asks the decision for a
+  `change_catalogue` of `roll_back` naming the provider and the staged version, by the caller; on a permit it records the
+  effect, calls the platform through `RollsBack` (a port of its own, so no `Modules` implementation changes), and
+  records the result `done` or `failed`; the effect is marked acted on only once the staging ended. The public
+  `carry_out_roll_back` takes the `Effect` itself and checks the permitted action, which the scan, matching names only,
+  can't: an effect whose action isn't a `roll_back` of a named version asks nothing of the platform
+  (`NotARollBack`), and the version is compared again with the one staged right before the platform is asked, so a
+  permit to roll one release back ends no other staging. `promote`'s `carry_promotion` reads only the provider off its
+  effect and doesn't check the change; that is left as it is, outside this row.
+- **Gaps, with owners.**
+  1. Nothing calls `Segments::roll_back` yet outside its tests: the assembly's wiring of an operator command to it, as
+     `promote` has through the assembly's `releases.rs`, isn't part of this row. Owner: the assembly row that wires the
+     operator's catalogue commands (`T-024-*`'s scenario kit), to be named by the plan's owner; no row exists for it yet.
+     **Closed by `T-020-42`**, which wires `Core::roll_back` in the assembly's `releases.rs` and holds a scenario for it.
+  2. The deployment's register must list `Change(RollBack)` for the operator logins that may roll back:
+     configuration, owner `F-021`'s register docs / the deployment.
+- **Red first.** The new roll back test failed on its permitted assertion (`Refuse` for `Permit`), `each permission
+  alone` on `Change(RollBack) allows itself`, the engine's two counts on 16 against 17, and the scan test on its
+  `CARRY_OUT` assertion.
+- **Rule-off** (`cargo test -p rutent-core-authz --lib`, file restored each time):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | the roll back arm answers no rule (`None`) | `roll_back_without_its_permission_is_refused`, `each_permission_alone_allows_only_its_own_action`, `every_value_moving_action_is_refused_when_policy_denies`, `authenticated_caller_is_still_decided_by_policy` |
+  | promotion's permission stands for it | `roll_back_without_its_permission_is_refused`, `each_permission_alone_allows_only_its_own_action` |
+  | no permission asked (any caller passes) | `roll_back_without_its_permission_is_refused`, `each_permission_alone_allows_only_its_own_action`, `caller_without_the_erase_permission_is_refused`, `authenticated_caller_is_still_decided_by_policy` |
+  | `roll_back` left out of the scan's `CARRY_OUT` | `staging_is_rolled_back_only_on_a_permitted_decisions_effect`, `no_public_entry_point_of_core_reaches_an_effect_without_a_decision` |
+
+- **Rule-off of the seam, fix round 1** (`cargo test -p rutent-core-orch --test roll_back`, file restored each time):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | the effect's action isn't checked to be a `roll_back` | `effect_of_another_action_rolls_nothing_back` |
+  | the staged version isn't compared again before the platform is asked | `effect_of_another_action_rolls_nothing_back` |
+  | a platform refusal records the result `done` | `platform_refusal_records_the_result_failed` |
+  | a decision that doesn't permit still yields an effect | `refused_or_unknown_roll_back_ends_nothing` |
+
+  Red first: with the action check missing (the shape of `carry_promotion`) `effect_of_another_action_rolls_nothing_back`
+  failed on its assertion; the other four seam tests passed against that stub and are held by the rule-offs above.
+
+## T-021-13
+
+Branch `f-021/t-021-12-13-rollback-override`, after `T-021-12`. Edits `components/core-authz/` only (`roles/`), a `DEC-20`
+path: it waits for the owner's click at the release into `main`.
+
+- **What changed.** `Permission::EraseOverridingCitations` joins the operator's permissions. An `Action::EraseStatement`
+  whose `overrides_citations` is set is asked of an operator's login the register lists for both `EraseStatement` and
+  `EraseOverridingCitations`, and of no other role, Core's own actors included; a register that says nothing gives a
+  missing input and so a refusal. The erasure without the override still asks `EraseStatement` alone, as `T-021-10`
+  built it. The decision's entry records the
+  request whole, so it names the commitment (the statement) and the override. The log's and the store's default, a cited
+  statement is kept (`erasure-waits-while-anything-rests-on-the-statement`, `EVIDENCE_RESTED_ON`), is untouched: policy
+  only decides who may ask for the override.
+- **Tests.** `erasure_overriding_citations_is_refused_while_no_rule_answers_it` is replaced by `erasure overriding citations
+  is permitted only with its own permission` and `operator with the erase permission alone is refused an override`.
+  `every_permission` lists the override as a thirteenth pair, so `each_permission_alone_allows_only_its_own_action` runs
+  over it (12 to 13), holding the erase permission beside the override's, the pair being what the override needs;
+  `operator_with_the_override_permission_alone_is_refused` holds that the override permission alone is refused; the tests that hold every other permission now also hold it where it isn't their subject, and
+  `T-021-10`'s tests pass unchanged. The engine's counts are untouched: the override is the same action.
+- **Defaults, reversible, each failing closed.**
+  - The override needs both permissions (fix round 1, the reviewer's finding: the contract exempts an erasure from the
+    citation check wherever its permitting decision sets `overrides_citations`, cited or not, so an override permission
+    that stood alone would erase any kept statement without the erase permission, the stronger permission under a
+    weaker name). This is the owner's form default for `override-permission-shape`, "Both permissions". The round-0
+    reading, two independent permissions, is withdrawn.
+  - It is an operator's login alone, never carried onward by Core's actors.
+  - Policy doesn't read whether the statement is cited: whether anything rests on it is the log's and the store's.
+- **Gaps, with owners.**
+  1. The deployment's register must list `EraseOverridingCitations` for the operator logins that may override:
+     configuration, owner `F-021`'s register docs / the deployment.
+  2. The store's carrying out of an override on that permit, and orchestration's asking for it only where the operator asked:
+     `T-022-10` and `T-020-42`. The conformance assembly's register (`conformance/scenarios/src/assembly/mod.rs:741`)
+     lists only `EraseStatement` for the operator's login: `T-020-42`'s scenarios need it to list
+     `EraseOverridingCitations` beside it, or they are refused (`T-020-42` leaves the default register without it and grants it in the scenarios that need it).
+- **Red first.** The permitted test failed on its outcome assertion (`Refuse` for `Permit`) and `each permission alone` on
+  its count; the refused tests pass against the stub (the behaviour before the row) and is held by the rule-offs. The enum
+  variant was added first so the tests compile.
+- **Rule-off, fix round 1** (`cargo test -p rutent-core-authz --lib`, file restored each time; the table of round 0, with
+  its independent reading, is withdrawn):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | the erase permission is no longer asked beside the override's | `operator_with_the_override_permission_alone_is_refused` |
+  | the override permission is no longer asked | `caller_without_the_erase_permission_is_refused`, `erasure_overriding_citations_is_permitted_only_with_its_own_permission`, `operator_with_the_erase_permission_alone_is_refused_an_override` |
+  | any role listed for both may override (no operator-only restriction) | `erasure_overriding_citations_is_permitted_only_with_its_own_permission`, `each_permission_alone_allows_only_its_own_action` |
+  | the override arm answers no rule (`None`) | `erasure_overriding_citations_is_permitted_only_with_its_own_permission`, `each_permission_alone_allows_only_its_own_action` |
+
+## T-021-14
+
+Branch `f-021/t-021-14-read-grants`, from `m3` at `2d62f1b9`. Finding 1 of `M3`'s milestone review (PR #143, review
+6043265441, High) and its Low on an agent's scope. Edits `components/core-authz/` (`roles/`, `parties/`, the engine's
+`Source` and the tests of `session/`, `engine/`, `funds/`, `cpl/` and `stuck/`), a `DEC-20` path that waits for the
+owner's click at the release into `main`, and the assembly's register of actors with three of its tests
+(`conformance/scenarios/src/assembly/policy.rs`; `tests/assembly_policy.rs`, `tests/assembly_wiring.rs`,
+`tests/bulk_measures.rs`, `tests/segments_support/mod.rs`, `F-024` files). No contract shape changes.
+
+- **The finding.** No fixed rule decided who may grant or revoke a read permission: `roles`' rule answered both calls
+  with no need, so a grant was held to its shape (`PermissionChange::check`: the grantee a regulator or a checker, the
+  grantor the operator, each by the role its request states) and to `ActsFor`, and `ActsFor` bound an actor's party
+  and kind, never its role. A customer's own login, stating the operator's role, granted itself the trail as a
+  regulator, read it, and revoked it, each permitted, and the log recorded the stated roles as fact.
+- **What changed.**
+  - **Read grants are the operator's, each a permission of its own.** `Permission::GrantRead` and
+    `Permission::RevokeRead` join the register's permissions, held login by login. `Asked::GrantPermission` asks an
+    operator's login the register lists for `GrantRead`, and `Asked::RevokePermission` one listed for `RevokeRead`,
+    each beside `Source::OfOperator`, the register's word that the login is the deployment operator's, in its party or
+    reaching it (as a stuck order's decider is held, `T-021-06`). Any other role is refused before the deployment's
+    policy is asked. A revocation still names a permission granted (`Register::granted`).
+  - **The role is bound in `ActsFor`.** `Source::ActsFor` gains `role`, the role the actor's request states, so the
+    register of actors answers whether the login acts for that party, as that kind, in that role. It is asked of every
+    actor every call names (`actors_named`), so a stated role is never taken on its word anywhere policy decides: a
+    grantor stating the operator's role, a grantee stating a regulator's or a checker's, a reader stating either, and
+    every other caller. The assembly's register (`Registers`) keeps each login's roles (`roles`, `acts_in`), listing an
+    actor adding its role, and listing it for another party or kind starting its roles afresh. Intake's own read of
+    the register (`core-orch`'s `Actors`, the assembly's `Acting`) still binds party and kind alone (gap 2).
+  - **The sweep covers every permission.** `each_permission_alone_allows_only_its_own_action` runs over all 25 of the
+    register's permissions (`every_permission_held`, an exhaustive match, so a permission a later row adds fails the
+    build until it is swept) and 28 calls (`every_call`): posting a route, the eleven catalogue changes, the plain
+    erasure and the override, a reversal and a late status asked by the operator and by Core carrying the order on,
+    value moved by Core and by the operator for a user, the operator's authorisation for a user, its read of an
+    order's state, granting and revoking a read, and a stuck order's four steps (decide, move, confirm, decline) in
+    the contract's worlds for them. Each permission is held alone by each actor that makes a call (the operator's
+    login, Core's carrier and an operator's desk); each call is permitted only where it is its own, recorded with its
+    actor, and only then reaches the deployment's policy. The override alone allows nothing, and beside the erase
+    permission allows the two erasures. The same permission held by another login or desk of the same parties gives
+    the callers none. Each call runs on a fresh engine over the sweep's register (`swept`).
+  - **The override is a scope of its own** (the Low). `Scope::EraseOverridingCitations` is the scope of an
+    `EraseStatement` whose `overrides_citations` is set; the plain erasure keeps `Scope::EraseStatement`.
+- **Tests.** `listed operator grants and revokes a regulator's read` and `customer's login stating the operator's role
+  grants, reads and revokes nothing` (the reviewer's probe, refused; the same login stating the operator's party too; a
+  login of another party listed in the operator's role and for both permissions; and a grant by the listed operator to
+  a grantee in a role it isn't listed in) in `roles/tests.rs`; the probe through the assembly
+  (`customers_login_stating_the_operators_role_grants_reads_and_revokes_nothing_in_the_assembly`,
+  `tests/assembly_policy.rs`); `erasure overriding citations is a scope of its own` in `parties/tests.rs`; the widened
+  sweep; and `policys_sources_answer_from_the_records` asserting the assembly's register refuses the customer's login
+  stating the operator's role or a regulator's. Test artefacts, not Core bugs, fixed in the other rows' tests: their
+  registers never listed a grantor for the new permissions (`session/tests.rs`'s `Says` answers `op-login-2` the
+  operator's and holding both; the engine's table answers them for its grant and revocation; `roles`'
+  `actor_stating_another_party_acts_for_no_one` lists `GrantRead`), `parties/tests.rs`' `Calls::by` grants in the
+  operator's role as it takes a stuck order's steps, and `bulk_measures.rs` lists the operator's login for both. The
+  test registers of the other modules (`cpl`, `parties`, `stuck`, `funds`, `session`, `engine`) answer `ActsFor`
+  without reading the role, as they never read the kind where it isn't their subject.
+- **Defaults, reversible, each failing closed.**
+  1. Granting and revoking are two permissions, not one: a login listed to grant can't revoke, and one listed to revoke
+     can't grant, the reading that keeps each a separate permission as `REQ-AUZ-6` asks of every operator change.
+  2. Both are held to `OfOperator` as well as to the operator's role and the register of permissions, so a login of
+     another party wrongly listed in the operator's role, or for the permission, grants nothing.
+  3. Binding the role in `ActsFor`, rather than a register of who may act as a regulator or a checker: one rule for
+     every actor and call, the brief's preference. A login acts in each role the register lists it in; one listed in
+     none acts in none.
+  4. The override's scope stands alone: an agent scoped to erase isn't scoped to override, and one scoped to override
+     isn't scoped to the plain erasure (the permissions still ask both, `T-021-13`).
+  5. The assembly's default register lists no one for `GrantRead` or `RevokeRead`: the scenarios that grant list the
+     operator's login themselves, as `T-020-42` does for the override.
+- **Gaps, with owners.**
+  1. The deployment's register must list each operator login for `GrantRead` and `RevokeRead` it may use, and every
+     login in each role it acts in, regulators' and checkers' included: configuration, owner `F-021`'s register docs /
+     the deployment (`F-030`).
+  2. `core-orch`'s `Actors` (intake's and the arrival filing's read of the register) binds party and kind, not role.
+     Those reads tell an order's own requester its status and check a filer before policy decides; policy binds the role
+     on every call it decides. Owner: `T-020-52` (the coordinator's routing in fix round 1; finding 4 of the review of
+     `30893dd6`).
+  3. ~~A read naming a permission is held to the grantee's party, not its role or login.~~ **Closed in fix round 1**
+     (finding 1 of the review of `30893dd6`): see below.
+- **Red first.** With the shapes in and the rules stubbed (`ActsFor` carrying a fixed role, both grant calls answered by
+  no need, the override mapped to the erase scope): the permitted test failed on `revoking alone grants nothing`
+  (`NoAccountableParty` for `NotPermitted`), the probe test on the operator's grant (`NoAccountableParty` for `Permit`),
+  the sweep on `[PostRoute] alone allows no grant a read` (`Permit` for `NotPermitted`), and the scope test on
+  `Scope::of` (`EraseStatement` for `EraseOverridingCitations`).
+- **Rule-off** (`cargo test -p rutent-core-authz --lib`, and for the assembly `cargo test -p rutent-scenarios --test
+  assembly_policy --test assembly_wiring`, file restored each time):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | a grant answered by no rule (the behaviour before the row) | `customers_login_stating_the_operators_role_grants_reads_and_revokes_nothing`, `listed_operator_grants_and_revokes_a_regulators_read`, `each_permission_alone_allows_only_its_own_action` |
+  | a revocation answered by no rule | `customers_login_stating_the_operators_role_grants_reads_and_revokes_nothing`, `listed_operator_grants_and_revokes_a_regulators_read`, `each_permission_alone_allows_only_its_own_action` |
+  | `OfOperator` not asked beside the permission | `customers_login_stating_the_operators_role_grants_reads_and_revokes_nothing` |
+  | a grant asks the revoke permission (one permission stands for both) | `listed_operator_grants_and_revokes_a_regulators_read`, `each_permission_alone_allows_only_its_own_action`, `actor_stating_another_party_acts_for_no_one`, `every_policy_call_reaches_the_one_consultation_or_is_marked_unbuilt` |
+  | any role the register lists may grant or revoke (no operator-only restriction) | `customers_login_stating_the_operators_role_grants_reads_and_revokes_nothing` (asked past the shape check, which holds the grantor to the operator's role too) |
+  | `ActsFor` carries a fixed role, not the one stated | `customers_login_stating_the_operators_role_grants_reads_and_revokes_nothing`, `listed_operator_grants_and_revokes_a_regulators_read`, `route_outside_the_authorisation_needs_a_new_one` |
+  | the grantee not among the actors a grant names | `customers_login_stating_the_operators_role_grants_reads_and_revokes_nothing`, `actor_stating_another_party_acts_for_no_one` |
+  | the override mapped to the erase scope | `erasure_overriding_citations_is_a_scope_of_its_own` |
+  | the assembly's register answers `ActsFor` whatever the role (`Registers::acts_in`) | `customers_login_stating_the_operators_role_grants_reads_and_revokes_nothing_in_the_assembly`, `policys_sources_answer_from_the_records` |
+
+### T-021-14, fix round 1 (the security review of `30893dd6`, PR #290)
+
+The review confirmed finding 1 of `M3`'s milestone review closed and raised the next layer. Fix commit on top of
+`30893dd6`, `components/core-authz/` (`session/`, `roles/` and their tests, the engine's call table, `parties`'
+register) and `conformance/scenarios/tests/assembly_policy.rs`. No contract shape changes: the log's rows stay
+party-wide, and policy is stricter than the log.
+
+- **Finding 1 (should-fix): a read by a permission is held to the whole grantee.** `Register::refuses` now needs a
+  grant in force whose grantee is the reader: its party, its login and its role, over a scope covering the read. And
+  only a regulator or a checker reads by a permission at all (`read_needs`): the arms that let any other role read by
+  one are gone, so the operator, a verifier, Core, a customer or a provider naming a permission is refused unless
+  another line lets the read through without one. The reviewer's probes are refused cases: `fr-bot` (a verifier) and
+  `fr-ops` (the operator's role) of `fin-regulator` reading by `examiner-3`'s grant, in
+  `read_by_a_permission_is_held_to_its_grantees_login_and_role` (with another regulator login of the party, and
+  `examiner-3` itself listed and reading as a checker) and through the assembly.
+- **Finding 2 (low): no read is granted to the operator's own login.** A grant asks the register's word that the
+  grantee's login is the deployment operator's (`Source::OfOperator`), and a yes refuses it; the grantor granting itself
+  is one case of it, since a grantor is always the operator's. The fixed rule's `Needs` gains `none`, inputs that must
+  each say no. `read_is_never_granted_to_the_operators_own_login`, and through the assembly.
+- **Finding 3 (low): a revocation is held to the grant it names.** `Register::granted` and the revocations kept
+  (`Register::revoked`, now the revocations themselves) match a grant by its permission, grantee and scope together,
+  so revoking a permission while naming another grantee or scope revokes nothing, and the log never records a
+  revocation from a grantee that held nothing. `revocation_is_held_to_the_grant_it_names`.
+- **Finding 4 (low):** `core-orch`'s `Actors` binding the role is left to `T-020-52`, as the coordinator routed it.
+- **Test registers taught the new word** (test artefacts, not Core bugs): `session/tests.rs`' `Says` answers no login
+  but `op-login-2` the operator's; the engine's call table says the grant fixture's grantee isn't; `parties/tests.rs`'
+  register says `examiner-3` isn't. The roles tests' register already followed chains.
+- **Defaults, reversible, each failing closed.** A read by a permission matches the grantee's login as well as its role
+  (the reviewer left the login to the owner's form; holding it is the stricter reading, and a party with several
+  regulator logins needs a grant per login). A grantee whose login the register can't place is a missing input, so a
+  refusal.
+- **Red first.** Each of the three tests failed on its assertion before the fix: `fr-bot` `Allowed`, the operator's
+  self-grant `Permit`, the revocation naming `ex-9` `Permit`.
+- **Rule-off** (`cargo test -p rutent-core-authz --lib`, file restored each time):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | the grant's login not matched to the reader's | `read_by_a_permission_is_held_to_its_grantees_login_and_role` |
+  | the grant's role not matched to the reader's | `read_by_a_permission_is_held_to_its_grantees_login_and_role` |
+  | any role reads by a permission (`_ if permitted`) | `read_by_a_permission_is_held_to_its_grantees_login_and_role` |
+  | the grantee's `OfOperator` not asked | `read_is_never_granted_to_the_operators_own_login` |
+  | `none` inputs not ruled (a yes passes) | `read_is_never_granted_to_the_operators_own_login` |
+  | a revocation matched by its permission alone | `revocation_is_held_to_the_grant_it_names` |
+  | a revocation's scope not matched | `revocation_is_held_to_the_grant_it_names` |
+
+### T-021-14, the two lows of the approval at `7865ed6b`
+
+- **A grant never reuses a permission's id.** Policy tracks grants and revocations one grant at a time, but the log's
+  `permitted-read-is-not-revoked` counts an id revoked for good once any revocation of it is permitted, and so revokes
+  every grant sharing it. So "grant, revoke, grant again" under one id was permitted while every read by it stayed
+  refused, and two grants sharing an id were revoked together by the log. The engine now refuses a grant naming an id
+  it granted before, to anyone, still in force or revoked (`Register::reuses`), before policy is asked; the same request
+  again, while its grant is in force, answers as the first did. `grant_reusing_a_permission_id_is_refused` holds both
+  cases and a fresh id granted and read by. Default, failing closed: one id, one grant, for good; the deployment names
+  a new id for a new grant.
+- **Docs.** `session`'s module docs and `read_needs`' say only a regulator or a checker reads by a permission, held to
+  the grant's own grantee.
+- **Red first.** The test failed on `an id in force` (`Permit` for `NotPermitted`).
+- **Rule-off** (`cargo test -p rutent-core-authz --lib`, file restored):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | an id in force may be granted again | `grant_reusing_a_permission_id_is_refused` |
+  | a revoked id may be granted again | `grant_reusing_a_permission_id_is_refused` |
+
+## T-021-15
+
+Branch `f-021/t-021-15-settings-lifecycle`, from `f01bc669` (the review round's batch with `T-020-45`'s `set_setting` and
+lifecycle changes, and `T-021-14`'s role binding and widened sweep). Finding 4 and `M2`'s item 6 of `M3`'s milestone
+review (PR #143). Edits `components/core-authz/` (`roles/`, the engine's scan and its tests), a `DEC-20` path that
+waits for the owner's click at the release into `main`. Policy's half only: Core's carrying out of a setting and of the
+five lifecycle actions is `T-020-49`'s. No contract shape changes.
+
+- **What changed.**
+  - `Permission::Setting(SettingKind)` is a permission of its own for each of the eight settings (operator fee,
+    slippage limit, evidence floor, public node, provider ceiling, publisher ceiling, cadence, cutover). A
+    `change_catalogue` of `set_setting` is asked of an operator's login the register lists for the one permission its
+    setting's kind is, and of no other role, Core's own actors included; a register that says nothing gives a missing
+    input and so a refusal. The decision's entry records the request whole, so it names the setting, its value and the
+    actor (`REQ-AUD-8`). The special arm that answered no rule is gone. `Permission::Change(SetSetting)` names no
+    setting and permits none.
+  - The five lifecycle actions (`accept`, `withdraw`, `revoke`, `declare_exploited`, `mark_stale`) already had a
+    permission of their own, `Permission::Change(change)`, through the one arm every catalogue change has, held to an
+    operator's login: so the publisher never marks its own version stale (`REQ-MDL-5`), and a version declared exploited
+    is never carried onward by Core's actors. Nothing in the rule changes; the row's tests pin it and the sweep covers it.
+  - `engine/entry_points.rs`: the five were already in `CARRY_OUT` (each with its own `change_catalogue: <change>`) and in
+    none of `CARRIES_OUT_NOTHING`, since `T-021-01`; so there was nothing to move. A test pins it for each of
+    `LIFECYCLE_ACTIONS`.
+- **Tests.** `operator_setting_is_refused_while_no_rule_answers_it` is replaced by `operator_setting_without_its_permission_is_refused`
+  (each setting: refused with every other permission held, Core's actor included, permitted with its own alone and the log
+  admits the effect, `Change(SetSetting)` alone permits none, a setting-less request fails its check).
+  `lifecycle_action_without_its_permission_is_refused` (the five), `publisher_is_refused_marking_its_own_version_stale`
+  (the publisher in its own role, and its login stating the operator's role, which the register of actors refuses),
+  `the_scan_lists_every_lifecycle_action_as_carried_out_only_on_an_effect`. `every_permission` lists the eight
+  settings, so `each_permission_alone_allows_only_its_own_action` runs over them (25 to 33 permissions, 28 to 36 calls);
+  `every_decided_action` lists them, so `T-021-01`'s two counts move by the eight (17 to 25, `3 * 17` to `3 * 25`): the
+  only edits to them.
+- **Defaults, reversible, each failing closed.**
+  - One permission per kind of setting, not one for all settings, as every catalogue change has its own (`REQ-AUZ-6`).
+  - Operator's logins only; never carried onward by Core's actors.
+  - Policy reads nothing of a setting's value or of the provider it is about: whether a value is sane (a ceiling above
+    zero, a cutover in the future) is the setting's check and the deployment's policy.
+  - A `set_setting` naming no setting is no request (the contract's check), and the arm gives it no rule if it ever got here.
+- **Gaps, with owners.**
+  1. The deployment's register must list `Setting(kind)` for the operator logins that may set each, and
+     `Change(AcceptModule)` etc. as before: configuration, owner `F-021`'s register docs / the deployment. The assembly's
+     register of actors lists no setting permission; `T-020-49`'s scenarios need it and grant it where used.
+  2. Carrying the settings and the lifecycle actions out on a permitted effect, and asking policy before the staging is
+     read (L6): `T-020-49`.
+  3. The plan's wording that the scan "moves" the five: they were already there; no edit was needed.
+- **Red first.** The setting tests failed on their permitted assertion (`Refuse` for `Permit`), `each permission alone`
+  on `Setting(OperatorFee) allows itself`, and the engine's two counts on policy's having decided 17 of 25 actions. The
+  lifecycle, publisher and scan tests passed at once, the behaviour being in place; they are held by the rule-offs below
+  (a test that passes at its first run, seen red only by switching its rule off).
+- **Rule-off** (`cargo test -p rutent-core-authz --lib`, file restored each time):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | the setting arm answers no rule (`None`) | `operator_setting_without_its_permission_is_refused`, `each_permission_alone_allows_only_its_own_action`, `every_value_moving_action_is_refused_when_policy_denies`, `authenticated_caller_is_still_decided_by_policy` |
+  | one setting's permission stands for every setting | `operator_setting_without_its_permission_is_refused`, `each_permission_alone_allows_only_its_own_action` |
+  | `Change(SetSetting)` stands for the setting | the same two |
+  | a setting asked of any role (no operator-only) | `operator_setting_without_its_permission_is_refused`, `each_permission_alone_allows_only_its_own_action`, `authenticated_caller_is_still_decided_by_policy` |
+  | no permission asked of a setting | `operator_setting_without_its_permission_is_refused`, `each_permission_alone_allows_only_its_own_action`, `caller_without_the_erase_permission_is_refused`, `erasure_overriding_citations_is_permitted_only_with_its_own_permission` |
+  | a lifecycle change asked of any role | `lifecycle_action_without_its_permission_is_refused`, `publisher_is_refused_marking_its_own_version_stale`, `each_permission_alone_allows_only_its_own_action`, `roll_back_without_its_permission_is_refused`, `authenticated_caller_is_still_decided_by_policy` |
+  | a lifecycle change asks no permission | `lifecycle_action_without_its_permission_is_refused`, `each_permission_alone_allows_only_its_own_action`, `roll_back_without_its_permission_is_refused`, `caller_without_the_erase_permission_is_refused`, `erasure_overriding_citations_is_permitted_only_with_its_own_permission` |
+  | one lifecycle permission stands for the five | `lifecycle_action_without_its_permission_is_refused`, `each_permission_alone_allows_only_its_own_action` |
+  | `mark_stale` left out of `CARRY_OUT` | `the_scan_lists_every_lifecycle_action_as_carried_out_only_on_an_effect`, `no_public_entry_point_of_core_reaches_an_effect_without_a_decision` |
+  | `declare_exploited` left out of `CARRY_OUT` | the same two |
+  | `accept` listed with another change | `the_scan_lists_every_lifecycle_action_as_carried_out_only_on_an_effect` |
+
+### T-021-15, fix round 1 (the review of `d2a8f0d9`, PR #296)
+
+- **Finding 1, should-fix: `OfOperator`.** The setting arm and the generic `Change` arm asked only `operator_holds`
+  (the stated role and the register's permission), so a login of another party (`bridge-pay`) that the register of
+  actors lists in the operator's role, holding `Setting(OperatorFee)`, was permitted. Both arms now ask
+  `of_operator_holds`, as `GrantRead` and `RevokeRead` do: the register must also say the login is the deployment
+  operator's (`Source::OfOperator`). The generic arm is every catalogue change's, so the fix covers the five lifecycle
+  actions, promotion, `roll_back`, grants, `set_slippage` and `reinstate` alike (one rule, fail closed). The plan row's
+  "held to the operator (`OfOperator`)" is read as this. Test: `another_partys_login_listed_in_the_operator_role_is_refused_every_setting_and_change`
+  (all 11 changes and 8 settings); the registers of the tests that permit an operator now link its party to the
+  operator (`Register::of_the_operator`), the only edits to existing tests.
+- **Finding 2, low.** `setting_naming_the_wrong_provider_is_no_request`: a slippage setting whose request names another
+  provider is `Err(Refused)` at `decide`, policy never consulted, nothing recorded. The contract's `check` decides it
+  (policy reads nothing of values); this pins it in this crate. It passed at once, and its rule is the contract's, which
+  this row doesn't edit, so it has no rule-off here (`T-020-45`'s `each_invalid_fixture_breaks_only_the_rule_it_names`
+  holds the rule).
+- **Finding 3, low.** `operator_setting_without_its_permission_is_refused` gains the role-binding case for a setting.
+- **Red first.** The new test failed on `Change(Grant)`: `Permit` for `NotPermitted`.
+- **Rule-off** (`cargo test -p rutent-core-authz --lib`, file restored each time):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | a setting asked of any operator-role login (no `OfOperator`) | `another_partys_login_listed_in_the_operator_role_is_refused_every_setting_and_change`, `operator_setting_without_its_permission_is_refused` |
+  | a catalogue change asked of any operator-role login (no `OfOperator`) | `another_partys_login_listed_in_the_operator_role_is_refused_every_setting_and_change` |
+
+## T-021-16
+
+Branch `f-021/t-021-16-mover-and-filed-reads`, from `0af4fa21` (wave 40's batch: `T-021-15`'s permissions, `T-020-45`'s
+`Reads::FiledOrder {order, requester}`, `T-020-40`'s parties). Finding 6 of `M3`'s milestone review of 2026-11-24: two
+policy items, one commit each. Edits `components/core-authz/` only (`session/`, `stuck/` and their tests), a `DEC-20`
+path that waits for the owner's click at the release into `main`. No contract shape changes; `contracts/` is
+untouched. No `Source` is added, so no test kit or assembly needs a new answer.
+
+### T-021-16, a filed order's read
+
+- **The rule** (`session/mod.rs`, `read_needs`). `Reads::FiledOrder {order, requester}` was refused whoever read
+  (`T-020-45`'s placeholder). Now: a customer reads it only where its party is the filed request's requester the read
+  names, asking no record (the log holds no acceptance yet, so `Source::OrderParties` can't answer); an agent of that
+  party is held first to the scope its party set for reading (`Scope::CheckRead`, `T-021-05`'s rule, unchanged), so an
+  agent its party didn't scope for reading is refused; the operator's login reads one without a permission as it reads
+  an order's state (`Permission::ReadOrderState`, the contract's README); a regulator or a checker only by a grant whose
+  scope covers it (the existing arm; the contract's `covers` gives only an exact `filed_order` scope); a provider, a
+  verifier and Core's own parts never (the rule's last arm). Every read is recorded, allowed or refused, as before
+  (`check_read`), and the deployment's policy is asked only after the fixed rules let it through.
+- **Tests** (each named test first, against the old rule):
+  - `agent_without_read_scope_is_refused_a_filed_orders_status_and_the_check_is_recorded` [`REQ-AUZ-8`, `REQ-AUD-12`]
+    (`session/tests.rs`): the contract's fixture (`agent-7` of `acme-treasury`) and a second read, its party setting no
+    read scope (`Says::unscoping`, added: the register of agents' scopes saying no for one agent and call), each refused
+    and recorded, the deployment never asked; a scoped agent, its party's person and a provider, reading a filed
+    request of another party's, and a provider reading one naming itself, each refused and recorded, no record asked.
+    It passed at once, the old rule refusing every filed read; the rule-offs below are its red.
+  - `agent_with_read_scope_reads_its_partys_filed_order` [`REQ-AUZ-7`]: the fixture allowed, its party's person
+    allowed, the operator's listed login allowed (the register asked for `ReadOrderState`, nothing else), the log
+    admitting each (`Kept`, through `admit_entry`); a refusing deployment refuses the agent. Red first: `Refused` for
+    `Allowed`.
+- **Defaults, reversible, each failing closed.**
+  1. ~~A filed order's requester is the read's own word.~~ Changed in round 4: policy asks the order's record
+     (`Source::Requester`); the read's word alone is never enough.
+  2. The operator reads a filed order's status as an order's state (the contract's README), on `ReadOrderState`.
+  3. A regulator or a checker reads a filed order only by a grant whose scope is exactly that filed read.
+- **For `T-020-52` (intake's side, not built here).** For every status intake tells of an order whose acceptance the
+  log doesn't hold yet, intake calls `Reads::check_read` with `ReadCheck { reader: <the caller as external
+  authentication established it, with its stated party, role and kind>, reads: Reads::FiledOrder { order, requester:
+  <the requester of intake's own record of the filed request, never the caller's word> }, permission: None, .. }` and
+  tells the status only on `ReadOutcome::Allowed`; on a refusal it tells no more than a refused reader is told
+  (`T-023-01`). Once the order's acceptance is in the log, it reads `Reads::OrderState { order }` instead, which policy
+  answers from the log's record (`Source::OrderParties`). A customer's own login and the operator's listed login read
+  through the same call. Policy records each check. Since round 4 policy also asks `Source::Requester(order)` of the
+  order's record, so the deployment's sources must answer it from intake's own record of the filed request, as the
+  assembly's `Records` does from `FiledOrders::opened`'s records (`orders`).
+- **Gaps, with owners.** Intake's calls above: `T-020-52`.
+- **Rule-off** (`cargo test -p rutent-core-authz --lib`, each switched off alone by `scratchpad/t-021-16/ruleoff.py`,
+  the file restored from its text before the mutation and touched):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | a customer's filed read held to the requester | `agent_without_read_scope_is_refused_a_filed_orders_status_and_the_check_is_recorded` |
+  | the operator reads a filed order as an order's state | `agent_with_read_scope_reads_its_partys_filed_order` |
+  | a filed order refused whoever reads (the behaviour before the row) | `agent_with_read_scope_reads_its_partys_filed_order` |
+  | the operator's filed read asks its login's permission | `agent_with_read_scope_reads_its_partys_filed_order` |
+  | an agent's read held to its party's read scope (`T-021-05`'s rule, for `check_read`) | `agent_without_read_scope_is_refused_a_filed_orders_status_and_the_check_is_recorded`; `agent_outside_its_partys_scope_is_refused`; `agent_without_an_accountable_party_is_refused`; `each_scope_permits_its_own_call_alone` |
+
+### T-021-16, R-MOVER: a decide step's mover is a holder the order involves
+
+- **The rule** (`stuck/mod.rs`, `involves_holder`, asked in `decide_check` after the customer check, on the log
+  policy's handle reads, after the consultation, never permitting). The provider a decision names as holding and moving
+  the value (`resolution.by`, a delivery's or a hand-on's) must be one the log already ties to the order: its origin
+  reserve (an acceptance of the order), a provider of a segment on a route it was given (a taken `route_chosen`,
+  `route_recalculated` or `destination_changed` input of the order), or the holder of a holding account its value
+  rested at (an arrival's reserve held against the order, a holding withdrawal's holder of the order or of the order it
+  was handed on from). Otherwise the decision is refused `not_permitted` and recorded so. Only entries the log holds as
+  `observed` count. The log's own reading (`party_to_the_order`) still takes a permitted decide step's mover as a party
+  whoever it is; policy is now stricter, so no decision it permits names a mover the order didn't already involve.
+- **Test.** `decide_step_naming_a_mover_the_order_does_not_involve_is_refused` [`REQ-AUZ-4`] (`stuck/tests.rs`): on the
+  contract's `world--sd` through a log that admits every entry (`Log::admits`, added for this test; the module's other
+  tests keep the non-admitting log they had), `outside-co` is refused and recorded; `bank-co` (an arrival's reserve),
+  `us-bank` (the origin reserve) and `fx-desk` (a route provider) are permitted, each on a fresh world; a permitted
+  decide step naming `outside-co`, admitted into the log before the request, doesn't make it one; the `world--sdh`
+  hand-on by `fx-desk` is permitted and by `outside-co` refused; and `involves_holder` over three of the contract's
+  admission histories: a holding withdrawal's holder (`holding-bank`, for the order and for the one it was handed on
+  from, no other), a recalculated route's and a changed destination's providers, and an order accepted with no route
+  (its origin reserve only, not another order's arrival reserve or route provider: the contract's
+  `only-a-declared-stuck-part-is-resolved--no-plan-with-its-acceptance` admits `bank-co` moving it, which policy now
+  refuses). Red first, against a stub that took every provider: `Permit` for the refused `outside-co`.
+  `T-021-05`'s and `T-021-06`'s tests pass beside it: `cargo test -p rutent-core-authz --lib`, 148 passed.
+- **What the log refused, sorted.** All test artefacts, none a Core bug: a second permitted decide step, and a later
+  one, under the world's transaction `tx-d3` (`stuck-resolution-transaction-is-its-own`): the permitted cases now each
+  run on a fresh world, and the later decisions name transactions of their own. And policy, not the log, refused the
+  `world--sdh` hand-on as `missing_input`: the test's register kept no evidence under its digest (`31`x32), now kept
+  about `ord-1`.
+- **The conflict this rule opened: a hand-on through a node's holding account** (closed in round 2, below, by (a)). The owner's form
+  choice `hand-on-wallet-holder` (`T-020-33`) has a hand-on's `by` name the holding account of the public inner node
+  the value rests at: the operator's plain wallet, which runs no segment and is no origin reserve and no arrival's
+  reserve. The value lands there by `Holdings::land`, through the platform, and the log records nothing of it. Probed
+  in `rutent-scenarios`' `stuck_order_of_the_assembled_core_is_handed_on_through_the_real_plain_wallet`, the only
+  entries naming `operator-wallet` before the decide step are the catalogue's `accept_module` decision and effect; the
+  wallet's own `holding_withdrawal` record comes only after the hand-on. So, by what the log holds, the wallet is no
+  holder the order involves, and the rule refuses that decision (`not_permitted`): that one scenario test goes red
+  (`assembly_real_wallet`, 6 of 7 pass). Every other stuck and hand-on scenario run passes (`assembly_stuck`,
+  `assembly_hand_on`, `assembly_policy`, `stuck`, `stuck_mover`, `stuck_hand_on`, `hand_on`, `hand_on_record`,
+  `reversing`). Exempting hand-ons isn't a fix: a delivery's `by` is already held to the part's route by Core
+  (`core-orch`'s `stuck::within`), so the hand-on is where R-MOVER's hole is. Default taken, reversible: fail closed,
+  the rule held for every decision, in a commit of its own that can be dropped by hash while the shape lands. The
+  shape wanted, either:
+  - (a, recommended, no contract change) a policy source over the deployment's register of node holding accounts,
+    `Source::HoldingAccount { node }`: whether the provider the input names holds the holding account at inner node
+    `node`, asked by `decide_check` for a decision whose `by` the log ties to nothing, `node` the inner node where the
+    stuck part's value rests (the `to` of its last settled segment on the plan the log holds). The assembly answers it
+    from `Holdings::account(node)`, which `Records` can't reach today (`Holdings` is `Core`'s own field, not shared),
+    so it is an `F-024` edit beside `core-authz`'s, and every test kit answering `Sources` needs the arm; production
+    answers it from `F-030`'s register;
+  - (b, contract) a verified record in core-internal of value landing in a node's holding account, `holding_landing
+    { order, segment, node, holder, record }` (`record` the holder's stated confirmation), written by Core when
+    `Landings::land` answers `Placed`; `involves_holder` and the log's `party_to_the_order` then read its `holder` as
+    the holder of a holding account the order's value rested at. Owner: the contract author.
+- **Defaults, reversible, each failing closed.**
+  1. The mover's holders are the order's own: a provider of a linked order's route counts only where a holding
+     withdrawal or a route of this order names it, not by the hand-on link alone.
+  2. A permitted decide step's mover and a `resolve_stuck` effect's mover never count, or the rule would rest on itself.
+  3. Only entries the log holds as `observed` count (acceptances, taken inputs, arrivals and holding withdrawals are).
+  4. The refusal is `not_permitted`, the class of every other "not the order's" refusal in this module.
+- **Gaps, with owners.**
+  1. ~~The hand-on conflict above.~~ Closed in round 2 by (a).
+  2. ~~The log's `party_to_the_order` still reads a permitted decide step's mover as a party whoever it is.~~ Closed in
+     round 3.
+  3. `core-orch`'s `stuck/party.rs` ports the log's reading; mirrored in round 3.
+  4. The stuck module's other tests run on a log that doesn't admit (`T-021-06`'s); only this row's test admits. Moving
+     them onto an admitting log is `T-021-06`'s owner's.
+- **Rule-off** (as above):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | the mover a holder the order involves (any provider passes) | `decide_step_naming_a_mover_the_order_does_not_involve_is_refused` |
+  | the decision refused where the mover is no holder (the check answers clear) | the same |
+  | the origin reserve | the same |
+  | a provider on a route chosen | the same |
+  | a provider on a route recalculated or with its destination changed | the same |
+  | a route of the order itself, not another's | the same |
+  | an arrival's reserve | the same, and ten of `T-021-06`'s and `T-021-14`'s, whose world's `bank-co` is held only as an arrival's reserve: `every_policy_call_reaches_the_one_consultation_or_is_marked_unbuilt`, `each_permission_alone_allows_only_its_own_action`, `core_never_decides_or_moves`, `deciding_moving_and_confirming_are_separate_permissions`, `neither_the_customer_nor_the_holders_desk_resolves_its_order`, `one_actor_attempting_both_decide_and_move_is_refused`, `resolution_naming_no_evidence_is_refused`, `step_with_nothing_permitted_behind_it_is_refused`, `two_agents_of_one_party_count_as_one_actor`, `unread_log_or_unreached_register_moves_nothing` |
+  | an arrival held against the order itself | `decide_step_naming_a_mover_the_order_does_not_involve_is_refused` |
+  | a holding withdrawal's holder | the same |
+  | a holding withdrawal of the order handed on to | the same |
+  | a holding withdrawal of the order handed on from | the same |
+  | a permitted decide step's mover never counts | the same, and `no_public_entry_point_of_core_reaches_an_effect_without_a_decision` (the mutation names `Outcome::Permitted`, which the scan watches) |
+  | only entries the log holds as `observed` | none: a second guard. Every kind the arms read is `observed` by the contract, and a permitted decide step matches no arm |
+
+### T-021-16, round 2 (the coordinator's decisions on the first report)
+
+Pre-production, so fixed in this row. Edits `components/core-authz/` (`engine/`'s `Source`, `stuck/`, the tests of
+`stuck/` and `parties/`) and, in `F-024`'s files, the assembly (`conformance/scenarios/src/assembly/`: `mod.rs`,
+`policy.rs`, `holding.rs`, `audit.rs`) and the segments kit (`tests/segments_support/mod.rs`). No contract shape changes.
+
+- **(a), built: the deployment's register of holding accounts.** `Source::HoldingAccount { node }`, the input the
+  mover: whether that provider holds the holding account of inner node `node`. `holder_check` asks it only where the
+  log ties `by` to nothing of the order (`involves_holder` false), and only for the order's held nodes
+  (`held_nodes`: each inner node a segment ends at on a route the order was given, a taken `route_chosen`,
+  `route_recalculated` or `destination_changed` input of the order, each once): never any other node. A yes for one
+  node clears the mover; a no or nothing asks the next node; none yes refuses `not_permitted`; a register out of reach,
+  with no yes, leaves the decision not known (`verifier_unreachable`, as the chain registers give it).
+- **The assembly answers it from Core's own `Holdings`.** `Core`'s `holdings` is now `Rc<RefCell<Holdings>>`, shared
+  with policy's `Records` (`Records::holdings`), so the answer is `Holdings::account(node)`: yes for the wallet holding
+  that node's account, no for another provider, nothing for a node with no account. Each use borrows for one call
+  (`HeldWallets::holder` and `withdraw`, `land_settled`, `land`, `start_handed_on`, the install, `audit`'s readings),
+  so no borrow is held while policy is consulted; `Core::holdings` hands out a `RefMut`, which its callers'
+  `.attributions()` read through.
+- **The test kits answer it.** The segments kit (`tests/segments_support/mod.rs`) and `parties/tests.rs` answer
+  nothing (no node there has a holding account); `stuck/tests.rs`' register keeps `holding_accounts` and answers yes
+  for the listed wallet, nothing otherwise, and can be set out of reach. The other kits already answer nothing for a
+  source they don't list.
+- **Tests.** `decide_step_naming_a_mover_the_order_does_not_involve_is_refused` gains the wallet cases on `world--sdh`:
+  `plain-wallet`, holding `ledger-in`'s account, where segments of `ord-1`'s route end, moves the hand-on; `far-wallet`,
+  holding the account of `ledger-far`, which no route of the order reaches, is refused `not_permitted` and recorded;
+  `plain-wallet` with the register out of reach is not known; each through the admitting log.
+  `stuck_order_of_the_assembled_core_is_handed_on_through_the_real_plain_wallet` is green again: `assembly_real_wallet`
+  7 of 7.
+- **Defaults, reversible, each failing closed.** A node a segment only starts from is no held node; nor is one of a
+  linked order's route by the link alone. Per node, nothing and no are alike (the kits answer nothing for a node whose
+  account isn't the mover's).
+- **Gap 2 (the log's party reading): stopped then, a shape was missing; built in round 3, below.** The log can't tell a holding-account mover from the
+  log alone: before the decide step it holds nothing of the wallet but the catalogue's acceptance of its module, and the
+  wallet's `holding_withdrawal` comes only once the linked route starts, so not on an unknown outcome, where the
+  wallet's word is the evidence a confirmation cites (`about_the_linked_order`). Bounding `party_to_the_order`'s decide
+  arm (and its `resolve_stuck` effect arm, which names the same `by`) to the log's other holders would refuse that
+  wallet's word; keeping it only where policy's (a) answer is recorded needs the decision's entry to record it, and
+  core-internal's `What::StuckDecide { request, decision }` has no place for it. `relations.rs` alone can't hold it, so
+  per the instruction nothing was changed in `contracts/` or in `core-orch`'s port. The exact shape:
+  - `What::StuckDecide` gains `held_at: Option<String>` (Rust `types.rs`, `#[serde(default, deserialize_with = "some",
+    skip_serializing_if = "Option::is_none")]`; the entry schema's `stuck_decide` `what`, an optional inner-node id):
+    the inner node whose holding account policy's register says the decision's `by` holds (`Source::HoldingAccount`),
+    present exactly where nothing else the log holds ties `by` to the order. Policy writes it in `decide_stuck`'s
+    entry from `holder_check`'s yes.
+  - A relation, `stuck-decide-held-at-is-a-held-node` (field `held_at`): a permitted decide step naming `held_at` names
+    an inner node a segment ends at on a route this log gave the order, and its `by` is no holder the log otherwise
+    ties to the order (so the field is never a second, unchecked basis).
+  - `party_to_the_order`: a permitted decide step's mover, and a `resolve_stuck` effect's mover, count as a party only
+    where `by` is an origin reserve of the order's acceptance, a provider of a segment on one of its routes, an
+    arrival's reserve held against it, or a holding withdrawal's holder of it, or where the permitting decide step
+    records `held_at` (for the effect, the decide step its permitting move carries out).
+  - Fixtures: `outcome-confirmation-cites-verified-evidence--a-confirmation-on-a-decide-steps-outside-mover` refused
+    (`party`), and `--a-confirmation-on-a-wallet-the-decide-step-held-at-a-node` admitted; the README's row and
+    CHANGELOG lines in core-internal's unreleased 1.0.0; `core-orch`'s `stuck/party.rs` mirrors the arm, which the
+    differential walk over the contract's folder then holds.
+  Owner: the coordinator, to authorise the `types.rs` and schema edit (this row can then build it), or the contract
+  author.
+- **Gap 4** stays as noted (the coordinator's ruling).
+- **Rule-off** (each switched off alone by `scratchpad/t-021-16/ruleoff2.py`, the file restored from its text before the
+  mutation and touched):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | the register of holding accounts asked for the order's held nodes | `decide_step_naming_a_mover_the_order_does_not_involve_is_refused`; `stuck_order_of_the_assembled_core_is_handed_on_through_the_real_plain_wallet` |
+  | a node's account saying nothing clears nothing (nothing taken as yes) | `decide_step_naming_a_mover_the_order_does_not_involve_is_refused` (the far wallet) |
+  | a register out of reach leaves not known (refused instead) | `decide_step_naming_a_mover_the_order_does_not_involve_is_refused` |
+  | the assembly answers from Core's holding accounts (nothing for every node) | `stuck_order_of_the_assembled_core_is_handed_on_through_the_real_plain_wallet` |
+
+### T-021-16, round 3 (the log's party reading, the coordinator's authorisation)
+
+The coordinator authorised the shape round 2 named. Edits `contracts/` (core-internal: `types.rs`, `relations.rs`,
+`standing.rs`, the verified-entry schema, the README, the CHANGELOG, six admission cases, `tests/core-internal.rs`),
+folded into core-internal's unreleased 1.0.0; `components/core-authz/` (`stuck/`); `components/core-orch/`
+(`stuck/party.rs`, the mirror; `hand_on/mod.rs`, one pattern); and the segments kit's `resolving.rs` (`F-024`). All
+`DEC-20` paths but the kit.
+
+- **The shape.** `What::StuckDecide` gains `held_at: Option<Id>` (optional on the wire, the schema's `inner_node`): the
+  inner node whose holding account the deployment's register says the decision's mover holds. Policy writes it from
+  `holder_check`'s yes, on a permit only (`decide_stuck`); a mover the log already ties records none. An `Id`, not the
+  `String` round 2 wrote: every node field of `What` (`HoldingWithdrawal.node`, the holding check's) is one, and the
+  schema refs the identifier, so Rust and the schema agree; the wire is the same.
+- **The row** `stuck-decide-held-at-is-a-held-node` (`REQ-AUZ-4`, `REQ-CAT-23`; relations now 115): a decide step naming
+  `held_at` needs a taken input of its order giving it a route with a segment ending at that node (`missing`
+  otherwise), and is refused on `by` where the log's other entries already tie the mover to the order
+  (`holder_of_the_order`), so the field is never a second basis.
+- **The narrowed party rule** (`party_to_the_order`): a permitted decide step's mover, and a `resolve_stuck` effect's,
+  is a party only where it is a holder the order involves by the log's other entries (`holder_of_the_order`: its origin
+  reserve, a provider of a segment on its routes, an arrival's reserve held against it, a holding withdrawal's holder
+  of it or of the order it was handed on from), or where the permitting decide step records `held_at` (for the effect,
+  the decide step its `carries_out` names, `held_at_of`). `core-orch`'s port mirrors both arms, and the walk over the
+  contract's folder (`orchestrations_reading_of_a_party_follows_the_logs_over_every_admission_case`) holds the two
+  readings together.
+- **Cases.** `stuck-decide-held-at-is-a-held-node--a-wallet-held-at-a-node-of-its-route` admitted (`world--sdh`'s
+  hand-on by `plain-wallet`, held at `ledger-in`); `--missing` (`ledger-far`) and `--by` (`fx-desk`, on the route)
+  refused. `outcome-confirmation-cites-verified-evidence--a-confirmation-on-a-mover-its-decide-step-held-at-a-node`
+  admitted (`decided-desk`, its decide step held at `ledger-in`). Two earlier admitted cases on an untied mover,
+  `--a-confirmation-on-the-mover-a-permitted-decide-names` (`decided-desk`) and
+  `--a-confirmation-on-the-mover-its-resolve-effect-names` (`moving-desk`), now break `party`, their only refusal, which
+  `stuck_resolution_evidence_made_outside_the_order_is_refused_by_the_log` asserts; its in-memory case (`bank-co` with
+  the order's arrival taken out) is now refused on `party`, and admitted once its decide step records `held_at`.
+- **Producers.** core-authz's engine writes the field; the segments kit's `PermitsEveryStep` writes none (it asks no
+  register); core-orch and the assembly build no `StuckDecide` entry themselves, and every pattern over one now ends in
+  `..`. The workspace builds with every target.
+- **The shared target dir.** One run built `rutent-core-orch`'s tests against a stale `rutent-contracts` (no `held_at`)
+  until the contract's sources were touched; the rule-off script touches them after each restore.
+- **Rule-off** (each switched off alone by `scratchpad/t-021-16/ruleoff3.py`, restored and touched; `rutent-contracts`'
+  `core-internal` tests, `rutent-core-orch`'s `party` tests, or core-authz's lib tests):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | the row `stuck-decide-held-at-is-a-held-node` (cites nothing) | `every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say` |
+  | the log's party rule: a decide step's mover only where tied or `held_at` | the same; `stuck_resolution_evidence_made_outside_the_order_is_refused_by_the_log`; core-orch's `orchestrations_reading_of_a_party_follows_the_logs_over_every_admission_case` |
+  | the log's party rule: a resolution's mover only where tied or `held_at` | the same three |
+  | the log's party rule: `held_at` makes the mover a party | the same three |
+  | the port's mirror of the decide-step arm | `orchestrations_reading_of_a_party_follows_the_logs_over_every_admission_case` |
+  | policy records `held_at` on its yes | `decide_step_naming_a_mover_the_order_does_not_involve_is_refused` |
+
+### T-021-16, round 4 (the review of `f4a125c9`, PR #305)
+
+| # | Finding | Answer | Test |
+|---|---|---|---|
+| 1 | Should-fix: the filed read checked the read against itself (`requester == party`), so a customer naming itself read any filed order | The customer arm, and so an agent's, asks the order's record (`Source::Requester(order)`, the input the reader's party) beside the read's naming it: a no or nothing refuses `not_permitted` before the deployment is asked, a record out of reach leaves the fixed rules not known, which a read answers as refused | `customer_naming_itself_the_requester_of_anothers_filed_order_is_refused` (the reviewer's `mallory`, on no, nothing and out of reach; `cust-1`, whom the record names, reads it); `agent_with_read_scope_reads_its_partys_filed_order` now asks the record |
+| 2 | Low: `held_at` and its row took any inner node of any route | Narrowed to the stuck part's resting node: `resting_node(order, part, history)`, public in core-internal, the state machine's `value_at` of the part as the log's taken inputs leave it. The row gains field `at`; policy asks the register for that node alone | `stuck-decide-held-at-is-a-held-node--at` (a world whose `p2` runs through `ledger-mid` while `p3` rests at `ledger-in`; `mid-wallet` held at `ledger-mid` refused on `at`); the core-authz test's two-node cases (`mid-wallet` refused, `plain-wallet` permitted and recorded at `ledger-in`) |
+| 3 | Low: the assembly borrowed `Holdings` for `HoldingAccount` | `try_borrow`, a failed borrow answering out of reach | none: no flow holds the register mutably while policy is consulted |
+
+- **What changed besides.** core-orch's port needed no edit (it reads `held_at`'s presence, which the row now holds to the
+  resting node). The `--at` world is an admission case, not a `world--` log: its history is `world--sdh`'s with `p2`'s
+  three segments moved to `ledger-mid` (the withdrawal ends there, the exchange stays there, the deposit leaves from
+  there). A first attempt moved `p3-s2`, an exchange, off one node, which the state machine refuses ("an exchange
+  stays at one node"): a test artefact, fixed by moving `p2` instead.
+- **Rule-off** (`scratchpad/t-021-16/ruleoff4.py`, each alone, restored and touched, `contracts/src/lib.rs` with them):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | a filed read asks the order's record of its requester | `customer_naming_itself_the_requester_of_anothers_filed_order_is_refused`; `agent_with_read_scope_reads_its_partys_filed_order` |
+  | the row's `held_at` is the stuck part's resting node (field `at`) | `every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say` |
+  | policy asks the register for the resting node alone (another node asked first) | `decide_step_naming_a_mover_the_order_does_not_involve_is_refused` |
+## T-021-17
+
+Branch `f-021/t-021-17-policy-restart`, from `1bc91b21` (the batch holding `T-020-46`). Round 2 of `M3`'s milestone
+review of 2026-11-24, a medium under finding 3 (issue #303). Edits `components/core-authz/` (`session/`, `funds/`'s
+`Recorded` and the tests of `session/`, `funds/` and `parties/`), a `DEC-20` path that waits for the owner's click at
+the release into `main`, and the assembly's reopening with one of its tests (`conformance/scenarios/src/lib.rs`'s
+`PolicyHandle`, `conformance/scenarios/src/assembly/mod.rs`'s `assemble_with`, `tests/assembly_policy.rs`; `F-024`
+files). No contract shape changes: the log already holds every decision the register is rebuilt from.
+
+- **What the reopened engine lost, register by register.**
+  - `Register` (`session/`): the sessions opened, the read permissions granted and the revocations permitted were
+    pushed in memory after each permitted decision and read from nowhere else. A reopened engine held none: a revoked
+    grant's id could be granted again, a grant given before the restart read nothing, and a session's id could open
+    another session. **This was the gap.**
+  - `Authorised` (`funds/`) and `Charged` (`parties/`) were already the log's (`T-021-04`, `T-021-05`): before every
+    authorisation, move and charge the engine reads the log's permitted `authorise` and `charge` entries on its own
+    handle (`Recorded::permitted`, `Recorded::charged`) and rebuilds the register from them, so an engine opened
+    again holds what the log holds. Nothing in them needed a change; the row's two tests for them pin it, each seen
+    red by switching its read off (the table below). The milestone review's reading that these two were kept in
+    memory alone is not borne out by the code.
+- **What changed.**
+  - `session::Registered` and `session::registered_in`: the register a log holds, read from the verified entries
+    whose outcome is `permitted` of an `open_session` that opened a session (its request's account and holder, the
+    session and end it opened), a `grant_permission` and a `revoke_permission`, in log order, each kept once as the
+    engine that wrote it kept it. The one definition every `Recorded` reads by, as `permitted_in` and `charged_in`
+    are.
+  - `funds::Recorded::registered`: policy's handle reads it, one wire with the append. Its default fails
+    (`ReadFailure::Unavailable`): a handle that doesn't say can't be read so, and an engine reopened over it fails
+    closed. The assembly's `PolicyHandle` answers it from the log's entries.
+  - `Engine::reopen`: the register rebuilt from that read in place of what it held. A read that fails marks the
+    register unread (`Register::unread`), and then every call resting on it is refused `missing_input`, never
+    permitted: a read by a permission, a grant (whose id the engine can't check for reuse), a revocation and a session
+    (whose id it can't check for reissue); a customer's acceptance of fault finds no session open and is refused. A
+    read resting on no permission rests on nothing the register holds and is decided as ever.
+  - The assembly: `assemble_with` calls `reopen` on every policy engine it puts together (empty on a fresh disk, the
+    register the engine that ran on held on a reopened one) and hands the rebuilt sessions to the catalogue's register
+    again (`Register::open_in`), as each was handed when it opened.
+- **Test artefact, not a Core bug.** The session tests' engine that ran on starts over `Kept::world()`, whose log holds
+  a session (`sess-1`) it never opened; it is put together with `reopen` as every engine over a log is, so its
+  register and the reopened one's agree.
+- **Tests.** The three named: `grant_revoked_and_granted_again_across_a_restart_is_judged_as_the_policy_that_ran_on`
+  [`REQ-AUZ-6`, `NFR-6`] (`session/tests.rs`: grant, revoke, grant again under a fresh id, then the restart; each probe
+  put to the engine that ran on and to the one reopened over a copy of its log, both judging alike: the revoked id
+  reads nothing and is never granted again, the fresh one reads, the grant in force asked again answers as it did,
+  and once revoked reads nothing; their registers equal), `authorisation_given_before_a_restart_is_held_after_it`
+  [`REQ-AUZ-1`, `NFR-6`] (`funds/tests.rs`) and `charge_recorded_before_a_restart_is_not_charged_again` [`NFR-6`]
+  (`parties/tests.rs`). New names for `PLAN.md`, each a rule of this row:
+  `session_opened_before_a_restart_is_held_after_it` [`REQ-CAT-3`, `NFR-6`] and
+  `register_that_cannot_be_read_on_reopening_refuses_what_it_would_answer` [`NFR-6`, `REQ-AUZ-5`] (`session/tests.rs`);
+  `read_grant_revoked_and_granted_again_before_core_reopens_is_held_through_the_assembly` [`REQ-AUZ-6`, `NFR-6`]
+  (`tests/assembly_policy.rs`, the wiring).
+- **Red first.** With the shapes in and `registered_in` and `reopen` stubbed, the three session tests failed on their
+  assertions: the reopened engine refused `perm-reg-2`'s read (`NotPermitted` for `Allowed`), held no session (`[]`
+  against the one opened), and refused the blind read `NotPermitted` for `MissingInput`. The funds and parties tests
+  passed at their first run, their rules being in place since `T-021-04` and `T-021-05`; they are held by the
+  rule-offs below.
+- **Rule-off** (each switched off alone from the committed checkpoint, `cargo test -p rutent-core-authz --lib`, and
+  for the assembly `cargo test -p rutent-scenarios --test assembly_policy`, through the lock, the file restored with
+  `git checkout`; script `ruleoff.py` in the row's scratch folder):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | `registered_in` reads nothing | `grant_revoked_and_granted_again_across_a_restart_is_judged_as_the_policy_that_ran_on`, `session_opened_before_a_restart_is_held_after_it` |
+  | `registered_in` keeps every outcome, not only `permitted` (fix round 1) | `grant_refused_before_a_restart_is_not_held_after_it`; before fix round 1, no test (the review of `f6d5ec68`, finding 1) |
+  | no grant rebuilt | `grant_revoked_and_granted_again_across_a_restart_is_judged_as_the_policy_that_ran_on` |
+  | no revocation rebuilt | the same |
+  | no session rebuilt | `session_opened_before_a_restart_is_held_after_it` |
+  | a read by a permission not refused while unread | `register_that_cannot_be_read_on_reopening_refuses_what_it_would_answer` |
+  | a grant not refused while unread | the same (a fresh id would be permitted) |
+  | a revocation not refused while unread | the same (refused `not_permitted`, not `missing_input`) |
+  | a session not refused while unread | the same (the session would open) |
+  | an unread log starts the register empty (no `unread`) | the same |
+  | `Authorised` not read from the log (kept in memory) | `authorisation_given_before_a_restart_is_held_after_it` and 41 other funds, roles and engine tests (the register then never fills) |
+  | `Charged` not rebuilt from the log's read | `charge_recorded_before_a_restart_is_not_charged_again`, `counter_is_the_logs_across_a_restart` and five other parties tests |
+  | the assembly doesn't call `reopen` | `read_grant_revoked_and_granted_again_before_core_reopens_is_held_through_the_assembly` |
+  | `PolicyHandle` doesn't answer `registered` (the default) | the same and eight other `assembly_policy` tests: the engine fails closed, every session refused |
+
+  The first run left `charge_recorded_before_a_restart_is_not_charged_again` green with the rebuild off (counting the
+  charge afresh in an empty counter answered the same); the test now fills the party's bound before the restart, and
+  goes red. An unread branch first written into the acceptance of fault turned nothing red (a cleared register holds
+  no session, so the acceptance is refused already) and was taken out.
+- **Local checks** (through the lock, `contracts/src/lib.rs` touched first): `cargo fmt --all -- --check`; `cargo clippy
+  --workspace --all-targets -- -D warnings` (after collapsing two `if`s of `registered_in` into match guards);
+  `cargo test -p rutent-core-authz` (150 pass); `rutent-scenarios`' `assembly_policy`, `assembly`, `reopened`,
+  `assembly_wiring`, `authz_scenarios` (all pass); the doc check; plan-check and tag-check `--strict` (0 findings,
+  2342 tests tagged). The full suite runs in CI.
+- **Defaults, reversible, each failing closed.**
+  1. The register is rebuilt once, when the engine is put together over the log (`reopen`), not read before every call
+     as `Authorised` and `Charged` are: each of its entries is written only by this engine's own permitted decision,
+     so between reopenings memory and log agree; two engines over one log at once would each hold only their own
+     grants, which v0's one policy engine per log never does.
+  2. A register that can't be read on reopening refuses every call resting on it as a missing input until a later
+     reopening reads it; nothing is retried in between.
+  3. `Recorded::registered`'s default fails, so a handle that doesn't override it fails closed rather than starting
+     empty.
+  4. Sessions are rebuilt whether or not they have ended: an ended one opens nothing and answers no acceptance, as in
+     the engine that ran on, and its id still opens no other session.
+- **Gaps, with owners.**
+  1. Two engines over one log at once (default 1): not v0's shape; were it, the register would be read before each
+     call as `Authorised` is. Owner: `F-021` if a deployment ever runs two.
+  2. The deployment's registers of actors and permissions (`Registers`) are configuration, set again on each Core put
+     together (`T-020-46`'s default), not policy's state: the deployment's, `F-030`.
+
+### T-021-17, fix round 1 (the review of `f6d5ec68`, PR #307)
+
+The reviewer's CHANGES (comment 7156746340) and the CI failure on `#307` (comment 7156992124), in one round on the same
+branch. Edits `components/core-authz/` (`session/` and the tests of `session/`, `roles/`, `parties/` and `engine/`), a
+`DEC-20` path, and `F-024` files: `conformance/scenarios/src/harness.rs`, `tests/charge_check.rs`,
+`tests/private_nodes.rs`, `tests/stuck.rs`, `tests/segments_support/mod.rs`.
+
+- **Finding 1, should-fix: the outcome filter pinned.** Nothing held that a decision refused before a restart isn't
+  rebuilt as permitted: with `registered_in` keeping every outcome, all 150 tests stayed green. New test
+  `grant_refused_before_a_restart_is_not_held_after_it` [`REQ-AUZ-6`, `NFR-6`] (`session/tests.rs`): the deployment
+  refuses a grant under a fresh id, a revocation of the grant in force and a session; each probe is put to the
+  engine that ran on and to the one reopened over a copy of its log. Both read nothing by the refused grant and grant
+  its id afresh, still read by the grant in force, and open a session under the refused session's id.
+- **Finding 2, low: `reopen` fails closed by default.** `Register::default` is unread, so `Engine::with_policy`
+  builds an engine whose register answers nothing until its first `reopen`: one put together over a log and never
+  reopened refuses every read by a permission, grant, revocation, session and acceptance as a missing input, never
+  permits from an empty register; one reopened over an empty log holds an empty register, read. New test
+  `engine_never_reopened_refuses_what_its_register_would_answer` [`NFR-6`, `REQ-AUZ-5`] (`session/tests.rs`), which
+  also reads by the grant once the same engine is reopened.
+- **Finding 3, low: `missing_input` for an acceptance.** `refuses_acceptance` answers `missing_input` on an unread
+  register, as the other readers do. New test
+  `acceptance_of_fault_on_a_register_that_cannot_be_read_is_refused_for_its_missing_input` [`REQ-AUZ-5`, `NFR-6`]
+  (`roles/tests.rs`, over `Blind`, a log policy can't read its register from, in the world where an acceptance in an
+  open session is permitted). Intake's and the arrival filing's session check (the assembly's `Held`, core-orch's
+  `SessionRegister` port, which answers `Option`) still refuses as "session not held": fail closed, but saying
+  `missing_input` there crosses core-orch's port. Left as it is; owner `T-020-52`, which edits intake's reads.
+- **Test artefacts, not Core bugs.** Every test engine over a log is now reopened: `session/tests.rs`' engines over
+  `Kept` (through `opened`); `roles`' and `parties`' `engine` helpers; the engine tests' unbuilt engine over `Taking`
+  and the call table's over `Seen`, whose logs answer `Recorded::registered`; the scenario kit's `Policy::new`
+  (`segments_support`, whose `PolicyPath` now answers it) and `stuck.rs`' two unbuilt engines. `roles`' `accepting`
+  world holds exactly the sessions it names: the world's log opened `sess-1` until 09:15, which the reopened engine
+  now rebuilds, where the world names its own until 09:10. `Assembly::new` (`lib.rs`, bound by `Log + PolicyLog`, not
+  `Entries`) stays unread: its unbuilt engine serves `tests/log-handles.rs`, which opens no session and grants
+  nothing, so it refuses, as the default means.
+- **The CI failure: a new session under the old id after a reopening.** `Core::open_session` always asks under the
+  deployment's one session id, so a second session after a reopening asks for another under an id already issued,
+  which the rebuilt register refuses, as the Core that ran on would. The tests relied on the gap; each now runs under
+  the session opened before: `charge_check`'s `terms_stated_before_core_reopens_bind_the_segments_after_it` (its
+  `req-second`), `private_nodes`' `private_rail_closed_before_core_reopens_stays_closed` (the deployment's session
+  id), and the harness's `Step::Restart`, which kept no session and opened a new one at the next order.
+  `reopened`'s `second_order_refused` asks for a session after the reopening at the same moment as before, the same
+  request again, which opens the same session.
+- **Rule-off** (`cargo test -p rutent-core-authz --lib` through the lock, each rule switched off alone from the
+  round's committed checkpoint `203abc49`, the file restored with `git checkout`; script `ruleoff2.py` in the row's
+  scratch folder):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | `registered_in` keeps every outcome, not only `permitted` | `grant_refused_before_a_restart_is_not_held_after_it` |
+  | the register starts readable (`Register::default`'s `unread: false`) | `engine_never_reopened_refuses_what_its_register_would_answer` |
+  | an acceptance not refused while unread | `acceptance_of_fault_on_a_register_that_cannot_be_read_is_refused_for_its_missing_input` |
+- **Red first.** `grant_refused_before_a_restart_is_not_held_after_it` passes at head, its rule being in place since
+  the first round, so it is held by its rule-off, as the reviewer's probe was. The two lows' tests were written with
+  their changes, not before them, and each was seen red only by switching its rule off (the table above).
+- **Local checks** (through the lock, `contracts/src/lib.rs` touched first): fmt; workspace clippy `-D warnings`;
+  `cargo test -p rutent-core-authz` (153 pass); `rutent-scenarios`' `charge_check`, `assembly`, `assembly_policy`,
+  `assembly_real_wallet`, `measures_called`, `private_nodes`, `reopened` (every binary that reopens Core), `stuck`,
+  `segments` (the kit's engines) and `log-handles` (`Assembly::new`'s engine), all pass; the doc check; plan-check and
+  tag-check `--strict` (0 findings, 2345 tests tagged). The full suite runs in CI.
+- **Defaults** (reversible, failing closed): an engine starts unread and answers its register only once reopened; an
+  acceptance on an unread register is a missing input; a scenario runs every order after a restart under the session
+  opened before it, held by the reopened Core.
+
+## The owner's answers of 2026-11-18, in the plan (2026-11-23)
+
+- **`spec-ac17-not-known`: "Not known".** `SPEC.md` 0.4.2's `AC-17` reads "the decision is \"not known\"", as
+  `REQ-AUZ-5` and the engine already had it. The scenario is renamed `unreachable_verifier_gives_not_known_and_nothing_moves`
+  (`conformance/scenarios/tests/authz_scenarios.rs`, a pure rename with its doc comment). The note in
+  `components/core-authz/src/engine/mod.rs` that the reading is pending is left for `T-021-12`, which edits
+  `core-authz` anyway, so this docs change touches no `DEC-20` path.
+- **New rows:** `T-021-11` (the origin account fixed in v0; `F-020`'s notes, "The origin check of 2026-11-23"),
+  `T-021-12` (`roll_back`'s own permission, item `rollback-permission`) and `T-021-13` (an erasure that overrides
+  citations, its own permission, item `erasure-of-cited-evidence`). `T-021-12` and `T-021-13` share `roles` in wave 34
+  and run in turn.
+- **`stuck-same-actor-reaches`: "As applied".** Agents whose chains of accountable parties meet anywhere below the
+  operator count as one actor, as `T-021-06` built it. The operator note is `SPEC.md` 0.4.2's `OBL-2`: its own staff
+  and agents must include two actors whose chains meet nowhere below it, or no stuck order can be resolved.

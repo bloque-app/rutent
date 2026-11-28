@@ -2,20 +2,33 @@
 //! serialises to a valid instance. Every `check` recurses through what it holds, so a value built in Rust is
 //! checked whole by one call.
 
-use alloc::{borrow::ToOwned, vec::Vec};
+use alloc::{borrow::ToOwned, string::String, vec::Vec};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
-use super::atoms::{seconds_down, seconds_up};
+use super::atoms::{compare_products, seconds_down, seconds_up};
 use super::types::{
     CallKind, Candidate, CatalogueSnapshot, CeilingScope, DecisionRecord, DeclaredCall, DropReason,
-    Endpoint, Figure, FigureValue, Operation, OperationKind, Origin, Part, PolicyBounds, Pricing,
-    Round,
+    Endpoint, FeeFormula, Figure, FigureValue, HeldQuote, Operation, OperationKind, Origin, Part,
+    PolicyBounds, Pricing, Ratio, Round, SettlementTimes, StatedTerms, THREE_DAYS_SECONDS,
+    TupleKey,
 };
-use super::{Amount, Id, Timestamp, Violation};
+use super::{Amount, Id, PositiveAmount, Timestamp, Violation};
 use crate::provider_role::{
-    ConversionOutcome, Denomination, Fee, JudgementAnswer, NodeRef, ReserveDirection,
+    ConversionOutcome, Denomination, Fee, JudgementAnswer, NodeRef, Reporting, ReserveDirection,
     ReserveMovementOutcome, ResultBody, Statement, StatementShape, TransferOutcome, VoidedBy,
 };
+
+/// The refusal of `rule`, broken: `Err` unless a contract test switched the rule off on this thread
+/// (`rule_switch::without_rule`), so it can see that a value it reads breaks that rule alone
+/// (`T-020-54`, the milestone reviewer's check of `T-020-45`). The switch exists only with the `rule-switches` feature,
+/// which the contract's own tests turn on and nothing shipped does.
+fn broke(rule: &'static str) -> Result<(), Violation> {
+    if crate::rule_switch::switched_off(rule) {
+        Ok(())
+    } else {
+        Err(Violation(rule))
+    }
+}
 
 /// Checks a bare typed operation, with no prices (`REQ-ORD-37`): the rules of
 /// `urn:rutent:router-api:operation#/$defs/operation` that JSON Schema can't state, and the provider-role atoms of
@@ -40,41 +53,37 @@ pub fn check_typed_operation(
     match kind {
         OperationKind::Withdrawal => {
             if !outer(from_node) || outer(to_node) {
-                return Err(Violation(
-                    "a withdrawal goes from an outer node to an inner one",
-                ));
+                broke("a withdrawal goes from an outer node to an inner one")?;
             }
             if !same_asset {
-                return Err(Violation("a withdrawal keeps its asset"));
+                broke("a withdrawal keeps its asset")?;
             }
         }
         OperationKind::Deposit => {
             if outer(from_node) || !outer(to_node) {
-                return Err(Violation(
-                    "a deposit goes from an inner node to an outer one",
-                ));
+                broke("a deposit goes from an inner node to an outer one")?;
             }
             if !same_asset {
-                return Err(Violation("a deposit keeps its asset"));
+                broke("a deposit keeps its asset")?;
             }
         }
         OperationKind::Route => {
             if outer(from_node) || outer(to_node) {
-                return Err(Violation("a route runs between inner nodes"));
+                broke("a route runs between inner nodes")?;
             }
             if from_node == to_node {
-                return Err(Violation("a route runs between two different nodes"));
+                broke("a route runs between two different nodes")?;
             }
             if !same_asset {
-                return Err(Violation("a route keeps its asset"));
+                broke("a route keeps its asset")?;
             }
         }
         OperationKind::Exchange => {
             if outer(from_node) || outer(to_node) {
-                return Err(Violation("an exchange runs at an inner node"));
+                broke("an exchange runs at an inner node")?;
             }
             if from_node != to_node {
-                return Err(Violation("an exchange stays at one node"));
+                broke("an exchange stays at one node")?;
             }
         }
     }
@@ -89,9 +98,7 @@ pub fn check_typed_chain<'a>(
     let mut last: Option<&Endpoint> = None;
     for (from, to) in ends {
         if last.is_some_and(|end| end != from) {
-            return Err(Violation(
-                "each operation of a part starts where the one before it ended",
-            ));
+            broke("each operation of a part starts where the one before it ended")?;
         }
         last = Some(to);
     }
@@ -106,12 +113,12 @@ fn check_endpoint(endpoint: &Endpoint) -> Result<(), Violation> {
         NodeRef::Outer(outer) => &outer.network,
     };
     if Id::new(node.as_str()).is_none() || Id::new(endpoint.asset.id.as_str()).is_none() {
-        return Err(Violation(
+        broke(
             "a node, network and asset is an identifier: 1 to 128 of A-Z a-z 0-9 . _ : -, starting with a letter or digit",
-        ));
+        )?;
     }
     if endpoint.asset.decimals > 36 {
-        return Err(Violation("an asset's decimals are at most 36"));
+        broke("an asset's decimals are at most 36")?;
     }
     Ok(())
 }
@@ -123,33 +130,72 @@ impl Operation {
     pub fn check(&self) -> Result<(), Violation> {
         check_typed_operation(self.kind, &self.from, &self.to)?;
         if repeats(&self.figures) {
-            return Err(Violation(
-                "duplicate figure: an operation cites each figure once",
-            ));
+            broke("duplicate figure: an operation cites each figure once")?;
         }
         if repeats(&self.calls) {
-            return Err(Violation("an operation names each call once"));
+            broke("an operation names each call once")?;
         }
         if self.calls.iter().any(|c| c.callee == self.provider) {
-            return Err(Violation("an operation names no call to its own provider"));
+            broke("an operation names no call to its own provider")?;
         }
         if self
             .calls
             .iter()
             .any(|c| c.kind == CallKind::HoldingBalance)
         {
-            return Err(Violation(
-                "an operation names no call for a holding balance",
-            ));
+            broke("an operation names no call for a holding balance")?;
+        }
+        if self.calls.iter().any(|c| {
+            matches!(
+                c.kind,
+                CallKind::StatusQuery | CallKind::Hold | CallKind::InnerSegmentsQuery
+            )
+        }) {
+            broke("an operation names no call for a status question or a hold")?;
         }
         if self.fee.asset != self.from.asset.id {
-            return Err(Violation("an operation's fee is in its from asset"));
+            broke("an operation's fee is in its from asset")?;
         }
         match Amount::new(self.fee.amount.as_str()) {
             Some(fee) if &fee <= self.amount_in.amount() => {}
-            _ => return Err(Violation("an operation's fee is at most its amount in")),
+            _ => broke("an operation's fee is at most its amount in")?,
         }
         Ok(())
+    }
+}
+
+impl Operation {
+    /// What this operation states as its `amount_out` for an accepted answer of its tuple's provider (a dry run or
+    /// a fresh quote) stating `answer_out` and `answer_fee`: what arrives (`REQ-CAT-11`, `REQ-QTE-11`). Under a tuple
+    /// that reports `gross`, a same-asset operation (a withdrawal, a route or a deposit) states the answer's
+    /// `amount_out` less its charge, the fee restated in this operation's out unit (provider-role's
+    /// [`less_the_charge`](crate::provider_role::less_the_charge)); under `net`, and for an exchange, whose fee is in
+    /// its from asset, the answer's `amount_out` as it stands. `tuple` is the tuple figure the operation cites;
+    /// `None` where it isn't one, or the charge is above the answer's `amount_out`.
+    ///
+    /// `None` means nothing arrives by the answer: no `amount_out` the operation could state matches it, so it confirms
+    /// nothing, and a candidate through it is dropped as delivering nothing (the router states its fee and `0` out,
+    /// arriving with nothing, or delivering nothing short of the destination). It is never read as the answer's
+    /// `amount_out`.
+    pub fn stated_out(&self, tuple: &Figure, answer_out: &str, answer_fee: &Fee) -> Option<String> {
+        let terms = match &tuple.value {
+            FigureValue::ReserveTuple { tuple } => &tuple.terms,
+            FigureValue::RampTuple { tuple } => &tuple.terms,
+            FigureValue::ExchangeTuple { tuple } => &tuple.terms,
+            _ => return None,
+        };
+        match (terms.reporting, self.kind) {
+            (
+                Reporting::Gross,
+                OperationKind::Withdrawal | OperationKind::Route | OperationKind::Deposit,
+            ) => crate::provider_role::less_the_charge(
+                answer_out,
+                &answer_fee.amount,
+                self.from.asset.decimals,
+                self.to.asset.decimals,
+            ),
+            _ => Some(answer_out.to_owned()),
+        }
     }
 }
 
@@ -163,9 +209,7 @@ impl Part {
         check_typed_chain(self.operations.iter().map(|o| (&o.from, &o.to)))?;
         for pair in self.operations.windows(2) {
             if &pair[0].amount_out != pair[1].amount_in.amount() {
-                return Err(Violation(
-                    "each operation of a part takes in what the one before it delivered",
-                ));
+                broke("each operation of a part takes in what the one before it delivered")?;
             }
         }
         Ok(())
@@ -191,9 +235,9 @@ impl Candidate {
                     .get(*part as usize)
                     .is_some_and(|p| (*operation as usize) < p.operations.len());
                 if !found {
-                    return Err(Violation(
+                    broke(
                         "an outside-band or unconfirmed reason names an operation of its candidate",
-                    ));
+                    )?;
                 }
             }
             Some(DropReason::BeyondLevels { part, operation }) => {
@@ -205,9 +249,9 @@ impl Candidate {
                 if *operation as usize + 1 != p.operations.len()
                     || !p.operations.last().amount_out.is_zero()
                 {
-                    return Err(Violation(
+                    broke(
                         "a beyond-levels reason names its part's last operation, which arrives with nothing",
-                    ));
+                    )?;
                 }
             }
             Some(DropReason::NothingDelivered { part, operation }) => {
@@ -219,9 +263,9 @@ impl Candidate {
                 if *operation as usize + 1 != p.operations.len()
                     || !p.operations.last().amount_out.is_zero()
                 {
-                    return Err(Violation(
+                    broke(
                         "a nothing-delivered reason names its part's last operation, which arrives with nothing",
-                    ));
+                    )?;
                 }
             }
             Some(DropReason::NoPrice { part, operation }) => {
@@ -235,9 +279,9 @@ impl Candidate {
                     || !last.amount_out.is_zero()
                     || last.fee.amount != "0"
                 {
-                    return Err(Violation(
+                    broke(
                         "a no-price reason names its part's last operation, which states a fee of 0 and arrives with nothing",
-                    ));
+                    )?;
                 }
             }
             Some(DropReason::FeeAboveAmount { part, operation }) => {
@@ -251,13 +295,24 @@ impl Candidate {
                     || !last.amount_out.is_zero()
                     || last.fee.amount != last.amount_in.amount().as_str()
                 {
-                    return Err(Violation(
+                    broke(
                         "a fee-above-amount reason names its part's last operation, which states its amount in as its fee and arrives with nothing",
-                    ));
+                    )?;
+                }
+            }
+            // Its part's last operation, the deposit; that its tuple pays out in batches is the record's to check
+            // against the snapshot (`T-020-39`).
+            Some(DropReason::BatchedPayout { part, operation }) => {
+                let last = self
+                    .parts
+                    .get(*part as usize)
+                    .is_some_and(|p| *operation as usize + 1 == p.operations.len());
+                if !last {
+                    broke("a batched-payout reason names its part's last operation")?;
                 }
             }
             Some(DropReason::Outranked { by }) if by == &self.candidate_id => {
-                return Err(Violation("a candidate isn't outranked by itself"));
+                broke("a candidate isn't outranked by itself")?;
             }
             _ => {}
         }
@@ -267,8 +322,17 @@ impl Candidate {
 
 impl PolicyBounds {
     /// Checks that there is at most one ceiling per provider and asset, and per publisher and asset, an asset
-    /// being its id and decimals.
+    /// being its id and decimals; at most one slippage limit per tuple; and that the operator's fee takes at most
+    /// the whole of what arrives in proportion (`numerator ≤ denominator`).
     pub fn check(&self) -> Result<(), Violation> {
+        let limited: Vec<_> = self.slippage_limits.iter().map(|l| &l.tuple).collect();
+        if repeats(&limited) {
+            broke("there is at most one slippage limit per tuple")?;
+        }
+        let proportion = &self.operator_fee.proportional;
+        if &proportion.numerator > proportion.denominator.amount() {
+            broke("the operator's fee takes at most the whole of what arrives in proportion")?;
+        }
         let providers: Vec<_> = self
             .provider_ceilings
             .iter()
@@ -280,9 +344,69 @@ impl PolicyBounds {
             .map(|c| (&c.publisher, &c.asset))
             .collect();
         if repeats(&providers) || repeats(&publishers) {
-            return Err(Violation(
-                "there is at most one ceiling per provider or publisher and asset",
-            ));
+            broke("there is at most one ceiling per provider or publisher and asset")?;
+        }
+        let older: Vec<_> = self
+            .older_protocol_versions
+            .iter()
+            .map(|o| o.version.as_str())
+            .collect();
+        if repeats(&older) || older.contains(&self.protocol_version.as_str()) {
+            broke("each older protocol version is named once and is not the current one")?;
+        }
+        Ok(())
+    }
+
+    /// The protocol versions in force under these bounds: the current one, and each older one until its cutover date,
+    /// as provider-role's `check_context` reads them (`REQ-PRT-4`).
+    pub fn protocol_versions(&self) -> crate::provider_role::ProtocolVersions {
+        self.older_protocol_versions.iter().fold(
+            crate::provider_role::ProtocolVersions::only(self.protocol_version.as_str()),
+            |versions, older| versions.with_older(older.version.as_str(), older.cutover.as_str()),
+        )
+    }
+
+    /// Checks these bounds against the snapshot they route over (`REQ-QTE-9`): every exchange tuple of the
+    /// snapshot that settles within [`THREE_DAYS_SECONDS`], by its price or by any fresh quote about it, has a
+    /// slippage limit here, matched on its provider and its two ends. Reserves and ramps set no rate, so they need
+    /// none; a tuple that declares no time within three days is free of the bound and needs none either.
+    ///
+    /// [`DecisionRecord::check`] runs it, so a record never names bounds that leave such a tuple unlimited.
+    pub fn check_against(&self, snapshot: &CatalogueSnapshot) -> Result<(), Violation> {
+        let within = |figure: &Figure, tuple: &Id| match &figure.value {
+            FigureValue::Price {
+                tuple: of,
+                settlement_seconds,
+                ..
+            } => of == tuple && settlement_seconds.get() <= THREE_DAYS_SECONDS,
+            FigureValue::FreshQuote { tuple: of, quote } => {
+                of == tuple
+                    && matches!(&quote.statement, ResultBody::Conversion(r)
+                        if matches!(&r.outcome, ConversionOutcome::DryRunAccepted(q)
+                            if q.settlement_seconds.get() <= THREE_DAYS_SECONDS))
+            }
+            _ => false,
+        };
+        for tuple in &snapshot.figures {
+            if !matches!(tuple.value, FigureValue::ExchangeTuple { .. }) {
+                continue;
+            }
+            let (Some(provider), Some((from, to))) = (tuple.origin.provider(), tuple_ends(tuple))
+            else {
+                return Err(Violation(
+                    "every exchange tuple has a provider and two ends a slippage limit can name",
+                ));
+            };
+            let declares_within = snapshot.figures.iter().any(|f| within(f, &tuple.figure_id));
+            let limited = self
+                .slippage_limits
+                .iter()
+                .any(|l| &l.tuple.provider == provider && l.tuple.from == from && l.tuple.to == to);
+            if declares_within && !limited {
+                broke(
+                    "every exchange tuple settling within three days has a slippage limit in the bounds",
+                )?;
+            }
         }
         Ok(())
     }
@@ -307,6 +431,32 @@ impl PolicyBounds {
                 .any(|c| &c.publisher == party && &c.asset == asset),
         }
     }
+}
+
+/// Whether what arrives leaves the customer at least `floor` after the operator's fee (`REQ-ORD-27`, 4.0.0): the
+/// fee is `flat + ceil(arrives × numerator / denominator)`, capped by its `maximum` and never raised to it, and
+/// what is left never goes below nothing. Exactly, with no division: for a whole `k` and a positive `d`,
+/// `ceil(a × n / d) ≤ k` holds exactly when `a × n ≤ k × d`.
+fn leaves_at_least(arrives: &Amount, fee: &FeeFormula, floor: &Amount) -> bool {
+    if floor.is_zero() {
+        return true;
+    }
+    // The fee may take up to `room` and leave the floor.
+    let Some(room) = arrives.checked_sub(floor) else {
+        return false;
+    };
+    if fee.maximum.as_ref().is_some_and(|maximum| maximum <= &room) {
+        return true;
+    }
+    let Some(proportional_room) = room.checked_sub(&fee.flat) else {
+        return false;
+    };
+    compare_products(
+        arrives,
+        &fee.proportional.numerator,
+        &proportional_room,
+        fee.proportional.denominator.amount(),
+    ) != core::cmp::Ordering::Greater
 }
 
 fn repeats<T: PartialEq>(items: &[T]) -> bool {
@@ -336,8 +486,9 @@ impl CatalogueSnapshot {
     ///   relying provider's, the one given to it (ADR-0012; ruled by the orchestrator, 2026-11-06). The relying
     ///   provider is the provider of the tuple a judgement names, not the verifier that made it.
     /// - Answers agree: no two dry-run answers (fresh quotes included) for one tuple and amount, one accepted and
-    ///   one refused; no two judgements of one subject for one tuple, one yes and one no (ruled by the
-    ///   orchestrator, 2026-11-06).
+    ///   one refused; no two judgements of one subject and one class for one tuple, one yes and one no (ruled by
+    ///   the orchestrator, 2026-11-06; by class since `T-020-06`'s review, so a no for one class stands beside a
+    ///   yes for another and drops its candidate).
     /// - A statement figure's age runs from its `made_at` to `taken_at`, rounded up, and its validity from
     ///   `made_at` to its `valid_until`, rounded down (`REQ-QTE-4`).
     /// - A calls figure (3.0.0, `T-011-06`) states no validity, lists each callee once and each kind once per
@@ -349,7 +500,7 @@ impl CatalogueSnapshot {
                 .iter()
                 .any(|f| f.figure_id == figure.figure_id)
             {
-                return Err(Violation("figure ids are unique in a snapshot"));
+                broke("figure ids are unique in a snapshot")?;
             }
         }
         let exposures: Vec<_> = self
@@ -363,9 +514,7 @@ impl CatalogueSnapshot {
             })
             .collect();
         if repeats(&exposures) {
-            return Err(Violation(
-                "there is at most one exposure per provider and asset",
-            ));
+            broke("there is at most one exposure per provider and asset")?;
         }
         let publishers: Vec<(&Id, &Id)> = self
             .figures
@@ -395,9 +544,7 @@ impl CatalogueSnapshot {
                 .iter()
                 .any(|(p, q)| p == provider && q != publisher)
         }) {
-            return Err(Violation(
-                "every provider has one publisher across the snapshot",
-            ));
+            broke("every provider has one publisher across the snapshot")?;
         }
         let tuples: Vec<(Option<&Id>, (Endpoint, Endpoint))> = self
             .figures
@@ -405,9 +552,7 @@ impl CatalogueSnapshot {
             .filter_map(|f| tuple_ends(f).map(|ends| (f.origin.provider(), ends)))
             .collect();
         if repeats(&tuples) {
-            return Err(Violation(
-                "a snapshot holds one tuple figure per provider and ends",
-            ));
+            broke("a snapshot holds one tuple figure per provider and ends")?;
         }
         let priced: Vec<&Id> = self
             .figures
@@ -418,7 +563,7 @@ impl CatalogueSnapshot {
             })
             .collect();
         if repeats(&priced) {
-            return Err(Violation("a snapshot holds at most one price per tuple"));
+            broke("a snapshot holds at most one price per tuple")?;
         }
         let declaring: Vec<Option<&Id>> = self
             .figures
@@ -427,9 +572,7 @@ impl CatalogueSnapshot {
             .map(|f| f.origin.provider())
             .collect();
         if repeats(&declaring) {
-            return Err(Violation(
-                "a snapshot holds at most one calls figure per provider",
-            ));
+            broke("a snapshot holds at most one calls figure per provider")?;
         }
         // The subject reference belongs to the relying provider (ADR-0012): the provider of the tuple a
         // judgement names, not the verifier that made it.
@@ -452,9 +595,7 @@ impl CatalogueSnapshot {
             .iter()
             .any(|(p, subject)| judged.iter().any(|(q, other)| p == q && subject != other))
         {
-            return Err(Violation(
-                "all judgements about one relying provider's tuples are about one subject",
-            ));
+            broke("all judgements about one relying provider's tuples are about one subject")?;
         }
         for figure in &self.figures {
             self.check_figure(figure)?;
@@ -462,8 +603,8 @@ impl CatalogueSnapshot {
         self.check_answers_agree()
     }
 
-    /// No two dry-run answers for one tuple and amount disagree, nor two judgements of one subject for one
-    /// tuple.
+    /// No two dry-run answers for one tuple and amount disagree, nor two judgements of one subject and one class
+    /// for one tuple.
     fn check_answers_agree(&self) -> Result<(), Violation> {
         let answers: Vec<(&Id, &str, bool)> = self
             .figures
@@ -492,28 +633,27 @@ impl CatalogueSnapshot {
                 .iter()
                 .any(|(t2, a2, yes2)| t == t2 && a == a2 && yes != yes2)
         }) {
-            return Err(Violation("dry-run answers for one tuple and amount agree"));
+            broke("dry-run answers for one tuple and amount agree")?;
         }
-        let judgements: Vec<(&Id, &str, bool)> = self
+        let judgements: Vec<(&Id, &str, &str, bool)> = self
             .figures
             .iter()
             .filter_map(|f| match &f.value {
                 FigureValue::Eligibility { tuple, judgement } => Some((
                     tuple,
                     judgement.statement.subject.as_str(),
+                    judgement.statement.class.as_str(),
                     judgement.statement.answer == JudgementAnswer::Yes,
                 )),
                 _ => None,
             })
             .collect();
-        if judgements.iter().any(|(t, s, yes)| {
+        if judgements.iter().any(|(t, s, c, yes)| {
             judgements
                 .iter()
-                .any(|(t2, s2, yes2)| t == t2 && s == s2 && yes != yes2)
+                .any(|(t2, s2, c2, yes2)| t == t2 && s == s2 && c == c2 && yes != yes2)
         }) {
-            return Err(Violation(
-                "eligibility judgements of one subject for one tuple agree",
-            ));
+            broke("eligibility judgements of one subject and class for one tuple agree")?;
         }
         Ok(())
     }
@@ -521,22 +661,20 @@ impl CatalogueSnapshot {
     fn check_figure(&self, figure: &Figure) -> Result<(), Violation> {
         let is_exposure = matches!(figure.value, FigureValue::Exposure { .. });
         if is_exposure != matches!(figure.origin, Origin::Operator { .. }) {
-            return Err(Violation(
+            broke(
                 "an exposure figure comes from the operator, every other figure from a provider",
-            ));
+            )?;
         }
         match &figure.value {
             FigureValue::Price { tuple, rate, .. } => {
                 if let Some(Pricing::Levels { levels }) = rate
                     && levels.windows(2).any(|w| w[0].up_to >= w[1].up_to)
                 {
-                    return Err(Violation("levels' bounds strictly increase"));
+                    broke("levels' bounds strictly increase")?;
                 }
                 let (_, side) = self.tuple_of(tuple, figure, true)?;
                 if rate.is_some() != (side == Side::Exchange) {
-                    return Err(Violation(
-                        "a price states a rate exactly when its tuple is an exchange's",
-                    ));
+                    broke("a price states a rate exactly when its tuple is an exchange's")?;
                 }
                 Ok(())
             }
@@ -557,16 +695,16 @@ impl CatalogueSnapshot {
                     return Err(Violation("a fresh quote is a provider's dry-run quote"));
                 };
                 if !matches!(kind, Side::Ramp | Side::Exchange) || kind != side {
-                    return Err(Violation(
+                    broke(
                         "a fresh quote is a transfer quote for a ramp's tuple or a conversion quote for an exchange's",
-                    ));
+                    )?;
                 }
                 check_fee(fee, amount_in, target)?;
                 if voided_by.is_empty() {
-                    return Err(Violation("something voids a quote"));
+                    broke("something voids a quote")?;
                 }
                 if repeats(voided_by) {
-                    return Err(Violation("a quote names each void condition once"));
+                    broke("a quote names each void condition once")?;
                 }
                 self.check_timing(figure, &quote.made_at, Some(valid_until))
             }
@@ -583,9 +721,7 @@ impl CatalogueSnapshot {
                     ));
                 };
                 if kind != side {
-                    return Err(Violation(
-                        "a dry run answers for its tuple's kind of operation",
-                    ));
+                    broke("a dry run answers for its tuple's kind of operation")?;
                 }
                 let valid_until = match view {
                     DryRun::Accepted {
@@ -594,9 +730,7 @@ impl CatalogueSnapshot {
                         ..
                     } => {
                         if amount_in != asked.amount().as_str() {
-                            return Err(Violation(
-                                "an accepted dry run states the amount its figure records",
-                            ));
+                            broke("an accepted dry run states the amount its figure records")?;
                         }
                         Some(valid_until)
                     }
@@ -606,29 +740,33 @@ impl CatalogueSnapshot {
             }
             FigureValue::Calls { calls } => {
                 if figure.valid_for_seconds.is_some() {
-                    return Err(Violation("a calls figure states no validity"));
+                    broke("a calls figure states no validity")?;
                 }
                 let callees: Vec<&Id> = calls.iter().map(|c| &c.callee).collect();
                 if repeats(&callees) {
-                    return Err(Violation("a calls figure lists each callee once"));
+                    broke("a calls figure lists each callee once")?;
                 }
                 if calls
                     .iter()
                     .any(|c| c.kinds.contains(&CallKind::HoldingBalance))
                 {
-                    return Err(Violation(
-                        "a calls figure declares no call for a holding balance",
-                    ));
+                    broke("a calls figure declares no call for a holding balance")?;
+                }
+                if calls.iter().any(|c| {
+                    c.kinds.iter().any(|k| {
+                        matches!(
+                            k,
+                            CallKind::StatusQuery | CallKind::Hold | CallKind::InnerSegmentsQuery
+                        )
+                    })
+                }) {
+                    broke("a calls figure declares no call for a status question or a hold")?;
                 }
                 if calls.iter().any(|c| repeats(&c.kinds)) {
-                    return Err(Violation(
-                        "a calls figure lists each kind once for its callee",
-                    ));
+                    broke("a calls figure lists each kind once for its callee")?;
                 }
                 if callees.iter().any(|c| Some(*c) == figure.origin.provider()) {
-                    return Err(Violation(
-                        "a calls figure names no call to its own provider",
-                    ));
+                    broke("a calls figure names no call to its own provider")?;
                 }
                 Ok(())
             }
@@ -672,9 +810,7 @@ impl CatalogueSnapshot {
             && (target.origin.provider() != figure.origin.provider()
                 || target.origin.publisher() != figure.origin.publisher())
         {
-            return Err(Violation(
-                "a figure about a tuple is from its tuple's provider and publisher",
-            ));
+            broke("a figure about a tuple is from its tuple's provider and publisher")?;
         }
         Ok((target, side))
     }
@@ -688,10 +824,10 @@ impl CatalogueSnapshot {
         statement: &Statement<T>,
     ) -> Result<(), Violation> {
         if statement.check_shape().is_err() {
-            return Err(Violation("a statement's envelope names its own shape"));
+            broke("a statement's envelope names its own shape")?;
         }
         if Some(statement.maker.as_str()) != figure.origin.provider().map(Id::as_str) {
-            return Err(Violation("a statement's maker is its figure's provider"));
+            broke("a statement's maker is its figure's provider")?;
         }
         Ok(())
     }
@@ -705,13 +841,11 @@ impl CatalogueSnapshot {
         valid_until: Option<&str>,
     ) -> Result<(), Violation> {
         if Timestamp::new(made_at).is_none() {
-            return Err(Violation("a statement's made_at is a timestamp"));
+            broke("a statement's made_at is a timestamp")?;
         }
         let age = seconds_up(made_at, self.taken_at.as_str());
         if age != Some(figure.age_seconds.get()) {
-            return Err(Violation(
-                "a statement figure's age runs from its making to the snapshot, rounded up",
-            ));
+            broke("a statement figure's age runs from its making to the snapshot, rounded up")?;
         }
         let stated = figure.valid_for_seconds.map(|s| s.get());
         let validity = match valid_until {
@@ -722,9 +856,9 @@ impl CatalogueSnapshot {
             None => stated.is_none(),
         };
         if !validity {
-            return Err(Violation(
+            broke(
                 "a statement figure's validity runs from its making to its valid_until, rounded down",
-            ));
+            )?;
         }
         Ok(())
     }
@@ -765,15 +899,16 @@ impl DecisionRecord {
     ///   `module_version`. Each call it names is declared there, and is to the provider of another operation of its
     ///   part (`REQ-MDL-21`).
     /// - A kept candidate (the chosen one, or one on the shortlist) cites no void statement, no figure past its
-    ///   validity, no refused dry run and no judgement of no; arrives at or above the floor and with something in
-    ///   every part; passes no ceiling, counting the value its operations produce as well as what they take in;
+    ///   validity, no refused dry run and no judgement of no; leaves the customer at least the floor after the
+    ///   operator's fee, and arrives with something in every part; passes no ceiling, counting the value its operations produce as well as what they take in;
     ///   uses no excluded provider or tuple; keeps within the part and hop limits; and has every operation within
     ///   its tuple's bands and its price's levels.
     /// - A drop reason that names a figure names one its candidate cites, and the figure supports the drop: a
     ///   stale figure is past its validity, a void statement is void, a voided quote names the condition, a
     ///   refused dry run was refused, and an ineligible judgement answered no. `below_floor`,
     ///   `no_positive_outcome`, `over_ceiling`, `excluded_by_policy` and `outside_band` are recomputed from the
-    ///   candidate's stated amounts and fees, the floor, the bounds and the exposures: they show the stated
+    ///   candidate's stated amounts and fees, the floor, the bounds (the operator's fee among them, since 4.0.0)
+    ///   and the exposures: they show the stated
     ///   amounts consistent with the drops, not with the prices cited, which the router suite recomputes
     ///   (`rutent-conformance`'s `router`, `T-004-02`). `no_positive_outcome` holds when any one part arrives with
     ///   nothing. `outranked` and `suspect_rate_cycle` rest on the ranking: here only that the outranking
@@ -790,12 +925,11 @@ impl DecisionRecord {
     pub fn check(&self) -> Result<(), Violation> {
         self.snapshot.check()?;
         self.bounds.check()?;
+        self.bounds.check_against(&self.snapshot)?;
         if let Round::Choice { refines } = &self.request.round
             && refines.taken_at.unix_nanos() > self.snapshot.taken_at.unix_nanos()
         {
-            return Err(Violation(
-                "a choice round refines a shortlist round taken at or before its own snapshot",
-            ));
+            broke("a choice round refines a shortlist round taken at or before its own snapshot")?;
         }
         self.check_usable_answers_agree()?;
         for (i, candidate) in self.candidates.iter().enumerate() {
@@ -804,25 +938,25 @@ impl DecisionRecord {
                 .iter()
                 .any(|c| c.candidate_id == candidate.candidate_id)
             {
-                return Err(Violation("candidate ids are unique in a decision record"));
+                broke("candidate ids are unique in a decision record")?;
             }
         }
         match (&self.request.round, &self.chosen) {
             (Round::Shortlist {}, Some(_)) => {
-                return Err(Violation("a shortlist round chooses nothing"));
+                broke("a shortlist round chooses nothing")?;
             }
             (Round::Choice { .. }, chosen) => {
                 if let Some(chosen) = chosen
                     && !self.candidates.iter().any(|c| &c.candidate_id == chosen)
                 {
-                    return Err(Violation("the chosen candidate is in the record"));
+                    broke("the chosen candidate is in the record")?;
                 }
                 for candidate in &self.candidates {
                     let is_chosen = chosen.as_ref() == Some(&candidate.candidate_id);
                     if is_chosen == candidate.dropped.is_some() {
-                        return Err(Violation(
+                        broke(
                             "every candidate but the chosen one has a drop reason, and the chosen one has none",
-                        ));
+                        )?;
                     }
                 }
             }
@@ -838,15 +972,18 @@ impl DecisionRecord {
     /// the provider-role `check_context`; `None` for a figure that isn't a statement.
     fn is_void(&self, id: &Id) -> Option<bool> {
         let figure = self.snapshot.figures.iter().find(|f| &f.figure_id == id)?;
-        let (deployment, version) = (
+        // The bounds name one protocol version, so a figure is taken under it alone, judged at the snapshot's time
+        // (provider-role 4.0.0's versions in force: none older here).
+        let (deployment, versions, at) = (
             &self.bounds.deployment,
-            self.bounds.protocol_version.as_str(),
+            self.bounds.protocol_versions(),
+            self.snapshot.taken_at.as_str(),
         );
         let context = match &figure.value {
-            FigureValue::FreshQuote { quote, .. } => quote.check_context(deployment, version),
-            FigureValue::DryRun { result, .. } => result.check_context(deployment, version),
+            FigureValue::FreshQuote { quote, .. } => quote.check_context(deployment, &versions, at),
+            FigureValue::DryRun { result, .. } => result.check_context(deployment, &versions, at),
             FigureValue::Eligibility { judgement, .. } => {
-                judgement.check_context(deployment, version)
+                judgement.check_context(deployment, &versions, at)
             }
             _ => return None,
         };
@@ -928,9 +1065,9 @@ impl DecisionRecord {
             if usable[..i].iter().any(|(_, t, a, f, o)| {
                 t == tuple && a == amount_in && (f != fee || o != amount_out)
             }) {
-                return Err(Violation(
+                broke(
                     "usable accepted answers for one tuple and amount agree on their fee and amount out",
-                ));
+                )?;
             }
         }
         Ok(())
@@ -985,9 +1122,7 @@ impl DecisionRecord {
                 }) if figure == id
             );
             if !at && !voided_for_it {
-                return Err(Violation(
-                    "a fresh quote an operation cites is for its amount in",
-                ));
+                broke("a fresh quote an operation cites is for its amount in")?;
             }
         }
         let bears_on_it = |f: &Figure| match &f.value {
@@ -1010,9 +1145,9 @@ impl DecisionRecord {
             bears_on_it(f) && self.is_usable(f) && !operation.figures.contains(&f.figure_id)
         });
         if left_out {
-            return Err(Violation(
+            broke(
                 "every operation cites every usable answer and judgement about its tuple at its amount in",
-            ));
+            )?;
         }
         Ok(())
     }
@@ -1037,14 +1172,10 @@ impl DecisionRecord {
             return Err(Violation("every operation cites one tuple figure"));
         };
         if tuple.origin.provider() != Some(&operation.provider) {
-            return Err(Violation(
-                "every operation cites a tuple of its own provider",
-            ));
+            broke("every operation cites a tuple of its own provider")?;
         }
         if tuple_ends(tuple) != Some((operation.from.clone(), operation.to.clone())) {
-            return Err(Violation(
-                "every operation cites a tuple with its own two ends",
-            ));
+            broke("every operation cites a tuple with its own two ends")?;
         }
         for figure in &cited {
             let names = match &figure.value {
@@ -1056,16 +1187,12 @@ impl DecisionRecord {
             };
             let calls = matches!(figure.value, FigureValue::Calls { .. });
             if !(figure.figure_id == tuple.figure_id || names == Some(&tuple.figure_id) || calls) {
-                return Err(Violation(
-                    "every other figure an operation cites names the operation's own tuple",
-                ));
+                broke("every other figure an operation cites names the operation's own tuple")?;
             }
             if let FigureValue::DryRun { amount_in, .. } = &figure.value
                 && amount_in != &operation.amount_in
             {
-                return Err(Violation(
-                    "every dry run an operation cites is for its amount in",
-                ));
+                broke("every dry run an operation cites is for its amount in")?;
             }
         }
         Ok(tuple)
@@ -1093,9 +1220,7 @@ impl DecisionRecord {
                 if release(&figure.origin).is_none()
                     || release(&figure.origin) != release(&tuple.origin)
                 {
-                    return Err(Violation(
-                        "an operation's calls come from its own module release's calls figure",
-                    ));
+                    broke("an operation's calls come from its own module release's calls figure")?;
                 }
                 *declared
             }
@@ -1110,9 +1235,7 @@ impl DecisionRecord {
                 .iter()
                 .any(|d| d.callee == call.callee && d.kinds.contains(&call.kind));
             if !is_declared {
-                return Err(Violation(
-                    "every call an operation names is one its provider's module declares",
-                ));
+                broke("every call an operation names is one its provider's module declares")?;
             }
             let on_the_route = part
                 .operations
@@ -1120,9 +1243,9 @@ impl DecisionRecord {
                 .enumerate()
                 .any(|(i, other)| i != o && other.provider == call.callee);
             if !on_the_route {
-                return Err(Violation(
+                broke(
                     "every call an operation names is to the provider of another operation of its part",
-                ));
+                )?;
             }
         }
         Ok(())
@@ -1157,7 +1280,9 @@ impl DecisionRecord {
     }
 
     /// Whether an operation is confirmed for the choice round: it cites an accepted dry-run answer of its own
-    /// provider for its tuple, at its amount in, with its fee and its amount out, within its validity and not void.
+    /// provider for its tuple, at its amount in, with its fee and stating what arrives by it
+    /// ([`Operation::stated_out`]: under a gross tuple, a same-asset answer's amount out less its charge), within its
+    /// validity and not void.
     /// For a route or exchange that is the provider's fresh quote (`transfer_quote`, `conversion_quote`); for a
     /// withdrawal or deposit, the reserve's accepted dry run.
     fn is_confirmed(&self, operation: &Operation, tuple: &Id) -> bool {
@@ -1178,11 +1303,13 @@ impl DecisionRecord {
                     } if t == tuple => result,
                     _ => return false,
                 };
+                // The operation states what arrives: under a gross tuple, a same-asset answer less its charge.
                 let same_terms = matches!(
                     dry_run_view(&result.statement),
                     Some((_, DryRun::Accepted { amount_in, amount_out, fee, .. }))
                         if amount_in == operation.amount_in.amount().as_str()
-                            && amount_out == operation.amount_out.as_str()
+                            && self.figure(tuple).and_then(|t| operation.stated_out(t, amount_out, fee)).as_deref()
+                                == Some(operation.amount_out.as_str())
                             && fee == &operation.fee
                 );
                 same_terms
@@ -1190,6 +1317,13 @@ impl DecisionRecord {
                     && self.is_void(&f.figure_id) == Some(false)
                     && (!timed || self.made_after_the_shortlist(f))
             })
+    }
+
+    /// Whether `tuple` is a deposit tuple declaring `batched` payouts.
+    fn batches_payouts(tuple: &Figure) -> bool {
+        matches!(&tuple.value, FigureValue::ReserveTuple { tuple }
+            if tuple.direction() == Some(crate::provider_role::ReserveDirection::Deposit)
+                && tuple.payouts() == crate::provider_role::Payouts::Batched)
     }
 
     fn check_candidate(&self, candidate: &Candidate) -> Result<(), Violation> {
@@ -1204,7 +1338,7 @@ impl DecisionRecord {
         for (p, part) in candidate.parts.iter().enumerate() {
             let (first, last) = (part.operations.first(), part.operations.last());
             if first.from != request.from {
-                return Err(Violation("every part starts at the request's origin"));
+                broke("every part starts at the request's origin")?;
             }
             let cut_short = matches!(
                 candidate.dropped,
@@ -1216,7 +1350,7 @@ impl DecisionRecord {
                 ) if part as usize == p
             );
             if last.to != request.to && !cut_short {
-                return Err(Violation("every part ends at the request's destination"));
+                broke("every part ends at the request's destination")?;
             }
             total = total
                 .checked_add(first.amount_in.amount())
@@ -1231,9 +1365,7 @@ impl DecisionRecord {
                     .iter()
                     .all(|f| self.snapshot.has_figure(f))
                 {
-                    return Err(Violation(
-                        "every figure an operation names is in the snapshot",
-                    ));
+                    broke("every figure an operation names is in the snapshot")?;
                 }
                 let tuple = self.tuple_of(operation)?;
                 let unpriced = matches!(
@@ -1242,14 +1374,23 @@ impl DecisionRecord {
                 );
                 if unpriced {
                     if self.prices_cited(operation) != 0 || self.has_price(&tuple.figure_id) {
-                        return Err(Violation(
+                        broke(
                             "a no-price reason names an operation whose tuple the snapshot holds no price for, and which cites none",
-                        ));
+                        )?;
                     }
                 } else if self.prices_cited(operation) != 1 {
-                    return Err(Violation(
-                        "every operation cites one price, for its own tuple",
-                    ));
+                    broke("every operation cites one price, for its own tuple")?;
+                }
+                // No kept or outranked candidate ends a part on a deposit at a reserve tuple that pays out in batches:
+                // one movement evidences one order's close, so Core could never close it (`REQ-ORD-33`,
+                // `T-020-43`). A candidate dropped for another reason may, as the router drops it first for this.
+                if o + 1 == part.operations.len()
+                    && matches!(candidate.dropped, None | Some(DropReason::Outranked { .. }))
+                    && Self::batches_payouts(tuple)
+                {
+                    broke(
+                        "a kept or outranked candidate doesn't end a part on a deposit at a reserve tuple that pays out in batches",
+                    )?;
                 }
                 self.check_citations(candidate, operation, &tuple.figure_id)?;
                 self.check_calls(part, o, tuple)?;
@@ -1263,9 +1404,7 @@ impl DecisionRecord {
             }
         }
         if &total != request.amount.amount() {
-            return Err(Violation(
-                "a candidate's parts add up to the request's amount",
-            ));
+            broke("a candidate's parts add up to the request's amount")?;
         }
         let cited: Vec<&Figure> = candidate
             .parts
@@ -1277,7 +1416,7 @@ impl DecisionRecord {
         let below_floor = request
             .floor
             .as_ref()
-            .is_some_and(|floor| &arriving < floor);
+            .is_some_and(|floor| !leaves_at_least(&arriving, &self.bounds.operator_fee, floor));
         let over: Vec<(CeilingScope, &Id, &Denomination)> = self.ceilings_passed(&placed);
         let excluded = placed
             .iter()
@@ -1289,46 +1428,36 @@ impl DecisionRecord {
                 .iter()
                 .any(|f| self.is_void(&f.figure_id) == Some(true))
             {
-                return Err(Violation("a kept candidate uses no void statement"));
+                broke("a kept candidate uses no void statement")?;
             }
             if cited.iter().any(|f| !f.is_within_validity()) {
-                return Err(Violation(
-                    "a kept candidate uses no figure past its validity",
-                ));
+                broke("a kept candidate uses no figure past its validity")?;
             }
             if cited.iter().any(|f| refuses(f)) {
-                return Err(Violation(
-                    "a kept candidate cites no refused dry run and no judgement of no",
-                ));
+                broke("a kept candidate cites no refused dry run and no judgement of no")?;
             }
             if below_floor {
-                return Err(Violation("a kept candidate arrives at or above the floor"));
+                broke(
+                    "a kept candidate leaves the customer at least the floor after the operator's fee",
+                )?;
             }
             if a_part_arrives_with_nothing {
-                return Err(Violation(
-                    "a kept candidate arrives with something in every part",
-                ));
+                broke("a kept candidate arrives with something in every part")?;
             }
             if !over.is_empty() {
-                return Err(Violation("a kept candidate passes no ceiling"));
+                broke("a kept candidate passes no ceiling")?;
             }
             if excluded {
-                return Err(Violation(
-                    "a kept candidate uses no excluded provider or tuple",
-                ));
+                broke("a kept candidate uses no excluded provider or tuple")?;
             }
             let hops = usize::from(self.bounds.max_hops.get());
             if candidate.parts.len() > usize::from(self.bounds.max_parts.get())
                 || candidate.parts.iter().any(|p| p.operations.len() > hops)
             {
-                return Err(Violation(
-                    "a kept candidate keeps within the part and hop limits",
-                ));
+                broke("a kept candidate keeps within the part and hop limits")?;
             }
             if !outside_band.is_empty() {
-                return Err(Violation(
-                    "a kept candidate's every operation is within its tuple's bands and levels",
-                ));
+                broke("a kept candidate's every operation is within its tuple's bands and levels")?;
             }
             if choice && !unconfirmed.is_empty() {
                 let early = unconfirmed.iter().any(|&(p, o)| {
@@ -1337,13 +1466,13 @@ impl DecisionRecord {
                         .is_ok_and(|t| self.confirms(operation, &t.figure_id, false))
                 });
                 if early {
-                    return Err(Violation(
+                    broke(
                         "a confirming answer is made at or after the shortlist round it refines",
-                    ));
+                    )?;
                 }
-                return Err(Violation(
+                broke(
                     "the choice round chooses only a candidate whose every operation is confirmed",
-                ));
+                )?;
             }
             return Ok(());
         };
@@ -1360,12 +1489,10 @@ impl DecisionRecord {
                     ));
                 };
                 if !cites(figure) {
-                    return Err(Violation(
-                        "a drop reason names a figure its candidate cites",
-                    ));
+                    broke("a drop reason names a figure its candidate cites")?;
                 }
                 if !self.supports(candidate, dropped, found) {
-                    return Err(Violation("a drop reason's figure supports the drop"));
+                    broke("a drop reason's figure supports the drop")?;
                 }
                 if matches!(
                     dropped,
@@ -1375,26 +1502,26 @@ impl DecisionRecord {
                 ) && self.is_void(figure).is_some()
                     && self.covered_elsewhere(candidate, figure)
                 {
-                    return Err(Violation(
+                    broke(
                         "a stale, void or voided statement drops its candidate only where no usable answer covers its operation",
-                    ));
+                    )?;
                 }
                 Ok(())
             }
             DropReason::Unconfirmed { part, operation } => {
                 if !choice || !unconfirmed.contains(&(*part as usize, *operation as usize)) {
-                    return Err(Violation(
+                    broke(
                         "an unconfirmed reason names an operation the choice round finds unconfirmed",
-                    ));
+                    )?;
                 }
                 Ok(())
             }
             DropReason::BeyondLevels { part, operation } => {
                 let named = &candidate.parts[*part as usize].operations[*operation as usize];
                 if !self.beyond_levels(named) {
-                    return Err(Violation(
+                    broke(
                         "a beyond-levels reason names an operation whose net is above its price's last level",
-                    ));
+                    )?;
                 }
                 Ok(())
             }
@@ -1402,9 +1529,23 @@ impl DecisionRecord {
             DropReason::NothingDelivered { part, operation } => {
                 let named = &candidate.parts[*part as usize].operations[*operation as usize];
                 if named.to == request.to {
-                    return Err(Violation(
+                    broke(
                         "a nothing-delivered reason names an operation short of the destination",
-                    ));
+                    )?;
+                }
+                Ok(())
+            }
+            // A route ending at a reserve that pays out in batches (`REQ-ORD-33`, `T-020-39`): the part's last
+            // operation, its deposit, at a reserve tuple that declares `batched`.
+            DropReason::BatchedPayout { part, operation } => {
+                let named = &candidate.parts[*part as usize].operations[*operation as usize];
+                let batched = matches!(&self.tuple_of(named)?.value, FigureValue::ReserveTuple { tuple }
+                        if tuple.direction() == Some(crate::provider_role::ReserveDirection::Deposit)
+                            && tuple.payouts() == crate::provider_role::Payouts::Batched);
+                if !batched {
+                    broke(
+                        "a batched-payout reason names a deposit at a reserve tuple that pays out in batches",
+                    )?;
                 }
                 Ok(())
             }
@@ -1412,17 +1553,17 @@ impl DecisionRecord {
                 let named = &candidate.parts[*part as usize].operations[*operation as usize];
                 let tuple = self.tuple_of(named)?;
                 if self.cites_a_usable_answer(named, &tuple.figure_id) {
-                    return Err(Violation(
+                    broke(
                         "a fee-above-amount reason names an operation that cites no usable answer at its amount in",
-                    ));
+                    )?;
                 }
                 Ok(())
             }
             DropReason::OutsideBand { part, operation } => {
                 if !outside_band.contains(&(*part as usize, *operation as usize)) {
-                    return Err(Violation(
+                    broke(
                         "an outside-band reason names an operation outside its tuple's bands or levels",
-                    ));
+                    )?;
                 }
                 Ok(())
             }
@@ -1432,30 +1573,26 @@ impl DecisionRecord {
                 asset,
             } => {
                 if !self.bounds.has_ceiling(*scope, party, asset) {
-                    return Err(Violation(
-                        "every ceiling a drop reason names is in the bounds",
-                    ));
+                    broke("every ceiling a drop reason names is in the bounds")?;
                 }
                 if !over.contains(&(*scope, party, asset)) {
-                    return Err(Violation(
-                        "an over-ceiling reason names a ceiling the candidate passes",
-                    ));
+                    broke("an over-ceiling reason names a ceiling the candidate passes")?;
                 }
                 Ok(())
             }
-            DropReason::BelowFloor {} if !below_floor => Err(Violation(
-                "a below-floor reason names a candidate that arrives below the floor",
-            )),
-            DropReason::NoPositiveOutcome {} if !a_part_arrives_with_nothing => Err(Violation(
+            DropReason::BelowFloor {} if !below_floor => broke(
+                "a below-floor reason names a candidate that leaves the customer less than the floor after the operator's fee",
+            ),
+            DropReason::NoPositiveOutcome {} if !a_part_arrives_with_nothing => broke(
                 "a no-positive-outcome reason names a candidate with a part that arrives with nothing",
-            )),
-            DropReason::ExcludedByPolicy {} if !excluded => Err(Violation(
+            ),
+            DropReason::ExcludedByPolicy {} if !excluded => broke(
                 "an excluded-by-policy reason names a candidate that uses an excluded provider or tuple",
-            )),
+            ),
             DropReason::Outranked { by }
                 if !self.candidates.iter().any(|c| &c.candidate_id == by) =>
             {
-                Err(Violation("an outranking candidate is in the record"))
+                broke("an outranking candidate is in the record")
             }
             _ => Ok(()),
         }
@@ -1795,11 +1932,11 @@ fn check_fee(fee: &Fee, amount_in: &str, tuple: &Figure) -> Result<(), Violation
         _ => return Err(Violation("a figure names a tuple figure of its snapshot")),
     };
     if fee.asset != input {
-        return Err(Violation("a quote's fee is in its tuple's input asset"));
+        broke("a quote's fee is in its tuple's input asset")?;
     }
     match (Amount::new(fee.amount.as_str()), Amount::new(amount_in)) {
         (Some(fee), Some(amount_in)) if fee <= amount_in => Ok(()),
-        _ => Err(Violation("a quote's fee is at most its amount in")),
+        _ => broke("a quote's fee is at most its amount in"),
     }
 }
 
@@ -1821,11 +1958,189 @@ macro_rules! checked_serde {
     )*};
 }
 
+impl SettlementTimes {
+    /// Checks that the segment settled at or after it started (`REQ-QTE-3`).
+    pub fn check(&self) -> Result<(), Violation> {
+        if self.settled_at.unix_nanos() < self.started_at.unix_nanos() {
+            broke("a segment settles at or after it starts")?;
+        }
+        Ok(())
+    }
+}
+
+impl Figure {
+    /// When the figure stops being usable, in nanoseconds since the Unix epoch, counted from a snapshot taken at
+    /// `taken_at`: `taken_at + (valid_for_seconds − age_seconds)`. Age is rounded up and validity down, so this is
+    /// never later than the figure's own `valid_until`. `None` for a figure that states no validity, which holds
+    /// until replaced (an advertisement, a price); a figure already past its validity expires at `taken_at`.
+    pub fn expires_at(&self, taken_at: &Timestamp) -> Option<i128> {
+        let valid = self.valid_for_seconds?.get();
+        let left = valid.saturating_sub(self.age_seconds.get());
+        Some(taken_at.unix_nanos() + i128::from(left) * 1_000_000_000)
+    }
+}
+
+impl DecisionRecord {
+    /// The earliest expiry ([`Figure::expires_at`]) of the figures `candidate`'s operations cite, from this record's
+    /// snapshot; `None` where none of them states a validity.
+    pub fn earliest_expiry(&self, candidate: &Candidate) -> Option<i128> {
+        candidate
+            .parts
+            .iter()
+            .flat_map(|p| p.operations.iter())
+            .flat_map(|o| o.figures.iter())
+            .filter_map(|id| self.figure(id))
+            .filter_map(|f| f.expires_at(&self.snapshot.taken_at))
+            .min()
+    }
+}
+
+impl HeldQuote {
+    /// Checks the record whole, that it chose a candidate, that the hold's validity is at or after the record's
+    /// snapshot was taken, and that it is no later than the earliest expiry of the figures the chosen candidate cites
+    /// ([`DecisionRecord::earliest_expiry`]), so a hold never outlives what its quote rests on (`REQ-QTE-15`,
+    /// `REQ-QTE-4`).
+    pub fn check(&self) -> Result<(), Violation> {
+        self.record.check()?;
+        let Some(chosen) = self.record.chosen() else {
+            return Err(Violation("a held quote's record chose a candidate"));
+        };
+        if self.valid_until.unix_nanos() < self.record.snapshot.taken_at.unix_nanos() {
+            broke("a held quote's validity is at or after its record's snapshot")?;
+        }
+        if self
+            .record
+            .earliest_expiry(chosen)
+            .is_some_and(|expiry| self.valid_until.unix_nanos() > expiry)
+        {
+            broke(
+                "a held quote's validity is no later than the earliest expiry of the figures its quote cites",
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl StatedTerms {
+    /// The history entry of a provider's signed terms (provider-role's `TupleTerms`, `REQ-QTE-6`), received by Core at
+    /// `received_at`: its tuple, fee formula and slippage regime, stated at the later of the statement's `made_at`
+    /// and `received_at`, never `made_at` alone, so terms dated before a segment started but received after it never
+    /// bind it ([`StatedTerms::stated_at`]). Refused where the statement isn't of the terms shape, breaks
+    /// provider-role's `check_terms` (made by another than its tuple's provider, or a slippage regime where its tuple
+    /// sets no rate or none where it does), or a figure isn't one of this contract's atoms.
+    pub fn from_statement(
+        statement: &Statement<crate::provider_role::TupleTerms>,
+        received_at: &Timestamp,
+    ) -> Result<StatedTerms, Violation> {
+        statement
+            .check_shape()
+            .map_err(|_| Violation("stated terms are a terms statement"))?;
+        crate::provider_role::check_terms(statement).map_err(|_| {
+            Violation(
+                "stated terms are their tuple's provider's own, with a slippage regime exactly where the tuple sets a rate",
+            )
+        })?;
+        let terms = &statement.statement;
+        let atom = || Violation("stated terms' figures are this contract's atoms");
+        let end = |e: &crate::provider_role::TupleEnd| Endpoint {
+            node: e.node.clone(),
+            asset: e.asset.clone(),
+        };
+        let made_at = Timestamp::new(statement.made_at.as_str()).ok_or_else(atom)?;
+        let stated_at = if made_at.unix_nanos() >= received_at.unix_nanos() {
+            made_at
+        } else {
+            received_at.clone()
+        };
+        Ok(StatedTerms {
+            tuple: TupleKey {
+                provider: Id::new(terms.tuple.provider.as_str()).ok_or_else(atom)?,
+                from: end(&terms.tuple.from),
+                to: end(&terms.tuple.to),
+            },
+            stated_at,
+            fee: FeeFormula {
+                flat: Amount::new(terms.fee.flat.as_str()).ok_or_else(atom)?,
+                proportional: Ratio {
+                    numerator: Amount::new(terms.fee.proportional.numerator.as_str())
+                        .ok_or_else(atom)?,
+                    denominator: PositiveAmount::new(terms.fee.proportional.denominator.as_str())
+                        .ok_or_else(atom)?,
+                },
+                maximum: match &terms.fee.maximum {
+                    Some(m) => Some(Amount::new(m.as_str()).ok_or_else(atom)?),
+                    None => None,
+                },
+            },
+            slippage: terms.slippage.clone(),
+        })
+    }
+}
+
+impl HeldQuote {
+    /// Checks a reserve's signed hold (provider-role's `Hold`, `REQ-QTE-15`) against this held quote, whose record
+    /// Core's log names by `record_id` and `record_digest` (core-internal's `decision_record` entry: its
+    /// `decision_record` and its `record`): of the hold shape, naming that record by that id and digest, so a hold
+    /// of another record's candidate of the same id never passes, holding this record's chosen candidate, made by the
+    /// reserve that starts each of its parts, with a validity no later than the earliest expiry of the figures that
+    /// candidate cites ([`DecisionRecord::earliest_expiry`]), and this quote held no longer than the hold says. That
+    /// `record_digest` is this record's digest is Core's, which computes it; this contract computes no digest.
+    pub fn check_hold(
+        &self,
+        hold: &Statement<crate::provider_role::Hold>,
+        record_id: &Id,
+        record_digest: &crate::module_interface::Digest,
+    ) -> Result<(), Violation> {
+        hold.check_shape()
+            .map_err(|_| Violation("a hold is a hold statement"))?;
+        let named = &hold.statement.record;
+        if named.id != record_id.as_str()
+            || named.digest.value != record_digest.value.as_str()
+            || named.digest.algorithm != crate::provider_role::DigestAlgorithm::Sha256
+            || record_digest.algorithm != crate::module_interface::DigestAlgorithm::Sha256
+        {
+            broke(
+                "a hold names its held quote's decision record, by the id and digest the log names it by",
+            )?;
+        }
+        let Some(chosen) = self.record.chosen() else {
+            return Err(Violation("a held quote's record chose a candidate"));
+        };
+        if hold.statement.candidate != chosen.candidate_id.as_str() {
+            broke("a hold holds its record's chosen candidate")?;
+        }
+        if chosen
+            .parts
+            .iter()
+            .any(|part| part.operations.first().provider.as_str() != hold.maker)
+        {
+            broke("a hold is made by the reserve that starts each part of its candidate")?;
+        }
+        let valid_until = Timestamp::new(hold.statement.valid_until.as_str())
+            .ok_or(Violation("a hold's validity is a timestamp"))?;
+        if self
+            .record
+            .earliest_expiry(chosen)
+            .is_some_and(|expiry| valid_until.unix_nanos() > expiry)
+        {
+            broke(
+                "a hold's validity is no later than the earliest expiry of the figures its candidate cites",
+            )?;
+        }
+        if self.valid_until.unix_nanos() > valid_until.unix_nanos() {
+            broke("a held quote is held no longer than its hold's validity")?;
+        }
+        Ok(())
+    }
+}
+
 checked_serde!(
     Operation,
     Part,
     Candidate,
     PolicyBounds,
     CatalogueSnapshot,
-    DecisionRecord
+    DecisionRecord,
+    SettlementTimes,
+    HeldQuote
 );

@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:core-internal:decision",
+  "title": "Decision",
+  "description": "Policy's answer to a decision call: permit, refuse with its class, or not known (REQ-AUZ-1, REQ-AUZ-5). It is appended to the log before it is given, and carries its entry's receipt. A stuck order's decide and move steps and a registered authorisation answer with the same shape.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "request",
+    "decision",
+    "outcome",
+    "receipt"
+  ],
+  "properties": {
+    "request": {
+      "description": "The request it answers.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "decision": {
+      "description": "The decision's id.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "outcome": {
+      "$ref": "#/$defs/answer"
+    },
+    "receipt": {
+      "description": "The receipt of the decision's entry in the log.",
+      "$ref": "urn:rutent:core-internal:receipt"
+    }
+  },
+  "$defs": {
+    "answer": {
+      "description": "The answer.",
+      "type": "object",
+      "required": [
+        "answer"
+      ],
+      "properties": {
+        "answer": {
+          "enum": [
+            "permit",
+            "refuse",
+            "not_known"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "answer"
+            ],
+            "properties": {
+              "answer": {
+                "const": "permit"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/answer_permit"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "answer"
+            ],
+            "properties": {
+              "answer": {
+                "const": "refuse"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/answer_refuse"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "answer"
+            ],
+            "properties": {
+              "answer": {
+                "const": "not_known"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/answer_not_known"
+          }
+        }
+      ]
+    },
+    "answer_permit": {
+      "description": "The action may take effect.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "answer"
+      ],
+      "properties": {
+        "answer": {
+          "const": "permit"
+        }
+      }
+    },
+    "answer_refuse": {
+      "description": "It may not.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "answer",
+        "class"
+      ],
+      "properties": {
+        "answer": {
+          "const": "refuse"
+        },
+        "class": {
+          "$ref": "urn:rutent:core-internal:common#/$defs/refusal_class"
+        }
+      }
+    },
+    "answer_not_known": {
+      "description": "Policy couldn't decide, so it may not either.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "answer",
+        "cause"
+      ],
+      "properties": {
+        "answer": {
+          "const": "not_known"
+        },
+        "cause": {
+          "$ref": "urn:rutent:core-internal:common#/$defs/not_known_cause"
+        }
+      }
+    }
+  }
+}

@@ -519,3 +519,79 @@ fn boundary_suite_refuses_a_release_whose_assertion_is_signed_by_another_key() {
     );
     assert!(!trusting.passed());
 }
+
+// verifies: REQ-MDL-1
+#[test]
+fn re_admitted_version_is_refused_with_its_own_reason() {
+    let report = run(ReferenceDouble::new());
+    for answer in [
+        Exercised::ReadmittedVersionRefused,
+        Exercised::ReadmittedWaitingVersionRefused,
+    ] {
+        assert!(
+            exercised_in_every_language(&report, answer),
+            "{answer:?} not exercised: {report:?}"
+        );
+    }
+    assert!(
+        !report.flagged().contains(&Check::ReadmittedVersionRefused),
+        "{:?}",
+        report.findings
+    );
+    for (name, binding) in [
+        (
+            "a binding that admits a version again",
+            ReferenceDouble::new().readmitting_versions(),
+        ),
+        (
+            "a binding that refuses it as another reason",
+            ReferenceDouble::new().misstating_readmission_refusals(),
+        ),
+    ] {
+        let flagged = run(binding);
+        assert_eq!(
+            flagged.flagged(),
+            [Check::ReadmittedVersionRefused].into(),
+            "{name}: {:?}",
+            flagged.findings
+        );
+    }
+}
+
+// verifies: REQ-MDL-11
+#[test]
+fn module_past_its_step_limit_is_refused() {
+    let report = run(ReferenceDouble::new());
+    for answer in [
+        Exercised::StepLimitRefused,
+        Exercised::StepsWithinTheLimitAnswered,
+    ] {
+        assert!(
+            exercised_in_every_language(&report, answer),
+            "{answer:?} not exercised: {report:?}"
+        );
+    }
+    assert!(
+        !report.flagged().contains(&Check::StepLimitEnforced),
+        "{:?}",
+        report.findings
+    );
+    for (name, binding) in [
+        (
+            "a binding that takes a step limit and never applies it",
+            ReferenceDouble::new().ignoring_the_step_limit(),
+        ),
+        (
+            "a binding that refuses past the limit as unavailable",
+            ReferenceDouble::new().misstating_limit_refusals(),
+        ),
+    ] {
+        let flagged = run(binding);
+        assert_eq!(
+            flagged.flagged(),
+            [Check::StepLimitEnforced].into(),
+            "{name}: {:?}",
+            flagged.findings
+        );
+    }
+}

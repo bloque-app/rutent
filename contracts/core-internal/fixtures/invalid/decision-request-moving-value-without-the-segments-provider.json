@@ -1,0 +1,31 @@
+{
+  "request": "req-100",
+  "caller": {
+    "party": "rutent",
+    "acts": "core-orch",
+    "role": "core",
+    "kind": "component"
+  },
+  "action": {
+    "kind": "move_value",
+    "order": "ord-17",
+    "segment": "seg-2",
+    "origin_reserve": "us-bank",
+    "authorisation": "auth-17",
+    "route": {
+      "destination": {
+        "reserve": "bank-co",
+        "node": {
+          "network": "co-ach"
+        },
+        "account": "acct-ref-9"
+      },
+      "to_asset": {
+        "id": "COP",
+        "decimals": 2
+      },
+      "delivers": "2500000"
+    }
+  },
+  "at": "2026-11-10T09:00:00Z"
+}

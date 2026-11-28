@@ -1,0 +1,35 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "acme-treasury",
+    "acts": "agent-7",
+    "role": "customer",
+    "kind": "agent"
+  },
+  "what": {
+    "call": "acceptance",
+    "acceptance": "acc-0001",
+    "order": "ord-19",
+    "request": "client-req-9",
+    "quote": {
+      "algorithm": "sha-256",
+      "value": "9191919191919191919191919191919191919191919191919191919191919191"
+    },
+    "authorisation": "auth-19",
+    "basis": "given",
+    "parties": {
+      "requester": "acme-treasury",
+      "beneficiary": "payee-ref-3",
+      "payer": "acme-treasury"
+    },
+    "origin_reserve": "us-bank",
+    "session": "sess-300"
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "core_clock"
+  },
+  "outcome": {
+    "status": "observed"
+  }
+}

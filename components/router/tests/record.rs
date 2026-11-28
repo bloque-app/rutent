@@ -7,8 +7,8 @@ mod common;
 use std::collections::BTreeSet;
 
 use common::{
-    Net, WIDE, bounds, choice_of, endpoint, fee, on, outer, parse, request, routed, shortlist,
-    tuples,
+    Net, WIDE, bounds, choice_of, endpoint, fee, limited, on, outer, parse, request, routed,
+    shortlist, tuples,
 };
 use rutent_conformance::router::recompute;
 use rutent_contracts::router_api::{
@@ -218,11 +218,11 @@ fn ac2_ends() -> (Value, Value, &'static str) {
 #[test]
 fn changed_objective_can_change_the_chosen_route() {
     let net = reserve_exchange_ramp();
-    let (_, cheapest, snapshot) = rounds(&net, ac2_ends(), &bounds(3));
+    let (_, cheapest, snapshot) = rounds(&net, ac2_ends(), &limited(bounds(3), &net.build(), 50));
     let fastest = for_objective(&cheapest, "fastest_settlement");
 
-    let by_cost = routed(&cheapest, &snapshot, &bounds(3));
-    let by_time = routed(&fastest, &snapshot, &bounds(3));
+    let by_cost = routed(&cheapest, &snapshot, &limited(bounds(3), &net.build(), 50));
+    let by_time = routed(&fastest, &snapshot, &limited(bounds(3), &net.build(), 50));
     passes(&by_cost);
     passes(&by_time);
 
@@ -256,11 +256,14 @@ fn changed_objective_can_change_the_chosen_route() {
 #[test]
 fn decision_record_recomputes_the_choice_with_no_provider_call() {
     let net = reserve_exchange_ramp();
-    let (_, cheapest, snapshot) = rounds(&net, ac2_ends(), &bounds(3));
+    let (_, cheapest, snapshot) = rounds(&net, ac2_ends(), &limited(bounds(3), &net.build(), 50));
     for objective in ["lowest_total_cost", "fastest_settlement"] {
         let bytes = {
-            let record =
-                RouteFinder::route(&for_objective(&cheapest, objective), &snapshot, &bounds(3));
+            let record = RouteFinder::route(
+                &for_objective(&cheapest, objective),
+                &snapshot,
+                &limited(bounds(3), &net.build(), 50),
+            );
             serde_json::to_vec(&record).unwrap()
         };
         // Only the record's bytes from here: no request, snapshot or bounds of the test's, and no router.
@@ -450,7 +453,7 @@ fn owners_rounds() -> [DecisionRecord; 2] {
 }
 
 fn owners_rounds_over(net: &Net) -> [DecisionRecord; 2] {
-    let bounds = bounds(3);
+    let bounds = limited(bounds(3), &net.build(), 50);
     let (shortlisted, choice, snapshot) = rounds(net, owners_ends(), &bounds);
     let chosen = routed(&choice, &snapshot, &bounds);
     passes(&chosen);

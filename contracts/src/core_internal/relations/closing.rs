@@ -1,0 +1,344 @@
+//! The citation table's rows for evidence and closing (`T-020-09`): a part's final deposit settled only on a public
+//! record and its reserve's verified statement, one public movement evidencing one segment, a replay resting on its
+//! exit's result, and a mismatch at a non-final public end resting on what its provider said (`T-020-21`). Kept apart from the rest of the table so the rows other tasks add don't meet these; [`admit_entry`]
+//! reads them after [`RELATIONS`](super::RELATIONS).
+//!
+//! [`admit_entry`]: super::admit_entry
+
+use super::*;
+
+/// Whether `segment` of `order` is a part's last, a deposit, in a plan `history` holds: a `route_chosen`, a
+/// `route_recalculated` or a `destination_changed`. Where the part closes (`REQ-ORD-33`).
+fn final_deposit(order: &str, segment: &str, history: &History) -> bool {
+    use crate::state_machine::{OperationKind, SegmentPlan};
+    let last = |plan: &[SegmentPlan]| {
+        plan.last()
+            .is_some_and(|s| s.segment_id.as_str() == segment && s.kind == OperationKind::Deposit)
+    };
+    history.iter().any(|(_, e)| {
+        let Some(i) = verified(e).and_then(input) else {
+            return false;
+        };
+        if i.subject.order.as_str() != order {
+            return false;
+        }
+        match &i.observed {
+            Observed::RouteChosen { parts, .. } => parts.iter().any(|p| last(&p.segments)),
+            Observed::RouteRecalculated { segments, .. }
+            | Observed::DestinationChanged { segments, .. } => last(segments),
+            _ => false,
+        }
+    })
+}
+
+/// The network of the destination the `move_value` effect for `segment` of `order` names: where its route ends, as
+/// policy held it against the authorisation (`move-rests-on-its-authorisation`).
+fn authorised_network<'a>(order: &Id, segment: &Id, history: &'a History) -> Option<&'a str> {
+    history
+        .iter()
+        .find_map(|(_, e)| match effect_action(verified(e)?)? {
+            (
+                Action::MoveValue {
+                    order: o,
+                    segment: s,
+                    route,
+                    ..
+                },
+                _,
+            ) if o == order && s == segment => Some(route.destination.node.network.as_str()),
+            _ => None,
+        })
+}
+
+/// The `segment_settled` input `entry` records: the evidence it cites, its order and its segment.
+type Settled<'a> = (
+    &'a crate::state_machine::Id,
+    &'a crate::state_machine::Id,
+    &'a crate::state_machine::Id,
+);
+
+fn settled(entry: &VerifiedEntry) -> Option<Settled<'_>> {
+    let i = input(entry)?;
+    match &i.observed {
+        Observed::SegmentSettled { evidence } => {
+            Some((evidence, &i.subject.order, i.subject.segment.as_ref()?))
+        }
+        _ => None,
+    }
+}
+
+/// The public movement graded evidence names, at whatever grade, with its order and segment.
+fn relied_on(entry: &VerifiedEntry) -> Option<(&PublicMovement, &Id, &Id)> {
+    match &entry.what {
+        What::Evidence {
+            movement: Some(movement),
+            order,
+            segment,
+            ..
+        } => Some((movement, order, segment)),
+        _ => None,
+    }
+}
+
+/// The rows, in the order the engine reads them. `contracts/core-internal/README.md` lists them with the rest.
+pub static CLOSING_RELATIONS: [Relation; 5] = [
+    Relation {
+        name: "final-deposit-closes-on-a-public-record",
+        spec: &["REQ-ORD-33", "REQ-ORD-39"],
+        // None other: the evidence a part's final deposit settles on is found by `settlement-rests-on-its-evidence`
+        // first, so this row refuses where it is found and falls short of a close.
+        quantifier: Quantifier::NoneOther,
+        refusal: "a part's final deposit settles only on a public record of a movement on its authorised destination's network, or into it where it is a private rail, naming the movement, resting on its reserve's verified statement: never a statement alone",
+        fields: &[],
+        cites: |e, h| match settled(e) {
+            Some((_, order, segment)) if final_deposit(order.as_str(), segment.as_str(), h) => {
+                by_fields(0)
+            }
+            _ => none(),
+        },
+        answers: |e, _, t, h| {
+            let Some((cited, order, segment)) = settled(e) else {
+                return Match::NotTarget;
+            };
+            let Some(What::Evidence {
+                evidence,
+                order: o,
+                segment: s,
+                grade,
+                rests_on,
+                movement,
+                ..
+            }) = verified(t).map(|t| &t.what)
+            else {
+                return Match::NotTarget;
+            };
+            if evidence.as_str() != cited.as_str()
+                || o.as_str() != order.as_str()
+                || s.as_str() != segment.as_str()
+            {
+                return Match::NotTarget;
+            }
+            // A deposit to a rail declared private closes on the movement into it, which names the rail as its
+            // `node`: the log can't tell the rail is declared private, a residual for `T-025-05`.
+            // Into a rail declared private, the movement names the rail, which is the destination's network.
+            let authorised = authorised_network(o, s, h);
+            let network = movement.as_ref().is_some_and(|m| match &m.node {
+                Some(node) => authorised == Some(node.as_str()),
+                None => authorised == Some(m.network.as_str()),
+            });
+            let provider = segment_provider(o, s, h);
+            let reserve = rests_on.iter().any(|r| {
+                h.iter().any(|(receipt, entry)| {
+                    receipt == r
+                        && stated(entry).is_some_and(|st| {
+                            matches!(st.attribution, Attribution::Verified { .. })
+                                && Some(maker_provider(st)) == provider
+                        })
+                })
+            });
+            let closes = *grade == crate::provider_role::EvidenceGrade::PublicRecord
+                && movement.is_some()
+                && network
+                && reserve;
+            judge(!closes, &[])
+        },
+    },
+    Relation {
+        name: "movement-evidences-one-segment",
+        spec: &["REQ-ORD-38", "REQ-ORD-33"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "one public movement evidences one segment of one order: another relied on it already",
+        fields: &[],
+        cites: |e, _| relied_on(e).map_or_else(none, |_| by_fields(0)),
+        answers: |e, _, t, _| {
+            let (Some((movement, order, segment)), Some((other, o, s))) =
+                (relied_on(e), verified(t).and_then(relied_on))
+            else {
+                return Match::NotTarget;
+            };
+            // A node's movements in and out evidence each segment inside it, of its one order (`REQ-ORD-33`): only
+            // another order, or another segment where neither names the node, relies on it a second time.
+            let node_level = other.node.is_some() || movement.node.is_some();
+            judge(
+                other.network == movement.network
+                    && other.id == movement.id
+                    && (o != order || (s != segment && !node_level)),
+                &[],
+            )
+        },
+    },
+    Relation {
+        name: "replay-rests-on-its-exit",
+        spec: &["REQ-ORD-41", "REQ-AUD-2"],
+        quantifier: Quantifier::Exists,
+        refusal: "a replay rests on its exit segment's result, a stated entry of this log",
+        fields: &[
+            ("order", "a replay's exit result is about its order"),
+            (
+                "segment",
+                "a replay's exit result is about its exit segment",
+            ),
+        ],
+        cites: |e, _| match &e.what {
+            // The exit's result, the first receipt; the records after it are `replay-cites-its-nodes-records`'.
+            What::Replay { rests_on, .. } => rests_on
+                .first()
+                .map(|exit| alloc::vec![by_receipt(exit, 0)])
+                .unwrap_or_default(),
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let (What::Replay { order, segment, .. }, Some(s)) = (&e.what, stated(t)) else {
+                return Match::NotTarget;
+            };
+            let about = s.about.as_ref();
+            judge(
+                true,
+                &[
+                    about.and_then(|a| a.order.as_ref()) == Some(order),
+                    about.and_then(|a| a.segment.as_ref()) == Some(segment),
+                ],
+            )
+        },
+    },
+    Relation {
+        name: "replay-cites-its-nodes-records",
+        spec: &["REQ-AUD-9", "REQ-ORD-41", "REQ-AUD-2"],
+        quantifier: Quantifier::Exists,
+        refusal: "a replay's receipts past its exit's name stated entries of this log",
+        fields: &[
+            ("verified", "a replay's node record is a verified statement"),
+            (
+                "record",
+                "a replay's receipt past its exit's names a publisher's record of inner segments",
+            ),
+            ("about", "a replay's node record is about its order"),
+            (
+                "node",
+                "a replay's node record is of a node it replayed that recorded something",
+            ),
+            (
+                "publisher",
+                "a replay's node record states for that node's publisher, the one the replay's exit result states for",
+            ),
+            ("once", "a replay cites one record of each node"),
+        ],
+        // What the replay read for each private node it replayed: its publisher's `inner-segments` record, so a
+        // checker finds what was compared (`REQ-AUD-9`). The record names its node (`About.node`, verified against
+        // its body by `attribute`), so the log holds it to a node the replay replayed and found a record for, to that
+        // node's publisher, and to one record per node (`T-020-36`). A node the replay replayed is bound to the
+        // publisher its exit's result states for (`private_node_of`), so that is the publisher a record must state
+        // for: a record by any other party binds and stands for nothing here. That there is one for each node that
+        // recorded something is the writer's (`T-020-32`).
+        cites: |e, _| match &e.what {
+            What::Replay { rests_on, .. } => rests_on
+                .iter()
+                .enumerate()
+                .skip(1)
+                .map(|(i, r)| by_receipt(r, i))
+                .collect(),
+            _ => none(),
+        },
+        answers: |e, _, t, h| {
+            let (
+                What::Replay {
+                    order,
+                    nodes,
+                    found,
+                    rests_on,
+                    ..
+                },
+                Some(s),
+            ) = (&e.what, stated(t))
+            else {
+                return Match::NotTarget;
+            };
+            let node = s.about.as_ref().and_then(|a| a.node.as_ref());
+            let silent = match found {
+                ReplayFound::NothingRecorded { nodes } => nodes.as_slice(),
+                _ => &[],
+            };
+            // The exit's result, verified, about the order: the publisher the replay binds its nodes to.
+            let publisher = rests_on
+                .first()
+                .and_then(|r| entry_at(r, h))
+                .and_then(stated)
+                .filter(|x| {
+                    matches!(x.attribution, Attribution::Verified { .. })
+                        && x.about.as_ref().and_then(|a| a.order.as_ref()) == Some(order)
+                })
+                .map(|x| &x.attribution.maker().party);
+            // The node records the replay cites past its exit's, by the node each names.
+            let of_node = |n: &Id| {
+                rests_on
+                    .iter()
+                    .skip(1)
+                    .filter_map(|r| entry_at(r, h).and_then(stated))
+                    .filter(|x| x.about.as_ref().and_then(|a| a.node.as_ref()) == Some(n))
+                    .count()
+            };
+            judge(
+                true,
+                &[
+                    matches!(s.attribution, Attribution::Verified { .. }),
+                    s.what.statement.as_str() == crate::provider_role::INNER_SEGMENTS_SHAPE,
+                    s.about.as_ref().and_then(|a| a.order.as_ref()) == Some(order),
+                    node.is_some_and(|n| nodes.contains(n) && !silent.contains(n)),
+                    publisher.is_some_and(|p| &s.attribution.maker().party == p),
+                    node.is_some_and(|n| of_node(n) == 1),
+                ],
+            )
+        },
+    },
+    Relation {
+        name: "public-mismatch-rests-on-the-providers-result",
+        spec: &["REQ-ORD-33", "REQ-AUD-2"],
+        quantifier: Quantifier::Exists,
+        refusal: "a mismatch at a public end rests on its provider's result, a stated entry of this log",
+        fields: &[
+            (
+                "verified",
+                "a mismatch's provider result is a verified statement",
+            ),
+            (
+                "result",
+                "a mismatch rests on its provider's result, not a question or another shape",
+            ),
+            (
+                "maker",
+                "a mismatch rests on the result of its segment's provider, the one this log's move named",
+            ),
+            (
+                "about",
+                "a mismatch's provider result is about its order and segment",
+            ),
+            (
+                "non_final",
+                "a public end's mismatch is recorded for a segment that isn't a part's final deposit, which closes on a public record alone",
+            ),
+        ],
+        // What the provider said it moved is its own verified result about the segment: the log holds its salted
+        // commitment, so that the figures the mismatch states are the result's is for whoever holds the kept bytes.
+        cites: |e, _| match &e.what {
+            What::PublicMismatch { rests_on, .. } => alloc::vec![by_receipt(rests_on, 0)],
+            _ => none(),
+        },
+        answers: |e, _, t, h| match (&e.what, stated(t)) {
+            (What::PublicMismatch { order, segment, .. }, Some(s)) => judge(
+                true,
+                &[
+                    matches!(s.attribution, Attribution::Verified { .. }),
+                    s.what.statement.as_str() == crate::provider_role::RESULT_SHAPE,
+                    segment_provider(order, segment, h) == Some(maker_provider(s)),
+                    s.about.as_ref().is_some_and(|a| {
+                        a.order.as_ref() == Some(order) && a.segment.as_ref() == Some(segment)
+                    }),
+                    // A part's final deposit is held to a public record (`final-deposit-closes-on-a-public-record`):
+                    // a contradiction there settles nothing, so it is no non-final end's mismatch.
+                    !final_deposit(order.as_str(), segment.as_str(), h),
+                ],
+            ),
+            _ => Match::NotTarget,
+        },
+    },
+];

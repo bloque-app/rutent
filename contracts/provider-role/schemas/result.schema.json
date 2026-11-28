@@ -30,7 +30,10 @@
             "judgement",
             "reversal",
             "reversal_confirmation",
-            "holding_balance"
+            "holding_balance",
+            "status_query",
+            "hold",
+            "inner_segments_query"
           ]
         }
       },
@@ -168,6 +171,51 @@
           },
           "then": {
             "$ref": "#/$defs/holding_balance_result"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "status_query"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/status_query_result"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "hold"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/hold_result"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "inner_segments_query"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/inner_segments_query_result"
           }
         }
       ]
@@ -963,6 +1011,13 @@
         },
         "evidence": {
           "$ref": "#/$defs/outcome_evidence"
+        },
+        "fault": {
+          "description": "Whose fault the provider shows the failure was, where it shows one: the customer's or the operator's (REQ-ORD-11). Until the party it names accepts it, the provider carries the reversal. Absent where it shows none.",
+          "enum": [
+            "customer",
+            "operator"
+          ]
         }
       }
     },
@@ -1050,6 +1105,10 @@
         "settlement_seconds": {
           "description": "The provider's declared settlement time, in seconds from segment start (REQ-QTE-3).",
           "$ref": "urn:rutent:provider-role:common#/$defs/safe_integer"
+        },
+        "terms": {
+          "description": "The provider's own signed terms for the tuple the dry run asked about, handed back with its answer (4.0.0), made by the result's maker, so a reader holds them stated before the segment starts (REQ-QTE-6). Absent where it hands back none.",
+          "$ref": "urn:rutent:provider-role:terms"
         }
       }
     },
@@ -1099,6 +1158,10 @@
         "settlement_seconds": {
           "description": "The provider's declared settlement time, in seconds from segment start (REQ-QTE-3).",
           "$ref": "urn:rutent:provider-role:common#/$defs/safe_integer"
+        },
+        "terms": {
+          "description": "The provider's own signed terms for the tuple the dry run asked about, handed back with its answer (4.0.0), made by the result's maker, so a reader holds them stated before the segment starts (REQ-QTE-6). Absent where it hands back none.",
+          "$ref": "urn:rutent:provider-role:terms"
         }
       }
     },
@@ -1156,6 +1219,10 @@
         "settlement_seconds": {
           "description": "The provider's declared settlement time, in seconds from segment start (REQ-QTE-3).",
           "$ref": "urn:rutent:provider-role:common#/$defs/safe_integer"
+        },
+        "terms": {
+          "description": "The provider's own signed terms for the tuple the dry run asked about, handed back with its answer (4.0.0), made by the result's maker, so a reader holds them stated before the segment starts (REQ-QTE-6). Absent where it hands back none.",
+          "$ref": "urn:rutent:provider-role:terms"
         }
       }
     },
@@ -1328,6 +1395,10 @@
         },
         "amount": {
           "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        },
+        "billed_separately": {
+          "description": "Whether the provider bills the fee separately, outside the amounts it reports (REQ-AUD-11, since 3.1.0). Absent where it doesn't say.",
+          "type": "boolean"
         }
       }
     },
@@ -1599,6 +1670,332 @@
         "balance": {
           "description": "Whole units of the asset, which may be zero.",
           "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        }
+      }
+    },
+    "status_query_result": {
+      "description": "A provider's answer to a status question (REQ-ORD-1; 4.0.0): the question's transaction, the transaction asked about, and where it stands.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "transaction",
+        "about",
+        "outcome"
+      ],
+      "properties": {
+        "kind": {
+          "const": "status_query"
+        },
+        "transaction": {
+          "description": "The transaction this result answers: the question's own (REQ-ORD-1).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "about": {
+          "description": "The transaction asked about.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "outcome": {
+          "$ref": "#/$defs/status_outcome"
+        }
+      }
+    },
+    "status_outcome": {
+      "description": "Where the transaction asked about stands: the provider's own result for it, whole; not known; or a refusal.",
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "answered",
+            "not_known",
+            "refused"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "answered"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/status_answered"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "not_known"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/status_not_known"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "refused"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/refused"
+          }
+        }
+      ]
+    },
+    "status_answered": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "result"
+      ],
+      "properties": {
+        "status": {
+          "const": "answered"
+        },
+        "result": {
+          "description": "The provider's own signed result for the transaction asked about, whole, made by the answer's maker: a result of that transaction's own operation, never a status answer or a hold.",
+          "$ref": "urn:rutent:provider-role:result"
+        }
+      }
+    },
+    "status_not_known": {
+      "description": "The provider knows no outcome of the transaction yet, or no such transaction. It says nothing else.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "const": "not_known"
+        }
+      }
+    },
+    "hold_result": {
+      "description": "A reserve's answer to a hold request (REQ-QTE-15; 4.0.0): the request's transaction, the hold's own id, and the hold or a refusal.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "transaction",
+        "outcome"
+      ],
+      "properties": {
+        "kind": {
+          "const": "hold"
+        },
+        "transaction": {
+          "description": "The transaction this result answers: the request's, the hold's own id.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "outcome": {
+          "$ref": "#/$defs/hold_outcome"
+        }
+      }
+    },
+    "hold_outcome": {
+      "description": "The reserve's hold, whole, or a refusal: nothing is held.",
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "held",
+            "refused"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "held"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/held"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "refused"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/refused"
+          }
+        }
+      ]
+    },
+    "held": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "hold"
+      ],
+      "properties": {
+        "status": {
+          "const": "held"
+        },
+        "hold": {
+          "description": "The reserve's own signed hold, whole, made by the answer's maker.",
+          "$ref": "urn:rutent:provider-role:hold"
+        }
+      }
+    },
+    "inner_segments_query_result": {
+      "description": "A provider's answer to the question of a private node's record (REQ-ORD-41; 4.0.0): the question's transaction, the node asked about, and the record, or why there is none.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "transaction",
+        "node",
+        "outcome"
+      ],
+      "properties": {
+        "kind": {
+          "const": "inner_segments_query"
+        },
+        "transaction": {
+          "description": "The transaction this result answers: the question's own.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "node": {
+          "description": "The private node asked about.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "outcome": {
+          "$ref": "#/$defs/inner_segments_outcome"
+        }
+      }
+    },
+    "inner_segments_outcome": {
+      "description": "The provider's own record of the node's segments, whole; none; or a refusal.",
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "answered",
+            "not_known",
+            "refused"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "answered"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/inner_segments_answered"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "not_known"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/inner_segments_not_known"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "refused"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/refused"
+          }
+        }
+      ]
+    },
+    "inner_segments_answered": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "record"
+      ],
+      "properties": {
+        "status": {
+          "const": "answered"
+        },
+        "record": {
+          "description": "The provider's own signed record of the private node, whole, made by the answer's maker (REQ-ORD-41).",
+          "$ref": "urn:rutent:provider-role:inner-segments"
+        }
+      }
+    },
+    "inner_segments_not_known": {
+      "description": "The provider has recorded no segment inside the node. It says nothing else.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "const": "not_known"
         }
       }
     }

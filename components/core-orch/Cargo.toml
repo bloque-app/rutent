@@ -8,9 +8,31 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Lets the test kit make a `stuck::Stated` of its own; never enabled by a build of the assembly.
+test-support = []
+# The test hooks on Core's adapter for each public network's reader (`T-020-60`'s round 1, L5): a random source of a
+# test's choosing, a question asked whatever the network's standing, a host set with no check, a check at a clock of
+# the test's, and a stand-in's public records in place of Core's own pass. Only tests enable it: this crate's own, and
+# `rutent-scenarios`' dev-dependencies; never its library, which the VOS scenarios crate builds too.
+reader-test-hooks = []
+
 [dependencies]
 rutent-contracts = { path = "../../contracts" }
 rutent-router = { path = "../router" }
 rutent-stm = { path = "../stm" }
 rutent-prov = { path = "../prov" }
 rutent-evidence = { path = "../evidence" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+# Core's adapter for each public network's reader service (`T-020-60`, `DEC-28`): its mTLS client, on rustls over
+# ring's primitives, the lines the reader host and the provider system lock; no aws-lc, no OpenSSL, no built-in root
+# store (the operator's CA is the one anchor).
+rustls = { version = "0.23.37", default-features = false, features = ["ring", "std", "tls12"] }
+
+[dev-dependencies]
+# This crate's own tests, with the reader test hooks (above).
+rutent-core-orch = { path = ".", features = ["reader-test-hooks"] }
+ed25519-dalek = "2.2.0"
+jsonschema = { version = "0.60.2", default-features = false }
+proptest = "1.12.0"

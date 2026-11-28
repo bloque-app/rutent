@@ -101,6 +101,52 @@ fn node_cannot_be_both_public_and_declared_private() {
     );
 }
 
+/// The private rails and the listed public networks never overlap (`REQ-CAT-22`; `T-020-60`, the review of #356's
+/// round 2, Low 3): an advertisement declaring a listed public network its private node is refused, and a listing of a
+/// network a provider declares private is refused, so a private rail is never a listed network routed unread.
+// verifies: REQ-CAT-22, DEC-28
+#[test]
+fn private_node_and_listed_public_network_never_share_a_name() {
+    let ad = ramp_advertisement();
+    let mut catalogue = Catalogue::new();
+    catalogue
+        .list_public_network("acme-ledger", true, true)
+        .expect("listed");
+    catalogue
+        .grant(grant("g-1", &ad.provider, tuples_of(&ad), 100_000))
+        .unwrap();
+    assert_eq!(
+        join(&mut catalogue, &ad, JOINED_AT),
+        Err(JoinRefusal::PrivateNodeIsPublic("acme-ledger".into())),
+        "a private node named after a listed network"
+    );
+    // Held off every route, it is listed all the same.
+    let mut catalogue = Catalogue::new();
+    catalogue
+        .list_public_network("acme-ledger", true, false)
+        .expect("listed, not started");
+    catalogue
+        .grant(grant("g-1", &ad.provider, tuples_of(&ad), 100_000))
+        .unwrap();
+    assert_eq!(
+        join(&mut catalogue, &ad, JOINED_AT),
+        Err(JoinRefusal::PrivateNodeIsPublic("acme-ledger".into()))
+    );
+
+    let mut catalogue = Catalogue::new();
+    catalogue
+        .grant(grant("g-1", &ad.provider, tuples_of(&ad), 100_000))
+        .unwrap();
+    join(&mut catalogue, &ad, JOINED_AT).expect("the private node declared");
+    assert_eq!(
+        catalogue.list_public_network("acme-ledger", true, true),
+        Err(NodeError::DeclaredPrivate("acme-ledger".into())),
+        "a listing of a network declared private"
+    );
+    assert!(!catalogue.nodes().is_listed_network("acme-ledger"));
+    assert!(!catalogue.nodes().is_started_network("acme-ledger"));
+}
+
 // verifies: REQ-ORD-39
 #[test]
 fn provider_below_the_tuples_evidence_floor_is_left_out_of_the_snapshot() {
@@ -391,6 +437,55 @@ fn outer_node_is_named_for_its_network_and_the_reserve_behind_it() {
     );
 }
 
+// verifies: REQ-CAT-22, DEC-28
+#[test]
+fn withheld_tuple_stays_withheld_after_its_network_is_delisted_and_an_unlisted_network_is_never_routed()
+ {
+    // `T-020-60`'s round 1, M2: an outer end needs a started network, so a network that failed its start-up check
+    // and was then delisted isn't routed again, and one no listing ever named is routed over by no tuple.
+    let mut catalogue = acme_catalogue(&[reserve_advertisement()]);
+    let routes_polygon = |c: &Catalogue| {
+        c.snapshot("snap-1", NOW)
+            .unwrap()
+            .snapshot
+            .figures
+            .iter()
+            .any(|f| {
+                matches!(&f.value, FigureValue::ReserveTuple { tuple }
+                if matches!(&tuple.origin, NodeRef::Outer(o) if o.network == "polygon"))
+            })
+    };
+    assert!(routes_polygon(&catalogue), "listed and started: routed");
+    catalogue
+        .list_public_network("polygon", true, false)
+        .unwrap();
+    assert!(!routes_polygon(&catalogue), "listed, not started: withheld");
+    assert!(catalogue.drop_public_network("polygon"));
+    assert!(
+        !routes_polygon(&catalogue),
+        "delisted after failing its check: still withheld"
+    );
+    assert!(
+        left_out_reasons(&catalogue).contains(&LeftOutReason::NetworkNotListed("polygon".into())),
+        "left out as on no list"
+    );
+    assert!(
+        !catalogue.drop_public_network("polygon"),
+        "nothing left to drop"
+    );
+    assert!(
+        !routes_polygon(&catalogue),
+        "never listed again: never routed"
+    );
+    catalogue
+        .list_public_network("polygon", true, true)
+        .unwrap();
+    assert!(
+        routes_polygon(&catalogue),
+        "listed again and started: routed"
+    );
+}
+
 // verifies: REQ-QTE-4
 #[test]
 fn every_figure_carries_its_age_and_origin() {
@@ -557,4 +652,31 @@ fn provider_of_another_publisher_cannot_route_through_a_private_node() {
     assert!(built.left_out.iter().all(|l| l.provider == "rival-pay"
         && l.reason == LeftOutReason::NodeNotListed("acme-ledger".into())));
     assert_eq!(built.left_out.len(), 2);
+}
+
+/// A later private claim of an unlisted node is handled as `T-020-65`'s rule says: a provider's claim of a node on the
+/// operator's public list is refused; once the operator has taken the node off (which Core permits only while nothing of
+/// its rests at the node or moves through it), the claim is joined and the node is the claiming publisher's, so the
+/// snapshot lists its provider's tuples there by its publisher alone.
+// verifies: REQ-CAT-22
+#[test]
+fn private_claim_of_a_node_is_joined_only_once_the_operator_unlisted_it() {
+    let ad = ramp_advertisement();
+    let mut catalogue = Catalogue::new();
+    catalogue.add_public_node("acme-ledger").unwrap();
+    catalogue
+        .grant(grant("g-1", &ad.provider, tuples_of(&ad), 100_000))
+        .unwrap();
+    assert_eq!(
+        join(&mut catalogue, &ad, JOINED_AT),
+        Err(JoinRefusal::PrivateNodeIsPublic("acme-ledger".into()))
+    );
+    assert!(catalogue.remove_public_node("acme-ledger"), "it was listed");
+    assert!(!catalogue.nodes().is_public("acme-ledger"));
+    join(&mut catalogue, &ad, JOINED_AT).expect("the claim, once unlisted");
+    assert_eq!(
+        catalogue.publishers().publisher_of_node("acme-ledger"),
+        Some(ad.publisher.as_str())
+    );
+    assert!(!catalogue.remove_public_node("acme-ledger"), "off already");
 }

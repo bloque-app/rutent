@@ -11,11 +11,31 @@
 //!
 //! - `holding_balance`: the balance the account holds at its node, in whole units of its asset, which is the sum of
 //!   what its orders hold. The operator asks it so the balance is the wallet's own word (`REQ-AUD-15`).
+//! - `reversal_confirmation`: whether the credit of a reversed segment came back into the account (`T-020-57`). A
+//!   route handed on starts from the account, its origin reserve (`REQ-ORD-16`, `REQ-ORD-43`), so its first move's
+//!   reversal brings the value back here, and Core asks the account. The value comes back on the node's network, so
+//!   the wallet confirms only on Core's reading of that network through its reader (`T-020-60` (6)): a movement final
+//!   there, tied to that segment, into this account, in full and in the asset asked, which the deployment keeps for the
+//!   account in the provider's own state (`reading/{segment}`) and its outside part reads; the sandboxed part reads no
+//!   state. Where there is no such reading, it is not confirmed and the reversal stays owed.
+//!
+//! The record lives in the instance, so a restart of the account's module empties it (a module's state is read-only
+//! through the host, and the wallet holds none outside its instance). It is rebuilt from the log, by Core, which reads
+//! what the wallet holds for each order (`balance_verification`, asked per order) and lands again what it lacks
+//! (`REQ-ORD-43`). The wallet's half of that:
+//!
+//! - a landing it carried out, asked again under the same transaction, is answered as it was and adds nothing, so a
+//!   re-landing can't double (`INV-1`); the same transaction for another order or amount is refused;
+//! - a release for an order it holds no record of, as a fresh instance doesn't, is answered `unknown`, never refused:
+//!   the value may still rest in the account, and Core lands it again before it releases.
+//!
+//! The record itself, and how it answers, is `wallet.rs`, which the platform's tests also run natively.
 //!
 //! The account is one node's and one asset's: the first movement that succeeds fixes both, and an operation naming
 //! another is refused. A refused operation fixes nothing. A request that is not well formed, a dry run, a zero amount or a release above what an order
-//! holds is refused as final, and changes nothing. Its outside part has nothing to do: a plain wallet declares no
-//! outside operation, destination or secret.
+//! holds is refused as final, and changes nothing. Its outside part calls nowhere: a plain wallet declares no
+//! secret or destination; it declares one outside operation, `wallet.credit`, which reads Core's reading of one
+//! credit.
 //!
 //! The parts are chosen by a feature (see `Cargo.toml`).
 
@@ -23,190 +43,40 @@
 compile_error!("choose one part: `sandboxed` or `outside`");
 
 #[cfg(feature = "sandboxed")]
+mod wallet;
+
+#[cfg(feature = "sandboxed")]
 mod sandboxed {
     use std::cell::RefCell;
-    use std::collections::BTreeMap;
 
-    use rutent_contracts::provider_role::{
-        BalanceAnswer, BalanceOutcome, BalanceVerification, BalanceVerificationResult, Deposit,
-        EvidenceGrade, EvidencePiece, Fee, HoldingBalance, HoldingBalanceAnswer,
-        HoldingBalanceOutcome, HoldingBalanceResult, MovementSettlement, NoDetail, Operation,
-        Refusal, Refused, ReserveMovementOutcome, ReserveMovementResult, ResultBody, Statement,
-        Withdrawal,
-    };
+    use rutent_contracts::provider_role::{Operation, Statement};
+
+    use super::wallet::Wallet;
 
     wit_bindgen::generate!({ world: "sandboxed", path: "../../src/module/wit" });
 
-    /// What rests in the account.
-    #[derive(Default)]
-    struct Wallet {
-        /// The node and asset the account was fixed to by its first operation.
-        fixed: Option<(String, String)>,
-        /// What each order holds, in whole units of the asset.
-        held: BTreeMap<String, u128>,
+    use rutent::binding::outside_requests;
+
+    use super::wallet::{CREDIT, Reading};
+
+    /// Core's reading of the credit for `segment`, kept for the account and asked of the outside part under
+    /// `transaction`: `None` where none is kept, or the outside part didn't answer.
+    fn credit(transaction: &str, segment: &str) -> Option<Reading> {
+        let request = serde_json::json!({
+            "transaction": transaction,
+            "operation": CREDIT,
+            "arguments": { "segment": segment },
+        });
+        let response: serde_json::Value =
+            serde_json::from_str(&outside_requests::request(&request.to_string())).ok()?;
+        if response["outcome"]["status"] != "completed" {
+            return None;
+        }
+        Reading::read(response["outcome"]["body"]["credit"].as_str()?)
     }
 
     thread_local! {
         static WALLET: RefCell<Wallet> = RefCell::new(Wallet::default());
-    }
-
-    /// A whole number of units: digits only, no sign and no leading zero.
-    fn amount(text: &str) -> Option<u128> {
-        let plain = !text.is_empty()
-            && text.bytes().all(|b| b.is_ascii_digit())
-            && (text == "0" || !text.starts_with('0'));
-        if plain { text.parse().ok() } else { None }
-    }
-
-    fn refused() -> ReserveMovementOutcome {
-        ReserveMovementOutcome::Refused(Refused {
-            refusal: Refusal::Final(NoDetail {}),
-        })
-    }
-
-    fn settled(
-        provider: &str,
-        kind: &str,
-        transaction: &str,
-        units: u128,
-        asset: &str,
-    ) -> ReserveMovementOutcome {
-        ReserveMovementOutcome::Succeeded(MovementSettlement {
-            amount_in: units.to_string(),
-            amount_out: units.to_string(),
-            fee: Fee {
-                asset: asset.to_owned(),
-                amount: "0".to_owned(),
-            },
-            evidence: vec![EvidencePiece {
-                grade: EvidenceGrade::SignedByProvider,
-                reference: format!("{provider}-{kind}-{transaction}"),
-                by: provider.to_owned(),
-            }],
-        })
-    }
-
-    /// One movement asked of the account, whichever way it goes.
-    struct Movement<'a> {
-        deposit: bool,
-        provider: &'a str,
-        transaction: &'a str,
-        node: &'a str,
-        asset: &'a str,
-        order: Option<&'a String>,
-        amount: &'a str,
-        dry_run: bool,
-    }
-
-    impl Wallet {
-        /// Whether `node` and `asset` are the account's: the ones its first successful operation fixed, or any while
-        /// none has.
-        fn is_for(&self, node: &str, asset: &str) -> bool {
-            match &self.fixed {
-                Some((n, a)) => n == node && a == asset,
-                None => true,
-            }
-        }
-
-        fn movement(&mut self, m: Movement) -> ReserveMovementOutcome {
-            let (Some(order), Some(units)) = (m.order, amount(m.amount)) else {
-                return refused();
-            };
-            if m.dry_run || units == 0 || !self.is_for(m.node, m.asset) {
-                return refused();
-            }
-            let held = self.held.get(order).copied().unwrap_or(0);
-            if m.deposit {
-                let total: u128 = self.held.values().sum();
-                if total.checked_add(units).is_none() {
-                    return refused();
-                }
-                self.held.insert(order.clone(), held + units);
-            } else if units > held {
-                return refused();
-            } else if units == held {
-                self.held.remove(order);
-            } else {
-                self.held.insert(order.clone(), held - units);
-            }
-            // Only a movement that went through fixes the account to its node and asset: a refused first operation
-            // leaves it free.
-            self.fixed
-                .get_or_insert_with(|| (m.node.to_owned(), m.asset.to_owned()));
-            let kind = if m.deposit { "deposit" } else { "withdrawal" };
-            settled(m.provider, kind, m.transaction, units, m.asset)
-        }
-
-        fn deposit(&mut self, d: &Deposit) -> ResultBody {
-            let outcome = self.movement(Movement {
-                deposit: true,
-                provider: &d.provider,
-                transaction: &d.transaction,
-                node: &d.origin,
-                asset: &d.asset,
-                order: d.inputs.get("order"),
-                amount: &d.amount,
-                dry_run: d.dry_run,
-            });
-            ResultBody::Deposit(ReserveMovementResult {
-                transaction: d.transaction.clone(),
-                outcome,
-            })
-        }
-
-        fn withdrawal(&mut self, w: &Withdrawal) -> ResultBody {
-            let outcome = self.movement(Movement {
-                deposit: false,
-                provider: &w.provider,
-                transaction: &w.transaction,
-                node: &w.destination,
-                asset: &w.asset,
-                order: w.inputs.get("order"),
-                amount: &w.amount,
-                dry_run: w.dry_run,
-            });
-            ResultBody::Withdrawal(ReserveMovementResult {
-                transaction: w.transaction.clone(),
-                outcome,
-            })
-        }
-
-        fn balance(&self, h: &HoldingBalance) -> ResultBody {
-            let outcome = if self.is_for(&h.node, &h.asset) {
-                HoldingBalanceOutcome::Answered(HoldingBalanceAnswer {
-                    balance: self.held.values().sum::<u128>().to_string(),
-                })
-            } else {
-                HoldingBalanceOutcome::Refused(Refused {
-                    refusal: Refusal::Final(NoDetail {}),
-                })
-            };
-            ResultBody::HoldingBalance(HoldingBalanceResult {
-                transaction: h.transaction.clone(),
-                outcome,
-            })
-        }
-
-        fn verification(&self, v: &BalanceVerification) -> ResultBody {
-            let outcome = match (amount(&v.amount), &self.fixed) {
-                (Some(units), Some((_, asset))) if *asset == v.asset => {
-                    BalanceOutcome::Answered(BalanceAnswer {
-                        sufficient: self.held.get(&v.account).copied().unwrap_or(0) >= units,
-                    })
-                }
-                // Nothing has landed yet, so no asset is fixed and nothing is held: only a stated nothing is covered.
-                (Some(units), None) => BalanceOutcome::Answered(BalanceAnswer {
-                    sufficient: units == 0,
-                }),
-                _ => BalanceOutcome::Refused(rutent_contracts::provider_role::BalanceRefused {
-                    refusal: rutent_contracts::provider_role::BalanceRefusal::Final(NoDetail {}),
-                }),
-            };
-            ResultBody::BalanceVerification(BalanceVerificationResult {
-                transaction: v.transaction.clone(),
-                outcome,
-            })
-        }
     }
 
     struct Part;
@@ -227,6 +97,10 @@ mod sandboxed {
                     Operation::Withdrawal(w) => Some(wallet.withdrawal(w)),
                     Operation::BalanceVerification(v) => Some(wallet.verification(v)),
                     Operation::HoldingBalance(h) => Some(wallet.balance(h)),
+                    Operation::ReversalConfirmation(c) => {
+                        let arrived = credit(&c.transaction, &c.segment);
+                        Some(wallet.confirmation(&operation, c, arrived.as_ref()))
+                    }
                     _ => None,
                 }
             });
@@ -244,6 +118,13 @@ mod sandboxed {
 mod outside {
     wit_bindgen::generate!({ world: "outside", path: "../../src/module/wit" });
 
+    use rutent::binding::state;
+
+    /// The outside operation that reads Core's reading of one credit, and its state keys' prefix: as `wallet.rs` names
+    /// them (`T-020-57`, `T-020-60` (6)).
+    const CREDIT: &str = "wallet.credit";
+    const READING_PREFIX: &str = "reading/";
+
     struct Part;
 
     impl Guest for Part {
@@ -251,9 +132,24 @@ mod outside {
             Ok(())
         }
 
-        /// A plain wallet's sandboxed part asks for nothing outside, so nothing is performed.
-        fn perform(_outside_request: String) -> String {
-            "{}".to_owned()
+        /// The one outside operation a plain wallet asks: Core's reading of the credit for a reversed segment, which
+        /// the deployment keeps in the provider's own state. Anything else performs nothing.
+        fn perform(outside_request: String) -> String {
+            let request: serde_json::Value =
+                serde_json::from_str(&outside_request).unwrap_or(serde_json::Value::Null);
+            let operation = request["operation"].as_str().unwrap_or_default();
+            let body = match (operation, request["arguments"]["segment"].as_str()) {
+                (CREDIT, Some(segment)) if !segment.is_empty() => serde_json::json!({
+                    "credit": state::read(&format!("{READING_PREFIX}{segment}")),
+                }),
+                _ => serde_json::json!({}),
+            };
+            serde_json::json!({
+                "transaction": request["transaction"],
+                "operation": operation,
+                "outcome": { "status": "completed", "body": body },
+            })
+            .to_string()
         }
     }
 

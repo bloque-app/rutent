@@ -1,0 +1,15 @@
+{
+  "request": "req-135",
+  "caller": {
+    "party": "operator",
+    "acts": "op-login-2",
+    "role": "operator",
+    "kind": "person"
+  },
+  "action": {
+    "kind": "change_catalogue",
+    "change": "list_public_network",
+    "provider": "operator"
+  },
+  "at": "2026-11-27T09:00:00Z"
+}

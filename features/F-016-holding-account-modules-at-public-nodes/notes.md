@@ -340,3 +340,118 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   failed: the answer was refused (`Unavailable`) because the release had been judged against the advertisement.
   The proxy's unit test now expects the refusal, where it expected the advertisement to change nothing.
 - **`DEC-20`.** The credential proxy: `proxy/shared.rs` and `proxy/world.rs`.
+
+## T-016-05, the plain wallet across a restart, and the handed-on start's one reading
+
+Rows: findings 3 and 7 of the milestone review of 2026-11-24 (PR #143); `M2`'s items 4 and 2. No contract change and
+no module-interface change.
+
+- **The wallet's half of a restart.** A module's state is read-only through the host, and the wallet's `held` map
+  lives in its instance, so a restart empties it. Core rebuilds the record from the log (`T-020-46`); the wallet
+  answers so that Core can tell what it lacks and re-land safely:
+  - **It attributes every order it holds.** Core asks `balance_verification` per order (`account` is the order), and
+    the answer is the wallet's own word of what that order holds; the contract's `holding_balance` stays the sum. No
+    new field: `HoldingBalanceAnswer` carries the balance alone, and the per-order question already exists, so no
+    contract shape was missing. A restarted wallet answers "not covered" for every order it lost.
+  - **A repeated landing adds nothing.** The wallet keeps each landing it carried out by its transaction (order and
+    amount). The same landing again is answered as it was, with the same evidence, and adds nothing; the same
+    transaction for another order or amount is refused. A refused landing keeps no record. The record of landings
+    outlives a full release, so a repeat of a spent landing puts nothing back.
+  - **A release with no record behind it is `unknown`, never refused.** The wallet keeps the orders it took a landing
+    for (`known`, kept after a full release). A release for an order not in it answers `unknown`, since the value may
+    rest in the account and only the record be lost. A release for a known order above what it holds is still
+    refused. A malformed request, a dry run, a zero amount and another node or asset are refused first, as before.
+  - **The host tells the two apart.** `WalletError::NotKnown` is a release the wallet answered `unknown`; every other
+    answer that isn't success stays `NotSucceeded`. Core's stuck mover reads any error after the hand-over as an
+    unknown outcome, as before, so nothing there changes (`T-020-46` reads `NotKnown` to re-land first).
+- **Why the repeat is tested natively.** The platform answers or refuses a second operation under a transaction it
+  carried out before the module runs (`INV-8`), and a wallet is operator-published with no advertisement, so the
+  platform can't tell a repeat is safe and refuses it as `DuplicateTransaction`. The wallet's own check is reached
+  only when that record is gone or does not cover the repeat, which no platform test can stage through the Wasm. So
+  the record and its answers moved to `guests/plain-wallet/src/wallet.rs` (the guest's `lib.rs` keeps the instance
+  and the exports), and `tests/holding_wallet_record.rs` compiles that same file natively and drives it. The Wasm
+  build is exercised as before by `holding_wallet.rs`, which carries the restart test.
+- **The handed-on start, one reading.** State-machine's contract stands: a route handed on starts at the inner node
+  with no withdrawal segment, and the account's record proves the start (`REQ-ORD-40`) and settles no segment.
+  `handed_on.rs`'s module docs, `HandedOnStart` and its `first_segment` now say so: `first_segment` is the first
+  segment of the route's own, the one that starts on the proof. `start_handed_on` also refuses, as `NotHandedOn`, a
+  route whose first segment is a withdrawal even from an inner node, which the contract has no such segment for.
+- **Tests** (written first, each watched failing on an assertion):
+  - `landing an order the wallet already holds adds nothing`, `holding_wallet_record.rs`: failed with the balance 200
+    for 100 (the repeat doubled it).
+  - `release the wallet holds no record of is not known, never refused`, `holding_wallet.rs`: failed on the release
+    after the wallet's restart, which was refused.
+  - `handed on route's start is proven by the holding record and settles no segment`, `holding_handed_on.rs`: failed
+    on the route that starts with a withdrawal, which started.
+  - Two earlier tests pinned a release of a never-landed order as refused (`holding_wallet.rs`); they now expect
+    `unknown`, the same release now being the not-known case.
+- **Rule-offs, each watched going red and restored:**
+
+  | Rule switched off | Test that went red |
+  |---|---|
+  | repeat of a landing under its transaction answered done, adds nothing | `landing an order the wallet already holds adds nothing` (balance 200) |
+  | release of an order with no record answers `unknown` | `release the wallet holds no record of is not known, never refused` |
+  | the host maps the wallet's `unknown` release to `NotKnown` | the same test, on its `NotKnown` assertion |
+  | a first segment that is a withdrawal is not a route handed on | `handed on route's start is proven by the holding record and settles no segment` |
+
+- **Defaults taken, reversible, failing closed.** A repeat under the same transaction for another order or amount is
+  refused. The landing record outlives a full release for the instance's life (a repeat can't re-add spent value).
+  An order released in full stays known, so a second release of it is refused, not unknown. A release at another node
+  or asset with no record is `unknown` and fixes nothing.
+- **Gaps and owners.**
+  - Core's re-landing before a release, and its use of `NotKnown` and the per-order attribution: `T-020-46`. The
+    host's `Holdings` ledger and its transaction counter (`{provider}-deposit-{n}`) are also in memory; a Core that
+    reopens and mints `…-deposit-1` again meets the platform's record of that transaction as `DuplicateTransaction`
+    (the platform's durable record is `T-013-10`'s), so the re-landing needs its own transaction ids: `T-020-46`.
+  - Core-orch's docs that still read the handed-on withdrawal as the route's first segment (`core-orch`'s `stuck`
+    and `reversal`, which this row doesn't edit): `T-020-46`'s or `T-020-45`'s files, for whoever next touches them.
+- **`DEC-20`.** No `DEC-20` path is touched.
+
+### T-016-05's record, extended by `T-020-57`: the wallet confirms a reversal's credit
+
+- **What it answers.** `reversal_confirmation` joins the plain wallet's operations (`WALLET_HANDLES`): a route handed
+  on starts from the node's holding account, its origin reserve (`REQ-ORD-16`, `REQ-ORD-43`), so its first move's
+  reversal brings the value back into the account and Core asks the account. `Wallet::confirmation` (`wallet.rs`, run
+  natively by `holding_wallet_record.rs`) confirms only a credit the account's statement holds for that very segment,
+  in the asset asked and in full; a short credit, another asset or none is `not_confirmed`; a malformed or zero
+  amount, or an account fixed to another asset, is refused as final. The confirmation is nested in the wallet's own
+  name, in the question's deployment and protocol version, and the platform signs it (the signer's existing
+  reversal-confirmation rule: the segment, asset and amount asked).
+- **Where the credit is read.** The sandboxed part reads no state, so it asks its outside part (`wallet.credit`, the
+  wallet's one declared outside operation, with no destination and no secret), which reads `credit/{segment}` from the
+  provider's own state: the account's statement, `{"asset", "amount"}`. In the simulated world the world writes it
+  (`Fleet::credit_wallet`), as it does a simulated reserve's credit (`Behaviour::reversal_credited`).
+- **Default, failing closed.** A deployment keeps no such statement for a plain wallet yet, so in production the wallet
+  confirms nothing and the reversal stays owed (and is declared stuck on its window, `T-020-47`). Gap, owner
+  `T-020-60` (the reader adapter, the lead's routing of `T-020-57`'s review, M1): a reversal back into a held public
+  node is a movement on that node's network, which its reader confirms; `Fleet::credit_wallet` stands in for that
+  confirmation in the scenarios.
+- **Tests.** `wallet_confirms_a_reversed_segments_credit_only_in_full_from_its_statement` (native, rule-off below).
+  The Wasm build answers through the assembly in `T-020-57`'s scenario, green since its round 2's contract change.
+
+| Rule switched off | Red |
+|---|---|
+| the wallet confirms only a credit in full (`== Some(units)` → any amount) | `wallet_confirms_a_reversed_segments_credit_only_in_full_from_its_statement` |
+
+### `T-020-60` (6): the wallet confirms on Core's reading of its node's network
+
+- **What changed.** The gap above is closed. A reversal back into a held public node is a movement on that node's
+  network, so Core reads it through the network's reader before it asks the wallet: the movement the network ties to
+  the reversed segment's transaction, final, into the holding account the order's `holding_withdrawal` names, of the
+  segment's asset and amount in full. Only then does Core hand the deployment its reading (`Providers::keep_reading`),
+  which the deployment keeps among the account's own state under `reading/{segment}` and the wallet's outside part
+  reads (`wallet.credit`, unchanged). Where there is no such reading Core asks the wallet nothing.
+- **The wallet's half.** `Wallet::confirmation` confirms only on a `Reading` (`wallet.rs`): every field present
+  (`segment`, `network`, `movement`, `destination`, `asset`, `amount`, `standing`, `reader`, `version`), `final`, tied
+  to the segment asked, into this account, on the node it is fixed to, in the asset asked and in full. A bare
+  `{"asset", "amount"}` credit record is no reading, and the old `credit/{segment}` key is read by nothing.
+- **Gone.** `Fleet::credit_wallet` and `WALLET_CREDIT_PREFIX`. The scenarios drive the network instead
+  (`Fleet::return_on_network`, the failed provider's reversal as the network itself records it), and Core reads it only
+  through the reader.
+- **Default.** The holding account is named on its network by its holder's id, as the simulated networks name it:
+  the catalogue registers no address per holding account yet (gap, owner `F-016` with `F-031`'s first real readers).
+
+| Rule switched off | Red |
+|---|---|
+| the wallet holds the reading's destination to itself | `wallet_confirms_a_reversed_segments_credit_only_in_full_from_its_statement` |
+| the wallet confirms only a `final` reading | `wallet_confirms_a_reversed_segments_credit_only_in_full_from_its_statement` |

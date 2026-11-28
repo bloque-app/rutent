@@ -1,0 +1,62 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "rutent",
+    "acts": "core-orch",
+    "role": "core",
+    "kind": "component"
+  },
+  "what": {
+    "call": "replay",
+    "order": "ord-17",
+    "segment": "seg-4",
+    "nodes": [
+      "ledger-a",
+      "ledger-b"
+    ],
+    "found": {
+      "status": "consistent_with_the_exit"
+    },
+    "rests_on": [
+      {
+        "log": "log-main",
+        "index": 140,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "2929292929292929292929292929292929292929292929292929292929292929"
+        }
+      },
+      {
+        "log": "log-main",
+        "index": 141,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a"
+        }
+      },
+      {
+        "log": "log-main",
+        "index": 142,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b"
+        }
+      }
+    ],
+    "movement": {
+      "network": "polygon",
+      "id": "0x9f3c2a",
+      "read_by": {
+        "reader": "polygon-reader",
+        "version": "0.1.0"
+      }
+    }
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "core_clock"
+  },
+  "outcome": {
+    "status": "observed"
+  }
+}

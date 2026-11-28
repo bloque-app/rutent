@@ -11,10 +11,90 @@
 //! Every key here is a [`PublicKey`], built only from its canonical encoding and compared by its decoded bytes.
 //! The verifier (`M2`) must still refuse non-canonical base64 and non-canonical points ([`PublicKey`] says which).
 
-use alloc::{borrow::ToOwned, string::String};
+use alloc::{borrow::ToOwned, string::String, vec::Vec};
 use serde::{Deserialize, Serialize};
 
 use super::types::PublicKey;
+use super::validate::made_after;
+
+/// The protocol versions a reader takes statements under (`REQ-PRT-1`, `REQ-PRT-4`, finding 11 of `M3`'s milestone
+/// review): the current one, and each older one still in force with the cutover date from which a statement under it
+/// is void. Before 4.0.0 a reader named one exact version, so a protocol bump voided every statement made under the
+/// version before it at once; with an older version in force, a provider re-signs under the current one before the
+/// cutover, and a holdout's statements under the old one are void from the date on (`THR-64`).
+///
+/// A reader with no older version in force names its one version ([`ProtocolVersions::only`]), and takes statements
+/// under it alone, as before.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProtocolVersions {
+    current: String,
+    older: Vec<Cutover>,
+}
+
+/// An older protocol version still in force, and its cutover date: from that instant on, a statement under it is
+/// void.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cutover {
+    /// The older version.
+    pub version: String,
+    /// The cutover date, an RFC 3339 UTC time in the schema's form: a statement under `version` is void at it and
+    /// after it.
+    pub cutover: String,
+}
+
+impl ProtocolVersions {
+    /// A reader's one version, with no older one in force.
+    pub fn only(current: impl Into<String>) -> Self {
+        Self {
+            current: current.into(),
+            older: Vec::new(),
+        }
+    }
+
+    /// The same versions, with `version` in force until `cutover`. A version named again keeps its first cutover, and
+    /// the current version is never an older one.
+    #[must_use]
+    pub fn with_older(mut self, version: impl Into<String>, cutover: impl Into<String>) -> Self {
+        let version = version.into();
+        if version != self.current && !self.older.iter().any(|c| c.version == version) {
+            self.older.push(Cutover {
+                version,
+                cutover: cutover.into(),
+            });
+        }
+        self
+    }
+
+    /// The current version: the one statements are made under from now on.
+    pub fn current(&self) -> &str {
+        &self.current
+    }
+
+    /// The older versions in force, each with its cutover date.
+    pub fn older(&self) -> &[Cutover] {
+        &self.older
+    }
+
+    /// Whether a statement under `version`, taken at `at` (an RFC 3339 UTC time in the schema's form), is in force:
+    /// under the current version always; under an older one only before its cutover date; under any other never. A
+    /// time `at` or a cutover that can't be ordered voids the older version's statement, which fails closed.
+    pub fn in_force(&self, version: &str, at: &str) -> Result<(), ContextMismatch> {
+        if version == self.current {
+            return Ok(());
+        }
+        match self.older.iter().find(|c| c.version == version) {
+            Some(older) if made_after(&older.cutover, at) => Ok(()),
+            Some(older) => Err(ContextMismatch::PastCutover {
+                version: older.version.clone(),
+                cutover: older.cutover.clone(),
+            }),
+            None => Err(ContextMismatch::ProtocolVersion {
+                expected: self.current.clone(),
+                found: version.to_owned(),
+            }),
+        }
+    }
+}
 
 /// A party's statement in its envelope. `T` is the statement's own shape. The schema of each kind of statement
 /// fixes `shape` to its `$id`; [`Statement::check_shape`] does the same in Rust.
@@ -94,13 +174,14 @@ pub trait StatementShape {
         Ok(())
     }
 
-    /// Checks any statements nested inside this one against the reader's context, and that each was made by
-    /// `maker`, the outer statement's maker. None, unless a type says otherwise.
+    /// Checks any statements nested inside this one against the reader's context, at `at`, and that each was made
+    /// by `maker`, the outer statement's maker. None, unless a type says otherwise.
     fn check_nested_context(
         &self,
         _maker: &str,
         _deployment: &Deployment,
-        _protocol_version: &str,
+        _versions: &ProtocolVersions,
+        _at: &str,
     ) -> Result<(), ContextMismatch> {
         Ok(())
     }
@@ -125,12 +206,19 @@ pub enum ContextMismatch {
         /// The deployment the statement names.
         found: Deployment,
     },
-    /// It names another protocol version.
+    /// It names a protocol version not in force: neither the reader's current one nor an older one it still takes.
     ProtocolVersion {
-        /// The reader's protocol version.
+        /// The reader's current protocol version.
         expected: String,
         /// The version the statement names.
         found: String,
+    },
+    /// It names an older protocol version whose cutover date has passed (`REQ-PRT-4`, `THR-64`): void.
+    PastCutover {
+        /// The older version it names.
+        version: String,
+        /// That version's cutover date.
+        cutover: String,
     },
     /// A statement nested in it was made by another party.
     NestedMaker {
@@ -157,14 +245,17 @@ impl<T: StatementShape> Statement<T> {
 }
 
 impl<T: StatementShape> Statement<T> {
-    /// Checks that the statement belongs to the reader's deployment and protocol version, so a statement replayed
-    /// from another is refused (`REQ-PRT-1`). The deployment's operator key is compared as well as its name.
-    /// Statements nested in it, such as a judgement in a result, are checked the same way, and must have the
-    /// same maker.
+    /// Checks that the statement belongs to the reader's deployment and to a protocol version in force at `at`, so a
+    /// statement replayed from another deployment or version is refused (`REQ-PRT-1`), and one under an older version
+    /// past its cutover date is void (`REQ-PRT-4`, [`ProtocolVersions::in_force`]). `at` is the time the reader judges
+    /// the statement at, an RFC 3339 UTC time: when it takes it, or, for a result of a segment begun before a
+    /// cutover, when the segment began. The deployment's operator key is compared as well as its name. Statements
+    /// nested in it, such as a judgement in a result, are checked the same way, and must have the same maker.
     pub fn check_context(
         &self,
         deployment: &Deployment,
-        protocol_version: &str,
+        versions: &ProtocolVersions,
+        at: &str,
     ) -> Result<(), ContextMismatch> {
         if &self.deployment != deployment {
             return Err(ContextMismatch::Deployment {
@@ -172,22 +263,18 @@ impl<T: StatementShape> Statement<T> {
                 found: self.deployment.clone(),
             });
         }
-        if self.protocol_version != protocol_version {
-            return Err(ContextMismatch::ProtocolVersion {
-                expected: protocol_version.to_owned(),
-                found: self.protocol_version.clone(),
-            });
-        }
+        versions.in_force(&self.protocol_version, at)?;
         self.statement
-            .check_nested_context(&self.maker, deployment, protocol_version)
+            .check_nested_context(&self.maker, deployment, versions, at)
     }
 
-    /// Checks that a nested statement was made by `maker` and belongs to the reader's context.
+    /// Checks that a nested statement was made by `maker` and belongs to the reader's context at `at`.
     pub fn check_as_nested(
         &self,
         maker: &str,
         deployment: &Deployment,
-        protocol_version: &str,
+        versions: &ProtocolVersions,
+        at: &str,
     ) -> Result<(), ContextMismatch> {
         if self.maker != maker {
             return Err(ContextMismatch::NestedMaker {
@@ -195,7 +282,7 @@ impl<T: StatementShape> Statement<T> {
                 inner: self.maker.clone(),
             });
         }
-        self.check_context(deployment, protocol_version)
+        self.check_context(deployment, versions, at)
     }
 }
 

@@ -239,8 +239,36 @@ pub fn bounds(max_hops: u8) -> PolicyBounds {
             "excluded_tuples": [],
             "provider_ceilings": [],
             "publisher_ceilings": [],
+            "operator_fee": fee("0", "0", "1"),
+            "slippage_limits": [],
         }),
     )
+}
+
+/// `bounds`, with a slippage limit of `max_bps` for every exchange tuple of `snapshot`, so the bounds limit each
+/// that settles within three days (router-api's `PolicyBounds::check_against`, `REQ-QTE-9`).
+pub fn limited(bounds: PolicyBounds, snapshot: &CatalogueSnapshot, max_bps: u16) -> PolicyBounds {
+    let mut value = serde_json::to_value(&bounds).expect("bounds serialise");
+    let limits: Vec<Value> =
+        serde_json::to_value(snapshot).expect("a snapshot serialises")["figures"]
+            .as_array()
+            .expect("figures")
+            .iter()
+            .filter(|f| f["value"]["kind"] == "exchange_tuple")
+            .map(|f| {
+                let tuple = &f["value"]["tuple"];
+                json!({
+                    "tuple": {
+                        "provider": f["origin"]["provider"],
+                        "from": { "node": tuple["node"], "asset": tuple["from"] },
+                        "to": { "node": tuple["node"], "asset": tuple["to"] },
+                    },
+                    "max_bps": max_bps,
+                })
+            })
+            .collect();
+    value["slippage_limits"] = json!(limits);
+    parse("limited bounds", value)
 }
 
 pub fn shortlist() -> Value {

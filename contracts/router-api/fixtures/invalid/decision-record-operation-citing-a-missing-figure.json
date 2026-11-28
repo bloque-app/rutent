@@ -3,1596 +3,94 @@
     "name": "rutent-test",
     "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
   },
+  "made_at": "2026-11-06T15:00:01Z",
+  "maker": "rutent-core",
   "protocol_version": "2.0.1",
   "shape": "urn:rutent:router-api:decision-record",
-  "maker": "rutent-core",
-  "made_at": "2026-11-06T15:00:01Z",
   "signature": {
-    "scheme": "ed25519",
     "key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA",
+    "scheme": "ed25519",
     "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
   },
   "statement": {
-    "router_version": "0.1.0",
-    "request": {
-      "request_id": "req-0001",
-      "round": {
-        "kind": "choice",
-        "refines": {
-          "request_id": "req-0001-shortlist",
-          "taken_at": "2026-11-06T14:59:50Z"
-        }
-      },
-      "from": {
-        "node": {
-          "network": "co-ach"
-        },
-        "asset": {
-          "id": "COP",
-          "decimals": 2
-        }
-      },
-      "to": {
-        "node": {
-          "network": "polygon"
-        },
-        "asset": {
-          "id": "USDC",
-          "decimals": 6
-        }
-      },
-      "amount": "100000000",
-      "objective": {
-        "kind": "lowest_total_cost"
-      }
-    },
-    "snapshot": {
-      "snapshot_id": "snap-0002",
-      "taken_at": "2026-11-06T15:00:00Z",
-      "figures": [
-        {
-          "figure_id": "f-w",
-          "origin": {
-            "kind": "provider",
-            "provider": "reserve-bank-co",
-            "publisher": "bank-co-group",
-            "provider_version": "2.1.0",
-            "module_version": "2.1.3"
-          },
-          "age_seconds": 3600,
-          "value": {
-            "kind": "reserve_tuple",
-            "tuple": {
-              "origin": {
-                "network": "co-ach"
-              },
-              "destination": "ledger-in",
-              "asset": "COP",
-              "decimals": {
-                "origin": 2,
-                "destination": 2
-              },
-              "terms": {
-                "bands": [
-                  {
-                    "min": "100",
-                    "max": "100000000000"
-                  }
-                ],
-                "reporting": "net",
-                "required_inputs": []
-              }
-            }
-          }
-        },
-        {
-          "figure_id": "f-w-price",
-          "origin": {
-            "kind": "provider",
-            "provider": "reserve-bank-co",
-            "publisher": "bank-co-group",
-            "provider_version": "2.1.0",
-            "module_version": "2.1.3"
-          },
-          "age_seconds": 3600,
-          "value": {
-            "kind": "price",
-            "tuple": "f-w",
-            "fee": {
-              "flat": "0",
-              "proportional": {
-                "numerator": "1",
-                "denominator": "1000"
-              }
-            },
-            "settlement_seconds": 600
-          }
-        },
-        {
-          "figure_id": "f-ramp",
-          "origin": {
-            "kind": "provider",
-            "provider": "ramp-x",
-            "publisher": "ramp-x",
-            "provider_version": "1.0.0",
-            "module_version": "1.0.0"
-          },
-          "age_seconds": 1800,
-          "value": {
-            "kind": "ramp_tuple",
-            "tuple": {
-              "origin": "ledger-in",
-              "destination": "ledger-b",
-              "asset": "COP",
-              "decimals": {
-                "origin": 2,
-                "destination": 2
-              },
-              "terms": {
-                "bands": [
-                  {
-                    "min": "100",
-                    "max": "100000000000"
-                  }
-                ],
-                "reporting": "net",
-                "required_inputs": []
-              }
-            }
-          }
-        },
-        {
-          "figure_id": "f-ramp-price",
-          "origin": {
-            "kind": "provider",
-            "provider": "ramp-x",
-            "publisher": "ramp-x",
-            "provider_version": "1.0.0",
-            "module_version": "1.0.0"
-          },
-          "age_seconds": 1800,
-          "value": {
-            "kind": "price",
-            "tuple": "f-ramp",
-            "fee": {
-              "flat": "5000",
-              "proportional": {
-                "numerator": "0",
-                "denominator": "1"
-              }
-            },
-            "settlement_seconds": 300
-          }
-        },
-        {
-          "figure_id": "f-ex-a",
-          "origin": {
-            "kind": "provider",
-            "provider": "exchange-a",
-            "publisher": "acme",
-            "provider_version": "3.0.0",
-            "module_version": "3.0.2"
-          },
-          "age_seconds": 900,
-          "value": {
-            "kind": "exchange_tuple",
-            "tuple": {
-              "node": "ledger-in",
-              "from": {
-                "id": "COP",
-                "decimals": 2
-              },
-              "to": {
-                "id": "USDC",
-                "decimals": 6
-              },
-              "terms": {
-                "bands": [
-                  {
-                    "min": "100",
-                    "max": "100000000000"
-                  }
-                ],
-                "reporting": "net",
-                "required_inputs": []
-              }
-            }
-          }
-        },
-        {
-          "figure_id": "f-ex-a-price",
-          "origin": {
-            "kind": "provider",
-            "provider": "exchange-a",
-            "publisher": "acme",
-            "provider_version": "3.0.0",
-            "module_version": "3.0.2"
-          },
-          "age_seconds": 900,
-          "value": {
-            "kind": "price",
-            "tuple": "f-ex-a",
-            "fee": {
-              "flat": "0",
-              "proportional": {
-                "numerator": "2",
-                "denominator": "1000"
-              }
-            },
-            "rate": {
-              "kind": "fixed",
-              "rate": "0.00025"
-            },
-            "settlement_seconds": 60
-          }
-        },
-        {
-          "figure_id": "f-ex-a-quote-old",
-          "origin": {
-            "kind": "provider",
-            "provider": "exchange-a",
-            "publisher": "acme",
-            "provider_version": "3.0.0",
-            "module_version": "3.0.2"
-          },
-          "age_seconds": 600,
-          "valid_for_seconds": 120,
-          "value": {
-            "kind": "fresh_quote",
-            "tuple": "f-ex-a",
-            "quote": {
-              "deployment": {
-                "name": "rutent-test",
-                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
-              },
-              "protocol_version": "2.0.1",
-              "shape": "urn:rutent:provider-role:result",
-              "maker": "exchange-a",
-              "made_at": "2026-11-06T14:50:00Z",
-              "signature": {
-                "scheme": "ed25519",
-                "key": "DVP_bDfejcFXRBdFhgleHZTDfHjingJbVFhJlkpiLdE",
-                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
-              },
-              "statement": {
-                "kind": "conversion",
-                "transaction": "tx-quote",
-                "outcome": {
-                  "status": "dry_run_accepted",
-                  "amount_in": "99900000",
-                  "amount_out": "249250500",
-                  "rate": "0.00025",
-                  "slippage": {
-                    "regime": "firm"
-                  },
-                  "fee": {
-                    "asset": "COP",
-                    "amount": "199800"
-                  },
-                  "direction": "exact_in",
-                  "valid_until": "2026-11-06T14:52:00Z",
-                  "voided_by": [
-                    "validity_passes",
-                    "amount_changes"
-                  ],
-                  "settlement_seconds": 60
-                }
-              }
-            }
-          }
-        },
-        {
-          "figure_id": "f-ex-b",
-          "origin": {
-            "kind": "provider",
-            "provider": "exchange-b",
-            "publisher": "acme",
-            "provider_version": "1.4.0",
-            "module_version": "1.4.0"
-          },
-          "age_seconds": 900,
-          "value": {
-            "kind": "exchange_tuple",
-            "tuple": {
-              "node": "ledger-b",
-              "from": {
-                "id": "COP",
-                "decimals": 2
-              },
-              "to": {
-                "id": "USDC",
-                "decimals": 6
-              },
-              "terms": {
-                "bands": [
-                  {
-                    "min": "100",
-                    "max": "100000000000"
-                  }
-                ],
-                "reporting": "net",
-                "required_inputs": []
-              }
-            }
-          }
-        },
-        {
-          "figure_id": "f-ex-b-price",
-          "origin": {
-            "kind": "provider",
-            "provider": "exchange-b",
-            "publisher": "acme",
-            "provider_version": "1.4.0",
-            "module_version": "1.4.0"
-          },
-          "age_seconds": 900,
-          "value": {
-            "kind": "price",
-            "tuple": "f-ex-b",
-            "fee": {
-              "flat": "0",
-              "proportional": {
-                "numerator": "1",
-                "denominator": "1000"
-              }
-            },
-            "rate": {
-              "kind": "levels",
-              "levels": [
-                {
-                  "up_to": "50000000",
-                  "rate": "0.00025"
-                },
-                {
-                  "up_to": "1000000000",
-                  "rate": "0.00024"
-                }
-              ]
-            },
-            "settlement_seconds": 120
-          }
-        },
-        {
-          "figure_id": "f-dep-in",
-          "origin": {
-            "kind": "provider",
-            "provider": "reserve-wallet",
-            "publisher": "wallet-co",
-            "provider_version": "1.2.0",
-            "module_version": "1.2.1"
-          },
-          "age_seconds": 7200,
-          "value": {
-            "kind": "reserve_tuple",
-            "tuple": {
-              "origin": "ledger-in",
-              "destination": {
-                "network": "polygon"
-              },
-              "asset": "USDC",
-              "decimals": {
-                "origin": 6,
-                "destination": 6
-              },
-              "terms": {
-                "bands": [
-                  {
-                    "min": "100",
-                    "max": "100000000000"
-                  }
-                ],
-                "reporting": "net",
-                "required_inputs": []
-              }
-            }
-          }
-        },
-        {
-          "figure_id": "f-dep-in-price",
-          "origin": {
-            "kind": "provider",
-            "provider": "reserve-wallet",
-            "publisher": "wallet-co",
-            "provider_version": "1.2.0",
-            "module_version": "1.2.1"
-          },
-          "age_seconds": 7200,
-          "value": {
-            "kind": "price",
-            "tuple": "f-dep-in",
-            "fee": {
-              "flat": "1000000",
-              "proportional": {
-                "numerator": "0",
-                "denominator": "1"
-              }
-            },
-            "settlement_seconds": 900
-          }
-        },
-        {
-          "figure_id": "f-dep-b",
-          "origin": {
-            "kind": "provider",
-            "provider": "reserve-wallet",
-            "publisher": "wallet-co",
-            "provider_version": "1.2.0",
-            "module_version": "1.2.1"
-          },
-          "age_seconds": 7200,
-          "value": {
-            "kind": "reserve_tuple",
-            "tuple": {
-              "origin": "ledger-b",
-              "destination": {
-                "network": "polygon"
-              },
-              "asset": "USDC",
-              "decimals": {
-                "origin": 6,
-                "destination": 6
-              },
-              "terms": {
-                "bands": [
-                  {
-                    "min": "100",
-                    "max": "100000000000"
-                  }
-                ],
-                "reporting": "net",
-                "required_inputs": []
-              }
-            }
-          }
-        },
-        {
-          "figure_id": "f-dep-b-price",
-          "origin": {
-            "kind": "provider",
-            "provider": "reserve-wallet",
-            "publisher": "wallet-co",
-            "provider_version": "1.2.0",
-            "module_version": "1.2.1"
-          },
-          "age_seconds": 7200,
-          "value": {
-            "kind": "price",
-            "tuple": "f-dep-b",
-            "fee": {
-              "flat": "1000000",
-              "proportional": {
-                "numerator": "0",
-                "denominator": "1"
-              }
-            },
-            "settlement_seconds": 900
-          }
-        },
-        {
-          "figure_id": "f-exposure-ex-a",
-          "origin": {
-            "kind": "operator",
-            "source": "core-ledger"
-          },
-          "age_seconds": 0,
-          "value": {
-            "kind": "exposure",
-            "provider": "exchange-a",
-            "publisher": "acme",
-            "asset": {
-              "id": "COP",
-              "decimals": 2
-            },
-            "in_flight": "40000000"
-          }
-        },
-        {
-          "figure_id": "f-ramp-dry-run",
-          "origin": {
-            "kind": "provider",
-            "provider": "ramp-x",
-            "publisher": "ramp-x",
-            "provider_version": "1.0.0",
-            "module_version": "1.0.0"
-          },
-          "age_seconds": 3,
-          "valid_for_seconds": 60,
-          "value": {
-            "kind": "dry_run",
-            "tuple": "f-ramp",
-            "amount_in": "99900000",
-            "result": {
-              "deployment": {
-                "name": "rutent-test",
-                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
-              },
-              "protocol_version": "2.0.1",
-              "shape": "urn:rutent:provider-role:result",
-              "maker": "ramp-x",
-              "made_at": "2026-11-06T14:59:57Z",
-              "signature": {
-                "scheme": "ed25519",
-                "key": "e0V3vJsCjF9X6QxTLlIe_hZzWsNvnBk6b91PyIpLDdE",
-                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
-              },
-              "statement": {
-                "kind": "transfer",
-                "transaction": "tx-dry-ramp",
-                "outcome": {
-                  "status": "dry_run_accepted",
-                  "amount_in": "99900000",
-                  "amount_out": "99895000",
-                  "fee": {
-                    "asset": "COP",
-                    "amount": "5000"
-                  },
-                  "direction": "exact_in",
-                  "valid_until": "2026-11-06T15:00:57Z",
-                  "voided_by": [
-                    "validity_passes",
-                    "amount_changes"
-                  ],
-                  "settlement_seconds": 300
-                }
-              }
-            }
-          }
-        },
-        {
-          "figure_id": "f-w-dry-run-refused",
-          "origin": {
-            "kind": "provider",
-            "provider": "reserve-bank-co",
-            "publisher": "bank-co-group",
-            "provider_version": "2.1.0",
-            "module_version": "2.1.3"
-          },
-          "age_seconds": 2,
-          "value": {
-            "kind": "dry_run",
-            "tuple": "f-w",
-            "amount_in": "40000000",
-            "result": {
-              "deployment": {
-                "name": "rutent-test",
-                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
-              },
-              "protocol_version": "2.0.1",
-              "shape": "urn:rutent:provider-role:result",
-              "maker": "reserve-bank-co",
-              "made_at": "2026-11-06T14:59:58Z",
-              "signature": {
-                "scheme": "ed25519",
-                "key": "eQ_qS7RWWcE8Xe_hTCtV-UZZfH_ahCkWFwYBXcciKCE",
-                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
-              },
-              "statement": {
-                "kind": "withdrawal",
-                "transaction": "tx-dry-w",
-                "outcome": {
-                  "status": "refused",
-                  "refusal": {
-                    "class": "final"
-                  }
-                }
-              }
-            }
-          }
-        },
-        {
-          "figure_id": "f-ex-b-eligibility",
-          "origin": {
-            "kind": "provider",
-            "provider": "verifier-kyc",
-            "publisher": "kyc-co",
-            "provider_version": "1.0.0",
-            "module_version": "1.0.0"
-          },
-          "age_seconds": 4,
-          "valid_for_seconds": 604800,
-          "value": {
-            "kind": "eligibility",
-            "tuple": "f-ex-b",
-            "judgement": {
-              "deployment": {
-                "name": "rutent-test",
-                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
-              },
-              "protocol_version": "2.0.1",
-              "shape": "urn:rutent:provider-role:judgement",
-              "maker": "verifier-kyc",
-              "made_at": "2026-11-06T14:59:56Z",
-              "signature": {
-                "scheme": "ed25519",
-                "key": "6Q4G-gR5jiREWsUia8tV_-tgyIw-2YJxbaJ8OkMaS0E",
-                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
-              },
-              "statement": {
-                "subject": "subj-42",
-                "class": "kyc.natural_person",
-                "answer": "yes",
-                "valid_until": "2026-11-13T14:59:56Z"
-              }
-            }
-          }
-        },
-        {
-          "figure_id": "f-ex-a-quote-elsewhere",
-          "origin": {
-            "kind": "provider",
-            "provider": "exchange-a",
-            "publisher": "acme",
-            "provider_version": "3.0.0",
-            "module_version": "3.0.2"
-          },
-          "age_seconds": 5,
-          "valid_for_seconds": 120,
-          "value": {
-            "kind": "fresh_quote",
-            "tuple": "f-ex-a",
-            "quote": {
-              "deployment": {
-                "name": "rutent-elsewhere",
-                "operator_key": "DB_q1ZR5r420fqOGugtrpUfD7jVigeJU4wYKXVT-JtA"
-              },
-              "protocol_version": "2.0.1",
-              "shape": "urn:rutent:provider-role:result",
-              "maker": "exchange-a",
-              "made_at": "2026-11-06T14:59:55Z",
-              "signature": {
-                "scheme": "ed25519",
-                "key": "DVP_bDfejcFXRBdFhgleHZTDfHjingJbVFhJlkpiLdE",
-                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
-              },
-              "statement": {
-                "kind": "conversion",
-                "transaction": "tx-quote",
-                "outcome": {
-                  "status": "dry_run_accepted",
-                  "amount_in": "99900000",
-                  "amount_out": "249250500",
-                  "rate": "0.00025",
-                  "slippage": {
-                    "regime": "firm"
-                  },
-                  "fee": {
-                    "asset": "COP",
-                    "amount": "199800"
-                  },
-                  "direction": "exact_in",
-                  "valid_until": "2026-11-06T15:01:55Z",
-                  "voided_by": [
-                    "validity_passes",
-                    "amount_changes"
-                  ],
-                  "settlement_seconds": 60
-                }
-              }
-            }
-          }
-        },
-        {
-          "figure_id": "f-ex-a-quote-50m",
-          "origin": {
-            "kind": "provider",
-            "provider": "exchange-a",
-            "publisher": "acme",
-            "provider_version": "3.0.0",
-            "module_version": "3.0.2"
-          },
-          "age_seconds": 5,
-          "valid_for_seconds": 120,
-          "value": {
-            "kind": "fresh_quote",
-            "tuple": "f-ex-a",
-            "quote": {
-              "deployment": {
-                "name": "rutent-test",
-                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
-              },
-              "protocol_version": "2.0.1",
-              "shape": "urn:rutent:provider-role:result",
-              "maker": "exchange-a",
-              "made_at": "2026-11-06T14:59:55Z",
-              "signature": {
-                "scheme": "ed25519",
-                "key": "DVP_bDfejcFXRBdFhgleHZTDfHjingJbVFhJlkpiLdE",
-                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
-              },
-              "statement": {
-                "kind": "conversion",
-                "transaction": "tx-quote-50m",
-                "outcome": {
-                  "status": "dry_run_accepted",
-                  "amount_in": "49950000",
-                  "amount_out": "124625250",
-                  "rate": "0.00025",
-                  "slippage": {
-                    "regime": "firm"
-                  },
-                  "fee": {
-                    "asset": "COP",
-                    "amount": "99900"
-                  },
-                  "direction": "exact_in",
-                  "valid_until": "2026-11-06T15:01:55Z",
-                  "voided_by": [
-                    "validity_passes",
-                    "amount_changes"
-                  ],
-                  "settlement_seconds": 60
-                }
-              }
-            }
-          }
-        },
-        {
-          "figure_id": "f-confirm-w-100000000",
-          "origin": {
-            "kind": "provider",
-            "provider": "reserve-bank-co",
-            "publisher": "bank-co-group",
-            "provider_version": "2.1.0",
-            "module_version": "2.1.3"
-          },
-          "age_seconds": 2,
-          "valid_for_seconds": 120,
-          "value": {
-            "kind": "dry_run",
-            "tuple": "f-w",
-            "amount_in": "100000000",
-            "result": {
-              "deployment": {
-                "name": "rutent-test",
-                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
-              },
-              "protocol_version": "2.0.1",
-              "shape": "urn:rutent:provider-role:result",
-              "maker": "reserve-bank-co",
-              "made_at": "2026-11-06T14:59:58Z",
-              "signature": {
-                "scheme": "ed25519",
-                "key": "eQ_qS7RWWcE8Xe_hTCtV-UZZfH_ahCkWFwYBXcciKCE",
-                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
-              },
-              "statement": {
-                "kind": "withdrawal",
-                "transaction": "tx-confirm-w-100000000",
-                "outcome": {
-                  "status": "dry_run_accepted",
-                  "amount_in": "100000000",
-                  "amount_out": "99900000",
-                  "fee": {
-                    "asset": "COP",
-                    "amount": "100000"
-                  },
-                  "valid_until": "2026-11-06T15:01:58Z",
-                  "voided_by": [
-                    "validity_passes",
-                    "amount_changes"
-                  ],
-                  "settlement_seconds": 600
-                }
-              }
-            }
-          }
-        },
-        {
-          "figure_id": "f-confirm-ex-a-99900000",
-          "origin": {
-            "kind": "provider",
-            "provider": "exchange-a",
-            "publisher": "acme",
-            "provider_version": "3.0.0",
-            "module_version": "3.0.2"
-          },
-          "age_seconds": 2,
-          "valid_for_seconds": 120,
-          "value": {
-            "kind": "fresh_quote",
-            "tuple": "f-ex-a",
-            "quote": {
-              "deployment": {
-                "name": "rutent-test",
-                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
-              },
-              "protocol_version": "2.0.1",
-              "shape": "urn:rutent:provider-role:result",
-              "maker": "exchange-a",
-              "made_at": "2026-11-06T14:59:58Z",
-              "signature": {
-                "scheme": "ed25519",
-                "key": "DVP_bDfejcFXRBdFhgleHZTDfHjingJbVFhJlkpiLdE",
-                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
-              },
-              "statement": {
-                "kind": "conversion",
-                "transaction": "tx-confirm-ex-a-99900000",
-                "outcome": {
-                  "status": "dry_run_accepted",
-                  "amount_in": "99900000",
-                  "amount_out": "249250500",
-                  "rate": "0.00025",
-                  "slippage": {
-                    "regime": "firm"
-                  },
-                  "fee": {
-                    "asset": "COP",
-                    "amount": "199800"
-                  },
-                  "direction": "exact_in",
-                  "valid_until": "2026-11-06T15:01:58Z",
-                  "voided_by": [
-                    "validity_passes",
-                    "amount_changes"
-                  ],
-                  "settlement_seconds": 600
-                }
-              }
-            }
-          }
-        },
-        {
-          "figure_id": "f-confirm-dep-in-249250500",
-          "origin": {
-            "kind": "provider",
-            "provider": "reserve-wallet",
-            "publisher": "wallet-co",
-            "provider_version": "1.2.0",
-            "module_version": "1.2.1"
-          },
-          "age_seconds": 2,
-          "valid_for_seconds": 120,
-          "value": {
-            "kind": "dry_run",
-            "tuple": "f-dep-in",
-            "amount_in": "249250500",
-            "result": {
-              "deployment": {
-                "name": "rutent-test",
-                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
-              },
-              "protocol_version": "2.0.1",
-              "shape": "urn:rutent:provider-role:result",
-              "maker": "reserve-wallet",
-              "made_at": "2026-11-06T14:59:58Z",
-              "signature": {
-                "scheme": "ed25519",
-                "key": "eQ_qS7RWpc2DfVUG1gIxHMfSs5VLK8rW-n9CVIivLBE",
-                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
-              },
-              "statement": {
-                "kind": "deposit",
-                "transaction": "tx-confirm-dep-in-249250500",
-                "outcome": {
-                  "status": "dry_run_accepted",
-                  "amount_in": "249250500",
-                  "amount_out": "248250500",
-                  "fee": {
-                    "asset": "USDC",
-                    "amount": "1000000"
-                  },
-                  "valid_until": "2026-11-06T15:01:58Z",
-                  "voided_by": [
-                    "validity_passes",
-                    "amount_changes"
-                  ],
-                  "settlement_seconds": 600
-                }
-              }
-            }
-          }
-        },
-        {
-          "figure_id": "f-confirm-w-50000000",
-          "origin": {
-            "kind": "provider",
-            "provider": "reserve-bank-co",
-            "publisher": "bank-co-group",
-            "provider_version": "2.1.0",
-            "module_version": "2.1.3"
-          },
-          "age_seconds": 2,
-          "valid_for_seconds": 120,
-          "value": {
-            "kind": "dry_run",
-            "tuple": "f-w",
-            "amount_in": "50000000",
-            "result": {
-              "deployment": {
-                "name": "rutent-test",
-                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
-              },
-              "protocol_version": "2.0.1",
-              "shape": "urn:rutent:provider-role:result",
-              "maker": "reserve-bank-co",
-              "made_at": "2026-11-06T14:59:58Z",
-              "signature": {
-                "scheme": "ed25519",
-                "key": "eQ_qS7RWWcE8Xe_hTCtV-UZZfH_ahCkWFwYBXcciKCE",
-                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
-              },
-              "statement": {
-                "kind": "withdrawal",
-                "transaction": "tx-confirm-w-50000000",
-                "outcome": {
-                  "status": "dry_run_accepted",
-                  "amount_in": "50000000",
-                  "amount_out": "49950000",
-                  "fee": {
-                    "asset": "COP",
-                    "amount": "50000"
-                  },
-                  "valid_until": "2026-11-06T15:01:58Z",
-                  "voided_by": [
-                    "validity_passes",
-                    "amount_changes"
-                  ],
-                  "settlement_seconds": 600
-                }
-              }
-            }
-          }
-        },
-        {
-          "figure_id": "f-confirm-ex-a-49950000",
-          "origin": {
-            "kind": "provider",
-            "provider": "exchange-a",
-            "publisher": "acme",
-            "provider_version": "3.0.0",
-            "module_version": "3.0.2"
-          },
-          "age_seconds": 2,
-          "valid_for_seconds": 120,
-          "value": {
-            "kind": "fresh_quote",
-            "tuple": "f-ex-a",
-            "quote": {
-              "deployment": {
-                "name": "rutent-test",
-                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
-              },
-              "protocol_version": "2.0.1",
-              "shape": "urn:rutent:provider-role:result",
-              "maker": "exchange-a",
-              "made_at": "2026-11-06T14:59:58Z",
-              "signature": {
-                "scheme": "ed25519",
-                "key": "DVP_bDfejcFXRBdFhgleHZTDfHjingJbVFhJlkpiLdE",
-                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
-              },
-              "statement": {
-                "kind": "conversion",
-                "transaction": "tx-confirm-ex-a-49950000",
-                "outcome": {
-                  "status": "dry_run_accepted",
-                  "amount_in": "49950000",
-                  "amount_out": "124625250",
-                  "rate": "0.00025",
-                  "slippage": {
-                    "regime": "firm"
-                  },
-                  "fee": {
-                    "asset": "COP",
-                    "amount": "99900"
-                  },
-                  "direction": "exact_in",
-                  "valid_until": "2026-11-06T15:01:58Z",
-                  "voided_by": [
-                    "validity_passes",
-                    "amount_changes"
-                  ],
-                  "settlement_seconds": 600
-                }
-              }
-            }
-          }
-        },
-        {
-          "figure_id": "f-confirm-dep-in-124625250",
-          "origin": {
-            "kind": "provider",
-            "provider": "reserve-wallet",
-            "publisher": "wallet-co",
-            "provider_version": "1.2.0",
-            "module_version": "1.2.1"
-          },
-          "age_seconds": 2,
-          "valid_for_seconds": 120,
-          "value": {
-            "kind": "dry_run",
-            "tuple": "f-dep-in",
-            "amount_in": "124625250",
-            "result": {
-              "deployment": {
-                "name": "rutent-test",
-                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
-              },
-              "protocol_version": "2.0.1",
-              "shape": "urn:rutent:provider-role:result",
-              "maker": "reserve-wallet",
-              "made_at": "2026-11-06T14:59:58Z",
-              "signature": {
-                "scheme": "ed25519",
-                "key": "eQ_qS7RWpc2DfVUG1gIxHMfSs5VLK8rW-n9CVIivLBE",
-                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
-              },
-              "statement": {
-                "kind": "deposit",
-                "transaction": "tx-confirm-dep-in-124625250",
-                "outcome": {
-                  "status": "dry_run_accepted",
-                  "amount_in": "124625250",
-                  "amount_out": "123625250",
-                  "fee": {
-                    "asset": "USDC",
-                    "amount": "1000000"
-                  },
-                  "valid_until": "2026-11-06T15:01:58Z",
-                  "voided_by": [
-                    "validity_passes",
-                    "amount_changes"
-                  ],
-                  "settlement_seconds": 600
-                }
-              }
-            }
-          }
-        },
-        {
-          "figure_id": "f-confirm-w-30000000",
-          "origin": {
-            "kind": "provider",
-            "provider": "reserve-bank-co",
-            "publisher": "bank-co-group",
-            "provider_version": "2.1.0",
-            "module_version": "2.1.3"
-          },
-          "age_seconds": 2,
-          "valid_for_seconds": 120,
-          "value": {
-            "kind": "dry_run",
-            "tuple": "f-w",
-            "amount_in": "30000000",
-            "result": {
-              "deployment": {
-                "name": "rutent-test",
-                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
-              },
-              "protocol_version": "2.0.1",
-              "shape": "urn:rutent:provider-role:result",
-              "maker": "reserve-bank-co",
-              "made_at": "2026-11-06T14:59:58Z",
-              "signature": {
-                "scheme": "ed25519",
-                "key": "eQ_qS7RWWcE8Xe_hTCtV-UZZfH_ahCkWFwYBXcciKCE",
-                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
-              },
-              "statement": {
-                "kind": "withdrawal",
-                "transaction": "tx-confirm-w-30000000",
-                "outcome": {
-                  "status": "dry_run_accepted",
-                  "amount_in": "30000000",
-                  "amount_out": "29970000",
-                  "fee": {
-                    "asset": "COP",
-                    "amount": "30000"
-                  },
-                  "valid_until": "2026-11-06T15:01:58Z",
-                  "voided_by": [
-                    "validity_passes",
-                    "amount_changes"
-                  ],
-                  "settlement_seconds": 600
-                }
-              }
-            }
-          }
-        },
-        {
-          "figure_id": "f-confirm-ramp-29970000",
-          "origin": {
-            "kind": "provider",
-            "provider": "ramp-x",
-            "publisher": "ramp-x",
-            "provider_version": "1.0.0",
-            "module_version": "1.0.0"
-          },
-          "age_seconds": 2,
-          "valid_for_seconds": 120,
-          "value": {
-            "kind": "fresh_quote",
-            "tuple": "f-ramp",
-            "quote": {
-              "deployment": {
-                "name": "rutent-test",
-                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
-              },
-              "protocol_version": "2.0.1",
-              "shape": "urn:rutent:provider-role:result",
-              "maker": "ramp-x",
-              "made_at": "2026-11-06T14:59:58Z",
-              "signature": {
-                "scheme": "ed25519",
-                "key": "e0V3vJsCjF9X6QxTLlIe_hZzWsNvnBk6b91PyIpLDdE",
-                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
-              },
-              "statement": {
-                "kind": "transfer",
-                "transaction": "tx-confirm-ramp-29970000",
-                "outcome": {
-                  "status": "dry_run_accepted",
-                  "amount_in": "29970000",
-                  "amount_out": "29965000",
-                  "fee": {
-                    "asset": "COP",
-                    "amount": "5000"
-                  },
-                  "direction": "exact_in",
-                  "valid_until": "2026-11-06T15:01:58Z",
-                  "voided_by": [
-                    "validity_passes",
-                    "amount_changes"
-                  ],
-                  "settlement_seconds": 600
-                }
-              }
-            }
-          }
-        },
-        {
-          "figure_id": "f-confirm-ex-b-29965000",
-          "origin": {
-            "kind": "provider",
-            "provider": "exchange-b",
-            "publisher": "acme",
-            "provider_version": "1.4.0",
-            "module_version": "1.4.0"
-          },
-          "age_seconds": 2,
-          "valid_for_seconds": 120,
-          "value": {
-            "kind": "fresh_quote",
-            "tuple": "f-ex-b",
-            "quote": {
-              "deployment": {
-                "name": "rutent-test",
-                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
-              },
-              "protocol_version": "2.0.1",
-              "shape": "urn:rutent:provider-role:result",
-              "maker": "exchange-b",
-              "made_at": "2026-11-06T14:59:58Z",
-              "signature": {
-                "scheme": "ed25519",
-                "key": "DVP_bDfejjFXRBdFhgllHZTDfHjinnJbVFhJlkppLdE",
-                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
-              },
-              "statement": {
-                "kind": "conversion",
-                "transaction": "tx-confirm-ex-b-29965000",
-                "outcome": {
-                  "status": "dry_run_accepted",
-                  "amount_in": "29965000",
-                  "amount_out": "74837587",
-                  "rate": "0.00025",
-                  "slippage": {
-                    "regime": "firm"
-                  },
-                  "fee": {
-                    "asset": "COP",
-                    "amount": "29965"
-                  },
-                  "direction": "exact_in",
-                  "valid_until": "2026-11-06T15:01:58Z",
-                  "voided_by": [
-                    "validity_passes",
-                    "amount_changes"
-                  ],
-                  "settlement_seconds": 600
-                }
-              }
-            }
-          }
-        },
-        {
-          "figure_id": "f-confirm-dep-b-74837587",
-          "origin": {
-            "kind": "provider",
-            "provider": "reserve-wallet",
-            "publisher": "wallet-co",
-            "provider_version": "1.2.0",
-            "module_version": "1.2.1"
-          },
-          "age_seconds": 2,
-          "valid_for_seconds": 120,
-          "value": {
-            "kind": "dry_run",
-            "tuple": "f-dep-b",
-            "amount_in": "74837587",
-            "result": {
-              "deployment": {
-                "name": "rutent-test",
-                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
-              },
-              "protocol_version": "2.0.1",
-              "shape": "urn:rutent:provider-role:result",
-              "maker": "reserve-wallet",
-              "made_at": "2026-11-06T14:59:58Z",
-              "signature": {
-                "scheme": "ed25519",
-                "key": "eQ_qS7RWpc2DfVUG1gIxHMfSs5VLK8rW-n9CVIivLBE",
-                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
-              },
-              "statement": {
-                "kind": "deposit",
-                "transaction": "tx-confirm-dep-b-74837587",
-                "outcome": {
-                  "status": "dry_run_accepted",
-                  "amount_in": "74837587",
-                  "amount_out": "73837587",
-                  "fee": {
-                    "asset": "USDC",
-                    "amount": "1000000"
-                  },
-                  "valid_until": "2026-11-06T15:01:58Z",
-                  "voided_by": [
-                    "validity_passes",
-                    "amount_changes"
-                  ],
-                  "settlement_seconds": 600
-                }
-              }
-            }
-          }
-        },
-        {
-          "figure_id": "f-confirm-w-20000000",
-          "origin": {
-            "kind": "provider",
-            "provider": "reserve-bank-co",
-            "publisher": "bank-co-group",
-            "provider_version": "2.1.0",
-            "module_version": "2.1.3"
-          },
-          "age_seconds": 2,
-          "valid_for_seconds": 120,
-          "value": {
-            "kind": "dry_run",
-            "tuple": "f-w",
-            "amount_in": "20000000",
-            "result": {
-              "deployment": {
-                "name": "rutent-test",
-                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
-              },
-              "protocol_version": "2.0.1",
-              "shape": "urn:rutent:provider-role:result",
-              "maker": "reserve-bank-co",
-              "made_at": "2026-11-06T14:59:58Z",
-              "signature": {
-                "scheme": "ed25519",
-                "key": "eQ_qS7RWWcE8Xe_hTCtV-UZZfH_ahCkWFwYBXcciKCE",
-                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
-              },
-              "statement": {
-                "kind": "withdrawal",
-                "transaction": "tx-confirm-w-20000000",
-                "outcome": {
-                  "status": "dry_run_accepted",
-                  "amount_in": "20000000",
-                  "amount_out": "19980000",
-                  "fee": {
-                    "asset": "COP",
-                    "amount": "20000"
-                  },
-                  "valid_until": "2026-11-06T15:01:58Z",
-                  "voided_by": [
-                    "validity_passes",
-                    "amount_changes"
-                  ],
-                  "settlement_seconds": 600
-                }
-              }
-            }
-          }
-        },
-        {
-          "figure_id": "f-confirm-ex-a-19980000",
-          "origin": {
-            "kind": "provider",
-            "provider": "exchange-a",
-            "publisher": "acme",
-            "provider_version": "3.0.0",
-            "module_version": "3.0.2"
-          },
-          "age_seconds": 2,
-          "valid_for_seconds": 120,
-          "value": {
-            "kind": "fresh_quote",
-            "tuple": "f-ex-a",
-            "quote": {
-              "deployment": {
-                "name": "rutent-test",
-                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
-              },
-              "protocol_version": "2.0.1",
-              "shape": "urn:rutent:provider-role:result",
-              "maker": "exchange-a",
-              "made_at": "2026-11-06T14:59:58Z",
-              "signature": {
-                "scheme": "ed25519",
-                "key": "DVP_bDfejcFXRBdFhgleHZTDfHjingJbVFhJlkpiLdE",
-                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
-              },
-              "statement": {
-                "kind": "conversion",
-                "transaction": "tx-confirm-ex-a-19980000",
-                "outcome": {
-                  "status": "dry_run_accepted",
-                  "amount_in": "19980000",
-                  "amount_out": "49850100",
-                  "rate": "0.00025",
-                  "slippage": {
-                    "regime": "firm"
-                  },
-                  "fee": {
-                    "asset": "COP",
-                    "amount": "39960"
-                  },
-                  "direction": "exact_in",
-                  "valid_until": "2026-11-06T15:01:58Z",
-                  "voided_by": [
-                    "validity_passes",
-                    "amount_changes"
-                  ],
-                  "settlement_seconds": 600
-                }
-              }
-            }
-          }
-        },
-        {
-          "figure_id": "f-confirm-dep-in-49850100",
-          "origin": {
-            "kind": "provider",
-            "provider": "reserve-wallet",
-            "publisher": "wallet-co",
-            "provider_version": "1.2.0",
-            "module_version": "1.2.1"
-          },
-          "age_seconds": 2,
-          "valid_for_seconds": 120,
-          "value": {
-            "kind": "dry_run",
-            "tuple": "f-dep-in",
-            "amount_in": "49850100",
-            "result": {
-              "deployment": {
-                "name": "rutent-test",
-                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
-              },
-              "protocol_version": "2.0.1",
-              "shape": "urn:rutent:provider-role:result",
-              "maker": "reserve-wallet",
-              "made_at": "2026-11-06T14:59:58Z",
-              "signature": {
-                "scheme": "ed25519",
-                "key": "eQ_qS7RWpc2DfVUG1gIxHMfSs5VLK8rW-n9CVIivLBE",
-                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
-              },
-              "statement": {
-                "kind": "deposit",
-                "transaction": "tx-confirm-dep-in-49850100",
-                "outcome": {
-                  "status": "dry_run_accepted",
-                  "amount_in": "49850100",
-                  "amount_out": "48850100",
-                  "fee": {
-                    "asset": "USDC",
-                    "amount": "1000000"
-                  },
-                  "valid_until": "2026-11-06T15:01:58Z",
-                  "voided_by": [
-                    "validity_passes",
-                    "amount_changes"
-                  ],
-                  "settlement_seconds": 600
-                }
-              }
-            }
-          }
-        },
-        {
-          "figure_id": "f-confirm-ramp-99900000",
-          "origin": {
-            "kind": "provider",
-            "provider": "ramp-x",
-            "publisher": "ramp-x",
-            "provider_version": "1.0.0",
-            "module_version": "1.0.0"
-          },
-          "age_seconds": 2,
-          "valid_for_seconds": 120,
-          "value": {
-            "kind": "fresh_quote",
-            "tuple": "f-ramp",
-            "quote": {
-              "deployment": {
-                "name": "rutent-test",
-                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
-              },
-              "protocol_version": "2.0.1",
-              "shape": "urn:rutent:provider-role:result",
-              "maker": "ramp-x",
-              "made_at": "2026-11-06T14:59:58Z",
-              "signature": {
-                "scheme": "ed25519",
-                "key": "e0V3vJsCjF9X6QxTLlIe_hZzWsNvnBk6b91PyIpLDdE",
-                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
-              },
-              "statement": {
-                "kind": "transfer",
-                "transaction": "tx-confirm-ramp-99900000",
-                "outcome": {
-                  "status": "dry_run_accepted",
-                  "amount_in": "99900000",
-                  "amount_out": "99895000",
-                  "fee": {
-                    "asset": "COP",
-                    "amount": "5000"
-                  },
-                  "direction": "exact_in",
-                  "valid_until": "2026-11-06T15:01:58Z",
-                  "voided_by": [
-                    "validity_passes",
-                    "amount_changes"
-                  ],
-                  "settlement_seconds": 600
-                }
-              }
-            }
-          }
-        },
-        {
-          "figure_id": "f-confirm-ex-b-99895000",
-          "origin": {
-            "kind": "provider",
-            "provider": "exchange-b",
-            "publisher": "acme",
-            "provider_version": "1.4.0",
-            "module_version": "1.4.0"
-          },
-          "age_seconds": 2,
-          "valid_for_seconds": 120,
-          "value": {
-            "kind": "fresh_quote",
-            "tuple": "f-ex-b",
-            "quote": {
-              "deployment": {
-                "name": "rutent-test",
-                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
-              },
-              "protocol_version": "2.0.1",
-              "shape": "urn:rutent:provider-role:result",
-              "maker": "exchange-b",
-              "made_at": "2026-11-06T14:59:58Z",
-              "signature": {
-                "scheme": "ed25519",
-                "key": "DVP_bDfejjFXRBdFhgllHZTDfHjinnJbVFhJlkppLdE",
-                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
-              },
-              "statement": {
-                "kind": "conversion",
-                "transaction": "tx-confirm-ex-b-99895000",
-                "outcome": {
-                  "status": "dry_run_accepted",
-                  "amount_in": "99895000",
-                  "amount_out": "244508252",
-                  "rate": "0.00025",
-                  "slippage": {
-                    "regime": "firm"
-                  },
-                  "fee": {
-                    "asset": "COP",
-                    "amount": "99895"
-                  },
-                  "direction": "exact_in",
-                  "valid_until": "2026-11-06T15:01:58Z",
-                  "voided_by": [
-                    "validity_passes",
-                    "amount_changes"
-                  ],
-                  "settlement_seconds": 600
-                }
-              }
-            }
-          }
-        },
-        {
-          "figure_id": "f-confirm-dep-b-244508252",
-          "origin": {
-            "kind": "provider",
-            "provider": "reserve-wallet",
-            "publisher": "wallet-co",
-            "provider_version": "1.2.0",
-            "module_version": "1.2.1"
-          },
-          "age_seconds": 2,
-          "valid_for_seconds": 120,
-          "value": {
-            "kind": "dry_run",
-            "tuple": "f-dep-b",
-            "amount_in": "244508252",
-            "result": {
-              "deployment": {
-                "name": "rutent-test",
-                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
-              },
-              "protocol_version": "2.0.1",
-              "shape": "urn:rutent:provider-role:result",
-              "maker": "reserve-wallet",
-              "made_at": "2026-11-06T14:59:58Z",
-              "signature": {
-                "scheme": "ed25519",
-                "key": "eQ_qS7RWpc2DfVUG1gIxHMfSs5VLK8rW-n9CVIivLBE",
-                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
-              },
-              "statement": {
-                "kind": "deposit",
-                "transaction": "tx-confirm-dep-b-244508252",
-                "outcome": {
-                  "status": "dry_run_accepted",
-                  "amount_in": "244508252",
-                  "amount_out": "243508252",
-                  "fee": {
-                    "asset": "USDC",
-                    "amount": "1000000"
-                  },
-                  "valid_until": "2026-11-06T15:01:58Z",
-                  "voided_by": [
-                    "validity_passes",
-                    "amount_changes"
-                  ],
-                  "settlement_seconds": 600
-                }
-              }
-            }
-          }
-        }
-      ]
-    },
     "bounds": {
       "deployment": {
         "name": "rutent-test",
         "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
       },
-      "protocol_version": "2.0.1",
-      "policy_version": "policy-7",
-      "max_hops": 4,
-      "max_parts": 1,
       "excluded_providers": [],
       "excluded_tuples": [],
+      "max_hops": 4,
+      "max_parts": 1,
+      "operator_fee": {
+        "flat": "0",
+        "proportional": {
+          "denominator": "1",
+          "numerator": "0"
+        }
+      },
+      "policy_version": "policy-7",
+      "protocol_version": "2.0.1",
       "provider_ceilings": [
         {
-          "provider": "exchange-a",
+          "amount": "500000000",
           "asset": {
-            "id": "COP",
-            "decimals": 2
+            "decimals": 2,
+            "id": "COP"
           },
-          "amount": "500000000"
+          "provider": "exchange-a"
         }
       ],
       "publisher_ceilings": [
         {
-          "publisher": "acme",
+          "amount": "800000000",
           "asset": {
-            "id": "COP",
-            "decimals": 2
+            "decimals": 2,
+            "id": "COP"
           },
-          "amount": "800000000"
+          "publisher": "acme"
+        }
+      ],
+      "slippage_limits": [
+        {
+          "max_bps": 50,
+          "tuple": {
+            "from": {
+              "asset": {
+                "decimals": 2,
+                "id": "COP"
+              },
+              "node": "ledger-in"
+            },
+            "provider": "exchange-a",
+            "to": {
+              "asset": {
+                "decimals": 6,
+                "id": "USDC"
+              },
+              "node": "ledger-in"
+            }
+          }
+        },
+        {
+          "max_bps": 50,
+          "tuple": {
+            "from": {
+              "asset": {
+                "decimals": 2,
+                "id": "COP"
+              },
+              "node": "ledger-b"
+            },
+            "provider": "exchange-b",
+            "to": {
+              "asset": {
+                "decimals": 6,
+                "id": "USDC"
+              },
+              "node": "ledger-b"
+            }
+          }
         }
       ]
     },
@@ -1603,96 +101,96 @@
           {
             "operations": [
               {
-                "kind": "withdrawal",
-                "provider": "reserve-bank-co",
-                "from": {
-                  "node": {
-                    "network": "co-ach"
-                  },
-                  "asset": {
-                    "id": "COP",
-                    "decimals": 2
-                  }
-                },
-                "to": {
-                  "node": "ledger-in",
-                  "asset": {
-                    "id": "COP",
-                    "decimals": 2
-                  }
-                },
                 "amount_in": "100000000",
-                "fee": {
-                  "asset": "COP",
-                  "amount": "100000"
-                },
                 "amount_out": "99900000",
+                "fee": {
+                  "amount": "100000",
+                  "asset": "COP"
+                },
                 "figures": [
                   "f-w",
                   "f-w-price",
                   "f-confirm-w-100000000"
-                ]
+                ],
+                "from": {
+                  "asset": {
+                    "decimals": 2,
+                    "id": "COP"
+                  },
+                  "node": {
+                    "network": "co-ach"
+                  }
+                },
+                "kind": "withdrawal",
+                "provider": "reserve-bank-co",
+                "to": {
+                  "asset": {
+                    "decimals": 2,
+                    "id": "COP"
+                  },
+                  "node": "ledger-in"
+                }
               },
               {
-                "kind": "exchange",
-                "provider": "exchange-a",
-                "from": {
-                  "node": "ledger-in",
-                  "asset": {
-                    "id": "COP",
-                    "decimals": 2
-                  }
-                },
-                "to": {
-                  "node": "ledger-in",
-                  "asset": {
-                    "id": "USDC",
-                    "decimals": 6
-                  }
-                },
                 "amount_in": "99900000",
-                "fee": {
-                  "asset": "COP",
-                  "amount": "199800"
-                },
                 "amount_out": "249250500",
+                "fee": {
+                  "amount": "199800",
+                  "asset": "COP"
+                },
                 "figures": [
                   "f-ex-a",
                   "f-ex-a-price",
                   "f-ex-a-quote",
                   "f-confirm-ex-a-99900000"
-                ]
+                ],
+                "from": {
+                  "asset": {
+                    "decimals": 2,
+                    "id": "COP"
+                  },
+                  "node": "ledger-in"
+                },
+                "kind": "exchange",
+                "provider": "exchange-a",
+                "to": {
+                  "asset": {
+                    "decimals": 6,
+                    "id": "USDC"
+                  },
+                  "node": "ledger-in"
+                }
               },
               {
-                "kind": "deposit",
-                "provider": "reserve-wallet",
-                "from": {
-                  "node": "ledger-in",
-                  "asset": {
-                    "id": "USDC",
-                    "decimals": 6
-                  }
-                },
-                "to": {
-                  "node": {
-                    "network": "polygon"
-                  },
-                  "asset": {
-                    "id": "USDC",
-                    "decimals": 6
-                  }
-                },
                 "amount_in": "249250500",
-                "fee": {
-                  "asset": "USDC",
-                  "amount": "1000000"
-                },
                 "amount_out": "248250500",
+                "fee": {
+                  "amount": "1000000",
+                  "asset": "USDC"
+                },
                 "figures": [
                   "f-dep-in",
                   "f-dep-in-price",
                   "f-confirm-dep-in-249250500"
-                ]
+                ],
+                "from": {
+                  "asset": {
+                    "decimals": 6,
+                    "id": "USDC"
+                  },
+                  "node": "ledger-in"
+                },
+                "kind": "deposit",
+                "provider": "reserve-wallet",
+                "to": {
+                  "asset": {
+                    "decimals": 6,
+                    "id": "USDC"
+                  },
+                  "node": {
+                    "network": "polygon"
+                  }
+                }
               }
             ]
           }
@@ -1700,245 +198,1797 @@
       },
       {
         "candidate_id": "c2",
+        "dropped": {
+          "by": "c1",
+          "reason": "outranked"
+        },
         "parts": [
           {
             "operations": [
               {
-                "kind": "withdrawal",
-                "provider": "reserve-bank-co",
-                "from": {
-                  "node": {
-                    "network": "co-ach"
-                  },
-                  "asset": {
-                    "id": "COP",
-                    "decimals": 2
-                  }
-                },
-                "to": {
-                  "node": "ledger-in",
-                  "asset": {
-                    "id": "COP",
-                    "decimals": 2
-                  }
-                },
                 "amount_in": "100000000",
-                "fee": {
-                  "asset": "COP",
-                  "amount": "100000"
-                },
                 "amount_out": "99900000",
+                "fee": {
+                  "amount": "100000",
+                  "asset": "COP"
+                },
                 "figures": [
                   "f-w",
                   "f-w-price",
                   "f-confirm-w-100000000"
-                ]
+                ],
+                "from": {
+                  "asset": {
+                    "decimals": 2,
+                    "id": "COP"
+                  },
+                  "node": {
+                    "network": "co-ach"
+                  }
+                },
+                "kind": "withdrawal",
+                "provider": "reserve-bank-co",
+                "to": {
+                  "asset": {
+                    "decimals": 2,
+                    "id": "COP"
+                  },
+                  "node": "ledger-in"
+                }
               },
               {
-                "kind": "route",
-                "provider": "ramp-x",
-                "from": {
-                  "node": "ledger-in",
-                  "asset": {
-                    "id": "COP",
-                    "decimals": 2
-                  }
-                },
-                "to": {
-                  "node": "ledger-b",
-                  "asset": {
-                    "id": "COP",
-                    "decimals": 2
-                  }
-                },
                 "amount_in": "99900000",
-                "fee": {
-                  "asset": "COP",
-                  "amount": "5000"
-                },
                 "amount_out": "99895000",
+                "fee": {
+                  "amount": "5000",
+                  "asset": "COP"
+                },
                 "figures": [
                   "f-ramp",
                   "f-ramp-price",
                   "f-ramp-dry-run",
                   "f-confirm-ramp-99900000"
-                ]
+                ],
+                "from": {
+                  "asset": {
+                    "decimals": 2,
+                    "id": "COP"
+                  },
+                  "node": "ledger-in"
+                },
+                "kind": "route",
+                "provider": "ramp-x",
+                "to": {
+                  "asset": {
+                    "decimals": 2,
+                    "id": "COP"
+                  },
+                  "node": "ledger-b"
+                }
               },
               {
-                "kind": "exchange",
-                "provider": "exchange-b",
-                "from": {
-                  "node": "ledger-b",
-                  "asset": {
-                    "id": "COP",
-                    "decimals": 2
-                  }
-                },
-                "to": {
-                  "node": "ledger-b",
-                  "asset": {
-                    "id": "USDC",
-                    "decimals": 6
-                  }
-                },
                 "amount_in": "99895000",
-                "fee": {
-                  "asset": "COP",
-                  "amount": "99895"
-                },
                 "amount_out": "244508252",
+                "fee": {
+                  "amount": "99895",
+                  "asset": "COP"
+                },
                 "figures": [
                   "f-ex-b",
                   "f-ex-b-price",
                   "f-ex-b-eligibility",
                   "f-confirm-ex-b-99895000"
-                ]
+                ],
+                "from": {
+                  "asset": {
+                    "decimals": 2,
+                    "id": "COP"
+                  },
+                  "node": "ledger-b"
+                },
+                "kind": "exchange",
+                "provider": "exchange-b",
+                "to": {
+                  "asset": {
+                    "decimals": 6,
+                    "id": "USDC"
+                  },
+                  "node": "ledger-b"
+                }
               },
               {
-                "kind": "deposit",
-                "provider": "reserve-wallet",
-                "from": {
-                  "node": "ledger-b",
-                  "asset": {
-                    "id": "USDC",
-                    "decimals": 6
-                  }
-                },
-                "to": {
-                  "node": {
-                    "network": "polygon"
-                  },
-                  "asset": {
-                    "id": "USDC",
-                    "decimals": 6
-                  }
-                },
                 "amount_in": "244508252",
-                "fee": {
-                  "asset": "USDC",
-                  "amount": "1000000"
-                },
                 "amount_out": "243508252",
+                "fee": {
+                  "amount": "1000000",
+                  "asset": "USDC"
+                },
                 "figures": [
                   "f-dep-b",
                   "f-dep-b-price",
                   "f-confirm-dep-b-244508252"
-                ]
+                ],
+                "from": {
+                  "asset": {
+                    "decimals": 6,
+                    "id": "USDC"
+                  },
+                  "node": "ledger-b"
+                },
+                "kind": "deposit",
+                "provider": "reserve-wallet",
+                "to": {
+                  "asset": {
+                    "decimals": 6,
+                    "id": "USDC"
+                  },
+                  "node": {
+                    "network": "polygon"
+                  }
+                }
               }
             ]
           }
-        ],
-        "dropped": {
-          "reason": "outranked",
-          "by": "c1"
-        }
+        ]
       },
       {
         "candidate_id": "c3",
+        "dropped": {
+          "by": "c1",
+          "reason": "outranked"
+        },
         "parts": [
           {
             "operations": [
               {
-                "kind": "withdrawal",
-                "provider": "reserve-bank-co",
-                "from": {
-                  "node": {
-                    "network": "co-ach"
-                  },
-                  "asset": {
-                    "id": "COP",
-                    "decimals": 2
-                  }
-                },
-                "to": {
-                  "node": "ledger-in",
-                  "asset": {
-                    "id": "COP",
-                    "decimals": 2
-                  }
-                },
                 "amount_in": "100000000",
-                "fee": {
-                  "asset": "COP",
-                  "amount": "100000"
-                },
                 "amount_out": "99900000",
+                "fee": {
+                  "amount": "100000",
+                  "asset": "COP"
+                },
                 "figures": [
                   "f-w",
                   "f-w-price",
                   "f-confirm-w-100000000"
-                ]
+                ],
+                "from": {
+                  "asset": {
+                    "decimals": 2,
+                    "id": "COP"
+                  },
+                  "node": {
+                    "network": "co-ach"
+                  }
+                },
+                "kind": "withdrawal",
+                "provider": "reserve-bank-co",
+                "to": {
+                  "asset": {
+                    "decimals": 2,
+                    "id": "COP"
+                  },
+                  "node": "ledger-in"
+                }
               },
               {
-                "kind": "exchange",
-                "provider": "exchange-a",
-                "from": {
-                  "node": "ledger-in",
-                  "asset": {
-                    "id": "COP",
-                    "decimals": 2
-                  }
-                },
-                "to": {
-                  "node": "ledger-in",
-                  "asset": {
-                    "id": "USDC",
-                    "decimals": 6
-                  }
-                },
                 "amount_in": "99900000",
-                "fee": {
-                  "asset": "COP",
-                  "amount": "199800"
-                },
                 "amount_out": "249250500",
+                "fee": {
+                  "amount": "199800",
+                  "asset": "COP"
+                },
                 "figures": [
                   "f-ex-a",
                   "f-ex-a-price",
                   "f-ex-a-quote-old",
                   "f-confirm-ex-a-99900000"
-                ]
+                ],
+                "from": {
+                  "asset": {
+                    "decimals": 2,
+                    "id": "COP"
+                  },
+                  "node": "ledger-in"
+                },
+                "kind": "exchange",
+                "provider": "exchange-a",
+                "to": {
+                  "asset": {
+                    "decimals": 6,
+                    "id": "USDC"
+                  },
+                  "node": "ledger-in"
+                }
               },
               {
-                "kind": "deposit",
-                "provider": "reserve-wallet",
-                "from": {
-                  "node": "ledger-in",
-                  "asset": {
-                    "id": "USDC",
-                    "decimals": 6
-                  }
-                },
-                "to": {
-                  "node": {
-                    "network": "polygon"
-                  },
-                  "asset": {
-                    "id": "USDC",
-                    "decimals": 6
-                  }
-                },
                 "amount_in": "249250500",
-                "fee": {
-                  "asset": "USDC",
-                  "amount": "1000000"
-                },
                 "amount_out": "248250500",
+                "fee": {
+                  "amount": "1000000",
+                  "asset": "USDC"
+                },
                 "figures": [
                   "f-dep-in",
                   "f-dep-in-price",
                   "f-confirm-dep-in-249250500"
-                ]
+                ],
+                "from": {
+                  "asset": {
+                    "decimals": 6,
+                    "id": "USDC"
+                  },
+                  "node": "ledger-in"
+                },
+                "kind": "deposit",
+                "provider": "reserve-wallet",
+                "to": {
+                  "asset": {
+                    "decimals": 6,
+                    "id": "USDC"
+                  },
+                  "node": {
+                    "network": "polygon"
+                  }
+                }
               }
             ]
           }
-        ],
-        "dropped": {
-          "reason": "stale_figure",
-          "figure": "f-ex-a-quote-old"
-        }
+        ]
       }
     ],
-    "chosen": "c1"
+    "chosen": "c1",
+    "ranking": "before_operator_fee",
+    "request": {
+      "amount": "100000000",
+      "from": {
+        "asset": {
+          "decimals": 2,
+          "id": "COP"
+        },
+        "node": {
+          "network": "co-ach"
+        }
+      },
+      "objective": {
+        "kind": "lowest_total_cost"
+      },
+      "request_id": "req-0001",
+      "round": {
+        "kind": "choice",
+        "refines": {
+          "request_id": "req-0001-shortlist",
+          "taken_at": "2026-11-06T14:59:50Z"
+        }
+      },
+      "to": {
+        "asset": {
+          "decimals": 6,
+          "id": "USDC"
+        },
+        "node": {
+          "network": "polygon"
+        }
+      }
+    },
+    "router_version": "0.1.0",
+    "snapshot": {
+      "figures": [
+        {
+          "age_seconds": 3600,
+          "figure_id": "f-w",
+          "origin": {
+            "kind": "provider",
+            "module_version": "2.1.3",
+            "provider": "reserve-bank-co",
+            "provider_version": "2.1.0",
+            "publisher": "bank-co-group"
+          },
+          "value": {
+            "kind": "reserve_tuple",
+            "tuple": {
+              "asset": "COP",
+              "decimals": {
+                "destination": 2,
+                "origin": 2
+              },
+              "destination": "ledger-in",
+              "origin": {
+                "network": "co-ach"
+              },
+              "terms": {
+                "bands": [
+                  {
+                    "max": "100000000000",
+                    "min": "100"
+                  }
+                ],
+                "reporting": "net",
+                "required_inputs": []
+              }
+            }
+          }
+        },
+        {
+          "age_seconds": 3600,
+          "figure_id": "f-w-price",
+          "origin": {
+            "kind": "provider",
+            "module_version": "2.1.3",
+            "provider": "reserve-bank-co",
+            "provider_version": "2.1.0",
+            "publisher": "bank-co-group"
+          },
+          "value": {
+            "fee": {
+              "flat": "0",
+              "proportional": {
+                "denominator": "1000",
+                "numerator": "1"
+              }
+            },
+            "kind": "price",
+            "settlement_seconds": 600,
+            "tuple": "f-w"
+          }
+        },
+        {
+          "age_seconds": 1800,
+          "figure_id": "f-ramp",
+          "origin": {
+            "kind": "provider",
+            "module_version": "1.0.0",
+            "provider": "ramp-x",
+            "provider_version": "1.0.0",
+            "publisher": "ramp-x"
+          },
+          "value": {
+            "kind": "ramp_tuple",
+            "tuple": {
+              "asset": "COP",
+              "decimals": {
+                "destination": 2,
+                "origin": 2
+              },
+              "destination": "ledger-b",
+              "origin": "ledger-in",
+              "terms": {
+                "bands": [
+                  {
+                    "max": "100000000000",
+                    "min": "100"
+                  }
+                ],
+                "reporting": "net",
+                "required_inputs": []
+              }
+            }
+          }
+        },
+        {
+          "age_seconds": 1800,
+          "figure_id": "f-ramp-price",
+          "origin": {
+            "kind": "provider",
+            "module_version": "1.0.0",
+            "provider": "ramp-x",
+            "provider_version": "1.0.0",
+            "publisher": "ramp-x"
+          },
+          "value": {
+            "fee": {
+              "flat": "5000",
+              "proportional": {
+                "denominator": "1",
+                "numerator": "0"
+              }
+            },
+            "kind": "price",
+            "settlement_seconds": 300,
+            "tuple": "f-ramp"
+          }
+        },
+        {
+          "age_seconds": 900,
+          "figure_id": "f-ex-a",
+          "origin": {
+            "kind": "provider",
+            "module_version": "3.0.2",
+            "provider": "exchange-a",
+            "provider_version": "3.0.0",
+            "publisher": "acme"
+          },
+          "value": {
+            "kind": "exchange_tuple",
+            "tuple": {
+              "from": {
+                "decimals": 2,
+                "id": "COP"
+              },
+              "node": "ledger-in",
+              "terms": {
+                "bands": [
+                  {
+                    "max": "100000000000",
+                    "min": "100"
+                  }
+                ],
+                "reporting": "net",
+                "required_inputs": []
+              },
+              "to": {
+                "decimals": 6,
+                "id": "USDC"
+              }
+            }
+          }
+        },
+        {
+          "age_seconds": 900,
+          "figure_id": "f-ex-a-price",
+          "origin": {
+            "kind": "provider",
+            "module_version": "3.0.2",
+            "provider": "exchange-a",
+            "provider_version": "3.0.0",
+            "publisher": "acme"
+          },
+          "value": {
+            "fee": {
+              "flat": "0",
+              "proportional": {
+                "denominator": "1000",
+                "numerator": "2"
+              }
+            },
+            "kind": "price",
+            "rate": {
+              "kind": "fixed",
+              "rate": "0.00025"
+            },
+            "settlement_seconds": 60,
+            "tuple": "f-ex-a"
+          }
+        },
+        {
+          "age_seconds": 600,
+          "figure_id": "f-ex-a-quote-old",
+          "origin": {
+            "kind": "provider",
+            "module_version": "3.0.2",
+            "provider": "exchange-a",
+            "provider_version": "3.0.0",
+            "publisher": "acme"
+          },
+          "valid_for_seconds": 120,
+          "value": {
+            "kind": "fresh_quote",
+            "quote": {
+              "deployment": {
+                "name": "rutent-test",
+                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+              },
+              "made_at": "2026-11-06T14:50:00Z",
+              "maker": "exchange-a",
+              "protocol_version": "2.0.1",
+              "shape": "urn:rutent:provider-role:result",
+              "signature": {
+                "key": "DVP_bDfejcFXRBdFhgleHZTDfHjingJbVFhJlkpiLdE",
+                "scheme": "ed25519",
+                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+              },
+              "statement": {
+                "kind": "conversion",
+                "outcome": {
+                  "amount_in": "99900000",
+                  "amount_out": "249250500",
+                  "direction": "exact_in",
+                  "fee": {
+                    "amount": "199800",
+                    "asset": "COP"
+                  },
+                  "rate": "0.00025",
+                  "settlement_seconds": 60,
+                  "slippage": {
+                    "regime": "firm"
+                  },
+                  "status": "dry_run_accepted",
+                  "valid_until": "2026-11-06T14:52:00Z",
+                  "voided_by": [
+                    "validity_passes",
+                    "amount_changes"
+                  ]
+                },
+                "transaction": "tx-quote"
+              }
+            },
+            "tuple": "f-ex-a"
+          }
+        },
+        {
+          "age_seconds": 900,
+          "figure_id": "f-ex-b",
+          "origin": {
+            "kind": "provider",
+            "module_version": "1.4.0",
+            "provider": "exchange-b",
+            "provider_version": "1.4.0",
+            "publisher": "acme"
+          },
+          "value": {
+            "kind": "exchange_tuple",
+            "tuple": {
+              "from": {
+                "decimals": 2,
+                "id": "COP"
+              },
+              "node": "ledger-b",
+              "terms": {
+                "bands": [
+                  {
+                    "max": "100000000000",
+                    "min": "100"
+                  }
+                ],
+                "reporting": "net",
+                "required_inputs": []
+              },
+              "to": {
+                "decimals": 6,
+                "id": "USDC"
+              }
+            }
+          }
+        },
+        {
+          "age_seconds": 900,
+          "figure_id": "f-ex-b-price",
+          "origin": {
+            "kind": "provider",
+            "module_version": "1.4.0",
+            "provider": "exchange-b",
+            "provider_version": "1.4.0",
+            "publisher": "acme"
+          },
+          "value": {
+            "fee": {
+              "flat": "0",
+              "proportional": {
+                "denominator": "1000",
+                "numerator": "1"
+              }
+            },
+            "kind": "price",
+            "rate": {
+              "kind": "levels",
+              "levels": [
+                {
+                  "rate": "0.00025",
+                  "up_to": "50000000"
+                },
+                {
+                  "rate": "0.00024",
+                  "up_to": "1000000000"
+                }
+              ]
+            },
+            "settlement_seconds": 120,
+            "tuple": "f-ex-b"
+          }
+        },
+        {
+          "age_seconds": 7200,
+          "figure_id": "f-dep-in",
+          "origin": {
+            "kind": "provider",
+            "module_version": "1.2.1",
+            "provider": "reserve-wallet",
+            "provider_version": "1.2.0",
+            "publisher": "wallet-co"
+          },
+          "value": {
+            "kind": "reserve_tuple",
+            "tuple": {
+              "asset": "USDC",
+              "decimals": {
+                "destination": 6,
+                "origin": 6
+              },
+              "destination": {
+                "network": "polygon"
+              },
+              "origin": "ledger-in",
+              "terms": {
+                "bands": [
+                  {
+                    "max": "100000000000",
+                    "min": "100"
+                  }
+                ],
+                "reporting": "net",
+                "required_inputs": []
+              }
+            }
+          }
+        },
+        {
+          "age_seconds": 7200,
+          "figure_id": "f-dep-in-price",
+          "origin": {
+            "kind": "provider",
+            "module_version": "1.2.1",
+            "provider": "reserve-wallet",
+            "provider_version": "1.2.0",
+            "publisher": "wallet-co"
+          },
+          "value": {
+            "fee": {
+              "flat": "1000000",
+              "proportional": {
+                "denominator": "1",
+                "numerator": "0"
+              }
+            },
+            "kind": "price",
+            "settlement_seconds": 900,
+            "tuple": "f-dep-in"
+          }
+        },
+        {
+          "age_seconds": 7200,
+          "figure_id": "f-dep-b",
+          "origin": {
+            "kind": "provider",
+            "module_version": "1.2.1",
+            "provider": "reserve-wallet",
+            "provider_version": "1.2.0",
+            "publisher": "wallet-co"
+          },
+          "value": {
+            "kind": "reserve_tuple",
+            "tuple": {
+              "asset": "USDC",
+              "decimals": {
+                "destination": 6,
+                "origin": 6
+              },
+              "destination": {
+                "network": "polygon"
+              },
+              "origin": "ledger-b",
+              "terms": {
+                "bands": [
+                  {
+                    "max": "100000000000",
+                    "min": "100"
+                  }
+                ],
+                "reporting": "net",
+                "required_inputs": []
+              }
+            }
+          }
+        },
+        {
+          "age_seconds": 7200,
+          "figure_id": "f-dep-b-price",
+          "origin": {
+            "kind": "provider",
+            "module_version": "1.2.1",
+            "provider": "reserve-wallet",
+            "provider_version": "1.2.0",
+            "publisher": "wallet-co"
+          },
+          "value": {
+            "fee": {
+              "flat": "1000000",
+              "proportional": {
+                "denominator": "1",
+                "numerator": "0"
+              }
+            },
+            "kind": "price",
+            "settlement_seconds": 900,
+            "tuple": "f-dep-b"
+          }
+        },
+        {
+          "age_seconds": 0,
+          "figure_id": "f-exposure-ex-a",
+          "origin": {
+            "kind": "operator",
+            "source": "core-ledger"
+          },
+          "value": {
+            "asset": {
+              "decimals": 2,
+              "id": "COP"
+            },
+            "in_flight": "40000000",
+            "kind": "exposure",
+            "provider": "exchange-a",
+            "publisher": "acme"
+          }
+        },
+        {
+          "age_seconds": 3,
+          "figure_id": "f-ramp-dry-run",
+          "origin": {
+            "kind": "provider",
+            "module_version": "1.0.0",
+            "provider": "ramp-x",
+            "provider_version": "1.0.0",
+            "publisher": "ramp-x"
+          },
+          "valid_for_seconds": 60,
+          "value": {
+            "amount_in": "99900000",
+            "kind": "dry_run",
+            "result": {
+              "deployment": {
+                "name": "rutent-test",
+                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+              },
+              "made_at": "2026-11-06T14:59:57Z",
+              "maker": "ramp-x",
+              "protocol_version": "2.0.1",
+              "shape": "urn:rutent:provider-role:result",
+              "signature": {
+                "key": "e0V3vJsCjF9X6QxTLlIe_hZzWsNvnBk6b91PyIpLDdE",
+                "scheme": "ed25519",
+                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+              },
+              "statement": {
+                "kind": "transfer",
+                "outcome": {
+                  "amount_in": "99900000",
+                  "amount_out": "99895000",
+                  "direction": "exact_in",
+                  "fee": {
+                    "amount": "5000",
+                    "asset": "COP"
+                  },
+                  "settlement_seconds": 300,
+                  "status": "dry_run_accepted",
+                  "valid_until": "2026-11-06T15:00:57Z",
+                  "voided_by": [
+                    "validity_passes",
+                    "amount_changes"
+                  ]
+                },
+                "transaction": "tx-dry-ramp"
+              }
+            },
+            "tuple": "f-ramp"
+          }
+        },
+        {
+          "age_seconds": 2,
+          "figure_id": "f-w-dry-run-refused",
+          "origin": {
+            "kind": "provider",
+            "module_version": "2.1.3",
+            "provider": "reserve-bank-co",
+            "provider_version": "2.1.0",
+            "publisher": "bank-co-group"
+          },
+          "value": {
+            "amount_in": "40000000",
+            "kind": "dry_run",
+            "result": {
+              "deployment": {
+                "name": "rutent-test",
+                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+              },
+              "made_at": "2026-11-06T14:59:58Z",
+              "maker": "reserve-bank-co",
+              "protocol_version": "2.0.1",
+              "shape": "urn:rutent:provider-role:result",
+              "signature": {
+                "key": "eQ_qS7RWWcE8Xe_hTCtV-UZZfH_ahCkWFwYBXcciKCE",
+                "scheme": "ed25519",
+                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+              },
+              "statement": {
+                "kind": "withdrawal",
+                "outcome": {
+                  "refusal": {
+                    "class": "final"
+                  },
+                  "status": "refused"
+                },
+                "transaction": "tx-dry-w"
+              }
+            },
+            "tuple": "f-w"
+          }
+        },
+        {
+          "age_seconds": 4,
+          "figure_id": "f-ex-b-eligibility",
+          "origin": {
+            "kind": "provider",
+            "module_version": "1.0.0",
+            "provider": "verifier-kyc",
+            "provider_version": "1.0.0",
+            "publisher": "kyc-co"
+          },
+          "valid_for_seconds": 604800,
+          "value": {
+            "judgement": {
+              "deployment": {
+                "name": "rutent-test",
+                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+              },
+              "made_at": "2026-11-06T14:59:56Z",
+              "maker": "verifier-kyc",
+              "protocol_version": "2.0.1",
+              "shape": "urn:rutent:provider-role:judgement",
+              "signature": {
+                "key": "6Q4G-gR5jiREWsUia8tV_-tgyIw-2YJxbaJ8OkMaS0E",
+                "scheme": "ed25519",
+                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+              },
+              "statement": {
+                "answer": "yes",
+                "class": "kyc.natural_person",
+                "subject": "subj-42",
+                "valid_until": "2026-11-13T14:59:56Z"
+              }
+            },
+            "kind": "eligibility",
+            "tuple": "f-ex-b"
+          }
+        },
+        {
+          "age_seconds": 5,
+          "figure_id": "f-ex-a-quote-elsewhere",
+          "origin": {
+            "kind": "provider",
+            "module_version": "3.0.2",
+            "provider": "exchange-a",
+            "provider_version": "3.0.0",
+            "publisher": "acme"
+          },
+          "valid_for_seconds": 120,
+          "value": {
+            "kind": "fresh_quote",
+            "quote": {
+              "deployment": {
+                "name": "rutent-elsewhere",
+                "operator_key": "DB_q1ZR5r420fqOGugtrpUfD7jVigeJU4wYKXVT-JtA"
+              },
+              "made_at": "2026-11-06T14:59:55Z",
+              "maker": "exchange-a",
+              "protocol_version": "2.0.1",
+              "shape": "urn:rutent:provider-role:result",
+              "signature": {
+                "key": "DVP_bDfejcFXRBdFhgleHZTDfHjingJbVFhJlkpiLdE",
+                "scheme": "ed25519",
+                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+              },
+              "statement": {
+                "kind": "conversion",
+                "outcome": {
+                  "amount_in": "99900000",
+                  "amount_out": "249250500",
+                  "direction": "exact_in",
+                  "fee": {
+                    "amount": "199800",
+                    "asset": "COP"
+                  },
+                  "rate": "0.00025",
+                  "settlement_seconds": 60,
+                  "slippage": {
+                    "regime": "firm"
+                  },
+                  "status": "dry_run_accepted",
+                  "valid_until": "2026-11-06T15:01:55Z",
+                  "voided_by": [
+                    "validity_passes",
+                    "amount_changes"
+                  ]
+                },
+                "transaction": "tx-quote"
+              }
+            },
+            "tuple": "f-ex-a"
+          }
+        },
+        {
+          "age_seconds": 5,
+          "figure_id": "f-ex-a-quote-50m",
+          "origin": {
+            "kind": "provider",
+            "module_version": "3.0.2",
+            "provider": "exchange-a",
+            "provider_version": "3.0.0",
+            "publisher": "acme"
+          },
+          "valid_for_seconds": 120,
+          "value": {
+            "kind": "fresh_quote",
+            "quote": {
+              "deployment": {
+                "name": "rutent-test",
+                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+              },
+              "made_at": "2026-11-06T14:59:55Z",
+              "maker": "exchange-a",
+              "protocol_version": "2.0.1",
+              "shape": "urn:rutent:provider-role:result",
+              "signature": {
+                "key": "DVP_bDfejcFXRBdFhgleHZTDfHjingJbVFhJlkpiLdE",
+                "scheme": "ed25519",
+                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+              },
+              "statement": {
+                "kind": "conversion",
+                "outcome": {
+                  "amount_in": "49950000",
+                  "amount_out": "124625250",
+                  "direction": "exact_in",
+                  "fee": {
+                    "amount": "99900",
+                    "asset": "COP"
+                  },
+                  "rate": "0.00025",
+                  "settlement_seconds": 60,
+                  "slippage": {
+                    "regime": "firm"
+                  },
+                  "status": "dry_run_accepted",
+                  "valid_until": "2026-11-06T15:01:55Z",
+                  "voided_by": [
+                    "validity_passes",
+                    "amount_changes"
+                  ]
+                },
+                "transaction": "tx-quote-50m"
+              }
+            },
+            "tuple": "f-ex-a"
+          }
+        },
+        {
+          "age_seconds": 2,
+          "figure_id": "f-confirm-w-100000000",
+          "origin": {
+            "kind": "provider",
+            "module_version": "2.1.3",
+            "provider": "reserve-bank-co",
+            "provider_version": "2.1.0",
+            "publisher": "bank-co-group"
+          },
+          "valid_for_seconds": 120,
+          "value": {
+            "amount_in": "100000000",
+            "kind": "dry_run",
+            "result": {
+              "deployment": {
+                "name": "rutent-test",
+                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+              },
+              "made_at": "2026-11-06T14:59:58Z",
+              "maker": "reserve-bank-co",
+              "protocol_version": "2.0.1",
+              "shape": "urn:rutent:provider-role:result",
+              "signature": {
+                "key": "eQ_qS7RWWcE8Xe_hTCtV-UZZfH_ahCkWFwYBXcciKCE",
+                "scheme": "ed25519",
+                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+              },
+              "statement": {
+                "kind": "withdrawal",
+                "outcome": {
+                  "amount_in": "100000000",
+                  "amount_out": "99900000",
+                  "fee": {
+                    "amount": "100000",
+                    "asset": "COP"
+                  },
+                  "settlement_seconds": 600,
+                  "status": "dry_run_accepted",
+                  "valid_until": "2026-11-06T15:01:58Z",
+                  "voided_by": [
+                    "validity_passes",
+                    "amount_changes"
+                  ]
+                },
+                "transaction": "tx-confirm-w-100000000"
+              }
+            },
+            "tuple": "f-w"
+          }
+        },
+        {
+          "age_seconds": 2,
+          "figure_id": "f-confirm-ex-a-99900000",
+          "origin": {
+            "kind": "provider",
+            "module_version": "3.0.2",
+            "provider": "exchange-a",
+            "provider_version": "3.0.0",
+            "publisher": "acme"
+          },
+          "valid_for_seconds": 120,
+          "value": {
+            "kind": "fresh_quote",
+            "quote": {
+              "deployment": {
+                "name": "rutent-test",
+                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+              },
+              "made_at": "2026-11-06T14:59:58Z",
+              "maker": "exchange-a",
+              "protocol_version": "2.0.1",
+              "shape": "urn:rutent:provider-role:result",
+              "signature": {
+                "key": "DVP_bDfejcFXRBdFhgleHZTDfHjingJbVFhJlkpiLdE",
+                "scheme": "ed25519",
+                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+              },
+              "statement": {
+                "kind": "conversion",
+                "outcome": {
+                  "amount_in": "99900000",
+                  "amount_out": "249250500",
+                  "direction": "exact_in",
+                  "fee": {
+                    "amount": "199800",
+                    "asset": "COP"
+                  },
+                  "rate": "0.00025",
+                  "settlement_seconds": 600,
+                  "slippage": {
+                    "regime": "firm"
+                  },
+                  "status": "dry_run_accepted",
+                  "valid_until": "2026-11-06T15:01:58Z",
+                  "voided_by": [
+                    "validity_passes",
+                    "amount_changes"
+                  ]
+                },
+                "transaction": "tx-confirm-ex-a-99900000"
+              }
+            },
+            "tuple": "f-ex-a"
+          }
+        },
+        {
+          "age_seconds": 2,
+          "figure_id": "f-confirm-dep-in-249250500",
+          "origin": {
+            "kind": "provider",
+            "module_version": "1.2.1",
+            "provider": "reserve-wallet",
+            "provider_version": "1.2.0",
+            "publisher": "wallet-co"
+          },
+          "valid_for_seconds": 120,
+          "value": {
+            "amount_in": "249250500",
+            "kind": "dry_run",
+            "result": {
+              "deployment": {
+                "name": "rutent-test",
+                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+              },
+              "made_at": "2026-11-06T14:59:58Z",
+              "maker": "reserve-wallet",
+              "protocol_version": "2.0.1",
+              "shape": "urn:rutent:provider-role:result",
+              "signature": {
+                "key": "eQ_qS7RWpc2DfVUG1gIxHMfSs5VLK8rW-n9CVIivLBE",
+                "scheme": "ed25519",
+                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+              },
+              "statement": {
+                "kind": "deposit",
+                "outcome": {
+                  "amount_in": "249250500",
+                  "amount_out": "248250500",
+                  "fee": {
+                    "amount": "1000000",
+                    "asset": "USDC"
+                  },
+                  "settlement_seconds": 600,
+                  "status": "dry_run_accepted",
+                  "valid_until": "2026-11-06T15:01:58Z",
+                  "voided_by": [
+                    "validity_passes",
+                    "amount_changes"
+                  ]
+                },
+                "transaction": "tx-confirm-dep-in-249250500"
+              }
+            },
+            "tuple": "f-dep-in"
+          }
+        },
+        {
+          "age_seconds": 2,
+          "figure_id": "f-confirm-w-50000000",
+          "origin": {
+            "kind": "provider",
+            "module_version": "2.1.3",
+            "provider": "reserve-bank-co",
+            "provider_version": "2.1.0",
+            "publisher": "bank-co-group"
+          },
+          "valid_for_seconds": 120,
+          "value": {
+            "amount_in": "50000000",
+            "kind": "dry_run",
+            "result": {
+              "deployment": {
+                "name": "rutent-test",
+                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+              },
+              "made_at": "2026-11-06T14:59:58Z",
+              "maker": "reserve-bank-co",
+              "protocol_version": "2.0.1",
+              "shape": "urn:rutent:provider-role:result",
+              "signature": {
+                "key": "eQ_qS7RWWcE8Xe_hTCtV-UZZfH_ahCkWFwYBXcciKCE",
+                "scheme": "ed25519",
+                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+              },
+              "statement": {
+                "kind": "withdrawal",
+                "outcome": {
+                  "amount_in": "50000000",
+                  "amount_out": "49950000",
+                  "fee": {
+                    "amount": "50000",
+                    "asset": "COP"
+                  },
+                  "settlement_seconds": 600,
+                  "status": "dry_run_accepted",
+                  "valid_until": "2026-11-06T15:01:58Z",
+                  "voided_by": [
+                    "validity_passes",
+                    "amount_changes"
+                  ]
+                },
+                "transaction": "tx-confirm-w-50000000"
+              }
+            },
+            "tuple": "f-w"
+          }
+        },
+        {
+          "age_seconds": 2,
+          "figure_id": "f-confirm-ex-a-49950000",
+          "origin": {
+            "kind": "provider",
+            "module_version": "3.0.2",
+            "provider": "exchange-a",
+            "provider_version": "3.0.0",
+            "publisher": "acme"
+          },
+          "valid_for_seconds": 120,
+          "value": {
+            "kind": "fresh_quote",
+            "quote": {
+              "deployment": {
+                "name": "rutent-test",
+                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+              },
+              "made_at": "2026-11-06T14:59:58Z",
+              "maker": "exchange-a",
+              "protocol_version": "2.0.1",
+              "shape": "urn:rutent:provider-role:result",
+              "signature": {
+                "key": "DVP_bDfejcFXRBdFhgleHZTDfHjingJbVFhJlkpiLdE",
+                "scheme": "ed25519",
+                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+              },
+              "statement": {
+                "kind": "conversion",
+                "outcome": {
+                  "amount_in": "49950000",
+                  "amount_out": "124625250",
+                  "direction": "exact_in",
+                  "fee": {
+                    "amount": "99900",
+                    "asset": "COP"
+                  },
+                  "rate": "0.00025",
+                  "settlement_seconds": 600,
+                  "slippage": {
+                    "regime": "firm"
+                  },
+                  "status": "dry_run_accepted",
+                  "valid_until": "2026-11-06T15:01:58Z",
+                  "voided_by": [
+                    "validity_passes",
+                    "amount_changes"
+                  ]
+                },
+                "transaction": "tx-confirm-ex-a-49950000"
+              }
+            },
+            "tuple": "f-ex-a"
+          }
+        },
+        {
+          "age_seconds": 2,
+          "figure_id": "f-confirm-dep-in-124625250",
+          "origin": {
+            "kind": "provider",
+            "module_version": "1.2.1",
+            "provider": "reserve-wallet",
+            "provider_version": "1.2.0",
+            "publisher": "wallet-co"
+          },
+          "valid_for_seconds": 120,
+          "value": {
+            "amount_in": "124625250",
+            "kind": "dry_run",
+            "result": {
+              "deployment": {
+                "name": "rutent-test",
+                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+              },
+              "made_at": "2026-11-06T14:59:58Z",
+              "maker": "reserve-wallet",
+              "protocol_version": "2.0.1",
+              "shape": "urn:rutent:provider-role:result",
+              "signature": {
+                "key": "eQ_qS7RWpc2DfVUG1gIxHMfSs5VLK8rW-n9CVIivLBE",
+                "scheme": "ed25519",
+                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+              },
+              "statement": {
+                "kind": "deposit",
+                "outcome": {
+                  "amount_in": "124625250",
+                  "amount_out": "123625250",
+                  "fee": {
+                    "amount": "1000000",
+                    "asset": "USDC"
+                  },
+                  "settlement_seconds": 600,
+                  "status": "dry_run_accepted",
+                  "valid_until": "2026-11-06T15:01:58Z",
+                  "voided_by": [
+                    "validity_passes",
+                    "amount_changes"
+                  ]
+                },
+                "transaction": "tx-confirm-dep-in-124625250"
+              }
+            },
+            "tuple": "f-dep-in"
+          }
+        },
+        {
+          "age_seconds": 2,
+          "figure_id": "f-confirm-w-30000000",
+          "origin": {
+            "kind": "provider",
+            "module_version": "2.1.3",
+            "provider": "reserve-bank-co",
+            "provider_version": "2.1.0",
+            "publisher": "bank-co-group"
+          },
+          "valid_for_seconds": 120,
+          "value": {
+            "amount_in": "30000000",
+            "kind": "dry_run",
+            "result": {
+              "deployment": {
+                "name": "rutent-test",
+                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+              },
+              "made_at": "2026-11-06T14:59:58Z",
+              "maker": "reserve-bank-co",
+              "protocol_version": "2.0.1",
+              "shape": "urn:rutent:provider-role:result",
+              "signature": {
+                "key": "eQ_qS7RWWcE8Xe_hTCtV-UZZfH_ahCkWFwYBXcciKCE",
+                "scheme": "ed25519",
+                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+              },
+              "statement": {
+                "kind": "withdrawal",
+                "outcome": {
+                  "amount_in": "30000000",
+                  "amount_out": "29970000",
+                  "fee": {
+                    "amount": "30000",
+                    "asset": "COP"
+                  },
+                  "settlement_seconds": 600,
+                  "status": "dry_run_accepted",
+                  "valid_until": "2026-11-06T15:01:58Z",
+                  "voided_by": [
+                    "validity_passes",
+                    "amount_changes"
+                  ]
+                },
+                "transaction": "tx-confirm-w-30000000"
+              }
+            },
+            "tuple": "f-w"
+          }
+        },
+        {
+          "age_seconds": 2,
+          "figure_id": "f-confirm-ramp-29970000",
+          "origin": {
+            "kind": "provider",
+            "module_version": "1.0.0",
+            "provider": "ramp-x",
+            "provider_version": "1.0.0",
+            "publisher": "ramp-x"
+          },
+          "valid_for_seconds": 120,
+          "value": {
+            "kind": "fresh_quote",
+            "quote": {
+              "deployment": {
+                "name": "rutent-test",
+                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+              },
+              "made_at": "2026-11-06T14:59:58Z",
+              "maker": "ramp-x",
+              "protocol_version": "2.0.1",
+              "shape": "urn:rutent:provider-role:result",
+              "signature": {
+                "key": "e0V3vJsCjF9X6QxTLlIe_hZzWsNvnBk6b91PyIpLDdE",
+                "scheme": "ed25519",
+                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+              },
+              "statement": {
+                "kind": "transfer",
+                "outcome": {
+                  "amount_in": "29970000",
+                  "amount_out": "29965000",
+                  "direction": "exact_in",
+                  "fee": {
+                    "amount": "5000",
+                    "asset": "COP"
+                  },
+                  "settlement_seconds": 600,
+                  "status": "dry_run_accepted",
+                  "valid_until": "2026-11-06T15:01:58Z",
+                  "voided_by": [
+                    "validity_passes",
+                    "amount_changes"
+                  ]
+                },
+                "transaction": "tx-confirm-ramp-29970000"
+              }
+            },
+            "tuple": "f-ramp"
+          }
+        },
+        {
+          "age_seconds": 2,
+          "figure_id": "f-confirm-ex-b-29965000",
+          "origin": {
+            "kind": "provider",
+            "module_version": "1.4.0",
+            "provider": "exchange-b",
+            "provider_version": "1.4.0",
+            "publisher": "acme"
+          },
+          "valid_for_seconds": 120,
+          "value": {
+            "kind": "fresh_quote",
+            "quote": {
+              "deployment": {
+                "name": "rutent-test",
+                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+              },
+              "made_at": "2026-11-06T14:59:58Z",
+              "maker": "exchange-b",
+              "protocol_version": "2.0.1",
+              "shape": "urn:rutent:provider-role:result",
+              "signature": {
+                "key": "DVP_bDfejjFXRBdFhgllHZTDfHjinnJbVFhJlkppLdE",
+                "scheme": "ed25519",
+                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+              },
+              "statement": {
+                "kind": "conversion",
+                "outcome": {
+                  "amount_in": "29965000",
+                  "amount_out": "74837587",
+                  "direction": "exact_in",
+                  "fee": {
+                    "amount": "29965",
+                    "asset": "COP"
+                  },
+                  "rate": "0.00025",
+                  "settlement_seconds": 600,
+                  "slippage": {
+                    "regime": "firm"
+                  },
+                  "status": "dry_run_accepted",
+                  "valid_until": "2026-11-06T15:01:58Z",
+                  "voided_by": [
+                    "validity_passes",
+                    "amount_changes"
+                  ]
+                },
+                "transaction": "tx-confirm-ex-b-29965000"
+              }
+            },
+            "tuple": "f-ex-b"
+          }
+        },
+        {
+          "age_seconds": 2,
+          "figure_id": "f-confirm-dep-b-74837587",
+          "origin": {
+            "kind": "provider",
+            "module_version": "1.2.1",
+            "provider": "reserve-wallet",
+            "provider_version": "1.2.0",
+            "publisher": "wallet-co"
+          },
+          "valid_for_seconds": 120,
+          "value": {
+            "amount_in": "74837587",
+            "kind": "dry_run",
+            "result": {
+              "deployment": {
+                "name": "rutent-test",
+                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+              },
+              "made_at": "2026-11-06T14:59:58Z",
+              "maker": "reserve-wallet",
+              "protocol_version": "2.0.1",
+              "shape": "urn:rutent:provider-role:result",
+              "signature": {
+                "key": "eQ_qS7RWpc2DfVUG1gIxHMfSs5VLK8rW-n9CVIivLBE",
+                "scheme": "ed25519",
+                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+              },
+              "statement": {
+                "kind": "deposit",
+                "outcome": {
+                  "amount_in": "74837587",
+                  "amount_out": "73837587",
+                  "fee": {
+                    "amount": "1000000",
+                    "asset": "USDC"
+                  },
+                  "settlement_seconds": 600,
+                  "status": "dry_run_accepted",
+                  "valid_until": "2026-11-06T15:01:58Z",
+                  "voided_by": [
+                    "validity_passes",
+                    "amount_changes"
+                  ]
+                },
+                "transaction": "tx-confirm-dep-b-74837587"
+              }
+            },
+            "tuple": "f-dep-b"
+          }
+        },
+        {
+          "age_seconds": 2,
+          "figure_id": "f-confirm-w-20000000",
+          "origin": {
+            "kind": "provider",
+            "module_version": "2.1.3",
+            "provider": "reserve-bank-co",
+            "provider_version": "2.1.0",
+            "publisher": "bank-co-group"
+          },
+          "valid_for_seconds": 120,
+          "value": {
+            "amount_in": "20000000",
+            "kind": "dry_run",
+            "result": {
+              "deployment": {
+                "name": "rutent-test",
+                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+              },
+              "made_at": "2026-11-06T14:59:58Z",
+              "maker": "reserve-bank-co",
+              "protocol_version": "2.0.1",
+              "shape": "urn:rutent:provider-role:result",
+              "signature": {
+                "key": "eQ_qS7RWWcE8Xe_hTCtV-UZZfH_ahCkWFwYBXcciKCE",
+                "scheme": "ed25519",
+                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+              },
+              "statement": {
+                "kind": "withdrawal",
+                "outcome": {
+                  "amount_in": "20000000",
+                  "amount_out": "19980000",
+                  "fee": {
+                    "amount": "20000",
+                    "asset": "COP"
+                  },
+                  "settlement_seconds": 600,
+                  "status": "dry_run_accepted",
+                  "valid_until": "2026-11-06T15:01:58Z",
+                  "voided_by": [
+                    "validity_passes",
+                    "amount_changes"
+                  ]
+                },
+                "transaction": "tx-confirm-w-20000000"
+              }
+            },
+            "tuple": "f-w"
+          }
+        },
+        {
+          "age_seconds": 2,
+          "figure_id": "f-confirm-ex-a-19980000",
+          "origin": {
+            "kind": "provider",
+            "module_version": "3.0.2",
+            "provider": "exchange-a",
+            "provider_version": "3.0.0",
+            "publisher": "acme"
+          },
+          "valid_for_seconds": 120,
+          "value": {
+            "kind": "fresh_quote",
+            "quote": {
+              "deployment": {
+                "name": "rutent-test",
+                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+              },
+              "made_at": "2026-11-06T14:59:58Z",
+              "maker": "exchange-a",
+              "protocol_version": "2.0.1",
+              "shape": "urn:rutent:provider-role:result",
+              "signature": {
+                "key": "DVP_bDfejcFXRBdFhgleHZTDfHjingJbVFhJlkpiLdE",
+                "scheme": "ed25519",
+                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+              },
+              "statement": {
+                "kind": "conversion",
+                "outcome": {
+                  "amount_in": "19980000",
+                  "amount_out": "49850100",
+                  "direction": "exact_in",
+                  "fee": {
+                    "amount": "39960",
+                    "asset": "COP"
+                  },
+                  "rate": "0.00025",
+                  "settlement_seconds": 600,
+                  "slippage": {
+                    "regime": "firm"
+                  },
+                  "status": "dry_run_accepted",
+                  "valid_until": "2026-11-06T15:01:58Z",
+                  "voided_by": [
+                    "validity_passes",
+                    "amount_changes"
+                  ]
+                },
+                "transaction": "tx-confirm-ex-a-19980000"
+              }
+            },
+            "tuple": "f-ex-a"
+          }
+        },
+        {
+          "age_seconds": 2,
+          "figure_id": "f-confirm-dep-in-49850100",
+          "origin": {
+            "kind": "provider",
+            "module_version": "1.2.1",
+            "provider": "reserve-wallet",
+            "provider_version": "1.2.0",
+            "publisher": "wallet-co"
+          },
+          "valid_for_seconds": 120,
+          "value": {
+            "amount_in": "49850100",
+            "kind": "dry_run",
+            "result": {
+              "deployment": {
+                "name": "rutent-test",
+                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+              },
+              "made_at": "2026-11-06T14:59:58Z",
+              "maker": "reserve-wallet",
+              "protocol_version": "2.0.1",
+              "shape": "urn:rutent:provider-role:result",
+              "signature": {
+                "key": "eQ_qS7RWpc2DfVUG1gIxHMfSs5VLK8rW-n9CVIivLBE",
+                "scheme": "ed25519",
+                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+              },
+              "statement": {
+                "kind": "deposit",
+                "outcome": {
+                  "amount_in": "49850100",
+                  "amount_out": "48850100",
+                  "fee": {
+                    "amount": "1000000",
+                    "asset": "USDC"
+                  },
+                  "settlement_seconds": 600,
+                  "status": "dry_run_accepted",
+                  "valid_until": "2026-11-06T15:01:58Z",
+                  "voided_by": [
+                    "validity_passes",
+                    "amount_changes"
+                  ]
+                },
+                "transaction": "tx-confirm-dep-in-49850100"
+              }
+            },
+            "tuple": "f-dep-in"
+          }
+        },
+        {
+          "age_seconds": 2,
+          "figure_id": "f-confirm-ramp-99900000",
+          "origin": {
+            "kind": "provider",
+            "module_version": "1.0.0",
+            "provider": "ramp-x",
+            "provider_version": "1.0.0",
+            "publisher": "ramp-x"
+          },
+          "valid_for_seconds": 120,
+          "value": {
+            "kind": "fresh_quote",
+            "quote": {
+              "deployment": {
+                "name": "rutent-test",
+                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+              },
+              "made_at": "2026-11-06T14:59:58Z",
+              "maker": "ramp-x",
+              "protocol_version": "2.0.1",
+              "shape": "urn:rutent:provider-role:result",
+              "signature": {
+                "key": "e0V3vJsCjF9X6QxTLlIe_hZzWsNvnBk6b91PyIpLDdE",
+                "scheme": "ed25519",
+                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+              },
+              "statement": {
+                "kind": "transfer",
+                "outcome": {
+                  "amount_in": "99900000",
+                  "amount_out": "99895000",
+                  "direction": "exact_in",
+                  "fee": {
+                    "amount": "5000",
+                    "asset": "COP"
+                  },
+                  "settlement_seconds": 600,
+                  "status": "dry_run_accepted",
+                  "valid_until": "2026-11-06T15:01:58Z",
+                  "voided_by": [
+                    "validity_passes",
+                    "amount_changes"
+                  ]
+                },
+                "transaction": "tx-confirm-ramp-99900000"
+              }
+            },
+            "tuple": "f-ramp"
+          }
+        },
+        {
+          "age_seconds": 2,
+          "figure_id": "f-confirm-ex-b-99895000",
+          "origin": {
+            "kind": "provider",
+            "module_version": "1.4.0",
+            "provider": "exchange-b",
+            "provider_version": "1.4.0",
+            "publisher": "acme"
+          },
+          "valid_for_seconds": 120,
+          "value": {
+            "kind": "fresh_quote",
+            "quote": {
+              "deployment": {
+                "name": "rutent-test",
+                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+              },
+              "made_at": "2026-11-06T14:59:58Z",
+              "maker": "exchange-b",
+              "protocol_version": "2.0.1",
+              "shape": "urn:rutent:provider-role:result",
+              "signature": {
+                "key": "DVP_bDfejjFXRBdFhgllHZTDfHjinnJbVFhJlkppLdE",
+                "scheme": "ed25519",
+                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+              },
+              "statement": {
+                "kind": "conversion",
+                "outcome": {
+                  "amount_in": "99895000",
+                  "amount_out": "244508252",
+                  "direction": "exact_in",
+                  "fee": {
+                    "amount": "99895",
+                    "asset": "COP"
+                  },
+                  "rate": "0.00025",
+                  "settlement_seconds": 600,
+                  "slippage": {
+                    "regime": "firm"
+                  },
+                  "status": "dry_run_accepted",
+                  "valid_until": "2026-11-06T15:01:58Z",
+                  "voided_by": [
+                    "validity_passes",
+                    "amount_changes"
+                  ]
+                },
+                "transaction": "tx-confirm-ex-b-99895000"
+              }
+            },
+            "tuple": "f-ex-b"
+          }
+        },
+        {
+          "age_seconds": 2,
+          "figure_id": "f-confirm-dep-b-244508252",
+          "origin": {
+            "kind": "provider",
+            "module_version": "1.2.1",
+            "provider": "reserve-wallet",
+            "provider_version": "1.2.0",
+            "publisher": "wallet-co"
+          },
+          "valid_for_seconds": 120,
+          "value": {
+            "amount_in": "244508252",
+            "kind": "dry_run",
+            "result": {
+              "deployment": {
+                "name": "rutent-test",
+                "operator_key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA"
+              },
+              "made_at": "2026-11-06T14:59:58Z",
+              "maker": "reserve-wallet",
+              "protocol_version": "2.0.1",
+              "shape": "urn:rutent:provider-role:result",
+              "signature": {
+                "key": "eQ_qS7RWpc2DfVUG1gIxHMfSs5VLK8rW-n9CVIivLBE",
+                "scheme": "ed25519",
+                "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+              },
+              "statement": {
+                "kind": "deposit",
+                "outcome": {
+                  "amount_in": "244508252",
+                  "amount_out": "243508252",
+                  "fee": {
+                    "amount": "1000000",
+                    "asset": "USDC"
+                  },
+                  "settlement_seconds": 600,
+                  "status": "dry_run_accepted",
+                  "valid_until": "2026-11-06T15:01:58Z",
+                  "voided_by": [
+                    "validity_passes",
+                    "amount_changes"
+                  ]
+                },
+                "transaction": "tx-confirm-dep-b-244508252"
+              }
+            },
+            "tuple": "f-dep-b"
+          }
+        }
+      ],
+      "snapshot_id": "snap-0002",
+      "taken_at": "2026-11-06T15:00:00Z"
+    }
   }
 }

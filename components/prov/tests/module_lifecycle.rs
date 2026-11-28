@@ -300,7 +300,7 @@ fn low_volume_release_stays_staged_until_its_minimum_is_observed() {
         Ok("1.1.0")
     );
     assert_eq!(binding.active_version(provider).as_deref(), Some("1.1.0"));
-    assert_eq!(answer(&mut binding, provider, 9).as_deref(), Ok("1.1.0"));
+    assert_eq!(answer(&mut binding, provider, 99).as_deref(), Ok("1.1.0"));
     let last = binding.lifecycle().decisions().last().expect("a decision");
     assert_eq!(
         (last.kind, last.by.as_str(), last.at),
@@ -401,7 +401,16 @@ fn newer_release_never_moves_a_segment_and_a_stale_mark_moves_it_to_the_version_
         binding.mark_stale(provider, "1.0.0", OPERATOR, later(5)),
         Ok(1)
     );
-    assert_eq!(answer(&mut binding, provider, 1).as_deref(), Ok("1.1.0"));
+    // Asked again, the transaction is answered from the platform's record (`T-013-09`), so the move is read from its
+    // segment.
+    assert_eq!(
+        binding
+            .lifecycle()
+            .segment(tx(provider, 1).as_str())
+            .map(|segment| segment.runs_on.as_str()),
+        Some("1.1.0")
+    );
+    assert_eq!(answer(&mut binding, provider, 2).as_deref(), Ok("1.1.0"));
     assert!(binding.version_process(provider, "1.0.0").is_none());
     let record = binding
         .end_segment(tx(provider, 1).as_str())
@@ -466,6 +475,38 @@ fn transaction_cannot_read_another_transactions_state() {
         // Another transaction's entry is never asked of the world.
         let asked: Vec<_> = binding.world.state_asked[asked..].to_vec();
         assert_eq!(asked.contains(&key), own, "transaction {n}: {asked:?}");
+    }
+}
+
+// verifies: REQ-MDL-8
+#[test]
+fn each_state_read_names_the_transaction_it_was_made_for() {
+    let provider = "stateful";
+    let mut binding = binding("reserve");
+    binding.seed_state(provider, "rates", "shared");
+    let module = spec(
+        provider,
+        "1.0.0",
+        vec![Step::ReadState {
+            part: PartName::Outside,
+            key: "rates".to_owned(),
+        }],
+        true,
+    );
+    install(&mut binding, &module, &language(), "reserve", &[]);
+    for n in [1, 2] {
+        Platform::take_events(&mut binding);
+        assert!(answer(&mut binding, provider, n).is_ok());
+        let reads: Vec<_> = Platform::take_events(&mut binding)
+            .state_reads
+            .into_iter()
+            .map(|r| (r.key, r.transaction))
+            .collect();
+        assert_eq!(
+            reads,
+            [("rates".to_owned(), tx(provider, n).as_str().to_owned())],
+            "transaction {n}"
+        );
     }
 }
 
@@ -795,4 +836,111 @@ fn only_operations_the_staged_version_ran_count_and_it_is_promoted_only_while_it
         Ok("1.1.0")
     );
     assert_eq!(answer(&mut binding, provider, 9).as_deref(), Ok("1.1.0"));
+}
+
+/// The counts of the provider's staged release.
+fn staged_counts(binding: &WasmBinding, provider: &str) -> rutent_prov::module::lifecycle::Counts {
+    binding
+        .lifecycle()
+        .observation(provider)
+        .expect("a release is staged")
+        .staged_counts
+}
+
+// verifies: REQ-MDL-4
+#[test]
+fn staged_version_that_refuses_every_operation_is_never_promoted() {
+    let provider = "refusing";
+    let mut binding = binding("reserve");
+    upgrade(&mut binding, provider, "1.0.0", true);
+    stage(&mut binding, 100, 0, 3);
+    // A release whose every answer the platform refuses as malformed: the module ran, and nothing it said is passed
+    // on, so each is a refusal, however many of them there are.
+    let mut bad = spec(provider, "1.1.0", Vec::new(), true);
+    bad.output = Output::Unparseable;
+    install(&mut binding, &bad, &language(), "reserve", &[]);
+    assert_eq!(binding.lifecycle().staged(provider), Some("1.1.0"));
+
+    for n in 1..=5 {
+        binding
+            .begin_segment(provider, &tx(provider, n))
+            .expect("a segment");
+        assert_eq!(
+            answer(&mut binding, provider, n),
+            Err(PlatformRefusal::MalformedOutput)
+        );
+    }
+    // The staging's summary reports the refusals apart from the answers.
+    let counts = staged_counts(&binding, provider);
+    assert_eq!((counts.answered, counts.refused), (0, 5));
+    assert_eq!(
+        binding.promote(provider, OPERATOR, later(86_400)),
+        Err(LifecycleRefusal::TooFewObserved {
+            observed: 0,
+            minimum: 3
+        })
+    );
+    assert_eq!(binding.active_version(provider).as_deref(), Some("1.0.0"));
+    assert_eq!(binding.lifecycle().staged(provider), Some("1.1.0"));
+}
+
+// verifies: REQ-MDL-4
+#[test]
+fn staged_version_is_promoted_on_the_operations_it_answered() {
+    let provider = "answering";
+    let mut binding = binding("reserve");
+    upgrade(&mut binding, provider, "1.0.0", true);
+    stage(&mut binding, 100, 0, 3);
+    // It handles deposits too, which the stand-in answers with a refusal of its own: a result, but not an answer.
+    let mut module = spec(provider, "1.1.0", Vec::new(), true);
+    module.declaration = common::declaration(provider, "1.1.0", &["withdrawal", "deposit"]);
+    install(&mut binding, &module, &language(), "reserve", &[]);
+    assert_eq!(binding.lifecycle().staged(provider), Some("1.1.0"));
+
+    // Two it answered, three it refused, one it answered with a refusal of its own: four operations short of three
+    // answers, whatever the total.
+    for n in 1..=2 {
+        binding
+            .begin_segment(provider, &tx(provider, n))
+            .expect("a segment");
+        assert_eq!(answer(&mut binding, provider, n).as_deref(), Ok("1.1.0"));
+    }
+    for n in 3..=5 {
+        binding
+            .begin_segment(provider, &tx(provider, n))
+            .expect("a segment");
+        let handled = Platform::handle(&mut binding, provider, &deposit(provider, n));
+        let types::Handled::Answered(result) = handled else {
+            panic!("the module answers its deposit: {handled:?}");
+        };
+        let value = serde_json::to_value(&result.statement).expect("JSON");
+        assert_eq!(value["outcome"]["status"], "refused", "{value}");
+    }
+    let counts = staged_counts(&binding, provider);
+    assert_eq!(
+        (counts.answered, counts.refused),
+        (2, 3),
+        "a result that refuses is counted as a refusal"
+    );
+    assert_eq!(
+        binding.promote(provider, OPERATOR, later(86_400)),
+        Err(LifecycleRefusal::TooFewObserved {
+            observed: 2,
+            minimum: 3
+        })
+    );
+    // A third answer reaches the minimum, and the refusals beside it change nothing.
+    binding
+        .begin_segment(provider, &tx(provider, 6))
+        .expect("a segment");
+    assert_eq!(answer(&mut binding, provider, 6).as_deref(), Ok("1.1.0"));
+    let counts = staged_counts(&binding, provider);
+    assert_eq!((counts.answered, counts.refused), (3, 3));
+    assert_eq!(
+        binding
+            .promote(provider, OPERATOR, later(86_400))
+            .as_deref(),
+        Ok("1.1.0")
+    );
+    assert_eq!(binding.active_version(provider).as_deref(), Some("1.1.0"));
 }

@@ -1,0 +1,15 @@
+{
+  "request": "req-503",
+  "outcome": {
+    "answer": "refused",
+    "class": "not_permitted"
+  },
+  "receipt": {
+    "log": "log-main",
+    "index": 56,
+    "entry": {
+      "algorithm": "sha-256",
+      "value": "4646464646464646464646464646464646464646464646464646464646464646"
+    }
+  }
+}

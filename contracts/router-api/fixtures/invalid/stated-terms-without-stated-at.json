@@ -1,0 +1,30 @@
+{
+  "tuple": {
+    "provider": "exchange-a",
+    "from": {
+      "node": "ledger-in",
+      "asset": {
+        "id": "COP",
+        "decimals": 2
+      }
+    },
+    "to": {
+      "node": "ledger-in",
+      "asset": {
+        "id": "USDC",
+        "decimals": 6
+      }
+    }
+  },
+  "fee": {
+    "flat": "100",
+    "proportional": {
+      "numerator": "3",
+      "denominator": "1000"
+    }
+  },
+  "slippage": {
+    "regime": "bounded",
+    "max_bps": 30
+  }
+}

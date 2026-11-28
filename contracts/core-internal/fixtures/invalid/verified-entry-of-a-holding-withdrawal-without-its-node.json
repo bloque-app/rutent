@@ -1,0 +1,30 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "rutent",
+    "acts": "core-orch",
+    "role": "core",
+    "kind": "component"
+  },
+  "what": {
+    "call": "holding_withdrawal",
+    "order": "ord-2",
+    "handed_on_from": "ord-1",
+    "holder": "us-bank",
+    "record": {
+      "log": "log-main",
+      "index": 189,
+      "entry": {
+        "algorithm": "sha-256",
+        "value": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+      }
+    }
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "core_clock"
+  },
+  "outcome": {
+    "status": "observed"
+  }
+}

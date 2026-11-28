@@ -2,15 +2,6 @@
   "base": "decision-record-split-of-one-part",
   "patch": [
     {
-      "op": "remove",
-      "path": "/statement/snapshot/figures/8"
-    },
-    {
-      "op": "replace",
-      "path": "/statement/bounds/max_parts",
-      "value": 1
-    },
-    {
       "op": "replace",
       "path": "/statement/candidates/2",
       "value": {
@@ -50,8 +41,8 @@
                 ]
               },
               {
-                "kind": "exchange",
-                "provider": "exchange-a",
+                "kind": "route",
+                "provider": "ramp-x",
                 "from": {
                   "node": "ledger-in",
                   "asset": {
@@ -60,31 +51,60 @@
                   }
                 },
                 "to": {
-                  "node": "ledger-in",
+                  "node": "ledger-b",
                   "asset": {
-                    "id": "USDC",
-                    "decimals": 6
+                    "id": "COP",
+                    "decimals": 2
                   }
                 },
                 "amount_in": "99900000",
                 "fee": {
                   "asset": "COP",
-                  "amount": "199800"
+                  "amount": "5000"
                 },
-                "amount_out": "249250500",
+                "amount_out": "99895000",
                 "figures": [
-                  "f-ex-a",
-                  "f-ex-a-price",
-                  "f-ex-a-quote-old",
-                  "f-ex-a-quote",
-                  "f-confirm-ex-a-99900000"
+                  "f-ramp",
+                  "f-ramp-price",
+                  "f-ramp-dry-run",
+                  "f-confirm-ramp-99900000"
+                ]
+              },
+              {
+                "kind": "exchange",
+                "provider": "exchange-b",
+                "from": {
+                  "node": "ledger-b",
+                  "asset": {
+                    "id": "COP",
+                    "decimals": 2
+                  }
+                },
+                "to": {
+                  "node": "ledger-b",
+                  "asset": {
+                    "id": "USDC",
+                    "decimals": 6
+                  }
+                },
+                "amount_in": "99895000",
+                "fee": {
+                  "asset": "COP",
+                  "amount": "99895"
+                },
+                "amount_out": "244508252",
+                "figures": [
+                  "f-ex-b",
+                  "f-ex-b-price",
+                  "f-ex-b-eligibility",
+                  "f-confirm-ex-b-99895000"
                 ]
               },
               {
                 "kind": "deposit",
                 "provider": "reserve-wallet",
                 "from": {
-                  "node": "ledger-in",
+                  "node": "ledger-b",
                   "asset": {
                     "id": "USDC",
                     "decimals": 6
@@ -99,24 +119,24 @@
                     "decimals": 6
                   }
                 },
-                "amount_in": "249250500",
+                "amount_in": "244508252",
                 "fee": {
                   "asset": "USDC",
                   "amount": "1000000"
                 },
-                "amount_out": "248250500",
+                "amount_out": "243508252",
                 "figures": [
-                  "f-dep-in",
-                  "f-dep-in-price",
-                  "f-confirm-dep-in-249250500"
+                  "f-dep-b",
+                  "f-dep-b-price",
+                  "f-confirm-dep-b-244508252"
                 ]
               }
             ]
           }
         ],
         "dropped": {
-          "reason": "stale_figure",
-          "figure": "f-ex-a-quote-old"
+          "reason": "outranked",
+          "by": "c1"
         }
       }
     }

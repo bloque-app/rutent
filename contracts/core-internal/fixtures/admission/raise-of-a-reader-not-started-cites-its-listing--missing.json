@@ -1,0 +1,90 @@
+{
+  "row": "raise-of-a-reader-not-started-cites-its-listing",
+  "breaks": "missing",
+  "history": [
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 120,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "cust-1",
+          "acts": "cust-1",
+          "role": "customer",
+          "kind": "person"
+        },
+        "what": {
+          "call": "open_session",
+          "request": {
+            "request": "req-s1",
+            "account": "acct-ref-1",
+            "holder": "cust-1",
+            "requester": {
+              "party": "cust-1",
+              "acts": "cust-1",
+              "role": "customer",
+              "kind": "person"
+            },
+            "until": "2026-11-10T09:15:00Z",
+            "at": "2026-11-10T09:00:00Z"
+          },
+          "opened": {
+            "session": "sess-1",
+            "expires_at": "2026-11-10T09:15:00Z"
+          }
+        },
+        "when": {
+          "at": "2026-11-10T09:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "permitted"
+        }
+      }
+    }
+  ],
+  "entry": {
+    "kind": "verified",
+    "who": {
+      "party": "rutent",
+      "acts": "core-orch",
+      "role": "core",
+      "kind": "component"
+    },
+    "what": {
+      "call": "raise",
+      "raise": {
+        "raise": "raise-reader-1",
+        "difference": {
+          "kind": "reader_not_started",
+          "network": "kreivo",
+          "why": "unreachable"
+        },
+        "cites": [
+          {
+            "log": "log-main",
+            "index": 120,
+            "entry": {
+              "algorithm": "sha-256",
+              "value": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4"
+            }
+          }
+        ],
+        "at": "2026-11-10T10:00:00Z"
+      }
+    },
+    "when": {
+      "at": "2026-11-10T10:00:00Z",
+      "source": "core_clock"
+    },
+    "outcome": {
+      "status": "done"
+    }
+  }
+}

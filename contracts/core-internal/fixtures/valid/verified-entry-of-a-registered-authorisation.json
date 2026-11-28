@@ -1,0 +1,44 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "cust-1",
+    "acts": "cust-1",
+    "role": "customer",
+    "kind": "person"
+  },
+  "what": {
+    "call": "authorise",
+    "authorisation": {
+      "authorisation": "auth-17",
+      "order": "ord-17",
+      "origin_reserve": "us-bank",
+      "destination": {
+        "reserve": "bank-co",
+        "node": {
+          "network": "co-ach"
+        },
+        "account": "acct-ref-9"
+      },
+      "to_asset": {
+        "id": "COP",
+        "decimals": 2
+      },
+      "floor": "2400000",
+      "given_by": {
+        "party": "cust-1",
+        "acts": "cust-1",
+        "role": "customer",
+        "kind": "person"
+      },
+      "at": "2026-11-10T09:00:00Z"
+    },
+    "decision": "dec-17"
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "core_clock"
+  },
+  "outcome": {
+    "status": "permitted"
+  }
+}

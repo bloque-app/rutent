@@ -13,6 +13,8 @@
 //! - [`lifecycle`]: each provider's accepted releases once admitted: the version in force, a release staged beside
 //!   it on a share of new segments, the version each segment in flight runs on, the operator's marks and decisions
 //!   (`REQ-MDL-4`, `REQ-MDL-5`, `REQ-MDL-19`, `REQ-MDL-20`, ADR-0014).
+//! - [`record`]: the platform's carried-out record, kept where a restart doesn't lose it: what it carried out under
+//!   each transaction, the segments in flight and the transactions that ended (`INV-8`, `NFR-6`, `T-013-10`).
 //! - [`engine`]: the one Wasmtime configuration the compiler and every provider process share: an explicit compile
 //!   target, only the WebAssembly features the modules need, fuel for CPU, and the memory limits per part.
 //! - [`children`]: the platform's side of its children, the admitting compiler (one fresh process per admission)
@@ -23,6 +25,8 @@
 //! - [`output`]: the check of a module's output against its schema, patterns and lengths, and what the platform
 //!   keeps of a guest's failure (`REQ-MDL-12`).
 //! - [`sandbox`]: the operating system's jail for a child, and the frames the platform and a child exchange.
+//! - `jail` (only with the `jail-layers` feature, which the package's own tests turn on): the test-only builder that
+//!   composes the jail's layers one at a time (`T-025-02`). A shipped build has no such entry point (`GUA-5`).
 //! - [`wire`]: the messages in those frames.
 //! - [`types`]: what the platform answers with.
 //!
@@ -35,10 +39,14 @@ pub mod admission;
 pub mod children;
 pub mod engine;
 pub mod host;
+#[cfg(feature = "jail-layers")]
+pub mod jail;
+mod layers;
 pub mod lifecycle;
 pub mod limits;
 pub mod output;
 pub mod platform;
+pub mod record;
 pub mod sandbox;
 pub mod types;
 pub mod wire;

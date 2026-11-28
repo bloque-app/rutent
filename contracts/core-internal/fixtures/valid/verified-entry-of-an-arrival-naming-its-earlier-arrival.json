@@ -1,0 +1,50 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "rutent",
+    "acts": "core-orch",
+    "role": "core",
+    "kind": "component"
+  },
+  "what": {
+    "call": "arrival",
+    "reserve": "bank-co",
+    "node": {
+      "network": "co-ach"
+    },
+    "asset": {
+      "id": "COP",
+      "decimals": 2
+    },
+    "amount": "50000",
+    "order": "ord-9",
+    "matched": "matches",
+    "report": {
+      "log": "log-main",
+      "index": 305,
+      "entry": {
+        "algorithm": "sha-256",
+        "value": "cececececececececececececececececececececececececececececececece"
+      }
+    },
+    "notice": {
+      "algorithm": "sha-256",
+      "value": "e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9"
+    },
+    "earlier": {
+      "log": "log-main",
+      "index": 303,
+      "entry": {
+        "algorithm": "sha-256",
+        "value": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "core_clock"
+  },
+  "outcome": {
+    "status": "observed"
+  }
+}
