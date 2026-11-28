@@ -180,26 +180,6 @@ impl Core {
         Ok(wallet)
     }
 
-    /// The private nodes' accounts the deployment's register names, listed again in the reopened catalogue, as
-    /// [`Core::install_publisher_account`] listed them (the review's S1).
-    pub(super) fn relist_publisher_accounts(&mut self) {
-        let accounts: Vec<PublisherAccount> = self
-            .deployed
-            .registers
-            .borrow()
-            .publisher_accounts
-            .values()
-            .cloned()
-            .collect();
-        for account in accounts {
-            let _ = self.catalogue.register_private_holding(
-                &account.node,
-                &account.publisher,
-                &account.module,
-            );
-        }
-    }
-
     /// Confirms the failed outcome a mover reported for the unknown `segment` of `order`, as Core does
     /// ([`rutent_core_orch::schedule::confirm_reported_failure`], `AC-6`): `confirmer` is another actor than the
     /// reporter, `report` the report's version and the statement it rests on (what the schedule's round told), and

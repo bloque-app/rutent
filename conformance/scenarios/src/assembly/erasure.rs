@@ -14,7 +14,7 @@ use crate::kit;
 
 /// The bound store as orchestration reaches it: the checks it runs before it erases, and the erasure on a done
 /// result.
-struct Bound<'a>(&'a BoundStore<LogDisk, LogsRead>);
+pub(super) struct Bound<'a>(pub(super) &'a BoundStore<LogDisk, LogsRead>);
 
 impl Statements for Bound<'_> {
     fn erasable(&mut self, commitment: &Digest) -> Result<(), AppendFailure> {
@@ -127,24 +127,6 @@ impl Core {
         reason: &str,
     ) -> Result<Erased, Box<NotErased>> {
         self.erase_statement_overriding_as(&kit::operator_login(), commitment, reason)
-    }
-
-    /// The erasures a Core that reopened found decided and done but not recorded (`Unsettled::reopened`), settled: the
-    /// store erases each (one erased already is `Ok`) and the `erasure` entry is appended, once (`T-020-46`). Answers
-    /// how many it settled; one that can't be settled now is left to the next reopening.
-    pub(super) fn settle_reopened_erasures(&mut self) -> usize {
-        let history: Vec<_> = self.log.borrow().entries().to_vec();
-        let core = kit::core();
-        let mut settled = 0;
-        for unsettled in rutent_core_orch::erasure::Unsettled::reopened(&history, &core) {
-            if unsettled
-                .settle(&mut self.general, &mut Bound(&self.bound), &self.clock)
-                .is_ok()
-            {
-                settled += 1;
-            }
-        }
-        settled
     }
 
     /// [`Core::erase_statement_as`] by the operator's login.

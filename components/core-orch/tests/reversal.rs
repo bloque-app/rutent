@@ -1306,6 +1306,12 @@ impl World {
         answering: &mut Answering,
         segment: &str,
     ) -> Result<Confirmation, ReversalError> {
+        // Core asks a confirmation again only on its retry cadence (the review of #355's round 2, H1): each question
+        // here is put a cadence after the last, as the deployment's timer would put it.
+        self.clock.0.set(Reading::at(
+            self.clock.0.get().floor().0
+                + rutent_core_orch::reversal::DEFAULT_REVERSAL_RETRY_SECONDS,
+        ));
         let bounds: PolicyBounds = self.record.bounds.clone();
         let (order, part, segment) = (id(ORDER), id(PART), id(segment));
         let at = At {

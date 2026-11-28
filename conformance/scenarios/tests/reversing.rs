@@ -607,3 +607,119 @@ fn failed_segment_with_no_route_left_is_resolved_under_policy_by_two_actors() {
     assert!(core.stuck_values().is_empty());
     let _ = (exchange, held);
 }
+
+/// The exchange failed, its reversal asked once and its outcome unknown, carried on once and confirmed: Core with a
+/// reversal in every state its run keeps.
+fn reversal_left_unknown(accepts: &'static str) -> (Core, Id, Id) {
+    let (mut core, order, _, exchange) = exchange_failed(accepts);
+    core.world()
+        .script_for(EXCHANGE, "reversal", Behaviour::act(Act::Unknown));
+    // Owed, asked, carried on, then confirmed.
+    for _ in 0..4 {
+        core.tick();
+    }
+    assert_eq!(core.confirmations_asked(&order, &exchange), 1);
+    (core, order, exchange)
+}
+
+/// Core reopens through its own entry point (`schedule::reopen`, the review of #355's round 2, M3), which rebuilds every
+/// part from the log in Core's own order, and holds what the Core that ran held: each order and its state, what each
+/// runs on, its stuck parts, the reversal's asks, confirmations and carrier, the operator's settings and cadences, the
+/// segments' retry, each listed advertisement and the value in flight.
+// verifies: NFR-6, INV-8
+#[test]
+fn core_reopened_through_its_own_entry_point_holds_what_the_core_that_ran_held() {
+    let (core, order, exchange) = reversal_left_unknown("AC-4");
+    let before = core.parts_snapshot();
+    assert!(
+        before
+            .reversals
+            .contains_key(&(order.as_str().to_owned(), exchange.as_str().to_owned())),
+        "{before:?}"
+    );
+    let given = execution_support::given(&[IN, EXCHANGE, QUICK, OUT]);
+    let core = rutent_scenarios::harness::Scenario::new("execution", "AC-4", given).reopen(
+        core,
+        1,
+        &mut rutent_scenarios::assembly::machine::Reference,
+    );
+    assert_eq!(core.parts_snapshot(), before);
+    admitted_log(&core);
+}
+
+/// A part's state dropped from memory (the review of #355's round 2, M3's failure scenario: a deployment that left
+/// `Reversals::reopened` out of its own reopening): the reversals forget the ask they sent, so Core's run tries to ask
+/// the exchange again, under a fresh transaction, and the log refuses the effect
+/// (`reversal-is-asked-again-only-after-a-refusal`), so nothing is handed over. Core's own reopen rebuilds the part from
+/// the log, as it was, and asks nothing again.
+// verifies: NFR-6, INV-8, REQ-ORD-3
+#[test]
+fn reversal_state_dropped_from_memory_is_rebuilt_by_cores_reopen_and_nothing_is_asked_again() {
+    use rutent_contracts::provider_role::Operation;
+    let (mut core, order, exchange) = reversal_left_unknown("AC-4");
+    let before = core.parts_snapshot();
+    let handed = |core: &mut Core| {
+        core.world()
+            .journal(EXCHANGE)
+            .iter()
+            .filter(|e| matches!(e.operation.statement, Operation::Reversal(_)))
+            .count()
+    };
+    let asks = |core: &Core| {
+        entries(core)
+            .iter()
+            .filter(|v| {
+                matches!(&v.what, What::Effect { action: Action::AskReversal { order: o, .. }, .. } if o == &order)
+            })
+            .count()
+    };
+    assert_eq!((handed(&mut core), asks(&core)), (1, 1));
+    core.forget_reversals();
+    // Owed again on the next tick; then asked again, as a Core that forgot would: the log refuses the second ask.
+    core.tick();
+    let round = core.tick();
+    let asked = round.runs.reversed(&order)[0].asked.clone();
+    assert!(
+        matches!(
+            asked,
+            Some(Err(rutent_core_orch::reversal::ReversalError::Append(_)))
+        ),
+        "the log refuses a second ask of a reversal whose outcome is unknown: {asked:?}"
+    );
+    assert_eq!(
+        (handed(&mut core), asks(&core)),
+        (1, 1),
+        "nothing handed over again"
+    );
+    // Core's own reopen rebuilds the reversals from the log, and its run asks nothing again.
+    let given = execution_support::given(&[IN, EXCHANGE, QUICK, OUT]);
+    let mut core = rutent_scenarios::harness::Scenario::new("execution", "AC-4", given).reopen(
+        core,
+        1,
+        &mut rutent_scenarios::assembly::machine::Reference,
+    );
+    // The one ask and its carrier as before the drop; the confirmations as the log holds them, the one the forgetful
+    // Core asked on the tick its ask was refused among them.
+    let key = (order.as_str().to_owned(), exchange.as_str().to_owned());
+    let (asks_before, confirmed_before, carrier_before) = before.reversals[&key].clone();
+    assert_eq!(
+        core.parts_snapshot().reversals[&key],
+        (asks_before, confirmed_before + 1, carrier_before),
+        "the reversal rebuilt from the log"
+    );
+    for _ in 0..3 {
+        core.clock
+            .advance(rutent_core_orch::reversal::DEFAULT_REVERSAL_RETRY_SECONDS);
+        let round = core.tick();
+        assert!(
+            round
+                .runs
+                .reversed(&order)
+                .iter()
+                .all(|r| r.asked.is_none() && r.carried_on.is_none()),
+            "{:?}",
+            round.runs.reversed(&order)
+        );
+    }
+    assert_eq!((handed(&mut core), asks(&core)), (1, 1));
+}

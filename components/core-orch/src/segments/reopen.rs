@@ -769,7 +769,20 @@ impl Segments {
             }),
             reopened: true,
             answer_logged,
-            carried_on: false,
+            // Carried on before Core stopped, as the log holds it (the review of #355's round 2, its Low): a decided
+            // carrying-on of the segment after its move's effect, so it is carried on once across restarts too.
+            carried_on: history[handed.at..].iter().any(|(_, e)| match e {
+                Entry::Verified(v) => matches!(
+                    &v.what,
+                    What::Effect {
+                        action: rutent_contracts::core_internal::Action::AskStatus { order, segment, .. }
+                            | rutent_contracts::core_internal::Action::RepeatOperation { order, segment, .. }
+                            | rutent_contracts::core_internal::Action::ReadRecordedAnswer { order, segment, .. },
+                        ..
+                    } if order == handed.order && segment.as_str() == handed.segment.as_str()
+                ),
+                Entry::Stated(_) => false,
+            }),
         };
         Some((flight, held))
     }

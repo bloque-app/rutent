@@ -22,11 +22,20 @@
 //! An advertisement the deployment installed that the log committed to in none of its stated entries is no
 //! advertisement this Core ever recorded, tampered with or never received: the reopening is refused (`REQ-AUD-2`).
 //! Every cutover the log holds stands at the end, in the catalogue and the platform.
+//!
+//! **A live Core lists by the same rule** ([`advertise`], the review of #355's round 2, M2): an advertisement a provider
+//! sends is kept, stated in the log as its maker's claim, and joined into the catalogue only where the log's key register
+//! accepted that very statement, judged by the listings and cutovers the log holds when it was received, then the
+//! deployment sets what it sets on a joined advertisement. An advertisement is its maker's signed statement, not an
+//! action anyone decides: what policy decided of it is the operator's grant before it (`super::grant`) and the
+//! operator's settings the log holds, and the key register is the log's. So a live Core and a reopened one list the
+//! same advertisements, by one reading ([`join_received`]).
 
 use std::collections::BTreeMap;
 
+use rutent_contracts::core_internal::calls::{AppendFailure, Evidence, GeneralEntry, Log};
 use rutent_contracts::core_internal::{
-    Action, CatalogueChange, Effect, Entry, Outcome, Permit, Receipt, What,
+    Action, CatalogueChange, Effect, Entry, Outcome, Permit, Receipt, StatedEntry, What,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{ADVERTISEMENT_SHAPE, Advertisement, Statement};
@@ -114,21 +123,7 @@ pub fn relist<'c>(
                     continue;
                 }
                 let bytes = bytes.ok_or_else(|| RelistRefused::Unreadable(maker.clone()))?;
-                let held = Settings::reopened(&history[..place]);
-                held.apply_listings(&mut Targets {
-                    catalogue: Some(catalogue),
-                    ..Targets::default()
-                });
-                held.apply_cutovers(&mut Targets {
-                    catalogue: Some(catalogue),
-                    ..Targets::default()
-                });
-                catalogue
-                    .join(&bytes, instant(&s.received_at))
-                    .map_err(|e| {
-                        RelistRefused::Refused(format!("{maker}'s advertisement: {e:?}"))
-                    })?;
-                (relisting.joined)(catalogue, &bytes);
+                join_received(&history[..place], s, &bytes, catalogue, relisting.joined)?;
             }
             Entry::Verified(v) => {
                 let What::Effect {
@@ -193,6 +188,137 @@ pub fn relist<'c>(
         ..Targets::default()
     });
     Ok(())
+}
+
+/// Joins `bytes`, the advertisement the log received as `stated`, into `catalogue` as Core lists one, live or reopened:
+/// judged by the listings and cutovers `before`, the log's entries before it, held, at the time the log received it;
+/// then the deployment sets on it what `joined` sets. The caller has held it to the key register's accepted commitment.
+fn join_received(
+    before: &[(Receipt, Entry)],
+    stated: &StatedEntry,
+    bytes: &[u8],
+    catalogue: &mut Catalogue,
+    joined: &mut dyn FnMut(&mut Catalogue, &[u8]),
+) -> Result<(), RelistRefused> {
+    let held = Settings::reopened(before);
+    held.apply_listings(&mut Targets {
+        catalogue: Some(catalogue),
+        ..Targets::default()
+    });
+    held.apply_cutovers(&mut Targets {
+        catalogue: Some(catalogue),
+        ..Targets::default()
+    });
+    catalogue
+        .join(bytes, instant(&stated.received_at))
+        .map_err(|e| {
+            RelistRefused::Refused(format!(
+                "{}'s advertisement: {e:?}",
+                stated.attribution.maker().acts.as_str()
+            ))
+        })?;
+    joined(catalogue, bytes);
+    Ok(())
+}
+
+/// What the deployment hands Core with an advertisement a provider sent: only what the log doesn't hold.
+pub struct Advertising<'a> {
+    /// Core's general handle on the log.
+    pub log: &'a mut dyn Log,
+    /// The log's entries as it holds them now, read after the advertisement's entry is appended.
+    pub history: &'a dyn Fn() -> Vec<(Receipt, Entry)>,
+    /// The evidence store, which keeps the advertisement's bytes before the log names them.
+    pub evidence: &'a mut dyn Evidence,
+    /// When the log receives it: Core's clock, as a timestamp.
+    pub received_at: Timestamp,
+    /// The commitment of the advertisement the log's key register accepted last for a provider, if any.
+    pub accepted: &'a dyn Fn(&str) -> Option<Digest>,
+    /// What the deployment sets on its catalogue once an advertisement, its bytes, is joined.
+    pub joined: &'a mut dyn FnMut(&mut Catalogue, &[u8]),
+}
+
+/// How an advertisement Core received came out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Advertised {
+    /// Kept, stated at this receipt, the register accepted it, and it is listed in the catalogue.
+    Listed(Receipt),
+    /// Kept and stated at this receipt, but the log's key register didn't accept it (an older one replayed, a key it
+    /// doesn't know): nothing is listed, and the catalogue keeps what it held.
+    NotAccepted(Receipt),
+}
+
+/// Why an advertisement wasn't received.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdvertiseRefused {
+    /// The bytes aren't a provider's advertisement Core can read.
+    Unreadable,
+    /// The evidence store or the log refused, or couldn't take it now.
+    Append(AppendFailure),
+    /// The catalogue refused the advertisement the register accepted.
+    Refused(String),
+}
+
+/// Core's entry point for an advertisement a provider sends (see the module's docs, the review of #355's round 2, M2):
+/// its bytes kept in the evidence store, its stated entry appended as its maker's claim for its publisher, made when it
+/// says and received now, and, where the log's key register accepted that very statement, joined into `catalogue` by
+/// [`relist`]'s own reading. The deployment hands in only what the log doesn't hold ([`Advertising`]).
+///
+/// # Errors
+///
+/// As [`AdvertiseRefused`] names.
+pub fn advertise(
+    bytes: &[u8],
+    catalogue: &mut Catalogue,
+    advertising: &mut Advertising<'_>,
+) -> Result<Advertised, AdvertiseRefused> {
+    let statement: Statement<Advertisement> =
+        serde_json::from_slice(bytes).map_err(|_| AdvertiseRefused::Unreadable)?;
+    let kept = advertising
+        .evidence
+        .keep(bytes)
+        .map_err(AdvertiseRefused::Append)?;
+    let entry: GeneralEntry = serde_json::from_value(serde_json::json!({
+        "kind": "stated",
+        "attribution": {"signature": "unverified", "claimed_by": {
+            "party": statement.statement.publisher,
+            "acts": statement.maker,
+            "role": "provider",
+            "kind": "component",
+        }},
+        "what": {"statement": ADVERTISEMENT_SHAPE},
+        "when": {"at": statement.made_at, "source": "party_stated"},
+        "received_at": advertising.received_at,
+        "outcome": {"status": "stated"},
+        "signed_with": {"scheme": "ed25519", "key": statement.signature.key},
+        "commitment": kept.commitment,
+    }))
+    .map_err(|_| AdvertiseRefused::Unreadable)?;
+    let receipt = advertising
+        .log
+        .append(&entry)
+        .map_err(AdvertiseRefused::Append)?;
+    let history = (advertising.history)();
+    let Some(place) = history.iter().position(|(r, _)| *r == receipt) else {
+        return Err(AdvertiseRefused::Append(AppendFailure::Unavailable));
+    };
+    let Entry::Stated(stated) = &history[place].1 else {
+        return Err(AdvertiseRefused::Unreadable);
+    };
+    // Only the statement the register accepted is listed, as on a reopening.
+    if (advertising.accepted)(stated.attribution.maker().acts.as_str()).as_ref()
+        != Some(&stated.commitment)
+    {
+        return Ok(Advertised::NotAccepted(receipt));
+    }
+    join_received(
+        &history[..place],
+        stated,
+        bytes,
+        catalogue,
+        advertising.joined,
+    )
+    .map_err(|e| AdvertiseRefused::Refused(format!("{e:?}")))?;
+    Ok(Advertised::Listed(receipt))
 }
 
 /// The effect the log holds at `receipt`, `what` its entry's, on the permit `decision` its entry names: what a grant

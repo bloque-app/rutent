@@ -10862,6 +10862,18 @@ log and the evidence store the log already reads. **Every caller of v0 behaviour
 | R22 only the register's accepted advertisement is joined | `old_advertisement_replayed_after_a_newer_accepted_one_changes_nothing` red (the older one listed) |
 | R23 an advertisement judged by the cutovers held when it was received | `old_version_provider_survives_its_cutover_and_a_reopen_by_the_version_its_segment_began_under` red |
 | R24 an installed advertisement the log didn't commit to refuses the reopening | `reopened_core_joins_only_the_advertisement_its_log_committed_to` red |
+| R25 a reversal is sent once: a fresh ask only where every earlier one failed (`Reversals::ask_allowed`, round 2's H1) | `reversal_whose_outcome_is_unknown_is_never_asked_again_under_a_new_transaction` red |
+| R26 each reversal's asks rebuilt from the log on reopen (`Reversals::rebuild_asks`) | `reversal_whose_outcome_is_unknown_is_never_asked_again_under_a_new_transaction` red (asked again after the reopen) |
+| R27 a reversal's confirmations bounded by the cadence and the cap | `reversal_whose_outcome_is_unknown_is_never_asked_again_under_a_new_transaction` red |
+| R28 an ask whose outcome is unknown carried on once under its own transaction | `reversal_whose_outcome_is_unknown_is_never_asked_again_under_a_new_transaction` red |
+| R29 no recorded-answer read at a provider that answers status queries (round 2's Low) | `no_value_moves_twice_after_core_reopens` red |
+| R30 a live advertisement listed only where the key register accepted it (`settings::listing::advertise`, M2) | `old_advertisement_replayed_after_a_newer_accepted_one_changes_nothing` red (the replayed older one listed) |
+| R31 Core's reopen rebuilds the reversals (`schedule::reopen`, M3) | `core_reopened_through_its_own_entry_point_holds_what_the_core_that_ran_held` red |
+| R32 Core's reopen rebuilds the stuck orders | `stuck_parts_kept_decision_and_move_are_rebuilt_from_the_log` and `done_move_is_counted_as_moved_after_a_restart` red; the snapshot test stays green, as it reads a part stuck from the segments |
+| R33 `carried_on` rebuilt from the log | `no_value_moves_twice_after_core_reopens` red (carried on again after the second restart) |
+| R34 the repeat row's `read_recorded_answer` arm (round 2's M1) | `read_of_a_recorded_answer_is_held_to_the_segments_unsettled_move_at_its_provider` red |
+| R35 `reversal-is-asked-again-only-after-a-refusal` (core-internal) | `reversal_asked_again_after_an_ask_that_may_have_moved_is_refused_by_the_log` red |
+| R36 the repeat row's arm for a reversal whose ask has no final outcome | `reversal_asked_again_after_an_ask_that_may_have_moved_is_refused_by_the_log` red |
 
 ### Local checks
 
@@ -11122,6 +11134,88 @@ and tests) and `rutent-core-authz --lib` (172, the entry-point scan included); e
 `--lib`, all with `RUTENT_SCENARIO_SEEDS=11,12,13,14,15,113,114,115,116,117,118,119` (so `invariants`, `assembly`,
 `reopened` and `protocol_cutover` on those seeds); plan-check and tag-check `--strict` (0 findings, 2742 tests). No
 contract, prov or module-guest file touched by this pass.
+
+### T-020-61, review round 2 (#355, CHANGES at `d671c898`)
+
+A new author, from `d671c898`. `origin/m3` (`3a53de34`) was already merged and didn't move. Edits `components/core-orch/`
+(`reversal/`, `schedule/`, `segments/`, `settings/`), `contracts/` (`DEC-20`: core-internal's unreleased 1.0.0) and the
+`F-024` files each commit body names.
+
+- **H1, a reversal sent once (`reversal/asks.rs`).** Each ask of a reversal goes under a fresh transaction, so a provider
+  can't tell a second ask from a new reversal of the same move. Now `Reversals::ask` claims a fresh transaction only where
+  every earlier ask of the reversal failed, which moved nothing (the provider refused it, or the platform refused before
+  the module passed anything out), and then only on the retry cadence and up to the cap; otherwise `AskedAlready`,
+  `NotDue` or `TriedEnough`. An ask whose outcome is unknown (`unanswered`, or no result after a stop) is carried on
+  once under its own transaction, in item (8)'s order: its status asked where the provider answers status queries, its
+  operation repeated where it declares a safe repeat and no status query, otherwise the platform's recorded answer read
+  back; each a decided effect, an answer of the reversal's transaction judged as the ask's would be
+  (`Reversals::carry_on_reversal`). An ask the provider carried out whose word doesn't count, and an unknown one carried
+  on, wait for the origin reserve's confirmation, asked on the same cadence and cap; past it the stuck check times the
+  part. Core's run takes the step `Reversals::next_step` names. A reopened Core rebuilds every ask, its outcome and
+  answer, whether it was carried on, the confirmations and the carrier from the log (`Reversals::rebuild_asks`);
+  `asked_last` and `took_step` are gone. **The log holds Core to it** (core-internal 1.0.0, folded, with fixtures and the
+  guard green against develop and m3): `reversal-is-asked-again-only-after-a-refusal` refuses an `ask_reversal` effect
+  after one of the same order and segment whose result isn't `failed`, and `repeat-is-of-an-unsettled-segment-at-its-provider`
+  admits a repeat or a recorded read of a failed segment whose `ask_reversal` has no final result (122 relations).
+  Tests: `reversal_whose_outcome_is_unknown_is_never_asked_again_under_a_new_transaction` (one ask and one reversal
+  operation at the exchange across ticks and a reopen, one recorded read, confirmations to the cap, then stuck) and
+  `reversal_asked_again_after_an_ask_that_may_have_moved_is_refused_by_the_log`; and
+  `reversal_state_dropped_from_memory_is_rebuilt_by_cores_reopen_and_nothing_is_asked_again` shows a forgetful Core's
+  second ask refused by the log, nothing handed over. The role suite gains no check of its own: Core can't send a second
+  ask of one reversal (its rule and the log's), and the stand-ins already refuse a second reversal of the same `reverses`.
+  The tests that stepped a reversal again now ask again only after a refusal and past the cadence
+  (`failed_segments_reversal_is_owed_asked_and_confirmed_by_cores_run`, `protocol_cutover`'s holdout), never after an
+  unknown or short answer (`simulated_faults`), and `confirmed_on_tick` waits out the cadence between confirmations.
+- **M1.** Admission cases for the repeat row's `read_recorded_answer` arm: `world--decide_read_recorded`,
+  `world--effect_read_recorded`, `--a-read-at-another-provider`, `--a-read-of-a-settled-segment`,
+  `--a-read-under-another-segments-transaction`, with the README cells; R34.
+- **M2, Core's entry point for an advertisement (`settings::listing::advertise`).** Its bytes kept, its stated entry
+  appended as its maker's claim, and joined only where the log's key register accepted that very statement, by
+  `relist`'s own reading (`join_received`, shared: the listings and cutovers held at receipt, the receipt's time, then what
+  the deployment sets on a joined advertisement). The assembly's `advertise` and `receive_advertisement` hand Core only
+  `kit::joined`; `kit::join` stays the log-less test kit's. `old_advertisement_replayed_after_a_newer_accepted_one_changes_nothing`
+  now holds the live path too.
+- **M3, Core's own reopen (`schedule::reopen`).** Every part rebuilt from the log in Core's order (the module's docs list
+  it), the deployment handing in only its pieces and holding what Core answers; the assembly's `reopen_core` wires it,
+  tells its own registers (policy's sources, the filings, the requests, the linked routes) and lets Core's run resume.
+  `relist`, `rebuild_from_log`, `relist_holdings`, `relist_publisher_accounts`, `recover_starts` and
+  `settle_reopened_erasures` are gone from the assembly. Tests:
+  `core_reopened_through_its_own_entry_point_holds_what_the_core_that_ran_held` (`Core::parts_snapshot` before and after)
+  and the dropped-state test above.
+- **Lows.** Carry-on at a status-query provider that knows no result waits for the stuck check and never reads the
+  platform's record (the coordinator's ruling on the reviewer's Low: item (8)'s order), now asserted. `carried_on` is
+  rebuilt from the log (a carrying-on of the segment after its move's effect), so a segment is carried on once across
+  restarts. `change_public_network`'s `done` result with nothing carried out stays: `T-020-60` owns it, in progress on a
+  branch stacked on this one.
+
+**Defaults taken in this round** (reversible, each failing closed):
+
+13. **A reversal ask that failed may be followed by another**, on the cadence and up to the cap: it moved nothing, so a
+    fresh transaction can't pay twice (the reviewer's fix). The coordinator's "never a fresh transaction" is read as of
+    an ask that may have moved: `unanswered`, no result, or `done`.
+14. **The retry cadence is 30 s and the cap 24** (`DEFAULT_REVERSAL_RETRY_SECONDS`, `MAX_REVERSAL_TRIES`), for the
+    confirmations and the asks after a refusal alike, so the stuck window of a provider that advertises settling in a
+    minute holds a few asks. `Reversals::set_retry_seconds` sets another; no operator setting carries it yet (a gap).
+15. **A carrying-on of a reversal policy refused is not tried again**: the reversal waits on its confirmations and the
+    stuck check.
+16. **An advertisement is not a decided action** (M2's "through policy"): what policy decided of it is the operator's
+    grant before it and the settings the log holds. At the build, an advertisement the register refuses is an error.
+17. **Core's reopen rebuilds the catalogue before the settings**, not after as the coordinator's list puts them: a
+    setting's missing result is completed against the rebuilt catalogue (it is `failed` where the catalogue refuses it),
+    and the listing judges each advertisement by the settings the log held when it was received.
+18. **The operator's confirmation of releases a restarted platform holds follows Core's reopen**: the landings owed are
+    asked again once the wallets run, as before.
+
+**Gaps of this round, with owners.**
+
+- `change_public_network` records `done` with nothing carried out: `T-020-60` (stacked on this branch, in progress).
+- No operator setting carries the reversal retry cadence (core-internal names no job for it): F-020's follow-up row.
+- A provider's showing of fault kept before a restart isn't rebuilt (`Reversals` holds it in memory), so `accept_fault`
+  answers `NoShowing` after a reopen until the provider shows it again (fails closed): F-020's follow-up row. The
+  reversal's own run (its asks, confirmations and carrier) is rebuilt.
+
+**Local checks of this round**: see the report on #355 (the stand-ins and the plain wallet built from this tree in a
+private directory and deleted after).
 
 ## T-020-67: what the checks of `T-020-58` and `T-020-54` left
 
