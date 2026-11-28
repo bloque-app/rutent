@@ -1504,6 +1504,8 @@ mod tests {
     /// what its orders hold there, and one private node's; it lends Core's parts to the log's comparisons alone, and no
     /// other (each other job finds them not lent, so nothing moves on it, and no balance is read, `REQ-AUZ-5`).
     struct Bare {
+        exposures: crate::snapshot::Exposures,
+        issued: crate::rounds::Issued,
         clock: At,
         intake: Intake,
         arrivals: Arrivals,
@@ -1627,7 +1629,20 @@ mod tests {
         ) {
         }
         fn with_reversal_desk(&mut self, _: &mut ReversalsLent<'_>) {}
-        fn with_stuck(&mut self, _: &mut StuckLent<'_>) {}
+        fn with_stuck(&mut self, with: &mut StuckLent<'_>) {
+            // The stuck orders and what they reach, over a log, a policy and a channel that take nothing.
+            let (mut log, mut policy, mut channel) = (Refuses, Refuses, Refuses);
+            let mut fresh = Drawn(0);
+            let mut parts = StuckParts {
+                clock: &self.clock,
+                log: &mut log,
+                fresh: &mut fresh,
+                issued: &self.issued,
+                segments: &mut self.segments,
+                exposures: &mut self.exposures,
+            };
+            with(&mut self.stuck, &mut parts, &mut policy, &mut channel);
+        }
         fn with_landings(&mut self, _: &mut dyn FnMut(&mut Segments, &mut dyn Landings)) {}
         fn with_audit(
             &mut self,
@@ -1647,8 +1662,68 @@ mod tests {
         }
     }
 
+    /// A log, a policy and an operator's channel that take nothing.
+    struct Refuses;
+
+    impl rutent_contracts::core_internal::calls::Log for Refuses {
+        fn append(
+            &mut self,
+            _: &rutent_contracts::core_internal::calls::GeneralEntry,
+        ) -> Result<Receipt, AppendFailure> {
+            Err(AppendFailure::Unavailable)
+        }
+    }
+
+    impl StuckOrders for Refuses {
+        fn decide_stuck(
+            &mut self,
+            _: &rutent_contracts::core_internal::StuckDecide,
+        ) -> Result<rutent_contracts::core_internal::Decision, AppendFailure> {
+            Err(AppendFailure::Unavailable)
+        }
+        fn move_stuck(
+            &mut self,
+            _: &rutent_contracts::core_internal::StuckMove,
+        ) -> Result<rutent_contracts::core_internal::Decision, AppendFailure> {
+            Err(AppendFailure::Unavailable)
+        }
+        fn report_outcome(
+            &mut self,
+            _: &rutent_contracts::core_internal::OutcomeReport,
+        ) -> Result<rutent_contracts::core_internal::Decision, AppendFailure> {
+            Err(AppendFailure::Unavailable)
+        }
+        fn confirm_outcome(
+            &mut self,
+            _: &rutent_contracts::core_internal::OutcomeConfirmation,
+        ) -> Result<rutent_contracts::core_internal::Decision, AppendFailure> {
+            Err(AppendFailure::Unavailable)
+        }
+    }
+
+    impl Operator for Refuses {
+        fn raise(
+            &mut self,
+            _: &rutent_contracts::core_internal::Raise,
+        ) -> rutent_contracts::core_internal::calls::Delivery {
+            rutent_contracts::core_internal::calls::Delivery::Undelivered
+        }
+    }
+
+    /// Fresh identifiers, counted.
+    struct Drawn(u32);
+
+    impl crate::rounds::Fresh for Drawn {
+        fn id(&mut self) -> Id {
+            self.0 += 1;
+            id(&format!("drawn-{}", self.0)).unwrap()
+        }
+    }
+
     fn bare() -> Bare {
         Bare {
+            exposures: crate::snapshot::Exposures::new(),
+            issued: crate::rounds::Issued::default(),
             clock: At(1_764_000_000),
             intake: Intake::new(),
             arrivals: Arrivals::default(),
@@ -1661,6 +1736,98 @@ mod tests {
             next: 0,
             register: true,
         }
+    }
+
+    /// The operator's decide step names any part of a split order (`T-020-61`, the review's M4): over a deployment that
+    /// lends a split order of three parts, its second part stuck, Core's entry point takes the part Core holds stuck,
+    /// never the first, and goes on to that part's own checks. The deployment's log takes nothing, so the decision stops
+    /// at the first of them that needs the log's records, the part's two ends; an order whose parts none is stuck is
+    /// not stuck at all.
+    // verifies: REQ-AUZ-4, AC-6
+    #[test]
+    fn stuck_command_decides_the_stuck_part_of_a_split_order() {
+        use crate::stuck::{ResolveError, decide_stuck};
+        use rutent_contracts::core_internal::Resolution;
+        use rutent_contracts::state_machine::RecordedInput;
+
+        let chosen: RecordedInput = serde_json::from_str(include_str!(
+            "../../../../contracts/state-machine/fixtures/valid/recorded-input-route-chosen-three-parts.json"
+        ))
+        .expect("a route of three parts");
+        let mut stuck_at: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../contracts/state-machine/fixtures/valid/recorded-input-stuck-declared-over-time.json"
+        ))
+        .expect("a stuck declaration");
+        stuck_at["subject"]["part"] = "p2".into();
+        let stuck_at: RecordedInput = serde_json::from_value(stuck_at).expect("of the second part");
+        let rutent_contracts::state_machine::Observed::RouteChosen { parts, .. } = &chosen.observed
+        else {
+            panic!("the route chosen");
+        };
+        let order = id("ord-1").unwrap();
+        let signed: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../contracts/router-api/fixtures/valid/decision-record-split-of-one-part.json"
+        ))
+        .expect("a signed record");
+        let record: rutent_contracts::router_api::DecisionRecord =
+            serde_json::from_value(signed["statement"].clone()).expect("a record");
+        let started = |plan| {
+            Started {
+            record: record.clone(),
+            plan,
+            authorisation: id("auth-1").unwrap(),
+            origin: id("reserve-bank-co").unwrap(),
+            route: serde_json::from_value(serde_json::json!({
+                "destination": { "reserve": "reserve-wallet", "node": { "network": "polygon" }, "account": "0xabc" },
+                "to_asset": { "id": "USDC", "decimals": 6 },
+                "delivers": "100",
+            }))
+            .expect("the route's end"),
+            session: None,
+            inputs: BTreeMap::new(),
+            floor: None,
+        }
+        };
+
+        let mut deployment = bare();
+        assert!(
+            deployment
+                .segments
+                .follow_recorded(&deployment.clock, &[chosen.clone(), stuck_at])
+        );
+        deployment
+            .intake
+            .hold_started(&order, started(parts.clone()));
+        deployment
+            .stuck
+            .plant_stuck(&order, &id("p2").unwrap(), Reading::at(1_763_000_000));
+        let decider = Bare::actors(&deployment).operator;
+        let resolution: Resolution = serde_json::from_value(serde_json::json!({
+            "kind": "hand_on", "by": "reserve-wallet", "linked_order": "linked-1",
+            "asset": { "id": "USDC", "decimals": 6 }, "amount": "100",
+        }))
+        .unwrap_or_else(|e| panic!("a resolution: {e}"));
+        let decided = decide_stuck(&mut deployment, &order, &decider, &resolution, &[]);
+        assert_eq!(
+            decided.err(),
+            Some(ResolveError::NoEnds),
+            "the second part, stuck, is decided: it goes past its selection to its own ends"
+        );
+
+        // Neither of the other parts is stuck: an order with only those is not stuck.
+        let mut deployment = bare();
+        assert!(
+            deployment
+                .segments
+                .follow_recorded(&deployment.clock, std::slice::from_ref(&chosen))
+        );
+        deployment
+            .intake
+            .hold_started(&order, started(parts.clone()));
+        assert_eq!(
+            decide_stuck(&mut deployment, &order, &decider, &resolution, &[]).err(),
+            Some(ResolveError::NotStuck)
+        );
     }
 
     /// Every job's body is Core's: over a deployment that answers only its ports, the tick runs every job, and what

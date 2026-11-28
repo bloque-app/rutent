@@ -2061,21 +2061,18 @@ impl Core {
         self.deployed.registers.borrow_mut()
     }
 
-    /// Grants `installed`, tuple by tuple: each decided by the operator's login as a catalogue change naming the
-    /// tuple and the advertising key, and its effect recorded; then that tuple granted in Core's catalogue, at its
-    /// effect's time, by the decider, under the key; then the effect's `done` result. So nothing is granted before its
-    /// record.
-    ///
-    /// The catalogue's grant equals the log's on what the log's grant holds: the tuple, the advertising key, the
-    /// decider and the effect's time. Its party, expiry, categories and reversal capacity are the deployment's
-    /// settings ([`kit::grant_terms`]), which core-internal's `change_catalogue` doesn't carry.
+    /// Grants `installed`, tuple by tuple, through Core's command ([`rutent_core_orch::settings::grant::grant`],
+    /// `T-020-61`): each decided by the operator's login as a catalogue change naming the tuple (or a verifier's class)
+    /// and the advertising key, its effect recorded, then granted in Core's catalogue at its effect's time, by the
+    /// decider, under the key, then its result. So nothing is granted before its record. The assembly hands Core the
+    /// deployment's terms ([`kit::grant_terms`]: the party, expiry, categories and reversal capacity, which
+    /// core-internal's `change_catalogue` doesn't carry) and the log's name of each tuple ([`kit::tuple_id`]).
     ///
     /// # Errors
     ///
-    /// If policy doesn't permit a tuple's grant, or the log takes no step of it.
+    /// If policy doesn't permit a tuple's grant, the catalogue refuses it, or the log takes no step of it.
     pub fn grant(&mut self, installed: &Installed) -> Result<(), AssemblyError> {
-        let listing =
-            |step: &str, e: AppendFailure| AssemblyError::Listing(format!("{step}: {e:?}"));
+        use rutent_core_orch::settings::grant::{GrantAsked, Granted};
         let statement = installed.advertisement.statement();
         let provider = kit::id(&statement.statement.provider);
         let key = statement.signature.key.clone();
@@ -2090,68 +2087,36 @@ impl Core {
             .filter(|_| statement.statement.offers.reserve.is_none())
             .map(|v| v.classes.clone())
             .unwrap_or_default();
-        let tuples: Vec<(
-            Option<Id>,
-            Option<Id>,
-            Option<rutent_prov::catalogue::TupleKey>,
-        )> = rutent_prov::catalogue::tuples_of(&statement.statement)
+        let granting: Vec<Granted> = rutent_prov::catalogue::tuples_of(&statement.statement)
             .into_iter()
-            .map(|t| (Some(kit::tuple_id(provider.as_str(), &t)), None, Some(t)))
+            .map(|tuple| Granted::Tuple {
+                id: kit::tuple_id(provider.as_str(), &tuple),
+                tuple,
+            })
             .chain(
                 verifier_classes
                     .iter()
-                    .map(|class| (None, Some(kit::id(class)), None)),
+                    .map(|class| Granted::Class(kit::id(class))),
             )
             .collect();
-        for (tuple_id, class, tuple) in tuples {
-            let action = Action::ChangeCatalogue {
-                change: CatalogueChange::Grant,
-                provider: provider.clone(),
-                version: None,
-                tuple: tuple_id,
-                class,
-                advertising_keys: vec![key.clone()],
-                statement_key: None,
-                setting: None,
-                versions: Vec::new(),
-                public_network: None,
-            };
-            let request = DecisionRequest {
-                request: self.fresh.id(),
-                caller: decider.clone(),
-                action: action.clone(),
-                at: self.clock.timestamp(),
-            };
-            let decision = rutent_contracts::core_internal::calls::Decisions::decide(
-                &mut self.policy,
-                &request,
-            )
-            .map_err(|e| listing("the grant's decision", e))?;
-            let permit = decision.permit().ok_or_else(|| {
-                AssemblyError::Listing(format!(
-                    "the grant wasn't permitted: {:?}",
-                    decision.outcome
-                ))
-            })?;
-            let effect = self
-                .verified(
-                    What::Effect {
-                        action,
-                        decision: permit,
-                    },
-                    Outcome::ToTakeEffect {},
-                )
-                .map_err(|e| listing("the grant's effect", e))?;
-            // Carried out on the terms the log holds, under an id of its own, the effect's place in the log, so a
-            // tuple granted again is granted anew.
-            let mut terms =
-                kit::grant_terms(installed, decider.acts.as_str(), self.time_of(&effect));
-            terms.id = format!("grant-{}-{}", provider.as_str(), u64::from(effect.index));
-            terms.tuples = tuple.into_iter().collect();
-            kit::grant(&mut self.catalogue, installed, terms);
-            self.verified(What::Result { effect }, Outcome::Done {})
-                .map_err(|e| listing("the grant's result", e))?;
-        }
+        let terms = kit::grant_terms(installed, decider.acts.as_str(), self.clock.instant());
+        let mut decisions = self.policy.clone();
+        rutent_core_orch::settings::grant::grant(
+            &mut self.general,
+            &mut decisions,
+            &mut self.catalogue,
+            &self.clock,
+            &mut self.fresh,
+            &GrantAsked {
+                provider: &provider,
+                advertising_key: &key,
+                granting: &granting,
+                terms: &terms,
+                caller: &decider,
+                core: &kit::core(),
+            },
+        )
+        .map_err(|e| AssemblyError::Listing(format!("the grant: {e:?}")))?;
         self.record_release(installed);
         Ok(())
     }
@@ -2434,14 +2399,11 @@ impl Core {
             if *change == CatalogueChange::Grant && tuple.is_none() && class.is_some() {
                 continue;
             }
-            // A holding account's release the operator accepted: its wallet is one of the host's accounts, which go on
-            // beside the platform and are listed again first (`Core::relist_holdings`, `T-020-46`).
-            if *change == CatalogueChange::AcceptModule
-                && self
-                    .catalogue
-                    .publishers()
-                    .published_by_operator(provider.as_str())
-            {
+            // A release Core's decided accept took (`T-020-61`): the platform holds it in force in its own record, which
+            // goes on beside Core, and Core's catalogue lists nothing for it. A holding account's wallet is one of the
+            // host's accounts, listed again first (`Core::relist_holdings`, `T-020-46`); a private node's publisher
+            // account is listed again from the deployment's register (`relist_publisher_accounts`).
+            if *change == CatalogueChange::AcceptModule {
                 continue;
             }
             let (CatalogueChange::Grant, Some(tuple_id)) = (change, tuple) else {
@@ -2500,15 +2462,6 @@ impl Core {
         let index = usize::try_from(u64::from(receipt.index)).unwrap_or(usize::MAX);
         match self.log.borrow().entries().get(index) {
             Some((_, Entry::Stated(s))) => rutent_core_authz::session::instant(&s.received_at),
-            _ => self.clock.instant(),
-        }
-    }
-
-    /// The time of the verified entry at `receipt`, on the catalogue's clock.
-    fn time_of(&self, receipt: &Receipt) -> rutent_prov::catalogue::Instant {
-        let index = usize::try_from(u64::from(receipt.index)).unwrap_or(usize::MAX);
-        match self.log.borrow().entries().get(index) {
-            Some((_, Entry::Verified(v))) => rutent_core_authz::session::instant(&v.when.at),
             _ => self.clock.instant(),
         }
     }
@@ -2913,21 +2866,6 @@ impl Core {
             .collect();
         self.stuck.follow(&self.segments, &entries, order)?;
         Ok(())
-    }
-
-    /// Declares that `order`'s input `input` rests on `judgement`, before the segment that carries it is handed over,
-    /// so Core writes the `reliance` entry before it sends (`T-020-23`).
-    ///
-    /// # Errors
-    ///
-    /// As [`Segments::rests_on`](rutent_core_orch::segments::Segments::rests_on).
-    pub fn rests_on(
-        &mut self,
-        order: &Id,
-        input: &str,
-        judgement: rutent_core_orch::reliance::Judgement,
-    ) -> Result<(), rutent_core_orch::reliance::Rests> {
-        self.segments.rests_on(order, input, judgement)
     }
 
     /// The judgement the log holds of `verifier`: the receipt of its stated entry of the judgement's shape, which

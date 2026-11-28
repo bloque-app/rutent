@@ -22,6 +22,8 @@
 //! under `DEC-13`, and a public node's `confirmations` reach Core here ([`Settings::public_node`]) for the network's
 //! reader to apply (see `F-020`'s notes for `T-020-49`'s gap on it).
 
+pub mod grant;
+
 use std::collections::BTreeMap;
 
 use rutent_contracts::core_internal::calls::{AppendFailure, Decisions, Log};

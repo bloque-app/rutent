@@ -13,12 +13,9 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use rutent_contracts::core_internal::calls::{
-    AppendFailure, Decisions, Evidence, GeneralEntry, Log,
-};
+use rutent_contracts::core_internal::calls::{AppendFailure, Evidence, GeneralEntry, Log};
 use rutent_contracts::core_internal::{
-    About, Action, Actor, CatalogueChange, DecisionRequest, Effect, Entry, Outcome, Receipt,
-    Violation, What,
+    About, Action, Actor, CatalogueChange, Effect, Entry, Receipt, Violation, What,
 };
 use rutent_contracts::module_interface::{Identifier, PlatformRefusal};
 use rutent_contracts::provider_role::{Operation, Statement};
@@ -26,7 +23,6 @@ use rutent_contracts::router_api::{DecisionRecord, Id, PolicyBounds};
 use rutent_contracts::state_machine::SegmentPlan;
 use rutent_core_authz::roles::Permission;
 use rutent_core_orch::hand_on::{HandOn, HandOnError};
-use rutent_core_orch::rounds::Fresh;
 use rutent_core_orch::segments::{Answered, Landed, Landings, Modules};
 use rutent_core_orch::snapshot::Clock;
 use rutent_core_orch::stuck::{
@@ -445,8 +441,8 @@ impl Core {
 
     /// Installs the operator's plain wallet as the holding account of the public node `node`, holding `asset`
     /// (`REQ-CAT-23`, `T-024-17`): the wallet's two components admitted to the platform on the operator's own signed
-    /// release, the node on the operator's public list, and the wallet registered as the node's account. Its release
-    /// isn't accepted in the log yet ([`Core::accept_release`]), so the log verifies none of its answers.
+    /// release and accepted through Core's decided accept ([`Core::accept_release`]), the node on the operator's public
+    /// list, and the wallet registered as the node's account. The platform runs none of it before Core accepted it.
     ///
     /// # Errors
     ///
@@ -457,6 +453,8 @@ impl Core {
         asset: &str,
     ) -> Result<InstalledWallet, AssemblyError> {
         let wallet = self.fleet.install_wallet(kit::OPERATOR_WALLET);
+        // Its release runs once Core's decided accept takes it (`T-020-61`).
+        self.accept_release(&wallet)?;
         let _ = self.catalogue.publish_operator_module(&wallet.provider);
         let _ = self.catalogue.add_public_node(node);
         self.holdings
@@ -491,89 +489,84 @@ impl Core {
         Ok(wallet)
     }
 
-    /// Accepts `wallet`'s release in the log, as a decided catalogue change (`REQ-CAT-23`, `REQ-AUD-2`): the operator's
-    /// login decides it, Core records its effect naming the release's statements key, and its result is `done`. From
-    /// then the log verifies the wallet's statements by that key, as it does any module the operator publishes.
+    /// Accepts `wallet`'s release, waiting at the platform since its install, through Core's decided accept
+    /// (`ReleaseChange::Accept`, `Segments::change_release`; `REQ-CAT-23`, `REQ-AUD-2`, `T-020-61`): the operator's
+    /// login decides it, Core records its effect naming the release's statements key before the platform accepts the
+    /// release, and its result after. From then the wallet runs, and the log verifies its statements by that key, as
+    /// it does any module the operator publishes. The assembly only names the operator's permission in the
+    /// deployment's register of actors. The receipt of the effect.
     ///
     /// # Errors
     ///
-    /// If policy doesn't permit the change, or the log takes no step of it.
-    pub fn accept_release(&mut self, wallet: &InstalledWallet) -> Result<Receipt, AssemblyError> {
-        self.log_wallet_release_change(
+    /// If policy doesn't permit the change, no release of it waits, or the platform refuses it.
+    pub(super) fn accept_release(
+        &mut self,
+        wallet: &InstalledWallet,
+    ) -> Result<Receipt, AssemblyError> {
+        let (version, key) = (kit::id(&wallet.version), wallet.statement_key());
+        self.wallet_release_change(
             wallet,
             CatalogueChange::AcceptModule,
-            Some(wallet.statement_key()),
+            rutent_core_orch::segments::lifecycle::ReleaseChange::Accept {
+                version: &version,
+                statement_key: &key,
+            },
         )
     }
 
-    /// Revokes `wallet`'s release in the log, as a decided catalogue change (`REQ-CAT-23`): from then the log attributes
-    /// none of its statements but for a transaction a segment of it ran on, and Core asks it nothing more
-    /// (`T-020-57`'s review, L1).
+    /// Revokes `wallet`'s release through Core's decided revoke (`ReleaseChange::Revoke`, `REQ-CAT-23`): from then the
+    /// platform runs none of it, the log attributes none of its statements but for a transaction a segment of it ran on,
+    /// and Core asks it nothing more (`T-020-57`'s review, L1).
     ///
     /// # Errors
     ///
-    /// If policy doesn't permit the change, or the log takes no step of it.
+    /// If policy doesn't permit the change, or the platform refuses it.
     pub fn revoke_release(&mut self, wallet: &InstalledWallet) -> Result<Receipt, AssemblyError> {
-        self.log_wallet_release_change(wallet, CatalogueChange::RevokeRelease, None)
+        let version = kit::id(&wallet.version);
+        self.wallet_release_change(
+            wallet,
+            CatalogueChange::RevokeRelease,
+            rutent_core_orch::segments::lifecycle::ReleaseChange::Revoke { version: &version },
+        )
     }
 
-    /// `change` of `wallet`'s release, decided by the operator's login, its effect recorded and its result `done`
-    /// (`T-020-57`; named apart from the lifecycle command, `Core::change_release`, of `T-020-49`).
-    fn log_wallet_release_change(
+    /// `change` of `wallet`'s release, by the operator's login, through Core's decided lifecycle path
+    /// ([`Core::change_release`]); `named` is the catalogue change it records, whose permission the deployment's
+    /// register names for the operator. The receipt of the effect Core recorded.
+    fn wallet_release_change(
         &mut self,
         wallet: &InstalledWallet,
-        change: CatalogueChange,
-        statement_key: Option<rutent_contracts::provider_role::PublicKey>,
+        named: CatalogueChange,
+        change: rutent_core_orch::segments::lifecycle::ReleaseChange<'_>,
     ) -> Result<Receipt, AssemblyError> {
-        let listing =
-            |step: &str, e: AppendFailure| AssemblyError::Listing(format!("{step}: {e:?}"));
         self.deployed
             .registers
             .borrow_mut()
-            .permit(&kit::operator_login(), Permission::Change(change));
-        let action = Action::ChangeCatalogue {
-            change,
-            provider: kit::id(&wallet.provider),
-            version: Some(kit::id(&wallet.version)),
-            tuple: None,
-            class: None,
-            advertising_keys: Vec::new(),
-            statement_key,
-            setting: None,
-            versions: Vec::new(),
-            public_network: None,
-        };
-        let request = DecisionRequest {
-            request: self.fresh.id(),
-            caller: kit::operator_login(),
-            action: action.clone(),
-            at: self.clock.timestamp(),
-        };
-        let decision = Decisions::decide(&mut self.policy, &request)
-            .map_err(|e| listing("the release's decision", e))?;
-        let permit = decision.permit().ok_or_else(|| {
-            AssemblyError::Listing(format!(
-                "the release wasn't permitted: {:?}",
-                decision.outcome
-            ))
-        })?;
-        let effect = self
-            .verified(
-                What::Effect {
-                    action,
-                    decision: permit,
+            .permit(&kit::operator_login(), Permission::Change(named));
+        self.change_release(&wallet.provider, change)
+            .map_err(|e| AssemblyError::Listing(format!("the release's change: {e:?}")))?;
+        self.log()
+            .entries()
+            .iter()
+            .rev()
+            .find_map(|(receipt, entry)| match entry {
+                Entry::Verified(v) => match &v.what {
+                    What::Effect {
+                        action:
+                            Action::ChangeCatalogue {
+                                change, provider, ..
+                            },
+                        ..
+                    } if *change == named && provider.as_str() == wallet.provider => {
+                        Some(receipt.clone())
+                    }
+                    _ => None,
                 },
-                Outcome::ToTakeEffect {},
-            )
-            .map_err(|e| listing("the release's effect", e))?;
-        self.verified(
-            What::Result {
-                effect: effect.clone(),
-            },
-            Outcome::Done {},
-        )
-        .map_err(|e| listing("the release's result", e))?;
-        Ok(effect)
+                Entry::Stated(_) => None,
+            })
+            .ok_or_else(|| {
+                AssemblyError::Listing("the release's effect isn't in the log".to_owned())
+            })
     }
 
     /// What a reopened Core finds of the landings its segments owed (`Segments::reconcile_landings`, `T-020-46`): each

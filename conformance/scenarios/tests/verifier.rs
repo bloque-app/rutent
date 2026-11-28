@@ -213,11 +213,8 @@ fn judged_and_run(verifiers: &[&str], verifier: &str, subject: &str) -> (Core, I
     let (order, told) = quoted(&mut core, request);
     assert!(offered(&told), "offered with the judgement: {told:?}");
     accepted(&mut core, &order, &told);
-    let judgement = core
-        .judgement_of(verifier)
-        .expect("the verifier's judgement");
-    core.rests_on(&order, PAYER_INPUT, judgement)
-        .expect("declared before anything is handed over");
+    // Core declares what the withdrawal's inputs rest on itself, as it hands it over: the judgement its eligibility
+    // figure cites, found in the log (`T-020-61`). No caller declares anything.
     core.ran_on_tick(&order).expect("runs");
     (core, order, told)
 }
@@ -248,6 +245,26 @@ fn provider_relying_on_a_verifiers_judgement_leaves_a_reliance_entry_naming_the_
     assert!(
         at < first_move(&core),
         "written before the value moved at the provider that relies on it"
+    );
+    // Core declared it: every input the withdrawal carries rests on the judgement its eligibility figure cites, the
+    // payer's account among them, with no caller's declaration (`T-020-61`).
+    let inputs: Vec<String> = core
+        .log()
+        .entries()
+        .iter()
+        .find_map(|(_, e)| match e {
+            Entry::Verified(v) => match &v.what {
+                What::Reliance { inputs, .. } => {
+                    Some(inputs.iter().map(|i| i.as_str().to_owned()).collect())
+                }
+                _ => None,
+            },
+            Entry::Stated(_) => None,
+        })
+        .expect("the reliance names its inputs");
+    assert!(
+        inputs.iter().any(|i| i == PAYER_INPUT),
+        "the payer's account rests on the judgement: {inputs:?}"
     );
 
     // Neither the operator nor the customer is the judge or the relier, and no other record cites the judgement: the

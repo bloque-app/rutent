@@ -527,10 +527,33 @@ impl Jobs<'_> {
         route: &Route,
     ) -> Result<Ran, String> {
         let actors = self.ports().actors();
-        let entry = record_entry(&self.ports().history(), &route.record);
+        let history = self.ports().history();
+        let entry = record_entry(&history, &route.record);
         let live = route.live(order, part, started, &actors, entry.as_ref());
+        // The judgements the route's eligibility figures carry, each found in the log (`REQ-CPL-12`): what Core declares
+        // the inputs of a segment it hands over rest on, before the segment is handed over.
+        let judgements: Vec<_> = route
+            .record
+            .snapshot
+            .figures
+            .iter()
+            .filter_map(|f| match &f.value {
+                rutent_contracts::router_api::FigureValue::Eligibility { judgement, .. } => {
+                    let ports = self.ports_mut();
+                    crate::reliance::stated_judgement(&history, &mut |c| ports.kept(c), judgement)
+                        .map(|found| ((**judgement).clone(), found))
+                }
+                _ => None,
+            })
+            .collect();
         let mut ran = Err("the segments weren't lent".to_owned());
         self.ports_mut().with_segments(&mut |segments, parts| {
+            segments.declare_cited(&live, &mut |statement| {
+                judgements
+                    .iter()
+                    .find(|(held, _)| held == statement)
+                    .map(|(_, found)| found.clone())
+            });
             ran = segments
                 .run_part(parts, &live)
                 .map_err(|why| format!("{why:?}"));

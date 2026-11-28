@@ -144,8 +144,8 @@ impl Core {
     }
 
     /// Installs the plain wallet as the account `publisher` keeps for the private node `node`, holding `asset`: the
-    /// platform runs it, the catalogue records it as the node's holding account, and the deployment's register of
-    /// holding accounts names it, its publisher and its asset, so the schedule reads it as the publisher's word, and
+    /// platform runs it once Core's decided accept takes its release ([`Core::accept_release`]), the catalogue records
+    /// it as the node's holding account, and the deployment's register of holding accounts names it, its publisher and its asset, so the schedule reads it as the publisher's word, and
     /// reads it again after Core reopens. The node must be one a provider joined to the catalogue declares private.
     ///
     /// # Errors
@@ -175,6 +175,8 @@ impl Core {
                     decimals: DECIMALS,
                 },
             );
+        // Its release runs once Core's decided accept takes it (`T-020-61`).
+        self.accept_release(&wallet)?;
         Ok(wallet)
     }
 

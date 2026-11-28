@@ -718,13 +718,11 @@ impl Fleet {
         let Admitted::Artefact(artefact) = admitted else {
             panic!("{provider}: admission refused the wallet's release: {admitted:?}");
         };
-        if artefact.acceptance.accepted.is_none() {
-            self.accept(provider, &artefact)
-                .expect("the first release is accepted");
-        }
+        // It waits for the operator's acceptance, which is Core's decided accept (`T-020-61`): the platform runs it
+        // only once Core accepted it.
         assert!(
-            self.platform.active_version(provider).is_some(),
-            "{provider}: the wallet runs"
+            artefact.acceptance.accepted.is_none() && self.platform.pending(provider).is_some(),
+            "{provider}: the wallet's release waits for its acceptance"
         );
         InstalledWallet {
             provider: provider.to_owned(),

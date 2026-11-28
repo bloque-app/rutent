@@ -3,11 +3,11 @@
 //! the provider's next segments only once it is in force. Which version each segment began and ran on is Core's own
 //! record, a `hand_over` entry of the log ([`Core::segment_versions`]).
 //!
-//! Core never publishes or accepts a release itself, and nothing here decides one: the operator's acceptance is the
-//! catalogue's (`T-013-04`), and a promotion goes through policy and the log as any catalogue change does (`T-020-08`).
+//! Core never publishes a release itself, and nothing here decides one: the operator's fresh acceptance of a waiting
+//! release is Core's decided accept ([`Core::change_release`] with `ReleaseChange::Accept`, `T-020-49`, `T-020-61`),
+//! and a promotion goes through policy and the log as any catalogue change does (`T-020-08`).
 
 use rutent_contracts::core_internal::{Entry, HandedOver, What};
-use rutent_contracts::module_interface::AdmissionArtefact;
 use rutent_prov::module::types::Admitted;
 
 use rutent_core_orch::segments::lifecycle::{Changed, ReleaseAsked, ReleaseChange, ReleaseRefused};
@@ -33,15 +33,6 @@ impl Core {
     /// Publishes `release` of the installed provider `provider` to the platform.
     pub fn publish_release(&mut self, provider: &str, release: &Release) -> Admitted {
         self.fleet.release(provider, release)
-    }
-
-    /// Gives `provider`'s waiting release its fresh acceptance, by the platform's test reviewer.
-    pub fn accept_waiting_release(
-        &mut self,
-        provider: &str,
-        artefact: &AdmissionArtefact,
-    ) -> Option<AdmissionArtefact> {
-        self.fleet.accept(provider, artefact)
     }
 
     /// Every segment Core's log records, in order, with the version of its provider's module it began on and the one

@@ -12,6 +12,7 @@ use rutent_contracts::module_interface::AcceptanceMode;
 use rutent_contracts::router_api::Id;
 use rutent_contracts::state_machine::OrderState;
 use rutent_core_orch::segments::PromoteRefused;
+use rutent_core_orch::segments::lifecycle::{Changed, ReleaseChange};
 use rutent_prov::module::lifecycle::Staging;
 use rutent_prov::module::types::Admitted;
 use rutent_scenarios::assembly::machine::Reference;
@@ -434,11 +435,31 @@ fn widened_release_needs_fresh_acceptance_before_it_serves_an_order() {
         Admitted::Artefact(_)
     ));
 
-    // Accepted afresh, the release is in force, and the next order runs on it.
+    // Accepted afresh through Core's decided accept (`T-020-61`): the operator's login asks, policy decides, Core
+    // records the effect before the platform accepts the release and its result after. The release is in force, and
+    // the next order runs on it.
+    let key = widened.declaration().outside.statement_key.clone();
     let accepted = core
-        .accept_waiting_release(RESERVE, &widened)
+        .change_release(
+            RESERVE,
+            ReleaseChange::Accept {
+                version: &kit::id("1.1.0"),
+                statement_key: &key,
+            },
+        )
         .expect("a waiting release is accepted");
-    assert!(accepted.acceptance.accepted.is_some());
+    assert_eq!(accepted, Changed::Accepted);
+    assert!(core.fleet().platform.pending(RESERVE).is_none());
+    let accept_effect = core.log().entries().iter().position(|(_, e)| {
+        matches!(e, Entry::Verified(v) if matches!(&v.what, What::Effect {
+            action: Action::ChangeCatalogue { change: CatalogueChange::AcceptModule, provider, version: Some(v), .. }, ..
+        } if provider.as_str() == RESERVE && v.as_str() == "1.1.0"))
+    });
+    assert!(
+        accept_effect.is_some_and(|at| core.log().entries()[at + 1..].iter().any(|(_, e)| matches!(e,
+            Entry::Verified(v) if v.outcome == (Outcome::Done {}) && matches!(&v.what, What::Result { .. })))),
+        "the acceptance's effect is in the log, its result after it"
+    );
     assert_eq!(
         core.fleet().platform.active_version(RESERVE).as_deref(),
         Some("1.1.0")
