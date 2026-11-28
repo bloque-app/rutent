@@ -3596,6 +3596,36 @@ fn read_of_a_recorded_answer_is_held_to_the_segments_unsettled_move_at_its_provi
     }
 }
 
+// verifies: REQ-ORD-3, INV-8
+#[test]
+fn reversal_asked_again_after_an_ask_that_may_have_moved_is_refused_by_the_log() {
+    // A reversal is asked again only where every earlier ask of it failed, moving nothing (`T-020-61`, the review of
+    // #355's round 2, H1): an ask whose outcome is unknown, one with no result and one the provider carried out are
+    // resolved under their own transaction, never followed by a second ask under a fresh one.
+    assert_case("reversal-is-asked-again-only-after-a-refusal--after-a-refusal");
+    for breaks in [
+        "after-an-ask-whose-outcome-is-unknown",
+        "after-an-ask-with-no-result",
+        "after-an-ask-the-provider-carried-out",
+    ] {
+        assert_case_refused(&format!(
+            "reversal-is-asked-again-only-after-a-refusal--{breaks}"
+        ));
+    }
+    // That ask's own transaction is read back, or repeated, while its outcome is unknown, never once it is known.
+    for admitted in [
+        "a-read-of-a-reversal-whose-outcome-is-unknown",
+        "a-repeat-of-a-reversal-whose-outcome-is-unknown",
+    ] {
+        assert_case(&format!(
+            "repeat-is-of-an-unsettled-segment-at-its-provider--{admitted}"
+        ));
+    }
+    assert_case_refused(
+        "repeat-is-of-an-unsettled-segment-at-its-provider--a-read-of-a-reversal-the-provider-carried-out",
+    );
+}
+
 // verifies: REQ-ORD-1, INV-8
 #[test]
 fn repeat_under_another_segments_transaction_is_refused_by_the_log() {
