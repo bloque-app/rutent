@@ -851,6 +851,23 @@ impl Stuck {
         Self::default()
     }
 
+    /// A test's plant: `part` of `order` held declared stuck since `since`, its value resting nowhere Core follows, as
+    /// the watch declares a part over time.
+    #[cfg(test)]
+    pub(crate) fn plant_stuck(&mut self, order: &Id, part: &Id, since: Reading) {
+        self.declared.insert(
+            key(order, part),
+            Declared {
+                state: OrderState::Stuck,
+                since,
+                segments: Vec::new(),
+                moved: Vec::new(),
+                in_motion: None,
+                resolved: false,
+            },
+        );
+    }
+
     /// Whether Core declared `part` of `order` stuck and it is still unresolved.
     pub fn is_stuck(&self, order: &Id, part: &Id) -> bool {
         self.declared
