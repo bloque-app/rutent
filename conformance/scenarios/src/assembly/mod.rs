@@ -2240,15 +2240,6 @@ impl Core {
         })
     }
 
-    /// When the log received the stated entry at `receipt`, on the catalogue's clock.
-    fn time_of_stated(&self, receipt: &Receipt) -> rutent_prov::catalogue::Instant {
-        let index = usize::try_from(u64::from(receipt.index)).unwrap_or(usize::MAX);
-        match self.log.borrow().entries().get(index) {
-            Some((_, Entry::Stated(s))) => rutent_core_authz::session::instant(&s.received_at),
-            _ => self.clock.instant(),
-        }
-    }
-
     /// Records `installed`'s advertisement in the log, received now: its bytes kept, and its stated entry
     /// appended, claimed by its maker for its publisher.
     ///
@@ -2256,37 +2247,70 @@ impl Core {
     ///
     /// If the evidence store doesn't keep its bytes, or the log doesn't take its entry.
     pub fn advertise(&mut self, installed: &Installed) -> Result<(), AssemblyError> {
-        let listing =
-            |step: &str, e: AppendFailure| AssemblyError::Listing(format!("{step}: {e:?}"));
-        let statement = installed.advertisement.statement();
-        let publisher = &statement.statement.publisher;
-        let bytes = installed.advertisement.bytes();
-        let kept = rutent_contracts::core_internal::calls::Evidence::keep(&mut self.keeper, bytes)
-            .map_err(|e| listing("the advertisement's bytes", e))?;
-        let maker = &statement.maker;
-        let entry: GeneralEntry = serde_json::from_value(json!({
-            "kind": "stated",
-            "attribution": {"signature": "unverified", "claimed_by": {
-                "party": publisher, "acts": maker, "role": "provider", "kind": "component"
-            }},
-            "what": {"statement": ADVERTISEMENT_SHAPE},
-            "when": {"at": statement.made_at, "source": "party_stated"},
-            "received_at": self.clock.timestamp(),
-            "outcome": {"status": "stated"},
-            "signed_with": {"scheme": "ed25519", "key": statement.signature.key},
-            "commitment": kept.commitment,
-        }))
-        .map_err(|e| AssemblyError::Listing(format!("the advertisement's entry: {e}")))?;
-        let receipt = self
-            .general
-            .append(&entry)
-            .map_err(|e| listing("the advertisement", e))?;
-        // Into Core's catalogue once the log holds it, at the time the log received it; the deployment's defaults the join
-        // sets (a floor on each tuple, the public nodes listed) give way to the operator's settings (L2 of #337's review).
-        let at = self.time_of_stated(&receipt);
-        kit::join(&mut self.catalogue, installed, at);
+        use rutent_core_orch::settings::listing::Advertised;
+        match self.receive_advertisement(installed.advertisement.bytes(), &installed.spec)? {
+            Advertised::Listed(_) => Ok(()),
+            Advertised::NotAccepted(_) => Err(AssemblyError::Listing(format!(
+                "the log's key register didn't accept {}'s advertisement",
+                installed.advertisement.statement().maker
+            ))),
+        }
+    }
+
+    /// The providers the deployment installed, as installed.
+    pub fn installed(&self) -> &[Installed] {
+        &self.installed
+    }
+
+    /// Hands `bytes`, an advertisement a provider sent, to Core's entry point (`settings::listing::advertise`, the review
+    /// of #355's round 2, M2): kept, stated in the log, and listed in Core's catalogue only where the log's key register
+    /// accepted that very statement, as a reopened Core lists it. The deployment hands in only what the log doesn't
+    /// hold: what it sets on a joined advertisement of the provider installed as `spec`.
+    ///
+    /// # Errors
+    ///
+    /// As Core's entry point refuses it.
+    pub fn receive_advertisement(
+        &mut self,
+        bytes: &[u8],
+        spec: &rutent_conformance::sim::Spec,
+    ) -> Result<rutent_core_orch::settings::listing::Advertised, AssemblyError> {
+        use rutent_core_orch::settings::listing::{Advertising, advertise};
+        let log = Rc::clone(&self.log);
+        let history = move || log.borrow().entries().to_vec();
+        let register = Rc::clone(&self.log);
+        let accepted = move |maker: &str| {
+            register
+                .borrow()
+                .accepted_advertisement(maker)
+                .map(|a| a.commitment)
+        };
+        let mut joined = |catalogue: &mut Catalogue, bytes: &[u8]| {
+            if let Ok(ad) = serde_json::from_slice::<
+                Statement<rutent_contracts::provider_role::Advertisement>,
+            >(bytes)
+            {
+                kit::joined(catalogue, &ad.statement, spec);
+            }
+        };
+        let received_at = self.clock.timestamp();
+        let advertised = advertise(
+            bytes,
+            &mut self.catalogue,
+            &mut Advertising {
+                log: &mut self.general,
+                history: &history,
+                evidence: &mut self.keeper,
+                received_at,
+                accepted: &accepted,
+                joined: &mut joined,
+            },
+        )
+        .map_err(|e| AssemblyError::Listing(format!("the advertisement: {e:?}")))?;
+        // The deployment's defaults the join sets (a floor on each tuple, the public nodes listed) give way to the
+        // operator's settings (L2 of #337's review).
         self.reapply_catalogue_settings();
-        Ok(())
+        Ok(advertised)
     }
 
     /// Puts the operator's catalogue settings back after the deployment's own listing touched the catalogue: each
