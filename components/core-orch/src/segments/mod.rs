@@ -726,9 +726,11 @@ pub struct Segments {
     tick_tries: BTreeMap<(String, String, String, String), u32>,
     /// When the tick last asked each read, in whole seconds: the tick's own due time.
     tick_last: BTreeMap<(String, String, String, String), u64>,
-    /// The reads whose record the tick took: it asks for no more of them (the grading, which the tick's answer feeds, asks
-    /// for none either).
-    tick_done: BTreeSet<(String, String, String, String)>,
+    /// The reads whose record the tick took, each with the transactions that record was about: the tick asks for no more
+    /// of them while what it would ask about is among those, and asks again once a later segment's transaction isn't, so
+    /// the books never keep an early record lacking it (#351's round 3). The grading, which the tick's answer feeds, asks
+    /// for none either.
+    tick_done: BTreeMap<(String, String, String, String), BTreeSet<String>>,
     /// The publishers' records of private nodes the log held when Core reopened, by what they say (`T-020-58`): a record
     /// read again after a restart, signed afresh, that says the same of the same order and node is not kept a second
     /// time, and cites the receipt the log gave the first.

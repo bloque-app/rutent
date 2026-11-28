@@ -530,6 +530,42 @@ fn hostile_reader_leaves_its_segment_unsettled_and_core_running() {
     assert_eq!(after_ticks(&mut core, &order, 3), OrderState::Complete);
 }
 
+/// A reader that starts and then hangs on a movement question: its host gives it up at its hang bound and answers for it
+/// that it can't stand behind an answer (`reader_hung`, `T-015-04`), well before Core's own socket bound, so Core reads
+/// it as unreadable, the segment settles nothing and waits, and Core runs on. Once the reader answers again the order
+/// completes (the reader timeout path, `T-024-25`'s Low 3).
+// verifies: REQ-MDL-11, INV-3
+#[test]
+fn reader_that_hangs_is_unreadable_once_its_host_gives_it_up_and_its_segment_waits() {
+    let (mut core, session, listed) = bank_only();
+    let bank = bank();
+    core.plant_readers(&Plan::everywhere(&listed, "unread-movements"));
+    let (order, _) = run(&mut core, within("req-1", &session, AMOUNT, RESERVE, OTHER));
+    core.plant_readers(&Plan::everywhere(&listed, "hang"));
+    assert_eq!(
+        core.readers().standing(&bank),
+        Standing::Started,
+        "it answers its rules, so it starts"
+    );
+    let asked = std::time::Instant::now();
+    let read = core
+        .public_records()
+        .status(&bank, &MovementId::new("any-movement").expect("an id"));
+    let waited = asked.elapsed();
+    assert!(
+        matches!(&read, Err(Unreadable::Reader(why)) if why.as_str() == "reader_hung"),
+        "the host answers for the reader it gave up: {read:?}"
+    );
+    assert!(
+        waited < rutent_core_orch::closing::readers::ANSWER_WINDOW,
+        "within Core's own bound: {waited:?}"
+    );
+    assert_ne!(after_ticks(&mut core, &order, 1), OrderState::Complete);
+    assert!(evidence_of(&core, &order).is_empty(), "nothing settles");
+    core.plant_readers(&Plan::default());
+    assert_eq!(after_ticks(&mut core, &order, 3), OrderState::Complete);
+}
+
 // verifies: NFR-6, REQ-AUD-4
 #[test]
 fn listed_reader_is_checked_again_after_core_reopens_and_its_evidence_still_reads() {

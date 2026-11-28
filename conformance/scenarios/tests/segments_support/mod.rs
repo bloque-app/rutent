@@ -712,7 +712,9 @@ impl authz::Sources for Register {
                 yes(account.as_str() == "acct-1" && need.input == customer().party)
             }
             authz::Source::Permissions { permission, .. } => yes(match permission {
-                Permission::CarryOnward => need.input == core().acts,
+                // Core's actor carries the operator's standing permission to read a private node's record onward
+                // (`T-020-58`), as the deployment's register lists it.
+                Permission::CarryOnward | Permission::ReadNodeRecord => need.input == core().acts,
                 Permission::Change(CatalogueChange::Promote | CatalogueChange::MarkStale)
                 | Permission::ReadOrderState => need.input == operator().acts,
                 _ => false,

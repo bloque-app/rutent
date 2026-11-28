@@ -233,8 +233,49 @@ impl Segments {
                 segments.note_tick_try(key.clone(), 0);
             }
         }
+        // Each with the transactions its last tick read was about, which the record taken covers.
+        let about_of = |key: &ReadKey| -> std::collections::BTreeSet<String> {
+            history
+                .iter()
+                .rev()
+                .find_map(|(_, entry)| match entry {
+                    Entry::Verified(VerifiedEntry {
+                        what:
+                            What::Effect {
+                                action:
+                                    Action::ReadNodeRecord {
+                                        order,
+                                        segment,
+                                        node,
+                                        provider,
+                                        by: ReadBy::Tick,
+                                        about,
+                                        ..
+                                    },
+                                ..
+                            },
+                        ..
+                    }) if (
+                        order.as_str(),
+                        segment.as_str(),
+                        node.as_str(),
+                        provider.as_str(),
+                    ) == (
+                        key.0.as_str(),
+                        key.1.as_str(),
+                        key.2.as_str(),
+                        key.3.as_str(),
+                    ) =>
+                    {
+                        Some(about.iter().map(|t| t.as_str().to_owned()).collect())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_default()
+        };
         for key in tick_done {
-            segments.note_tick_done(key);
+            let about = about_of(&key);
+            segments.note_tick_done(key, about);
         }
         for input in &inputs {
             if let (Observed::StuckResolved { .. }, Some(part)) =

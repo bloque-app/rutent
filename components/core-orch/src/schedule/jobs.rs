@@ -1276,7 +1276,14 @@ impl Duties for Jobs<'_> {
                 &bytes,
             ) {
                 if fed {
-                    taken.push((order.clone(), segment, node.clone(), provider));
+                    let about = wanted
+                        .iter()
+                        .find(|(o, s, n, p, ..)| {
+                            *o == order && *s == segment && *n == node && *p == provider
+                        })
+                        .map(|(.., about)| about.clone())
+                        .unwrap_or_default();
+                    taken.push((order.clone(), segment, node.clone(), provider, about));
                 }
                 published.push(Published {
                     order,
@@ -1286,8 +1293,8 @@ impl Duties for Jobs<'_> {
             }
         }
         self.ports.with_segments(&mut |segments, _| {
-            for (order, segment, node, provider) in &taken {
-                segments.note_record_taken(order, segment, node, provider);
+            for (order, segment, node, provider, about) in &taken {
+                segments.note_record_taken(order, segment, node, provider, about);
             }
         });
         published

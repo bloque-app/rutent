@@ -537,6 +537,54 @@ fn linked_orders_settled_then_reversed_first_move_is_returned_to_its_node() {
     assert!(!totals.contains_key(&(NEXT.to_owned(), LINKED.to_owned())));
 }
 
+/// What rests at each node by order and asset is what rests by order, in the asset it rests in (`INV-1`, `REQ-AUD-6`,
+/// #351's round 3): the value a reversal brought back to the held node rests there in its asset, keyed by node, order
+/// and asset, and nothing rests where it left; nothing rests in another asset; and each node and order's total over its
+/// assets is [`Segments::resting_totals`]'s.
+// verifies: INV-1, REQ-AUD-6
+#[test]
+fn resting_totals_by_asset_key_each_value_by_node_order_and_asset() {
+    let clock = Fixed(Cell::new(1_795_000_000));
+    let mut segments = first_move_failed(&clock);
+    segments.note_reversed(
+        &Id::new(LINKED).expect("an id"),
+        &Id::new("seg-transfer").expect("an id"),
+        &Amount::new(AMOUNT).expect("an amount"),
+    );
+    take(
+        &mut segments,
+        &input(
+            4,
+            Some("seg-transfer"),
+            Observed::ReversalCompleted {
+                evidence: id("ev-back"),
+            },
+        ),
+    );
+    let by_asset = segments.resting_totals_by_asset();
+    assert_eq!(
+        by_asset.get(&(HELD.to_owned(), LINKED.to_owned(), "COP".to_owned())),
+        Some(&Amount::new(AMOUNT).expect("an amount")),
+        "{by_asset:?}"
+    );
+    assert!(
+        by_asset
+            .keys()
+            .all(|(node, order, asset)| node == HELD && order == LINKED && asset == "COP"),
+        "nothing rests elsewhere or in another asset: {by_asset:?}"
+    );
+    let totals = segments.resting_totals();
+    for ((node, order), total) in &totals {
+        let summed: u128 = by_asset
+            .iter()
+            .filter(|((n, o, _), _)| n == node && o == order)
+            .map(|(_, a)| a.as_str().parse::<u128>().expect("an amount"))
+            .sum();
+        assert_eq!(summed.to_string(), total.as_str(), "{node} {order}");
+    }
+    assert_eq!(totals.len(), by_asset.len());
+}
+
 /// A completion whose confirmation says nothing came back, or whose amount can't be read (`Reversals::complete` keeps
 /// it as zero), lands nothing again: the order Core follows reads the move as reversed, but what the move took in never
 /// stands in for the confirmation, and a reopened Core reads the same (`INV-1`, `T-020-57`'s review, L2). Neither judge

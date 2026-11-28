@@ -29,7 +29,8 @@
 //! A hostile act makes it misbehave, for the host and Core to hold: `crash` (on a question), `malformed` (answers
 //! something that is no answer), `other-movement` (answers about another movement or transaction than the one asked)
 //! `other-identity` (answers its rules naming another network's identity than the one it checked, a start-up liar),
-//! `unread-movements` (answers its rules, but no movement: every movement question is unreadable),
+//! `unread-movements` (answers its rules, but no movement: every movement question is unreadable), `hang` (answers its
+//! rules, then never answers a movement question: the host's timeout path, `reader_hung`),
 //! and `undeclared` (also asks an endpoint it doesn't declare: the world's own host for the network, and for a light
 //! client a port its rule doesn't name). A key the listing doesn't name is the harness's to plant, in the host's
 //! configuration: the reader never holds a key.
@@ -456,6 +457,13 @@ fn main() {
         };
         if reader.hostile("crash") {
             std::process::exit(3);
+        }
+        // A reader planted to hang answers its rules, so it starts, and never answers a movement question: the host
+        // gives it up at its hang bound and answers for it that it can't stand behind an answer (`reader_hung`).
+        if reader.hostile("hang") && !matches!(question.asked, Asked::NetworkRules(_)) {
+            loop {
+                std::thread::park();
+            }
         }
         if reader.hostile("malformed") {
             send(&FromReader::Answer {

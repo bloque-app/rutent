@@ -11136,8 +11136,10 @@ scenario tests) and `tools/licence-check/src/artifact.rs`, a `DEC-20` path. No o
   (24) tries for a segment, node and provider, counted in `read_node_record` as each effect is appended and rebuilt in
   `Segments::reopened` from the log's effects. A reopened Core asks once at once (its books were lost), then by the
   cadence; a record the log holds doesn't count toward the cap. Past the cap Core asks no more and the segment waits on
-  what it waits on, which the stuck check reports. The tick's read (`Job::PublishersRecords`) is not capped; it is on its
-  own cadence. Tests: `segment_graded_many_times_while_it_waits_asks_a_publisher_answering_not_known_a_bounded_number_of_times`
+  what it waits on, which the stuck check reports (`segment_capped_on_its_node_record_reads_is_named_by_the_stuck_check`,
+  added by `T-020-60`). The tick's read (`Job::PublishersRecords`) has a cap of its own, `MAX_TICK_TRIES` (72), apart
+  from the grading's, and is on its own cadence (`T-020-67`'s round 2; since `T-020-60` its tries and its done set are
+  rebuilt from the log's `read_node_record` effects whose `by` is `tick`, `rebuilt_tick_reads`). Tests: `segment_graded_many_times_while_it_waits_asks_a_publisher_answering_not_known_a_bounded_number_of_times`
   (counts the log's entries over 20 gradings, an hour apart for the cap, and across a restart),
   `read_not_taken_is_asked_again_at_the_operators_publishers_records_cadence_across_a_restart`, and in core-orch
   `a_read_not_taken_is_asked_again_on_the_retry_cadence_and_not_at_every_grading` and
@@ -11185,7 +11187,7 @@ scenario tests) and `tools/licence-check/src/artifact.rs`, a `DEC-20` path. No o
   `conflicting_with_no_order_is_told_no_agent_unscoped_to_read`, not a source search. The licence check's `canon` reads
   `AND`, `WITH` and `OR` in any case, and an operator not written in upper case keeps the expression as written.
 - **Defaults** (reversible, fail closed). The cap is 24 and the retry cadence the operator's, 3600 s until set; the tick's
-  read is uncapped; after a restart one read is made at once.
+  read has a cap of 72 (as first built it had none; round 2 gave it one); after a restart one read is made at once.
 - **Rule-offs** (each alone, the file restored, `ruleoff.py` in the row's scratch folder; every red an assertion):
 
   | Rule switched off | Red |
