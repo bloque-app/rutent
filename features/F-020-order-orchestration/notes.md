@@ -10851,6 +10851,13 @@ log and the evidence store the log already reads. **Every caller of v0 behaviour
 | R11 the held gate in `Intake::request_of` | stays green: `Intake::started` and `hold_started` refuse a held order too (defence in depth); the held tests hold on those |
 | R12 the owed-reversal gate in Core's run | stays green: the scenario's owed reversal is a ramp's, which `recalc::evidenced` already holds in flight; the gate is for a failed deposit whose reversal Core recorded owed, which no scenario reaches |
 | R13 a reopened segment whose answer is logged isn't carried on | stays green: carried on, its status answer is the one the log holds and its grading still refuses to go on, so nothing moves twice either way; kept as defence in depth |
+| R14 Core declares what a handed-over segment's inputs rest on (`Segments::declare_cited`, M3) | `provider_relying_on_a_verifiers_judgement_leaves_a_reliance_entry_naming_the_verifier_and_the_provider` and `false_judgement_is_recorded_as_its_verifiers_word_and_its_reliers_reliance` red (no reliance entry) |
+| R15 the judgement found by its kept bytes, and only where the log attributed it (`reliance::stated_judgement`) | `the_judgement_a_figure_carries_is_found_by_its_kept_bytes_and_its_attribution` red, each half switched off alone |
+| R16 Core's grant carried out in its catalogue (`settings::grant::carry_out_grant`) | `catalogues_grant_is_the_one_the_log_records` red (the catalogue holds no grant, so the advertisement's join refuses) |
+| R17 `decide_stuck` takes the part Core holds stuck, not the first (M4) | `stuck_command_decides_the_stuck_part_of_a_split_order` red (`NotStuck`) |
+| R18 `INV-4`'s relaxed contradiction rule, the test's: a second result statement is a violation only where its body was kept before | the strict count turns `silence_and_late_delivery_never_move_one_value_from_two_places` red on the pinned seed 105 (two result statements, the contradiction); Core's own same-body rule (`Reversals`, a re-signed answer of a kept body is that entry) switched off stays green: no run delivers a re-signed answer of the same body |
+| R19 `Landing::restore` answers `NotNow` where the account's module runs no process | stays green with `Unconfirmed` in its place: its one caller, `reconcile`, treats the two alike and reconciles again on the next confirmation or reopening, so `NotNow` has no effect of its own there; the test holds what it stands for (no transaction, nothing asked, landed once the wallet runs) |
+| R20 Core's run declares a part with no route left stuck (L6) | `stuck_command_is_a_core_entry_point` and `stuck_order_of_the_assembled_core_is_resolved_through_the_mover_and_the_real_engine` red (the part never stuck) |
 
 ### Local checks
 
@@ -10996,6 +11003,100 @@ Merged `origin/m3` at `64309ac3` (T-024-25, #353) as its own commit; the only co
   `kit::join` registers a private node's holding as `holding`, a module the platform doesn't run, so registering it would
   still raise (`NotAnswered`) rather than read; the scenarios keep counting around it, in `gross_charged`, `charge_check`,
   `quoting` and `report_pairs`.
+
+### T-020-61, review round 1, third pass (a new author, from `9562981b`)
+
+Merged `origin/m3` at `3a53de34` (T-015-05, #354, the reader host) as its own commit, no conflict.
+
+- **M3, the reliance declarations, done (`REQ-CPL-12`).** Core declares what a segment's inputs rest on as its run hands
+  the part over (`Segments::declare_cited`, called by `Jobs::run_route` before `Segments::run_part`): every input a
+  segment's operation carries rests on the verifier's judgement the operation's eligibility figure carries, and Core
+  finds that judgement's stated entry in the log itself (`reliance::stated_judgement`: the judgement's shape,
+  attributed by the log to the maker the statement names, its bytes kept under the entry's commitment the figure's
+  statement). The `reliance` entry is then written before the send as before. The assembly's `rests_on` is gone; the
+  verifier scenario declares nothing and asserts the payer's account among the reliance's inputs.
+- **M3, release acceptance, done.** The wallets the assembly installs, a public node's holding account
+  (`install_wallet`) and a private node's publisher account (`install_publisher_account`), are admitted to the platform
+  waiting, and accepted through Core's decided accept (`Segments::change_release` with `ReleaseChange::Accept`): policy
+  first, the effect recorded before the platform accepts, its result after. A wallet's revoke goes through
+  `ReleaseChange::Revoke`. `log_wallet_release_change`, which asked policy and wrote the effect and a `done` result with
+  nothing carried out, is gone, and so is `accept_waiting_release` (the fleet's platform accept by a test reviewer):
+  `module_scenarios` accepts its widened release through Core. The platform runs no wallet Core hasn't accepted, so the
+  wallet test's "answer before acceptance is unattributed" half is gone with it.
+- **M3, the provider's grant, done.** `settings::grant::grant` is Core's decided grant of each tuple an advertisement
+  offers and each class a verifier offers: policy by the caller, the effect, the grant made in Core's catalogue at the
+  effect's time under the advertising key (`carry_out_grant`, which holds the effect; the catalogue's `grant` was
+  already in core-authz's `CARRY_OUT`, so the scan holds it to rule 3), its result `failed` where the catalogue
+  refused. The deployment hands in only what core-internal's grant doesn't carry (party, expiry, categories, reversal
+  capacity) and the log's names of the tuples. The assembly's `grant` hands Core the ask.
+- **M4, tested.** `decide_stuck` already took the part Core holds stuck. The schedule's bare deployment
+  (`schedule::jobs` tests) now lends the stuck orders over a log, a policy and a channel that take nothing, and
+  `stuck_command_decides_the_stuck_part_of_a_split_order` plants a split order of three parts, its second part stuck
+  (the state machine following the route and the declaration; `Stuck` holding it declared through a test-only
+  `plant_stuck`): Core's entry point decides the second part and goes on to its own checks, stopping at its ends
+  (`NoEnds`, the first check that needs the log's records); an order with no part stuck is `NotStuck`. A decision
+  carried through to policy needs a world whose log holds the authorisation and the evidence; the assembled worlds
+  plant no split order.
+- **L1, item 9's four Lows, done.** "Lose no order" reads what Core knows of its orders right before each restart of
+  Core and its platform and right after it (`Core::order_snapshot`: id, the state Core follows the order in, its
+  request's amount) and holds them equal. `INV-4`'s relaxed contradiction rule is re-proved by its rule-off (R18): the
+  reason it is re-proved now is the floor (`contradictions >= 1`, the pinned seed 105's contradicting late answer), which
+  makes the branch reached, so a strict count goes red rather than staying green for want of a contradiction. A
+  `RestartWhileStuck` run with two orders (the pinned seed 117) reads each order's end by its own place in the caught
+  set. `Landing::restore`'s `NotNow` is tested (`landing_owed_at_a_holding_account_that_runs_nothing_now_is_tried_once_it_runs`).
+- **L6, done where the run makes a part stuck naturally.** `assembly_stuck`'s two tests and `assembly_hand_on` reach the
+  stuck part through Core's run: the deposit's start refused, the reserve refuses the deposit's dry run as Core
+  recalculates the part from its ledger, so the recalculation finds no route and Core's run declares the part stuck.
+  `leave_no_route` stays for the tests where ticking on would change what they read: `measures_called` and
+  `bulk_measures` call it to keep a failed run out of the next orders' ticks, so the measures are of those runs alone;
+  `assembly_real_wallet`'s `stuck_before_the_schedule_runs` is the part stuck before the schedule lands anything, which a
+  tick would change; `reopened`'s two are restarts of a part stuck at a given point. Each is a test's setting, not a
+  behaviour a deployment reaches only through it: Core's run declares the same part stuck through `Stuck::no_route`.
+
+**What else in the assembly, checked (`conformance/scenarios/src/assembly/`).** Moved in this pass: `rests_on`,
+`grant`'s decided body, `log_wallet_release_change`, `accept_waiting_release`. What is left that writes to Core's log or
+catalogue, and why it stays:
+
+1. `relist` and `advertise`/`kit::join` (Core's catalogue rebuilt from the log's grants and advertisements on reopening,
+   and an advertisement joined as it is received). This is v0 behaviour, the catalogue's side of `NFR-6`, with the
+   assembly as its only caller. It is not moved here: it replays the advertisements the log's key register accepted,
+   judged by the cutovers held when each was received, into a catalogue core-orch doesn't yet rebuild at all. Named for
+   the coordinator to rule on as its own row (a core-orch catalogue reopen beside `Settings::reopened`); until then the
+   assembly's rebuild refuses any catalogue change it doesn't replay, failing closed.
+2. `change_public_network` (a public network listed or delisted with its reader service, `T-024-25`): decided and
+   recorded, but nothing carries it out, since Core's catalogue takes nothing from a listing until `T-020-60` puts Core on
+   its reader. Owner: `T-020-60`.
+3. The fleet's acceptance of each simulated provider's first release at build (`Fleet::install`, the platform's test
+   reviewer): the deployment's starting set, admitted before Core is assembled; each provider's catalogue grant is then
+   Core's decided grant. A provider released later is accepted through Core (`module_scenarios`).
+4. Test hooks and planted faults, no v0 behaviour: `effect_without_its_result`, `append_advertisement`, `state_by`,
+   `plant_unpriced_route`, `leave_no_route` (above).
+5. Deployment wiring: the registers, sessions, installs, the ports Core is lent, `tick` on a timer.
+
+**Defaults taken in this pass** (reversible, each failing closed):
+
+9. **An operation that cites more than one eligibility figure** has its inputs rest on the first whose judgement the log
+   holds; one whose judgement the log doesn't hold declares nothing, so no reliance is written for it.
+10. **An input already resting on another judgement keeps the first** (`Rests::Another`, the register's own rule): a
+    later segment carrying the same input under another verifier's judgement relies on the first. No v0 route carries
+    one input under two judgements.
+11. **A wallet the assembly installs is accepted at its install**, through Core's decided accept; `Core::relist` skips
+    any accepted release, which the platform's record holds.
+12. **A grant is made at its effect's own time**, in the catalogue's whole seconds.
+
+**Gaps of this pass, with owners.**
+
+- A reserve's judgement (its proof that its users may enact, `REQ-CPL-8`) is carried by no operation's figure, so Core
+  can't find it from the record: `Segments::rests_on` stays core-orch's API for it, with only tests calling it
+  (`reliance.rs`, `stuck_mover.rs`). Owner: the row that puts a reserve's judgement into the record (`F-012`'s figures).
+- The catalogue's rebuild on reopening (item 1 above): for the coordinator.
+
+**Local checks of this pass** (after the merge of `3a53de34`, the stand-ins and the plain wallet built from this tree
+in a private directory and deleted after): fmt; clippy `--workspace --all-targets -D warnings`; `rutent-core-orch` (lib
+and tests) and `rutent-core-authz --lib` (172, the entry-point scan included); every `rutent-scenarios` binary and
+`--lib`, all with `RUTENT_SCENARIO_SEEDS=11,12,13,14,15,113,114,115,116,117,118,119` (so `invariants`, `assembly`,
+`reopened` and `protocol_cutover` on those seeds); plan-check and tag-check `--strict` (0 findings, 2742 tests). No
+contract, prov or module-guest file touched by this pass.
 
 ## T-020-67: what the checks of `T-020-58` and `T-020-54` left
 
