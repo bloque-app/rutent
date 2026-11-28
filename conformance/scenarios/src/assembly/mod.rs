@@ -2275,202 +2275,91 @@ impl Core {
         }
     }
 
-    /// Grants a verifier its category in the catalogue where the log's grants are replayed (`Core::relist`), which
-    /// finds no tuple behind a class grant. Nothing for a provider that offers a tuple.
-    fn grant_verifier(&mut self, installed: &Installed) {
-        self.record_release(installed);
-        let ad = &installed.advertisement.statement().statement;
-        if ad.offers.verifier.is_some() && rutent_prov::catalogue::tuples_of(ad).is_empty() {
-            let terms = kit::grant_terms(
-                installed,
-                kit::operator_login().acts.as_str(),
-                rutent_prov::catalogue::Instant(1_000),
-            );
-            kit::grant(&mut self.catalogue, installed, terms);
-        }
-    }
-
-    /// Core's catalogue rebuilt from its log, as after a restart: each tuple granted by a `done` grant, at its effect's
-    /// time and under its id, as [`Core::grant`] granted it, and each advertisement the log holds joined at the time
-    /// the log received it, as [`Core::advertise`] joined it, once the bytes the evidence store kept under the log's
-    /// commitment are the installed provider's advertisement. A `done` catalogue change of any other kind (a revoke, a
-    /// release accepted, revoked or promoted) refuses the reopening: it isn't replayed, and a catalogue rebuilt
-    /// without it would grant what the log revoked.
+    /// Core's catalogue rebuilt from its log, as after a restart, by Core ([`rutent_core_orch::settings::listing::relist`],
+    /// `T-020-61`): the assembly hands it only what the log doesn't hold, the deployment's installed advertisements,
+    /// its grant terms, the log's names of tuples, what it sets on a joined advertisement, and the platform, which takes
+    /// the cutovers. The verifiers' releases are recorded for the grading, as at the build.
     ///
     /// # Errors
     ///
-    /// On a catalogue change it doesn't replay, or an advertisement whose kept bytes aren't the installed one's.
+    /// As Core refuses the rebuild: a catalogue change it doesn't replay, an installed advertisement the log didn't
+    /// commit to, an accepted one it can't read back.
     fn relist(&mut self) -> Result<(), AssemblyError> {
+        use rutent_core_orch::settings::listing::{Relisting, relist};
         let entries: Vec<(Receipt, Entry)> = self.log.borrow().entries().to_vec();
-        let kept = rutent_core_audit::receipts::store::Shelf::load(&mut self.disk.shelf())
+        let shelf = rutent_core_audit::receipts::store::Shelf::load(&mut self.disk.shelf())
             .map_err(|e| AssemblyError::Listing(format!("the evidence store's shelf: {e:?}")))?
             .kept;
-        let done: Vec<&Receipt> = entries
+        let installed = self.installed.clone();
+        for one in &installed {
+            self.record_release(one);
+        }
+        let advertised: Vec<(String, Vec<u8>)> = installed
             .iter()
-            .filter_map(|(_, e)| match e {
-                Entry::Verified(v) if v.outcome == (Outcome::Done {}) => match &v.what {
-                    What::Result { effect } => Some(effect),
-                    _ => None,
-                },
-                _ => None,
+            .map(|one| {
+                (
+                    one.advertisement.statement().maker.clone(),
+                    one.advertisement.bytes().to_vec(),
+                )
             })
             .collect();
-        let decider = kit::operator_login();
-        // Each installed provider the log holds an advertisement of, and whether the log committed to the installed
-        // advertisement's own bytes in one of its stated entries (`REQ-AUD-2`).
-        let mut committed: BTreeMap<String, bool> = BTreeMap::new();
-        for (place, (receipt, entry)) in entries.iter().enumerate() {
-            let Entry::Verified(v) = entry else {
-                if let Entry::Stated(s) = entry
-                    && s.what.statement.as_str() == ADVERTISEMENT_SHAPE
-                    && let Some(one) = self.installed.iter().find(|one| {
-                        one.advertisement.statement().maker == s.attribution.maker().acts.as_str()
-                    })
-                {
-                    let these = kept
-                        .iter()
-                        .find(|k| k.kept.commitment == s.commitment)
-                        .and_then(|k| rutent_core_audit::receipts::store::bearing_out(&k.kept));
-                    *committed
-                        .entry(s.attribution.maker().acts.as_str().to_owned())
-                        .or_default() |= these.as_deref() == Some(one.advertisement.bytes());
-                    // The advertisement the log's key register accepted last for the provider is what Core lists again,
-                    // as the register took it in (`T-024-21`): a re-advertisement it accepted after the installed one
-                    // is listed as such, and a stated entry it refused, or one it accepted and then saw replaced, is
-                    // not listed at all. Only the entry that brought the accepted one is replayed.
-                    let maker = s.attribution.maker().acts.as_str().to_owned();
-                    let Some(accepted) = self.log.borrow().accepted_advertisement(&maker) else {
-                        continue;
-                    };
-                    if accepted.commitment != s.commitment {
-                        continue;
-                    }
-                    let Some(bytes) = kept
-                        .iter()
-                        .find(|k| k.kept.commitment == s.commitment)
-                        .and_then(|k| rutent_core_audit::receipts::store::bearing_out(&k.kept))
-                    else {
-                        return Err(AssemblyError::Listing(format!(
-                            "the advertisement the log's register accepted for {maker} isn't kept: its bytes can't be read"
-                        )));
-                    };
-                    let mut one = one.clone();
-                    one.advertisement = rutent_conformance::role::Received::from_bytes(bytes).map_err(|e| {
-                        AssemblyError::Listing(format!(
-                            "the advertisement the log's register accepted for {maker} doesn't read: {e}"
-                        ))
-                    })?;
-                    let at = rutent_core_authz::session::instant(&s.received_at);
-                    self.grant_verifier(&one);
-                    // The advertisement is judged by the cutovers the log held when it was received, not by those it
-                    // holds now: a cutover moved earlier since doesn't void what was taken before (`REQ-PRT-4`,
-                    // `T-020-54`, #143's blocker b).
-                    let held = rutent_core_orch::settings::Settings::reopened(&entries[..place]);
-                    held.apply_listings(&mut rutent_core_orch::settings::Targets {
-                        catalogue: Some(&mut self.catalogue),
-                        ..rutent_core_orch::settings::Targets::default()
-                    });
-                    held.apply_cutovers(&mut rutent_core_orch::settings::Targets {
-                        catalogue: Some(&mut self.catalogue),
-                        ..rutent_core_orch::settings::Targets::default()
-                    });
-                    kit::join(&mut self.catalogue, &one, at);
-                }
-                continue;
-            };
-            let What::Effect {
-                action:
-                    Action::ChangeCatalogue {
-                        change,
-                        provider,
-                        tuple,
-                        class,
-                        ..
-                    },
-                ..
-            } = &v.what
-            else {
-                continue;
-            };
-            if !done.contains(&receipt) {
-                continue;
-            }
-            // An operator's setting is Core's to rebuild, from the log, apart (`Settings::reopened`, `T-020-49`).
-            if *change == CatalogueChange::SetSetting {
-                continue;
-            }
-            // The operator's confirmation of a provider's releases held after a platform's restart is the platform's to
-            // hold, in its own record (`T-013-11`): Core's catalogue lists nothing for it (`T-024-21`).
-            if *change == CatalogueChange::ConfirmReleases {
-                continue;
-            }
-            // A public network listed with its reader service (`T-024-25`): until `T-020-60` puts Core on its reader
-            // and the catalogue's public list on the listing, the log holds it and Core's catalogue takes nothing from
-            // it.
-            if change.is_about_a_public_network() {
-                continue;
-            }
-            // A verifier's class grant has no tuple to rebuild: the category grant is made where its advertisement is
-            // replayed (`grant_verifier`).
-            if *change == CatalogueChange::Grant && tuple.is_none() && class.is_some() {
-                continue;
-            }
-            // A release Core's decided accept took (`T-020-61`): the platform holds it in force in its own record, which
-            // goes on beside Core, and Core's catalogue lists nothing for it. A holding account's wallet is one of the
-            // host's accounts, listed again first (`Core::relist_holdings`, `T-020-46`); a private node's publisher
-            // account is listed again from the deployment's register (`relist_publisher_accounts`).
-            if *change == CatalogueChange::AcceptModule {
-                continue;
-            }
-            let (CatalogueChange::Grant, Some(tuple_id)) = (change, tuple) else {
-                return Err(AssemblyError::Listing(format!(
-                    "the log holds a {change:?} of {} that Core::relist doesn't replay",
-                    provider.as_str()
-                )));
-            };
-            let Some(one) = self
-                .installed
+        let log = Rc::clone(&self.log);
+        let accepted = move |maker: &str| {
+            log.borrow()
+                .accepted_advertisement(maker)
+                .map(|a| a.commitment)
+        };
+        let mut kept = |c: &rutent_contracts::module_interface::Digest| {
+            shelf
                 .iter()
-                .find(|one| one.advertisement.statement().statement.provider == provider.as_str())
-                .cloned()
-            else {
-                continue;
+                .find(|k| k.kept.commitment == *c)
+                .and_then(|k| rutent_core_audit::receipts::store::bearing_out(&k.kept))
+        };
+        let terms = |provider: &str, decider: &str, at: rutent_prov::catalogue::Instant| {
+            installed
+                .iter()
+                .find(|one| one.advertisement.statement().statement.provider == provider)
+                .map(|one| kit::grant_terms(one, decider, at))
+        };
+        let mut joined = |catalogue: &mut Catalogue, bytes: &[u8]| {
+            let Ok(ad) = serde_json::from_slice::<
+                Statement<rutent_contracts::provider_role::Advertisement>,
+            >(bytes) else {
+                return;
             };
-            let statement = one.advertisement.statement();
-            let Some(tuple) = rutent_prov::catalogue::tuples_of(&statement.statement)
-                .into_iter()
-                .find(|t| &kit::tuple_id(provider.as_str(), t) == tuple_id)
-            else {
-                continue;
-            };
-            let mut terms = kit::grant_terms(
-                &one,
-                decider.acts.as_str(),
-                rutent_core_authz::session::instant(&v.when.at),
-            );
-            terms.id = format!("grant-{}-{}", provider.as_str(), u64::from(receipt.index));
-            terms.tuples = vec![tuple];
-            kit::grant(&mut self.catalogue, &one, terms);
-        }
-        // An installed advertisement the log committed to in none of its stated entries is no advertisement this Core
-        // ever recorded: tampered with, or never received. The reopening is refused (`REQ-AUD-2`), whatever the register
-        // accepted since; a re-advertisement the register accepted after the installed one leaves the installed one
-        // committed to.
-        if let Some((maker, _)) = committed.iter().find(|(_, committed)| !**committed) {
-            return Err(AssemblyError::Listing(format!(
-                "the advertisement installed for {maker} isn't one the log committed to: no commitment's bytes are its"
-            )));
-        }
-        // Every cutover the log holds now stands in the catalogue and the platform, before the log's results are judged
-        // again (`REQ-PRT-4`, `T-020-54`).
-        rutent_core_orch::settings::Settings::reopened(&entries).apply_cutovers(
-            &mut rutent_core_orch::settings::Targets {
-                catalogue: Some(&mut self.catalogue),
-                platform: Some(&mut self.fleet.platform),
-                ..rutent_core_orch::settings::Targets::default()
+            if let Some(one) = installed
+                .iter()
+                .find(|one| one.advertisement.statement().maker == ad.maker)
+            {
+                kit::joined(catalogue, &ad.statement, &one.spec);
+            }
+        };
+        relist(
+            &entries,
+            &mut self.catalogue,
+            Some(&mut self.fleet.platform),
+            &mut Relisting {
+                kept: &mut kept,
+                accepted: &accepted,
+                installed: &advertised,
+                terms: &terms,
+                tuple_id: &kit::tuple_id,
+                joined: &mut joined,
             },
-        );
-        Ok(())
+        )
+        .map_err(|e| {
+            use rutent_core_orch::settings::listing::RelistRefused;
+            AssemblyError::Listing(match e {
+                RelistRefused::NotReplayed { change, provider } => format!(
+                    "the log holds a {change:?} of {} that Core's catalogue rebuild doesn't replay",
+                    provider.as_str()
+                ),
+                RelistRefused::Uncommitted(maker) => format!(
+                    "the advertisement installed for {maker} isn't one the log committed to: no commitment's bytes are its"
+                ),
+                other => format!("Core's catalogue wasn't rebuilt: {other:?}"),
+            })
+        })
     }
 
     /// When the log received the stated entry at `receipt`, on the catalogue's clock.
@@ -3191,6 +3080,57 @@ mod tests {
         let scenario = Scenario::new("Core alone", "AC-28", Given::one_reserve(Staged::AtOnce));
         let (core, _) = scenario.core(1, &mut machine::Reference);
         (core, scenario.config(1))
+    }
+
+    /// What Core's catalogue lists of each installed provider: each grant's id, tuples, decider, time and keys, and the
+    /// advertisement it accepted.
+    fn listed(core: &Core) -> Vec<String> {
+        core.installed
+            .iter()
+            .map(|one| {
+                let provider = one.advertisement.statement().statement.provider.clone();
+                let grants: Vec<String> = core
+                    .catalogue
+                    .grants_of_provider(&provider)
+                    .iter()
+                    .map(|g| {
+                        format!(
+                            "{} {:?} {} {:?} {:?}",
+                            g.id(),
+                            g.terms().tuples,
+                            g.terms().granted_by,
+                            g.terms().granted_at,
+                            g.advertising_keys()
+                        )
+                    })
+                    .collect();
+                format!(
+                    "{provider}: {grants:?}; {:?}",
+                    core.catalogue.accepted_advertisement(&provider)
+                )
+            })
+            .collect()
+    }
+
+    /// A Core opened again lists what it listed before, rebuilt by Core from its log alone (`T-020-61`, the
+    /// coordinator's ruling: `NFR-6`'s first reading, no durable store beside the log): the reopened Core starts from
+    /// an empty catalogue, the old one dropped with the Core that stopped, and Core's rebuild grants each provider its
+    /// tuples again at the same times under the same ids and keys, and joins the advertisement its log accepted.
+    // verifies: NFR-6, REQ-CAT-1
+    #[test]
+    fn reopened_core_rebuilds_its_catalogue_from_its_log_alone() {
+        let (core, config) = alone();
+        let before = listed(&core);
+        assert!(
+            before
+                .iter()
+                .all(|l| l.contains("grant-") && l.contains("Some(")),
+            "every provider granted and its advertisement joined: {before:?}"
+        );
+        let reopened = core
+            .reopened(&config, &mut machine::Reference)
+            .expect("reopened");
+        assert_eq!(listed(&reopened), before, "listed again, as it was");
     }
 
     /// A Core opened again rebuilds its catalogue from the grants and advertisements its log holds, and from nothing

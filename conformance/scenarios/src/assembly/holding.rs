@@ -441,7 +441,7 @@ impl Core {
 
     /// Installs the operator's plain wallet as the holding account of the public node `node`, holding `asset`
     /// (`REQ-CAT-23`, `T-024-17`): the wallet's two components admitted to the platform on the operator's own signed
-    /// release and accepted through Core's decided accept ([`Core::accept_release`]), the node on the operator's public
+    /// release and accepted through Core's decided accept (`Core::accept_release`), the node on the operator's public
     /// list, and the wallet registered as the node's account. The platform runs none of it before Core accepted it.
     ///
     /// # Errors

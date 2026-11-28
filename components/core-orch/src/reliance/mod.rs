@@ -330,48 +330,28 @@ mod tests {
         .unwrap()
     }
 
-    /// A stated entry of the judgement's shape by `maker`, kept under the commitment `kept`, attributed or not.
+    /// A stated entry of the judgement's shape by `maker`, kept under the commitment `kept`, attributed or not: read
+    /// as the log hands it back, so no stated entry is built here but through `relay`'s helper.
     fn stated(maker: &str, kept: u8, attributed: bool) -> rutent_contracts::core_internal::Entry {
-        use rutent_contracts::core_internal::{
-            ShapeId, SignedWith, StatedEntry, StatedKind, StatedOutcome, StatedStatus,
-            StatedTimeSource, StatedWhat, StatedWhen,
+        let who = serde_json::json!({
+            "party": "acme-checks", "acts": maker, "role": "verifier", "kind": "component",
+        });
+        let attribution = if attributed {
+            serde_json::json!({ "signature": "verified", "who": who })
+        } else {
+            serde_json::json!({ "signature": "unverified", "claimed_by": who })
         };
-        use rutent_contracts::provider_role::SignatureScheme;
-        let who = Actor {
-            party: id("acme-checks"),
-            acts: id(maker),
-            role: Role::Verifier,
-            kind: ActorKind::Component,
-        };
-        rutent_contracts::core_internal::Entry::Stated(StatedEntry {
-            kind: StatedKind::Stated,
-            attribution: if attributed {
-                Attribution::Verified { who }
-            } else {
-                Attribution::Unverified { claimed_by: who }
-            },
-            what: StatedWhat {
-                statement: ShapeId::new(JUDGEMENT_SHAPE).unwrap(),
-            },
-            when: StatedWhen {
-                at: Timestamp::new("2026-11-06T15:04:05Z".to_owned()).unwrap(),
-                source: StatedTimeSource::PartyStated,
-            },
-            received_at: at(),
-            outcome: StatedOutcome {
-                status: StatedStatus::Stated,
-            },
-            signed_with: SignedWith {
-                scheme: SignatureScheme::Ed25519,
-                key: serde_json::from_value(serde_json::json!(
-                    "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8"
-                ))
-                .unwrap(),
-            },
-            commitment: commitment(kept),
-            about: None,
-            relayed_by: None,
-        })
+        serde_json::from_value(serde_json::json!({
+            "kind": "stated",
+            "attribution": attribution,
+            "what": { "statement": JUDGEMENT_SHAPE },
+            "when": { "at": "2026-11-06T15:04:05Z", "source": "party_stated" },
+            "received_at": "2026-11-10T09:00:00Z",
+            "outcome": { "status": "stated" },
+            "signed_with": { "scheme": "ed25519", "key": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8" },
+            "commitment": commitment(kept),
+        }))
+        .unwrap()
     }
 
     fn commitment(at: u8) -> rutent_contracts::module_interface::Digest {
