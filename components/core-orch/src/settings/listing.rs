@@ -29,7 +29,7 @@
 //! deployment sets what it sets on a joined advertisement. An advertisement is its maker's signed statement, not an
 //! action anyone decides: what policy decided of it is the operator's grant before it (`super::grant`) and the
 //! operator's settings the log holds, and the key register is the log's. So a live Core and a reopened one list the
-//! same advertisements, by one reading ([`join_received`]).
+//! same advertisements, by one reading (`join_received`).
 
 use std::collections::BTreeMap;
 

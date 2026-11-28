@@ -11214,8 +11214,15 @@ A new author, from `d671c898`. `origin/m3` (`3a53de34`) was already merged and d
   answers `NoShowing` after a reopen until the provider shows it again (fails closed): F-020's follow-up row. The
   reversal's own run (its asks, confirmations and carrier) is rebuilt.
 
-**Local checks of this round**: see the report on #355 (the stand-ins and the plain wallet built from this tree in a
-private directory and deleted after).
+**Local checks of this round** (through the lock; the stand-ins and the plain wallet built from this tree in a private
+directory and deleted after): fmt; clippy `--workspace --all-targets -D warnings`; `rutent-core-orch` (lib and tests) and
+`rutent-core-authz --lib` (172, the entry-point scan included: the reversal's carry-on puts its carriers through `put`,
+which takes the effect); `rutent-contracts` (`core-internal` 111) and `rutent-core-audit`; the contract guard against
+`origin/develop` and `origin/m3` (no violations); prov's `module_record`; every `rutent-scenarios` binary and `--lib` with
+`RUTENT_SCENARIO_SEEDS=11,12,13,14,15,113,114,115,116,117,118,119` (so `invariants`, `assembly`, `reopened` and
+`protocol_cutover` on those seeds), then `--lib` and `ending` again after their last fixes; plan-check and tag-check
+`--strict` (0 findings, 2748 tests). Every confirmation Core asks, the operator's `confirm_undone` included, keeps the
+retry cadence, so `ending.rs` asks its second a cadence later.
 
 ## T-020-67: what the checks of `T-020-58` and `T-020-54` left
 
