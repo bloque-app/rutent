@@ -2246,6 +2246,17 @@ pub enum Difference {
         /// Why it wasn't read.
         why: HoldingNotRead,
     },
+    /// A listed public network whose reader didn't pass Core's start-up check, so the network doesn't start
+    /// (`REQ-CAT-22`, `DEC-28`, `T-020-60` (2)): it is off the catalogue's public list, the snapshot routes nothing to
+    /// it and its segments read as unreadable, while Core's other networks run on. It moves nothing (ADR-0009). Raised
+    /// once in a spell of not starting, the spell ending when its reader passes; it cites the listing its reader was
+    /// held to (`raise-of-a-reader-not-started-cites-its-listing`).
+    ReaderNotStarted {
+        /// The network, as its listing names it.
+        network: Id,
+        /// Why it didn't start.
+        why: ReaderNotStarted,
+    },
     /// A material change in a provider's p99 settlement time (`REQ-ORD-6`).
     SettlementTime {
         /// The provider.
@@ -2272,6 +2283,37 @@ pub enum PairNotBuilt {
     NotAnAmount {},
     /// The contract refuses the pair.
     Refused {},
+}
+
+/// Why a listed network's reader didn't pass Core's start-up check (`T-020-60` (2)). Schema:
+/// `urn:rutent:core-internal:raise#/$defs/reader_not_started`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReaderNotStarted {
+    /// Its listing breaks the reader contract's rules: its identity and trust rule unpaired, or a trust rule that doesn't
+    /// hold.
+    ListingBreaksItsRules,
+    /// The listing's host setting holds no address the deployment gave Core.
+    NoHost,
+    /// The listing names another CA than the operator's CA the deployment handed Core.
+    OtherCa,
+    /// The reader host couldn't be reached, or the link's handshake failed.
+    Unreachable,
+    /// The host gave no answer.
+    NoAnswer,
+    /// The answer wasn't a reader's signed answer, or doesn't read as Core reads it.
+    Malformed,
+    /// Its signature doesn't verify under the reader's listed statement key.
+    NotSigned,
+    /// It answered another question, request, network, key, version or deployment, or came past its deadline on Core's
+    /// clock.
+    Refused,
+    /// The reader said it can't stand behind an answer.
+    ReaderUnreadable,
+    /// Its reader answered another network identity than the listing's.
+    OtherIdentity,
+    /// Its reader answered another trust rule than the listing's.
+    OtherTrust,
 }
 
 /// Why a holding account's balance wasn't read. Schema: `urn:rutent:core-internal:raise#/$defs/holding_not_read`.

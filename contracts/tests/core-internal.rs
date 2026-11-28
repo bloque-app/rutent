@@ -373,7 +373,7 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 159] = [
+const SCHEMA_RULES: [SchemaRule; 161] = [
     (
         "verified-entry-of-graded-evidence-whose-movement-names-no-reader",
         &[("/what/movement", "required")],
@@ -1005,6 +1005,16 @@ const SCHEMA_RULES: [SchemaRule; 159] = [
         "raise-of-a-pair-not-built-for-a-reason-it-has-no-name-for",
         &[("/difference/why/kind", "enum")],
         "unknown variant `lost`",
+    ),
+    (
+        "raise-of-a-network-whose-reader-did-not-start-for-a-reason-it-has-no-name-for",
+        &[("/difference/why", "enum")],
+        "unknown variant `slow`",
+    ),
+    (
+        "raise-of-a-network-whose-reader-did-not-start-citing-nothing",
+        &[("/cites", "minItems")],
+        "a raise cites the entries it rests on, at least one, each once",
     ),
     (
         "raise-citing-nothing",
@@ -3707,6 +3717,24 @@ fn raise_of_a_holding_not_read_carries_no_balance_and_cites_only_its_accounts_ch
     for broken in ["missing", "account", "node", "provider"] {
         assert_case_refused(&format!(
             "raise-of-a-holding-not-read-cites-its-accounts-check--{broken}"
+        ));
+    }
+}
+
+// verifies: REQ-CAT-22, DEC-28
+#[test]
+fn raise_of_a_network_whose_reader_did_not_start_cites_its_listing() {
+    assert_accepted_by_both("raise-of-a-network-whose-reader-did-not-start");
+    // It names why, from the reasons it has names for, and cites at least one entry, as every raise but two kinds does.
+    assert_rejected(
+        "raise-of-a-network-whose-reader-did-not-start-for-a-reason-it-has-no-name-for",
+    );
+    assert_rejected("raise-of-a-network-whose-reader-did-not-start-citing-nothing");
+    // What it cites is a listing of its own network: never another network's, nor an entry that lists nothing.
+    assert_case("raise-of-a-reader-not-started-cites-its-listing--its-listing");
+    for broken in ["missing", "network"] {
+        assert_case_refused(&format!(
+            "raise-of-a-reader-not-started-cites-its-listing--{broken}"
         ));
     }
 }

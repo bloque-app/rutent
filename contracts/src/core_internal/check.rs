@@ -427,7 +427,8 @@ impl Raise {
             } => charged <= maximum,
             Difference::Holding { .. }
             | Difference::PairNotBuilt { .. }
-            | Difference::HoldingNotRead { .. } => false,
+            | Difference::HoldingNotRead { .. }
+            | Difference::ReaderNotStarted { .. } => false,
             Difference::PublicEnd {
                 found,
                 moved,

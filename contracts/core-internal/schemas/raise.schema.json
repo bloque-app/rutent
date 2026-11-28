@@ -50,7 +50,8 @@
             "settlement_time",
             "public_end",
             "pair_not_built",
-            "holding_not_read"
+            "holding_not_read",
+            "reader_not_started"
           ]
         }
       },
@@ -188,6 +189,21 @@
           },
           "then": {
             "$ref": "#/$defs/difference_holding_not_read"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "reader_not_started"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/difference_reader_not_started"
           }
         }
       ]
@@ -680,6 +696,44 @@
           ]
         }
       }
+    },
+    "difference_reader_not_started": {
+      "description": "A listed public network whose reader didn't pass Core's start-up check, so the network doesn't start (REQ-CAT-22, DEC-28, T-020-60): it is off the catalogue's public list, the snapshot routes nothing to it and its segments read as unreadable, while Core's other networks run on. It moves nothing. Raised once in a spell of not starting; it cites the listing its reader was held to.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "network",
+        "why"
+      ],
+      "properties": {
+        "kind": {
+          "const": "reader_not_started"
+        },
+        "network": {
+          "description": "The network, as its listing names it.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "why": {
+          "$ref": "#/$defs/reader_not_started"
+        }
+      }
+    },
+    "reader_not_started": {
+      "description": "Why the network's reader didn't pass the start-up check: its listing breaks the reader contract's rules; no host address; another CA than the operator's; the host unreachable; no answer; an answer that isn't a reader's signed answer; a signature that doesn't verify under the listed key; an answer to another question or past its deadline; the reader unable to stand behind an answer; another network identity, or another trust rule, than the listing's.",
+      "enum": [
+        "listing_breaks_its_rules",
+        "no_host",
+        "other_ca",
+        "unreachable",
+        "no_answer",
+        "malformed",
+        "not_signed",
+        "refused",
+        "reader_unreadable",
+        "other_identity",
+        "other_trust"
+      ]
     }
   },
   "allOf": [

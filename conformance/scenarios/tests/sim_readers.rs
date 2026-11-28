@@ -130,7 +130,11 @@ fn simulated_reader_answers_as_its_simulated_network_does() {
         "one network follows the Substrate rule, another the EVM rule"
     );
     // Every listed reader passed Core's start-up check: the listing's identity, trust rule and version.
-    assert!(core.not_started().is_empty(), "{:?}", core.not_started());
+    assert!(
+        core.reader_raises().is_empty(),
+        "{:?}",
+        core.reader_raises()
+    );
     let mut asked: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for network in &listed {
         let network = network.network.as_str().to_owned();

@@ -1,6 +1,17 @@
 # core-internal changelog
 
 ## 1.0.0
+- `T-020-60` (item 2, `REQ-CAT-22`, `DEC-28`): `Difference::ReaderNotStarted {network, why}` (`reader_not_started`), the
+  raise Core makes when a listed public network's reader doesn't pass its start-up check, so the network doesn't start:
+  why, one of `listing_breaks_its_rules`, `no_host`, `other_ca`, `unreachable`, `no_answer`, `malformed`, `not_signed`,
+  `refused`, `reader_unreadable`, `other_identity` and `other_trust` (`ReaderNotStarted`). It moves nothing, and cites at
+  least one entry, as every raise but `pair_not_built` and `holding_not_read` does. Its relation
+  `raise-of-a-reader-not-started-cites-its-listing` holds each receipt it cites to a decided `list_public_network` effect
+  naming its own network, so the relation count is one more. Folded into this unreleased version: no log was kept under
+  the old shape. Fixtures: valid `raise-of-a-network-whose-reader-did-not-start`; invalid `…-citing-nothing` and
+  `…-for-a-reason-it-has-no-name-for` (two schema rules more); admission cases `--its-listing`, `--missing`, `--network`.
+  Ignorable: no, a reader that ignored it would not tell the operator why a network is held off its routes.
+  (DEC-4, DEC-20, T-020-60)
 - `T-020-60` (`DEC-28`, `REQ-AUD-4`; ADR-0007 as amended): `PublicMovement` gains `read_by` (`MovementReader {reader,
   version}`), required: the reader service that read the movement, by its name on its host, and the version that
   answered, which Core holds to the network's listing. Every `evidence`, `replay` and `public_mismatch` entry that names a

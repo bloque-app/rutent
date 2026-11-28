@@ -30,6 +30,7 @@
 //! 5. **Unreadable.** Each of `PublicRecords`' three calls answers the reader's answer or [`Unreadable`]; closing takes
 //!    `Unreadable` as "doesn't settle yet".
 
+pub mod raise;
 pub mod tls;
 
 use std::cell::RefCell;
@@ -57,6 +58,7 @@ use rutent_evidence::{MovementId, NetworkRules, Status};
 use super::{Moved, PublicRecords};
 use crate::snapshot::{Clock, Reading};
 
+pub use raise::Raised;
 pub use tls::{ReaderTls, TlsRefusal};
 
 /// How long, on Core's clock, Core waits for an answer by default: its deadline is the time it asked plus this.

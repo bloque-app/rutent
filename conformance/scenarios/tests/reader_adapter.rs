@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 use execution_support::*;
 use readers_support::{Plan, Read, Readers, TestCa};
-use rutent_contracts::core_internal::PublicNetwork;
+use rutent_contracts::core_internal::{PublicNetwork, ReaderNotStarted};
 use rutent_contracts::provider_role::NoDetail;
 use rutent_contracts::reader::{Answered, Asked, ReaderMismatch};
 use rutent_contracts::router_api::Id;
@@ -110,6 +110,45 @@ fn after_ticks(core: &mut Core, order: &Id, ticks: usize) -> OrderState {
     state(core, order)
 }
 
+/// A network whose reader doesn't start is raised to the operator in the log, citing the listing its reader was held
+/// to, and the log admits the raise (`raise-of-a-reader-not-started-cites-its-listing`); it is raised once in a spell
+/// of not starting, so checking again while it still fails raises nothing more. Once its reader passes the spell ends,
+/// and a later failure raises it again (`T-020-60` (2), `REQ-CAT-22`).
+// verifies: REQ-CAT-22, DEC-28
+#[test]
+fn network_whose_reader_does_not_start_is_raised_once_in_its_spell_citing_its_listing() {
+    let (mut core, _, _) = bank_only();
+    let bank = bank();
+    let host = core.reader_service().address();
+    assert!(core.reader_raises().is_empty(), "every reader started");
+    let nowhere = TcpListener::bind("127.0.0.1:0")
+        .and_then(|l| l.local_addr())
+        .expect("a port");
+    core.move_reader_host(nowhere);
+    let raises = core.reader_raises();
+    let [(network, why, cites)] = raises.as_slice() else {
+        panic!("one raise: {raises:?}")
+    };
+    assert_eq!((network, *why), (&bank, ReaderNotStarted::Unreachable));
+    let listing = core
+        .listing_receipt(&bank)
+        .expect("the log holds the network's listing");
+    assert_eq!(cites, &vec![listing], "it cites the network's listing");
+    // Checked again while it still fails: the same spell, nothing more raised.
+    core.start_readers();
+    assert_eq!(core.reader_raises().len(), 1, "raised once in its spell");
+    // Its reader passes again: the spell ends. A later failure raises it again.
+    core.move_reader_host(host);
+    assert_eq!(core.readers().standing(&bank), Standing::Started);
+    assert_eq!(
+        core.reader_raises().len(),
+        1,
+        "a reader that passes isn't raised"
+    );
+    core.move_reader_host(nowhere);
+    assert_eq!(core.reader_raises().len(), 2, "a new spell, raised again");
+}
+
 // verifies: REQ-CAT-22, DEC-28
 #[test]
 fn network_whose_reader_is_unreachable_does_not_start_and_cannot_be_listed() {
@@ -126,10 +165,10 @@ fn network_whose_reader_is_unreachable_does_not_start_and_cannot_be_listed() {
         core.readers().standing(&bank),
         Standing::NotStarted(NotStarted::Unread(Unreadable::Unreachable))
     );
-    assert_eq!(
-        core.not_started().get(&bank),
-        Some(&NotStarted::Unread(Unreadable::Unreachable)),
-        "the operator is told why"
+    let raises = core.reader_raises();
+    assert!(
+        matches!(raises.as_slice(), [(n, ReaderNotStarted::Unreachable, _)] if *n == bank),
+        "the operator is told why, by a raise in the log: {raises:?}"
     );
     // It is off the catalogue's public list, and the snapshot routes nothing to it: no quote is shown.
     assert!(!core.catalogue().nodes().is_started_network(&bank));

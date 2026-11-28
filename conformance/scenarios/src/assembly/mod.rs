@@ -795,8 +795,8 @@ pub struct Core {
     /// The deployment's reader host, run apart from Core as a process of its own, which the adapter reaches through the
     /// host setting [`crate::sim::readers::HOST_SETTING`]: the deployment's, not Core's, so it goes on across a reopen.
     reader_service: Option<crate::sim::reader_service::ReaderService>,
-    /// Why each listed network that didn't start didn't, as Core told the operator (`T-020-60` (2)).
-    not_started: BTreeMap<String, rutent_core_orch::closing::readers::NotStarted>,
+    /// The networks Core raised to the operator as not started, in the spell now running (`T-020-60` (2)).
+    raised: rutent_core_orch::closing::readers::Raised,
     issued: Issued,
     /// What goes wrong with an order and how it ends (`T-024-06`).
     pub(crate) life: lifecycle::Lifecycle,
@@ -1371,7 +1371,7 @@ impl Core {
             booked: grading::Booked::default(),
             readers,
             reader_service: Some(reader_service),
-            not_started: BTreeMap::new(),
+            raised: rutent_core_orch::closing::readers::Raised::default(),
             issued: Issued::new(),
             life: lifecycle::Lifecycle::new(),
             exposures: Exposures::new(),
@@ -1636,7 +1636,8 @@ impl Core {
     /// Core's start-up check of each listed network's reader (`T-020-60` (2)), as when it opens or reopens: each
     /// listing the log holds taken into Core's adapter and its reader asked `network_rules`, held to the listing. A
     /// network whose reader passes is on the catalogue's public list; one whose reader is unreachable or fails doesn't
-    /// start, is held off it, and the operator is told why ([`Core::not_started`]). The other networks run on.
+    /// start, is held off it, and Core raises it to the operator in the log, once in its spell, citing its listing
+    /// ([`rutent_core_orch::closing::readers::Raised`], [`Core::reader_raises`]). The other networks run on.
     pub fn start_readers(&mut self) {
         let listed = self.public_networks();
         for network in self.readers.listed().keys().cloned().collect::<Vec<_>>() {
@@ -1652,15 +1653,40 @@ impl Core {
         for network in &listed {
             self.readers.list(network);
         }
-        self.not_started = self.readers.check_all(&self.clock).into_iter().collect();
+        let not_started: BTreeMap<String, rutent_core_orch::closing::readers::NotStarted> =
+            self.readers.check_all(&self.clock).into_iter().collect();
         for network in &listed {
-            let started = !self.not_started.contains_key(network.network.as_str());
+            let started = !not_started.contains_key(network.network.as_str());
             let _ = self.catalogue.list_public_network(
                 network.network.as_str(),
                 network.listing.is_some(),
                 started,
             );
         }
+        let history: Vec<(Receipt, Entry)> = self.log.borrow().entries().to_vec();
+        let names: Vec<String> = listed
+            .iter()
+            .map(|n| n.network.as_str().to_owned())
+            .collect();
+        let core = kit::core();
+        let mut channel = rutent_core_orch::notice::Channel {
+            notices: &mut self.notices,
+            key: &mut self.notice_signer,
+            transport: &mut self.wire,
+        };
+        // A raise the log can't take now is tried again on the next check: the network stays out of its spell.
+        let _ = self.raised.raise(
+            &names,
+            &not_started,
+            &history,
+            rutent_core_orch::segments::RaiseDesk {
+                log: &mut self.general,
+                clock: &self.clock,
+                fresh: &mut self.fresh,
+                operator: &mut channel,
+                core: &core,
+            },
+        );
     }
 
     /// The deployment's host setting [`crate::sim::readers::HOST_SETTING`] now holds `address`, as when the deployment
@@ -1676,9 +1702,38 @@ impl Core {
         self.fleet.platform.world.reader_endpoints()
     }
 
-    /// Each listed network whose reader didn't start, with why, as Core told the operator (`T-020-60` (2)).
-    pub fn not_started(&self) -> &BTreeMap<String, rutent_core_orch::closing::readers::NotStarted> {
-        &self.not_started
+    /// The receipt of the last decided listing of `network` the log holds: what a raise of it as not started cites.
+    pub fn listing_receipt(&self, network: &str) -> Option<Receipt> {
+        rutent_core_orch::closing::readers::raise::listing_of(self.log.borrow().entries(), network)
+    }
+
+    /// Every raise of a network whose reader didn't start, as the log holds it, in order: its network, why, and the
+    /// receipts it cites (`T-020-60` (2)).
+    pub fn reader_raises(
+        &self,
+    ) -> Vec<(
+        String,
+        rutent_contracts::core_internal::ReaderNotStarted,
+        Vec<Receipt>,
+    )> {
+        self.log
+            .borrow()
+            .entries()
+            .iter()
+            .filter_map(|(_, e)| match e {
+                Entry::Verified(VerifiedEntry {
+                    what: What::Raise { raise },
+                    ..
+                }) => match &raise.difference {
+                    rutent_contracts::core_internal::Difference::ReaderNotStarted {
+                        network,
+                        why,
+                    } => Some((network.as_str().to_owned(), *why, raise.cites.clone())),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
     }
 
     /// Core's adapter for the listed networks' readers.

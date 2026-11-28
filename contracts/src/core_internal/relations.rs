@@ -517,7 +517,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 121] = [
+pub static RELATIONS: [Relation; 122] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -3726,6 +3726,53 @@ pub static RELATIONS: [Relation; 121] = [
                 return Match::NotTarget;
             };
             judge(true, &[checked == account, at == node, by == provider])
+        },
+    },
+    Relation {
+        name: "raise-of-a-reader-not-started-cites-its-listing",
+        spec: &["REQ-CAT-22"],
+        quantifier: Quantifier::Exists,
+        refusal: "a network raised as not started cites only a listing of that network in this log",
+        fields: &[(
+            "network",
+            "a network not started cites a listing of its own network",
+        )],
+        // A network whose reader didn't pass Core's start-up check is raised on the listing its reader was held to
+        // (`T-020-60` (2)): each receipt it cites is a decided `list_public_network` effect naming that very network, so
+        // a raise can't rest on another network's listing or on an entry that lists nothing.
+        cites: |e, _| match &e.what {
+            What::Raise { raise }
+                if matches!(raise.difference, Difference::ReaderNotStarted { .. }) =>
+            {
+                raise
+                    .cites
+                    .iter()
+                    .enumerate()
+                    .map(|(i, receipt)| by_receipt(receipt, i))
+                    .collect()
+            }
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let (What::Raise { raise }, Some(v)) = (&e.what, verified(t)) else {
+                return Match::NotTarget;
+            };
+            let Difference::ReaderNotStarted { network, .. } = &raise.difference else {
+                return Match::NotTarget;
+            };
+            let What::Effect {
+                action:
+                    Action::ChangeCatalogue {
+                        change: CatalogueChange::ListPublicNetwork,
+                        public_network: Some(listed),
+                        ..
+                    },
+                ..
+            } = &v.what
+            else {
+                return Match::NotTarget;
+            };
+            judge(true, &[listed.network == *network])
         },
     },
     Relation {
