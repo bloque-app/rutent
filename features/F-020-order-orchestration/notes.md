@@ -11090,7 +11090,13 @@ the installed advertisements (for that check), its grant terms, the log's names 
 advertisement (`kit::joined`: the module's version, the tuples' floors, the private nodes' holdings, the operator's public
 nodes) and the platform. Tests: `reopened_core_rebuilds_its_catalogue_from_its_log_alone` (a reopen from an empty
 catalogue lists every grant and advertisement as before) and `old_advertisement_replayed_after_a_newer_accepted_one_changes_nothing`
-(now across a reopen: the register's accepted advertisement is the one listed again).
+(now across a reopen: the register's accepted advertisement is the one listed again). Each grant is made again on the
+effect the log holds (`regrant` takes the `Effect` built from the log's entry and the permit it names), so core-authz's
+entry-point scan holds the rebuild to rule 3 as it holds Core's grant. Local checks after it: fmt; clippy
+`--workspace --all-targets -D warnings`; core-orch (lib and tests); core-authz `--lib` (172); every scenario binary and
+`--lib` with the same seeds and the stand-ins and plain wallet built privately, then `assembly_policy`,
+`protocol_cutover`, `reopened`, `assembly_wiring` and `--lib` again after `regrant`; plan-check and tag-check `--strict`
+(0 findings, 2743 tests).
 
 **Defaults taken in this pass** (reversible, each failing closed):
 

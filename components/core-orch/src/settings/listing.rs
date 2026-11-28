@@ -25,7 +25,9 @@
 
 use std::collections::BTreeMap;
 
-use rutent_contracts::core_internal::{Action, CatalogueChange, Entry, Outcome, Receipt, What};
+use rutent_contracts::core_internal::{
+    Action, CatalogueChange, Effect, Entry, Outcome, Permit, Receipt, What,
+};
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{ADVERTISEMENT_SHAPE, Advertisement, Statement};
 use rutent_contracts::router_api::{Id, Timestamp};
@@ -136,7 +138,6 @@ pub fn relist<'c>(
                             provider,
                             tuple,
                             class,
-                            advertising_keys,
                             ..
                         },
                     decision,
@@ -175,17 +176,10 @@ pub fn relist<'c>(
                     }
                     None => Vec::new(),
                 };
-                let id = terms.id.clone();
-                let made =
-                    Grant::new(terms).map_err(|e| RelistRefused::Refused(format!("{e:?}")))?;
-                catalogue
-                    .grant(made)
-                    .map_err(|e| RelistRefused::Refused(format!("{e:?}")))?;
-                for key in advertising_keys {
-                    catalogue
-                        .trust_advertising_key(&id, key.clone())
-                        .map_err(|e| RelistRefused::Refused(format!("{e:?}")))?;
-                }
+                // Granted again on the effect the log holds, done: the grant rests on that effect, as it did when made.
+                let effect = logged(&v.what, decision, receipt)
+                    .ok_or_else(|| RelistRefused::Refused("a grant's effect".to_owned()))?;
+                regrant(catalogue, &effect, terms)?;
             }
             Entry::Stated(_) => {}
         }
@@ -198,6 +192,44 @@ pub fn relist<'c>(
         platform,
         ..Targets::default()
     });
+    Ok(())
+}
+
+/// The effect the log holds at `receipt`, `what` its entry's, on the permit `decision` its entry names: what a grant
+/// granted again on reopening rests on, never one Core makes anew.
+fn logged(what: &What, decision: &Permit, receipt: &Receipt) -> Option<Effect> {
+    match what {
+        What::Effect { action, .. } => Some(Effect {
+            action: action.clone(),
+            decision: decision.clone(),
+            receipt: receipt.clone(),
+        }),
+        _ => None,
+    }
+}
+
+/// Grants `terms` in `catalogue` again on the `done` grant `effect` the log holds, trusting each advertising key it names.
+fn regrant(
+    catalogue: &mut Catalogue,
+    effect: &Effect,
+    terms: GrantTerms,
+) -> Result<(), RelistRefused> {
+    let Action::ChangeCatalogue {
+        advertising_keys, ..
+    } = &effect.action
+    else {
+        return Err(RelistRefused::Refused("not a grant".to_owned()));
+    };
+    let id = terms.id.clone();
+    let made = Grant::new(terms).map_err(|e| RelistRefused::Refused(format!("{e:?}")))?;
+    catalogue
+        .grant(made)
+        .map_err(|e| RelistRefused::Refused(format!("{e:?}")))?;
+    for key in advertising_keys {
+        catalogue
+            .trust_advertising_key(&id, key.clone())
+            .map_err(|e| RelistRefused::Refused(format!("{e:?}")))?;
+    }
     Ok(())
 }
 
