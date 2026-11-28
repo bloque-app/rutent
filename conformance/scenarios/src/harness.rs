@@ -124,13 +124,11 @@ pub enum Fault {
     /// From now on, the destination's network ties each deposit to the first movement to its account of its amount:
     /// a reserve paying two orders with one payment (`T-020-09`, `REQ-ORD-38`).
     OnePaymentForTwo,
-    /// The log's store turns away the next `times` appends of a verified record whose `call` is `call`, such as
-    /// `result`, as a store that can't take them now does (`T-020-60` item (8)).
-    RefuseAppends {
-        /// The verified entry's `call`.
-        call: &'static str,
-        /// How many appends it turns away.
-        times: usize,
+    /// The log's store turns away the result of the next effect whose action is of `kind`, each try of it, such as
+    /// `ask_status`, as a store that can't take it now does (`T-020-60` item (8)).
+    RefuseResultOf {
+        /// The effect's action kind.
+        kind: &'static str,
     },
 }
 
@@ -633,7 +631,7 @@ pub fn plant(core: &mut Core, fault: &Fault) {
             );
         }
         Fault::OnePaymentForTwo => core.tie_payments_by_destination(),
-        Fault::RefuseAppends { call, times } => core.refuse_log_appends(call, *times),
+        Fault::RefuseResultOf { kind } => core.disk.refuse_result_of(kind),
     }
 }
 

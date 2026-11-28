@@ -95,10 +95,8 @@ impl Segments {
             }
             self.carry_unwritten.remove(&at);
             return match answered {
-                Answered::Bytes(bytes) => self.take_answer(&at, bytes),
-                Answered::Refused(_) => {
-                    CarriedOn::Waiting("carried on once already: left for the stuck check")
-                }
+                Some(bytes) => self.take_answer(&at, bytes),
+                None => CarriedOn::Waiting("carried on once already: left for the stuck check"),
             };
         }
         let Some(flight) = self.flights.get(&at) else {
@@ -135,6 +133,10 @@ impl Segments {
                     provider: &provider,
                     asking: &asking,
                     about: &statement,
+                },
+                &|bytes| {
+                    crate::reversal::status_result(bytes, &statement.statement, &asking, &provider)
+                        .filter(|result| names_transaction(result, transaction.as_str()))
                 },
             ) {
                 Ok(answered) => answered,
@@ -173,6 +175,7 @@ impl Segments {
                     provider: &provider,
                     transaction: &transaction,
                 },
+                &|bytes| Some(bytes.to_vec()),
             ) {
                 Ok(answered) => answered,
                 Err(stopped) => return stopped,
@@ -201,6 +204,7 @@ impl Segments {
                 provider: &provider,
                 transaction: &transaction,
             },
+            &|bytes| names_transaction(bytes, transaction.as_str()).then(|| bytes.to_vec()),
         ) {
             Ok(answered) => answered,
             Err(stopped) => return stopped,
@@ -236,6 +240,8 @@ impl Segments {
 
     /// One decided action of Core's: policy asked, the effect recorded before anything is asked, acted on once, `ask`
     /// put to the platform as the effect lets it, and its result recorded whatever came back (`INV-7`, `REQ-AUD-1`).
+    /// Where the log can't take the result now, it is kept with the answer `taken` makes of what came back, the one the
+    /// segment takes once the result is written.
     fn decided(
         &mut self,
         parts: &mut Parts<'_>,
@@ -243,6 +249,7 @@ impl Segments {
         segment: &(String, String),
         action: Action,
         ask: Ask<'_>,
+        taken: &dyn Fn(&[u8]) -> Option<Vec<u8>>,
     ) -> Result<Answered, CarriedOn> {
         let at = now(parts.clock).map_err(|_| CarriedOn::Failed)?;
         let request = DecisionRequest {
@@ -306,9 +313,14 @@ impl Segments {
         )
         .is_err()
         {
-            // Kept to be written first on the next carry-on of the segment (above).
+            // Kept to be written first on the next carry-on of the segment (above), with the answer it takes then, as
+            // the caller would have taken it now.
+            let answer = match &answered {
+                Answered::Bytes(bytes) => taken(bytes),
+                Answered::Refused(_) => None,
+            };
             self.carry_unwritten
-                .insert(segment.clone(), (receipt, outcome, at, answered));
+                .insert(segment.clone(), (receipt, outcome, at, answer));
             return Err(CarriedOn::Failed);
         }
         Ok(answered)

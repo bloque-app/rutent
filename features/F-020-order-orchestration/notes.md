@@ -11872,8 +11872,11 @@ A new author from `df75e9d0`; `origin/m3` still at `52c5b859`. Where a line abov
   - *R43 and R47 reached.* `movement_back_another_segment_relied_on_confirms_no_reversal_into_a_held_node`: the node's
     reader ties the movement back by destination and amount, which answers with the movement that brought the stuck
     order's value in, one its settled segment relies on. `carry_on_whose_result_the_log_refused_gets_its_result_first_and_no_second_effect`:
-    the log turns away the carry-on's result (`Fault::RefuseAppends`), and the next tick writes it before anything
-    else, with no second effect.
+    the log turns away each try of the carry-on's result (`Fault::RefuseResultOf`, `Disk::refuse_result_of`), and the
+    next tick writes it before anything else, with no second effect. The test found a real Core bug behind round 2's
+    green R47: the unwritten path took the status question's raw answer as the segment's answer, never the provider's
+    result inside it. `decided` now keeps the answer its caller would take (the status answer's result, a repeat's
+    answer, the platform record's naming the transaction), and the unwritten path takes that.
 - **Lows:**
   - `reader-test-hooks` is pinned in `tools/boundary-check`: `TEST_ONLY_FEATURES`, `test_only_features_enabled` and
     `test_only_features_outside_tests`. The feature is turned on only from a `[dev-dependencies]` entry (Core's own

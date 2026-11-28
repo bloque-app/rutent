@@ -45,6 +45,9 @@ pub struct Disk {
     seen: Rc<RefCell<Vec<(String, usize)>>>,
     /// Records of a call the store can't take now: its name and how many more appends it turns away.
     refusing: Rc<Cell<Option<(&'static str, usize)>>>,
+    /// The result the store turns away once, of the next effect of an action kind: the kind, and, once that effect is
+    /// taken, its place in the log.
+    refusing_result_of: Rc<RefCell<Option<(String, Option<usize>)>>>,
     /// The statements kept that a Core reopened on this disk can't read back: the shelf keeps them, and the store
     /// answers nothing under them to Core's reopening.
     unreadable: Rc<RefCell<Vec<Digest>>>,
@@ -91,6 +94,45 @@ impl Disk {
     /// log may try again (`AppendFailure::Unavailable`).
     pub fn refuse(&self, call: &'static str, times: usize) {
         self.refusing.set(Some((call, times)));
+    }
+
+    /// Makes the log's store turn away the result of the next effect whose action is of `kind` (such as
+    /// `ask_status`): the effect is taken, and its result can't be now (`T-020-60` item (8)).
+    pub fn refuse_result_of(&self, kind: &str) {
+        *self.refusing_result_of.borrow_mut() = Some((kind.to_owned(), None));
+    }
+
+    /// Whether `record` is the result [`Disk::refuse_result_of`] turns away: the first result after an effect of its
+    /// kind, which Core appends right after carrying the effect out, each of the tries of that one append.
+    fn result_refused(&self, record: &[u8]) -> bool {
+        let mut armed = self.refusing_result_of.borrow_mut();
+        let Some((kind, effect)) = armed.as_mut() else {
+            return false;
+        };
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(record) else {
+            return false;
+        };
+        match (*effect, value["what"]["call"].as_str()) {
+            (None, Some("effect")) if value["what"]["action"]["kind"].as_str() == Some(kind) => {
+                *effect = Some(SEGMENT_APPEND_TRIES);
+                false
+            }
+            // Core appends an effect's result right after it carries the effect out, with no other result between, and
+            // tries one append that many times: each try of that one append is turned away, and no later one.
+            (Some(left), Some("result")) => {
+                if left <= 1 {
+                    *armed = None;
+                } else {
+                    *effect = Some(left - 1);
+                }
+                true
+            }
+            (Some(_), _) => {
+                *armed = None;
+                false
+            }
+            _ => false,
+        }
     }
 
     fn refused(&self, record: &[u8]) -> bool {
@@ -188,12 +230,15 @@ impl Disk {
     }
 }
 
+/// How many times Core's segments try one append to the log (`core-orch`'s `segments::journal::APPEND_TRIES`).
+const SEGMENT_APPEND_TRIES: usize = 3;
+
 /// The log's store, on a [`Disk`].
 pub struct LogDisk(Disk);
 
 impl Store for LogDisk {
     fn append(&mut self, record: &[u8]) -> Result<(), StoreError> {
-        if self.0.refused(record) {
+        if self.0.refused(record) || self.0.result_refused(record) {
             return Err(StoreError::Unavailable(
                 "the store can't take it now (a planted fault)".to_owned(),
             ));

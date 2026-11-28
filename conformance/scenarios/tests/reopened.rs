@@ -835,10 +835,7 @@ fn carry_on_whose_result_the_log_refused_gets_its_result_first_and_no_second_eff
             .when(Step::Plant(Fault::CrashAfterEffect(1)))
             .when(Step::Run)
             .when(Step::Restart)
-            .when(Step::Plant(Fault::RefuseAppends {
-                call: "result",
-                times: 1,
-            }))
+            .when(Step::Plant(Fault::RefuseResultOf { kind: "ask_status" }))
             .when(Step::Rerun)
             .when(Step::Rerun)
             .when(Step::Rerun)
@@ -864,10 +861,7 @@ fn carry_on_whose_result_the_log_refused_gets_its_result_first_and_no_second_eff
             .when(Step::Plant(Fault::CrashAfterEffect(1)))
             .when(Step::Run)
             .when(Step::Restart)
-            .when(Step::Plant(Fault::RefuseAppends {
-                call: "result",
-                times: 1,
-            }))
+            .when(Step::Plant(Fault::RefuseResultOf { kind: "ask_status" }))
             .when(Step::Rerun)
             .when(Step::Restart)
             .when(Step::Rerun)

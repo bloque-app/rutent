@@ -710,15 +710,16 @@ struct Tracked {
 #[derive(Debug, Clone, Default)]
 pub struct Segments {
     /// A carry-on's result the log couldn't take now, by order and segment: its effect's receipt, its outcome, its time
-    /// and what came back, written before anything else is tried for the segment, so a carry-on effect is never followed
-    /// by a second one without its result (`T-020-60` item (8), from the check of `T-020-61` at `7557cd9e`).
+    /// and the answer the segment takes of what came back, written before anything else is tried for the segment, so a
+    /// carry-on effect is never followed by a second one without its result (`T-020-60` item (8), from the check of
+    /// `T-020-61` at `7557cd9e`). A reopened Core rebuilds each from the log's carry-on effects with no result.
     carry_unwritten: BTreeMap<
         (String, String),
         (
             Receipt,
             rutent_contracts::core_internal::Outcome,
             rutent_contracts::router_api::Timestamp,
-            Answered,
+            Option<Vec<u8>>,
         ),
     >,
     acted: BTreeSet<String>,
