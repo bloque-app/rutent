@@ -1643,6 +1643,19 @@ impl Core {
         }
     }
 
+    /// The deployment's host setting [`crate::sim::readers::HOST_SETTING`] now holds `address`, as when the deployment
+    /// moves its reader host: Core checks each listed reader again there (`T-020-60`).
+    pub fn move_reader_host(&mut self, address: std::net::SocketAddr) {
+        self.readers
+            .set_host(crate::sim::readers::HOST_SETTING, address);
+        self.start_readers();
+    }
+
+    /// The endpoints the world serves its networks' readers.
+    pub fn world_endpoints(&self) -> crate::sim::readers::Endpoints {
+        self.fleet.platform.world.reader_endpoints()
+    }
+
     /// Each listed network whose reader didn't start, with why, as Core told the operator (`T-020-60` (2)).
     pub fn not_started(&self) -> &BTreeMap<String, rutent_core_orch::closing::readers::NotStarted> {
         &self.not_started

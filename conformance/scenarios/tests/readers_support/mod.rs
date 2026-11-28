@@ -87,12 +87,21 @@ impl TestCa {
     /// The test CA: an Ed25519 key from [`CA_SEED`], and fixed fields (its name, serial and validity), so its
     /// certificate is deterministic (an Ed25519 signature is).
     pub fn new() -> Self {
+        Self::of(CA_SEED, "rutent scenarios test CA")
+    }
+
+    /// Another CA than the operator's, of its own key and name: what no listing names.
+    pub fn other() -> Self {
+        Self::of(*b"rutent-scenarios-other-ca-seed-1", "another CA")
+    }
+
+    fn of(seed: [u8; 32], common_name: &str) -> Self {
         // PKCS #8 v1 of an Ed25519 key (RFC 8410): the fixed prefix, then the 32-byte seed.
         let mut pkcs8 = vec![
             0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22,
             0x04, 0x20,
         ];
-        pkcs8.extend_from_slice(&CA_SEED);
+        pkcs8.extend_from_slice(&seed);
         let key = KeyPair::from_pkcs8_der_and_sign_algo(
             &PrivatePkcs8KeyDer::from(pkcs8),
             &rcgen::PKCS_ED25519,
@@ -100,7 +109,7 @@ impl TestCa {
         .expect("the test CA's key");
         let mut params = CertificateParams::new(Vec::<String>::new()).expect("parameters");
         let mut name = DistinguishedName::new();
-        name.push(DnType::CommonName, "rutent scenarios test CA");
+        name.push(DnType::CommonName, common_name);
         params.distinguished_name = name;
         params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
         params.serial_number = Some(SerialNumber::from(vec![0x01]));
@@ -384,6 +393,8 @@ pub struct Readers {
     core: rutent_core_orch::closing::Readers,
     /// The test CA's certificate, PEM: what the deployment hands Core as the operator's CA.
     pub ca_pem: String,
+    /// Further links to the same host, each under a leaf of its own ([`Readers::serve_leaf`]).
+    others: Vec<Link>,
     /// The client certificate the test CA issued Core, and its key, PEM.
     pub core_chain_pem: String,
     pub core_key_pem: String,
@@ -559,6 +570,7 @@ impl Readers {
             listings,
             configs,
             core,
+            others: Vec::new(),
             ca_pem: ca.pem(),
             core_chain_pem: core_leaf.chain_pem.clone(),
             core_key_pem: core_leaf.key_pem.clone(),
@@ -588,6 +600,57 @@ impl Readers {
     /// Core's adapter over the link.
     pub fn core(&self) -> &rutent_core_orch::closing::Readers {
         &self.core
+    }
+
+    /// Core's adapter over the link, to point at another of the host's links.
+    pub fn core_mut(&mut self) -> &mut rutent_core_orch::closing::Readers {
+        &mut self.core
+    }
+
+    /// A fresh adapter of Core's over the link, as the deployment would hand Core one: the test CA, Core's client
+    /// certificate and the host's address, the listings taken in and not yet checked.
+    pub fn core_adapter(&self) -> rutent_core_orch::closing::Readers {
+        let tls = rutent_core_orch::closing::readers::ReaderTls::new(
+            self.ca_pem.as_bytes(),
+            self.core_chain_pem.as_bytes(),
+            self.core_key_pem.as_bytes(),
+        )
+        .expect("Core's side of the link");
+        let context = rutent_scenarios::assembly::context();
+        let mut core = rutent_core_orch::closing::Readers::new(
+            tls,
+            context.deployment.clone(),
+            context.protocol_versions(),
+        );
+        core.set_host(readers::HOST_SETTING, self.link.address());
+        for (network, listing) in &self.listings {
+            core.list(&PublicNetwork {
+                network: rutent_contracts::router_api::Id::new(network.as_str()).expect("a network"),
+                listing: Some(listing.clone()),
+            });
+        }
+        core
+    }
+
+    /// The same host served on another link, under a leaf `ca` issues for `name` with a fresh key: a rotated
+    /// certificate, where `ca` is the operator's and `name` the listed one. Where it listens.
+    pub fn serve_leaf(&mut self, ca: &TestCa, name: &str) -> &Link {
+        let leaf = ca.issue(name, ExtendedKeyUsagePurpose::ServerAuth);
+        let tls = LinkTls::new(
+            self.ca_pem.as_bytes(),
+            leaf.chain_pem.as_bytes(),
+            leaf.key_pem.as_bytes(),
+            CORE_NAME,
+        )
+        .expect("the link's TLS");
+        let link = Link::serve(
+            TcpListener::bind("127.0.0.1:0").expect("a loopback port"),
+            tls,
+            self.host.clone(),
+        )
+        .expect("the link");
+        self.others.push(link);
+        self.others.last().expect("just served")
     }
 
     /// Asks `network`'s reader `asked` over the link, through Core's own adapter at Core's clock (the host's system

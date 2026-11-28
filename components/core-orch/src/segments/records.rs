@@ -121,6 +121,33 @@ impl Segments {
         tries.last = tries.last.max(at);
     }
 
+    /// Notes a tick's read put (`T-020-67`), counted once its effect is in the log: a read that failed before its effect
+    /// counts no try (the milestone reviewer's check of `T-020-67`, Low 3), and a reopened Core counts each from the log's
+    /// `by: tick` effects (Low 1).
+    pub(super) fn note_tick_try(&mut self, key: Key, at: u64) {
+        *self.tick_tries.entry(key.clone()).or_insert(0) += 1;
+        let last = self.tick_last.entry(key).or_insert(at);
+        *last = (*last).max(at);
+    }
+
+    /// That the tick took the record of `key` (rebuilt from the log on reopening): no tick asks for it again.
+    pub(super) fn note_tick_done(&mut self, key: Key) {
+        self.tick_done.insert(key);
+    }
+
+    /// How many times the tick has put the read of `node`'s record to `provider` for `segment` of `order`.
+    pub fn tick_tries(&self, order: &Id, segment: &Id, node: &str, provider: &str) -> u32 {
+        self.tick_tries
+            .get(&(
+                order.as_str().to_owned(),
+                segment.as_str().to_owned(),
+                node.to_owned(),
+                provider.to_owned(),
+            ))
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// Whether a read for `key` may be put at `now`: its record isn't taken, fewer than [`MAX_RECORD_TRIES`] have been put,
     /// and the retry cadence has passed since the last (a clock that went back makes it due: it fails closed on the side
     /// of asking, as the status cadence does, but never past the cap).
@@ -226,8 +253,10 @@ impl Segments {
             return None;
         }
         let read = self.ask_node_record(parts, read, false);
-        self.tick_last.insert(key.clone(), seconds);
-        *self.tick_tries.entry(key).or_insert(0) += 1;
+        // Asked now, whatever came of it: a read that left no effect waits its cadence too, but counts no try; one that
+        // did was counted when its effect was appended.
+        let last = self.tick_last.entry(key).or_insert(seconds);
+        *last = (*last).max(seconds);
         Some(read)
     }
 
@@ -304,17 +333,19 @@ impl Segments {
         ) else {
             return Read::Failed;
         };
-        // The read is the log's from here: it counts as a try, which a restart counts again from the effect.
+        // The read is the log's from here: it counts as a try, the grading's or the tick's, which a restart counts again
+        // from the effect.
+        let key = (
+            read.order.as_str().to_owned(),
+            read.segment.as_str().to_owned(),
+            read.node.to_owned(),
+            read.provider.to_owned(),
+        );
+        let effect_seconds = u64::try_from(effect_at.unix_nanos() / 1_000_000_000).unwrap_or(0);
         if counted {
-            self.note_record_try(
-                (
-                    read.order.as_str().to_owned(),
-                    read.segment.as_str().to_owned(),
-                    read.node.to_owned(),
-                    read.provider.to_owned(),
-                ),
-                u64::try_from(effect_at.unix_nanos() / 1_000_000_000).unwrap_or(0),
-            );
+            self.note_record_try(key, effect_seconds);
+        } else {
+            self.note_tick_try(key, effect_seconds);
         }
         let effect = Effect {
             action,
