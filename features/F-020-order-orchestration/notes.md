@@ -10939,6 +10939,52 @@ T-020-67 landed that still called the assembly's `run` move onto ticks.
   test; L1 (item 9's four Lows); L2 (item 7's: a lapsed quote's hold released; the owed-reversal refusal is now in the H1
   test); L3 (`reserve_yes` recorded on the quote); L6 (the stuck tests reached through Core's run).
 
+### T-020-61, review round 1 continued (the coordinator's message after `428b91d6`)
+
+Merged `origin/m3` at `64309ac3` (T-024-25, #353) as its own commit; the only conflict was F-024's notes, both sides kept.
+
+- **`end` and `dispute` go through policy** (the coordinator's ruling; `DEC-20` paths `contracts/`, `components/core-authz/`).
+  core-internal 1.0.0 (unreleased) gains `Action::EndOrder {order}` and `Action::DisputeFault {order, segment}`, decided
+  and never an effect (`Effect::check` refuses one), with schema, four fixtures, CHANGELOG and README; no relation of their
+  own. core-authz: the order's requester in the customer's role, or an operator's login holding `Permission::EndOrder` or
+  `::DisputeFault`, both in the permission sweep (43 permissions, 46 calls) and in
+  `an_order_is_ended_and_a_fault_disputed_by_its_requester_or_the_operator_holding_the_permission`. Core's `end` and
+  `dispute` entry points ask policy first and act only on its permit; the self-check `end` had is gone. `ending.rs`
+  asserts another customer's `end` is refused (`NotPermitted`) and records nothing.
+- **The other entry points, checked.** `accept_fault`: the customer's is policy's decision of `accept_fault`, which Core
+  asks; the operator's is its `accept_fault` command, which core-internal lists among the commands that need no policy
+  decision (`OperatorCommand`), bound by the register of actors. `show_fault`, `returned`, `late_approval` and `report_late`
+  take no actor's request: each is a provider's or a reserve's signed statement, verified by its key and kept as its maker's,
+  moving nothing (`REQ-ORD-11`, `-31`, `-25`, `REQ-STM-6`); a decided action would let policy refuse to keep evidence,
+  which `INV-3`'s record of every result forbids. `confirm_undone` puts the same signed `reversal_confirmation` question to
+  the origin reserve that Core's run puts for every owed reversal, which is not decided anywhere (`T-020-12`'s design):
+  deciding it is a change to the reversal confirmation itself, named here as its gap, not this row's.
+- **M1, confirmed.** Carry-on (`segments/carry_on.rs`): a provider that declares a status query is asked its status; only a
+  provider that declares a safe repeat and no status query has its operation repeated (`repeat_operation`); any other has
+  the platform's recorded answer read back (`read_recorded_answer`), then waits for the stuck check. No `handle` is called
+  under `repeat_operation`, so the scan's `CARRY_OUT` listing needs nothing for it. R13's test stands
+  (`no_value_moves_twice_after_core_reopens`).
+- **H2, done: Core accepts a linked order** (`intake/linked.rs`). `accept_linked` routes it from the node with the rounds,
+  plans it, keeps the customer's inputs as the operator's statement of them (`ORDER_INPUTS_SHAPE`, the log holding the
+  commitment), shows the quote, takes the customer's acceptance on the starting provider's yes, and asks policy for the
+  authorisation the acceptance names, given by the customer under its own floor (`LinkedOrder.floor`). Core's run reads the
+  inputs back when it starts the linked order (`linked_inputs`) and composes no authorisation in the customer's name: with
+  none in force the order never starts. The assembly's `accept_linked` hands the request to Core and keeps the accepted
+  route. Test `linked order is accepted by core with the customer's inputs logged`. The reopen test's crash moved from
+  `authorise` to the first move's `decide`, since no authorisation is registered at start any more.
+- **L2, done.** A quote shown before Core reopened, past its validity, drops its hold when its acceptance is refused
+  (`shown_in_the_log`); `holds.rs` asserts the hold is gone and redeemed by nothing.
+- **L3, done.** The yes a rebuilt quote cites is the reserve's verified result about the order answering a question Core
+  stated under that transaction, never its last statement about the order. Recording the yes on the `shown` entry itself would
+  be a core-internal change; the shape-and-transaction selection is exact without it.
+- **Not built in this round, each owned by this row:** M3 (the open orders at a reserve, the reliance declarations, release
+  acceptance through Core's decided path); M4's split-order test (no assembled world plants a split order: the split worlds
+  are core-orch's test `Core::split`, which has no `Ports`); L1 (item 9's four Lows); L6 (the stuck tests reached through
+  Core's run); and the holding-check registration of the sim reserves' ledger nodes (item 8 of the message): every
+  `kit::join` registers a private node's holding as `holding`, a module the platform doesn't run, so registering it would
+  still raise (`NotAnswered`) rather than read; the scenarios keep counting around it, in `gross_charged`, `charge_check`,
+  `quoting` and `report_pairs`.
+
 ## T-020-67: what the checks of `T-020-58` and `T-020-54` left
 
 Branch `f-020/t-020-67`, issue #349, from `19e6984d` (`m3-next`). Edits `components/core-orch/` (`segments/`, `closing/`,
