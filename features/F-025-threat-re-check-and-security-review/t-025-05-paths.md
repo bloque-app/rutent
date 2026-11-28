@@ -1577,9 +1577,9 @@ The paths `git diff --name-only e63afbeb..2caa6f55` lists under a `DEC-20` prefi
 ## Third pass (`dcefd125..47a2b2a0`, 2026-11-28)
 
 The paths `git diff --name-only dcefd125 47a2b2a0` lists under a `DEC-20` prefix (`HOUSE-RULES.md`, `.github/CODEOWNERS`,
-now with `components/reader-host/` and the provider system's paths it reaches), with `components/prov/src/module/` whole
-and `conformance/evidence/v0-scope`: 934 paths, 151 of them code, schemas, docs, tests and workflows, and 783 contract
-fixtures (291 new, 492 changed). Ids are the findings, informational notes and residuals of `notes.md`, section
+now with `components/reader-host/` and the provider system's paths it reaches), with `components/prov/src/module/` whole,
+`conformance/evidence/v0-scope` and `HOUSE-RULES.md`, whose `DEC-20` list changed: 935 paths, 152 of them code, schemas,
+docs, tests and workflows, and 783 contract fixtures (291 new, 492 changed). Ids are the findings, informational notes and residuals of `notes.md`, section
 "T-025-05, third pass". Counts are lines added and removed. "data" is a fixture: JSON that `contracts/tests/` reads valid
 or refused; none holds a private key, a seed or a token (searched; a declaration's `secrets` field names secrets and
 holds none).
@@ -1590,6 +1590,7 @@ holds none).
 | `.github/workflows/ci.yml` | 25 | 0 | sound (T-024-24's doc steps for the module guests and the plain wallet: no permission, secret or untrusted input added) |
 | `.github/workflows/jail-probes.yml` | 19 | 1 | sound (T-015-04 and T-015-05's probes; each exact `... ok` line grepped, so a skipped probe fails the step) |
 | `.github/workflows/stm-vos.yml` | 34 | 0 | sound (T-024-24's doc steps; VOS sources as the lint step reads them) |
+| `HOUSE-RULES.md` | 9 | 1 | sound (the `DEC-20` list gains the reader host, the provider system's paths it reaches and `tools/boundary-check/`; it matches `.github/CODEOWNERS` entry for entry, and its last line says a path added to the list is added there in the same change) |
 | `components/core-audit/src/compare/detect.rs` | 45 | 3 | sound |
 | `components/core-audit/src/compare/mod.rs` | 20 | 0 | sound |
 | `components/core-audit/src/log/keys.rs` | 351 | 18 | sound (a revocation counts from its admitted effect, closing L5, `T-022-11`; a cutover from its admitted effect, an advertisement judged at its received time); informational I4 |
