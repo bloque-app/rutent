@@ -4,9 +4,10 @@
 //! step is Core's. The reversal a failed segment owes is never a command: Core's run owes, asks and confirms it on its
 //! ticks ([`crate::schedule::run`]).
 //!
-//! - [`end`]: the customer's request to end an order without completing (`REQ-ORD-12`). core-internal has no decided
-//!   action for it, so Core holds the caller to the order's customer, as the log's acceptance names it, or to the
-//!   deployment's operator, bound by the register of actors, before anything of the order is told.
+//! - [`end`]: the customer's request to end an order without completing (`REQ-ORD-12`), decided by policy as
+//!   core-internal's `end_order` (`T-020-61`): the order's requester in the customer's role, or an operator's login
+//!   holding the permission, before anything of the order is told. The log holds no relation from the `end_requested`
+//!   input to that permit (`F-025`'s third pass, L10), so this command is the one path that asks policy first.
 //! - [`show_fault`], [`accept_fault`], [`dispute`]: the failed provider's showing that the fault was the customer's or the
 //!   operator's, and the named party's acceptance or dispute of it (`REQ-ORD-11`). The customer's acceptance is policy's
 //!   permitted decision of its `accept_fault` in its open session, which Core asks itself and then reads from its own
