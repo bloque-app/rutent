@@ -231,7 +231,7 @@ fn listing_whose_reader_fails_its_check_is_done_but_its_network_is_held_off_and_
         .expect("the listing's effect");
     let result = entries.iter().find_map(|(_, e)| match e {
         Entry::Verified(v) => match &v.what {
-            What::Result { effect: of } if *of == effect => Some(v.outcome.clone()),
+            What::Result { effect: of } if *of == effect => Some(v.outcome),
             _ => None,
         },
         Entry::Stated(_) => None,

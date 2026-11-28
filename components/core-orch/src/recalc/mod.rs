@@ -441,7 +441,7 @@ impl Recalculations {
         // guard refused before the segment's first hand-over, is no route still to run; nor is a route chosen by other
         // means (a floor wait built on the first route, the customer's choice).
         if let Some(segment) =
-            untried(parts.segments, order_id, &ask.part, part, settled).filter(|segment| {
+            untried(parts.segments, order_id, ask.part, part, settled).filter(|segment| {
                 followed
                     .recalculated_to
                     .get(ask.part.as_str())

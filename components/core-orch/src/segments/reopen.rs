@@ -494,7 +494,12 @@ impl Segments {
             }
             self.carry_unwritten.insert(
                 (order.as_str().to_owned(), segment.as_str().to_owned()),
-                (receipt.clone(), Outcome::Unanswered {}, at.clone(), None),
+                UnwrittenCarryOn {
+                    effect: receipt.clone(),
+                    outcome: Outcome::Unanswered {},
+                    at: at.clone(),
+                    answer: None,
+                },
             );
         }
     }

@@ -84,7 +84,13 @@ impl Segments {
             return CarriedOn::NotAwaiting;
         }
         // A carry-on whose result the log didn't take: its result is written first, never a second effect after it.
-        if let Some((receipt, outcome, when, answered)) = self.carry_unwritten.get(&at).cloned() {
+        if let Some(super::UnwrittenCarryOn {
+            effect: receipt,
+            outcome,
+            at: when,
+            answer: answered,
+        }) = self.carry_unwritten.get(&at).cloned()
+        {
             if journal::append(
                 parts.log,
                 journal::verified(carry.core, What::Result { effect: receipt }, &when, outcome),
@@ -319,8 +325,15 @@ impl Segments {
                 Answered::Bytes(bytes) => taken(bytes),
                 Answered::Refused(_) => None,
             };
-            self.carry_unwritten
-                .insert(segment.clone(), (receipt, outcome, at, answer));
+            self.carry_unwritten.insert(
+                segment.clone(),
+                super::UnwrittenCarryOn {
+                    effect: receipt,
+                    outcome,
+                    at,
+                    answer,
+                },
+            );
             return Err(CarriedOn::Failed);
         }
         Ok(answered)

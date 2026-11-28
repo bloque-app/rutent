@@ -47,10 +47,18 @@ pub struct Disk {
     refusing: Rc<Cell<Option<(&'static str, usize)>>>,
     /// The result the store turns away once, of the next effect of an action kind: the kind, and, once that effect is
     /// taken, its place in the log.
-    refusing_result_of: Rc<RefCell<Option<(String, Option<usize>)>>>,
+    refusing_result_of: Rc<RefCell<Option<ResultRefusal>>>,
     /// The statements kept that a Core reopened on this disk can't read back: the shelf keeps them, and the store
     /// answers nothing under them to Core's reopening.
     unreadable: Rc<RefCell<Vec<Digest>>>,
+}
+
+/// A refusal of one effect's result ([`Disk::refuse_result_of`]): the effect's action kind, and, once that effect is
+/// taken, how many more tries of its result's append are turned away.
+#[derive(Debug, Clone)]
+struct ResultRefusal {
+    kind: String,
+    left: Option<usize>,
 }
 
 impl std::fmt::Debug for Disk {
@@ -99,14 +107,17 @@ impl Disk {
     /// Makes the log's store turn away the result of the next effect whose action is of `kind` (such as
     /// `ask_status`): the effect is taken, and its result can't be now (`T-020-60` item (8)).
     pub fn refuse_result_of(&self, kind: &str) {
-        *self.refusing_result_of.borrow_mut() = Some((kind.to_owned(), None));
+        *self.refusing_result_of.borrow_mut() = Some(ResultRefusal {
+            kind: kind.to_owned(),
+            left: None,
+        });
     }
 
     /// Whether `record` is the result [`Disk::refuse_result_of`] turns away: the first result after an effect of its
     /// kind, which Core appends right after carrying the effect out, each of the tries of that one append.
     fn result_refused(&self, record: &[u8]) -> bool {
         let mut armed = self.refusing_result_of.borrow_mut();
-        let Some((kind, effect)) = armed.as_mut() else {
+        let Some(ResultRefusal { kind, left: effect }) = armed.as_mut() else {
             return false;
         };
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(record) else {

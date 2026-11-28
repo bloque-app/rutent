@@ -11912,3 +11912,43 @@ A new author from `df75e9d0`; `origin/m3` still at `52c5b859`. Where a line abov
 - Still open, unchanged: the holding account's address on its network (F-016 with `F-031`), a node's `confirmations`
   (`F-031`), the VOS runner's `RUTENT_SIM_READER` (F-024 with the VOS session), and Core deriving an advertisement's
   private nodes (F-016).
+
+#### Rule-off, round 3 (each rule switched off alone, its test run, the file restored; `ruleoff.py` and `ruleoffs.sh` in the row's scratch folder)
+
+| Rule switched off | Result |
+|---|---|
+| R48 Core's join puts the operator's catalogue settings back after `joined` (M1) | `advertisement_joined_after_a_floor_is_set_stays_at_the_operators_floor` red |
+| R49 a `publishers_records` cadence set sets the segments' record retry (M1) | `read_not_taken_is_asked_again_at_the_operators_publishers_records_cadence_across_a_restart` and `ticks_reads_stay_bounded_over_many_ticks` red |
+| R50 a pending movement back asks nothing (M2; replaces R41) | `reversal_back_into_a_held_public_node_is_confirmed_from_the_networks_reader` red (the holding account asked) |
+| R51 a reversal confirmed at zero leaves the part with no route | `confirmation_rebuilt_as_zero_leaves_a_part_the_stuck_check_names` red |
+| R52 `Recalculations` refuses a route it recalculated onto, not yet tried | `recalculated_route_not_yet_run_is_not_recalculated_again` red |
+| R59 a move policy decided counts as tried | `statement_by_a_provider_on_an_earlier_route_of_the_order_backs_a_resolution` red (`NotTriedYet`) |
+| R58 the stuck watch on Core's tick (`Job::Watch` reports nothing) | `provider_silent_past_twice_its_p99_makes_the_order_stuck_and_a_late_delivery_moves_nothing_twice` red |
+| R43 (again) a movement back another segment relied on confirms nothing | `movement_back_another_segment_relied_on_confirms_no_reversal_into_a_held_node` red (round 2: green) |
+| R47 (again) a carry-on's unwritten result is written first | `carry_on_whose_result_the_log_refused_gets_its_result_first_and_no_second_effect` red (round 2: green) |
+| R53 an unwritten carry-on result rebuilt on reopening (Low 4) | the same test, its restarted run, red |
+| R54 the boundary check reports the hooks turned on from a normal dependency (Low 1) | `reader_test_hooks_are_enabled_only_from_dev_dependencies` red |
+| R55 a decided listing marked started only where its reader passed (Low 2, round 2's RO7) | `listing_whose_reader_fails_its_check_is_done_but_its_network_is_held_off_and_raised` red |
+| R56 the catalogue refuses a private node named after a listed network (Low 3) | `private_node_and_listed_public_network_never_share_a_name` red |
+| R57 the catalogue refuses a listing of a declared private node (Low 3) | the same, red |
+
+#### Local checks, round 3
+
+`contracts/src/lib.rs` was touched first. The plain wallet and the stand-ins were built from this tree into the row's
+scratch folder (`RUTENT_PLAIN_WALLET`, `RUTENT_WASM_STANDINS`) and deleted after.
+
+- fmt for the root, the module guests and the plain wallet: clean.
+- clippy `-D warnings` for the root `--workspace --all-targets`, the module guests as `ci.yml` lints them, and the
+  plain wallet with both features: clean.
+- Every `rutent-core-orch` binary (421) and `rutent-core-authz --lib` (173).
+- `rutent-reader-host` (31), `rutent-boundary-check` (34), and `rutent-prov`'s `holding_wallet`,
+  `holding_wallet_record`, `catalogue`, `catalogue_snapshot` and `role_suite` (69).
+- `rutent-conformance` (121), since the simulated world's dry runs changed.
+- Every `rutent-scenarios` binary (629, `--no-fail-fast`), `sim_readers` alone (7), and `invariants` and `assembly` on
+  seeds 11..15 and 113..119.
+- The licence check as `licences.yml` runs it.
+- plan-check and tag-check `--strict`: 0 findings, 2792 tests.
+- Contracts, core-audit and the contract guard weren't touched in this round, so they weren't rerun.
+- After the last refactors (the unwritten carry-on as a struct, which `core-authz`'s entry-point scan holds no type
+  alias to name; the disk's refusal state), clippy, `rutent-core-orch`, `rutent-core-authz --lib` and the touched
+  scenario binaries were run again: clean.

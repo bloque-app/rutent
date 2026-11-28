@@ -703,6 +703,19 @@ struct Tracked {
     since: Reading,
 }
 
+/// A carry-on's result the log couldn't take now, to be written first on the segment's next carry-on.
+#[derive(Debug, Clone)]
+pub(crate) struct UnwrittenCarryOn {
+    /// The carry-on effect's receipt.
+    pub(crate) effect: Receipt,
+    /// The result's outcome.
+    pub(crate) outcome: rutent_contracts::core_internal::Outcome,
+    /// The result's time.
+    pub(crate) at: Timestamp,
+    /// The answer the segment takes once the result is written, if any.
+    pub(crate) answer: Option<Vec<u8>>,
+}
+
 /// Core's record of the segments it handed over, kept across orders by the assembly: the effects acted on, the
 /// transactions assigned, the drains not yet appended, each segment from its permit to its final outcome, and the
 /// orders followed. A Core that reopens rebuilds it from the log ([`Segments::reopened`], `T-020-46`): the effects
@@ -713,15 +726,7 @@ pub struct Segments {
     /// and the answer the segment takes of what came back, written before anything else is tried for the segment, so a
     /// carry-on effect is never followed by a second one without its result (`T-020-60` item (8), from the check of
     /// `T-020-61` at `7557cd9e`). A reopened Core rebuilds each from the log's carry-on effects with no result.
-    carry_unwritten: BTreeMap<
-        (String, String),
-        (
-            Receipt,
-            rutent_contracts::core_internal::Outcome,
-            rutent_contracts::router_api::Timestamp,
-            Option<Vec<u8>>,
-        ),
-    >,
+    carry_unwritten: BTreeMap<(String, String), UnwrittenCarryOn>,
     acted: BTreeSet<String>,
     /// The segments, by order and segment, whose move policy was asked to decide, permitted or not: tried, whatever
     /// came of it, so a recalculation may start from a route whose move policy refused with no flight kept
