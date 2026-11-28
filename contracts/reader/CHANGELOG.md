@@ -1,6 +1,10 @@
 # reader changelog
 
 ## 1.0.0
+- `T-020-60` (the milestone reviewer's check of `T-020-59` at `a45e302b`, routed here): `TrustRule::check`'s refusals go
+  through the contracts' rule switch, so each invalid listing breaks its one rule alone (core-internal's fixtures for a pool
+  naming one host twice and one with fewer endpoints than its quorum); the README says an answer arriving exactly at its
+  deadline is accepted; a test's vendor host is an `.example` one. No shape or rule changed. (DEC-4, DEC-20, T-020-60)
 - The seventh contract, the protocol Core and a reader host speak over mTLS (`T-020-59`; `DEC-28`, ADR-0007 as amended
   on the owner's finding 7 on the demo of 2026-11-25 and his form answers `reader-registration-path` and
   `reader-answer-trust` of 2026-11-26). Each public network's reader is a reader service outside Core, and outer code
