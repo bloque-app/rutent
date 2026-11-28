@@ -6,6 +6,7 @@
 //! a mover the engine refuses, by chain, by permission or as the provider's own desk, hands the reserve nothing and
 //! records no effect; the permitted one's move is carried out on the platform, once, and the part is resolved.
 
+use rutent_conformance::sim::{Act, Behaviour};
 use rutent_contracts::core_internal::{
     Action, Actor, ActorKind, Answer, Decided, Destination, Entry, Outcome, RefusalClass,
     Resolution, Role, What,
@@ -101,6 +102,28 @@ fn moves_by_the_engine(core: &Core) -> Vec<Outcome> {
         .collect()
 }
 
+/// The part of `order` whose deposit failed made stuck by Core's own run, with no route left (`REQ-ORD-28`, `T-020-61`,
+/// the review's L6): the reserve refuses the deposit's dry run as Core recalculates the part from its ledger, so the
+/// recalculation finds no route, and Core's run declares the part stuck for want of one. No test caller declares it.
+fn stuck_on_ticks(
+    core: &mut Core,
+    order: &rutent_contracts::router_api::Id,
+    part: &rutent_contracts::router_api::Id,
+) {
+    core.world()
+        .script_dry_run(RESERVE, "deposit", Behaviour::act(Act::Refuse));
+    for _ in 0..4 {
+        if core.is_stuck(order, part) {
+            break;
+        }
+        core.tick();
+    }
+    assert!(
+        core.is_stuck(order, part),
+        "Core's run left the part with no route, stuck"
+    );
+}
+
 /// A stuck order of the assembled Core is resolved through the production mover, on the real engine's permits for
 /// both steps. The engine refuses a mover whose chain reaches the decider's party (`same_actor`), one holding no
 /// permission to move, and the desk of the provider holding the funds: each is answered not permitted, no effect is
@@ -125,8 +148,7 @@ fn stuck_order_of_the_assembled_core_is_resolved_through_the_mover_and_the_real_
     // The withdrawal settles; the platform won't begin the deposit: its value rests at the reserve's ledger.
     core.faults.refuse_begin = Some(1);
     core.ran_on_tick(&order).expect("the order runs");
-    core.leave_no_route(&order).expect("the part is stuck");
-    assert!(core.is_stuck(&order, &part));
+    stuck_on_ticks(&mut core, &order, &part);
 
     // Who acts. Alice's desk decides; bob's moves; carol's desk acts for alice's, so carol is alice's by chain;
     // dave holds no permission to move; the reserve's own desk may not move what the reserve holds.
@@ -278,7 +300,7 @@ fn stuck_command_is_a_core_entry_point() {
     let part = core.first_part(&order).expect("a started order");
     core.faults.refuse_begin = Some(1);
     core.tick();
-    core.leave_no_route(&order).expect("the part is stuck");
+    stuck_on_ticks(&mut core, &order, &part);
     let alice = staff(&core, "desk-a", "alice");
     let bob = staff(&core, "desk-b", "bob");
     {

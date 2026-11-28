@@ -5,6 +5,7 @@
 //! hand-on here, for a linked order the log holds no acceptance of, is refused by the log and nothing is handed to
 //! anyone.
 
+use rutent_conformance::sim::{Act, Behaviour};
 use rutent_contracts::core_internal::{
     Action, Actor, ActorKind, Answer, Decided, Entry, Resolution, Role, What,
 };
@@ -102,7 +103,16 @@ fn stuck_order_of_the_assembled_core_is_handed_on_only_where_a_holding_account_h
     let part = core.first_part(&order).expect("a started order");
     core.faults.refuse_begin = Some(1);
     core.ran_on_tick(&order).expect("the order runs");
-    core.leave_no_route(&order).expect("the part is stuck");
+    // Core's own run leaves the part with no route (`REQ-ORD-28`, `T-020-61`, the review's L6): the reserve refuses the
+    // deposit's dry run as Core recalculates the part from its ledger. No test caller declares it stuck.
+    core.world()
+        .script_dry_run(RESERVE, "deposit", Behaviour::act(Act::Refuse));
+    for _ in 0..4 {
+        if core.is_stuck(&order, &part) {
+            break;
+        }
+        core.tick();
+    }
     assert!(core.is_stuck(&order, &part));
 
     let (alice, bob) = (

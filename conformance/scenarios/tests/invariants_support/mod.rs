@@ -267,6 +267,8 @@ pub struct Sim {
     pub notes: Vec<String>,
     /// The orders a planted crash caught mid-run, Core and its platform restarted under them (`T-024-21`).
     pub caught: Vec<String>,
+    /// What Core knew of its orders right before each restart and right after it (`T-020-61`, item 9's Low).
+    pub snapshots: Vec<(Snapshot, Snapshot)>,
 }
 
 impl Sim {
@@ -381,6 +383,7 @@ pub fn play(plan: Plan) -> Sim {
         plan,
         notes: Vec::new(),
         caught: Vec::new(),
+        snapshots: Vec::new(),
     };
     let mut orders: Vec<Id> = Vec::new();
     let crashed = match drive(&mut driving, &mut orders) {
@@ -391,6 +394,7 @@ pub fn play(plan: Plan) -> Sim {
         core,
         notes,
         caught,
+        snapshots,
         ..
     } = driving;
     let run = Run::read(
@@ -405,6 +409,7 @@ pub fn play(plan: Plan) -> Sim {
         run,
         notes,
         caught,
+        snapshots,
     }
 }
 
@@ -418,17 +423,25 @@ struct Driving<'a> {
     plan: Plan,
     notes: Vec<String>,
     caught: Vec<String>,
+    snapshots: Vec<(Snapshot, Snapshot)>,
 }
+
+/// The orders Core knows, by id: the state Core follows each in and the amount its request asks.
+pub type Snapshot = BTreeMap<String, (Option<String>, Option<String>)>;
 
 impl Driving<'_> {
     fn core(&mut self) -> &mut Core {
         self.core.as_mut().expect("Core")
     }
 
-    /// Core and its platform restarted after a crash (`Scenario::restart`, `T-024-21`).
+    /// Core and its platform restarted after a crash (`Scenario::restart`, `T-024-21`): the orders Core knows, their
+    /// states and amounts, read before and after it (`T-020-61`, item 9's Low).
     fn restart(&mut self, why: &str) {
         let core = self.core.take().expect("Core");
-        self.core = Some(self.scenario.restart(core, self.plan.seed, &mut Reference));
+        let before = core.order_snapshot();
+        let core = self.scenario.restart(core, self.plan.seed, &mut Reference);
+        self.snapshots.push((before, core.order_snapshot()));
+        self.core = Some(core);
         self.notes.push(format!("restarted: {why}"));
     }
 

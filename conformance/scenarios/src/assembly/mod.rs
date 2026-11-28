@@ -2907,6 +2907,29 @@ impl Core {
             })
     }
 
+    /// Each order Core knows, by id: the state Core follows it in (`None` where it follows none yet) and the amount its
+    /// request asks (`T-020-61`, item 9's Low: what a restart of Core and its platform must lose none of, read before
+    /// the restart and again after it).
+    pub fn order_snapshot(&self) -> BTreeMap<String, (Option<String>, Option<String>)> {
+        self.intake
+            .orders()
+            .map(|order| {
+                let id = kit::id(order);
+                let state = self.segments.order(&id).map(|o| {
+                    serde_json::to_value(o.state)
+                        .ok()
+                        .and_then(|v| v.as_str().map(str::to_owned))
+                        .unwrap_or_else(|| format!("{:?}", o.state))
+                });
+                let amount = self
+                    .intake
+                    .request_of(&id)
+                    .map(|r| r.route.amount.amount().as_str().to_owned());
+                (order.to_owned(), (state, amount))
+            })
+            .collect()
+    }
+
     /// The first part of a started `order`'s plan.
     pub fn first_part(&self, order: &Id) -> Option<Id> {
         self.intake
