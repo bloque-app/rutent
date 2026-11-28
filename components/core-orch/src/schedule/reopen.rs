@@ -20,7 +20,8 @@
 //! 5. **The reversals**: the late answers kept, and each reversal's asks, their carrying-on, its confirmations and its
 //!    carrier (`asks`, H1).
 //! 6. **The schedule**: when each segment was last asked its status, and the operator's cadences put in it; the
-//!    segments' node-record retry from the same settings; arrivals' and the platform's settings.
+//!    segments' node-record retry and the reversals' retry (`reversal_retries`) from the same settings; arrivals' and
+//!    the platform's settings.
 //! 7. **What only the log completes**: a restrictive lifecycle effect's missing result, from what the platform holds,
 //!    and the erasures decided and done but not recorded.
 //!
@@ -327,7 +328,8 @@ pub fn reopen(
         .landings(&mut |landings| landings_found = segments.reconcile_landings(landings));
     let mut stuck = Stuck::reopened(&segments, deployment.clock, history, &mut exposures);
     // 5. The reversals.
-    let reversals = Reversals::reopened(history, &mut |commitment| reading.kept.bytes(commitment));
+    let mut reversals =
+        Reversals::reopened(history, &mut |commitment| reading.kept.bytes(commitment));
     {
         let mut parts = StuckParts {
             clock: deployment.clock,
@@ -348,6 +350,7 @@ pub fn reopen(
         arrivals: Some(&mut arrivals),
         platform: Some(deployment.platform.cutovers()),
         segments: None,
+        reversals: Some(&mut reversals),
     });
     segments.set_record_retry_seconds(schedule.cadences().of(super::Job::PublishersRecords));
     // 7. A lifecycle effect's missing result, and the erasures decided and done.

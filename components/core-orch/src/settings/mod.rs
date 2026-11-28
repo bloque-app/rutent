@@ -30,7 +30,7 @@ use std::collections::BTreeMap;
 use rutent_contracts::core_internal::calls::{AppendFailure, Decisions, Log};
 use rutent_contracts::core_internal::{
     Action, Actor, Answer, CatalogueChange, Count, DecisionRequest, Effect, Entry, OperatorSetting,
-    Outcome, Receipt, STATUS_ASKS_JOB, VerifiedEntry, What,
+    Outcome, REVERSAL_RETRIES_JOB, Receipt, STATUS_ASKS_JOB, VerifiedEntry, What,
 };
 use rutent_contracts::provider_role::{EvidenceGrade, NodeRef};
 use rutent_contracts::router_api::{
@@ -133,6 +133,8 @@ pub struct Targets<'a> {
     /// The module platform, which admits a release assertion by the protocol versions in force (`REQ-PRT-4`,
     /// `T-020-54`).
     pub platform: Option<&'a mut dyn Cutovers>,
+    /// Core's reversals: how often a reversal is asked again (`reversal_retries`, `T-020-61`).
+    pub reversals: Option<&'a mut crate::reversal::Reversals>,
 }
 
 /// What takes an older protocol version's cutover date: the module platform's admission of a release assertion.
@@ -549,6 +551,18 @@ impl Settings {
         {
             arrivals.set_deposit_wait(seconds);
         }
+        if let (Some(reversals), Some(seconds)) = (
+            targets.reversals.as_deref_mut(),
+            self.reversal_retry_seconds(),
+        ) {
+            reversals.set_retry_seconds(seconds);
+        }
+    }
+
+    /// How often a reversal is asked again, where the operator set it (`reversal_retries`, `T-020-61`): `None` leaves
+    /// Core's own default ([`crate::reversal::DEFAULT_REVERSAL_RETRY_SECONDS`]).
+    pub fn reversal_retry_seconds(&self) -> Option<u64> {
+        self.cadences.get(REVERSAL_RETRIES_JOB).copied()
     }
 
     /// The router's bounds: the deployment's own, `base`, with the operator's fee, slippage limits and ceilings in
@@ -691,6 +705,13 @@ fn apply_one(setting: &OperatorSetting, targets: &mut Targets<'_>) -> Result<(),
             seconds,
             provider,
         } => {
+            // How often a reversal is asked again is the reversals' own cadence, no job on the schedule (`T-020-61`).
+            if job.as_str() == REVERSAL_RETRIES_JOB && provider.is_none() {
+                if let Some(reversals) = targets.reversals.as_deref_mut() {
+                    reversals.set_retry_seconds(seconds.get());
+                }
+                return Ok(());
+            }
             if let Some(cadences) = targets.cadences.as_deref_mut() {
                 match provider {
                     Some(provider) if job.as_str() == STATUS_ASKS_JOB => {

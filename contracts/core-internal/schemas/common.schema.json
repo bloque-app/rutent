@@ -1386,7 +1386,7 @@
           "const": "cadence"
         },
         "job": {
-          "description": "One of Core's scheduled jobs, by name (T-020-48).",
+          "description": "One of Core's scheduled jobs, by name (T-020-48), or reversal_retries: how often Core asks a failed segment's reversal again, its confirmation or an ask its provider refused (T-020-61).",
           "$ref": "#/$defs/token"
         },
         "seconds": {

@@ -387,6 +387,12 @@ pub const LIFECYCLE_ACTIONS: [(&str, CatalogueChange); 5] = [
 /// provider's own cadence is for (`OperatorSetting::Cadence::provider`, `T-020-49`).
 pub const STATUS_ASKS_JOB: &str = "status_asks";
 
+/// The name a `cadence` setting gives how often Core asks a failed segment's reversal again (`T-020-61`, the coordinator's
+/// ruling on round 3 of #355): its confirmation of the origin reserve, and an ask its provider refused, which moved
+/// nothing. No job of its own on the schedule: Core's order run takes the step on that cadence, and up to its cap, and
+/// a Core that reopens holds it again from its settings. Named for no provider.
+pub const REVERSAL_RETRIES_JOB: &str = "reversal_retries";
+
 /// The platform's confirmation of a provider's releases after an unclean end (`T-013-11`, `T-020-49`): a sixth
 /// lifecycle action, about a provider's versions as the platform's record holds them rather than one release, so it is
 /// apart from [`LIFECYCLE_ACTIONS`]: the action's name on the platform and its change.

@@ -723,3 +723,45 @@ fn reversal_state_dropped_from_memory_is_rebuilt_by_cores_reopen_and_nothing_is_
     }
     assert_eq!((handed(&mut core), asks(&core)), (1, 1));
 }
+
+/// How often Core asks a reversal again is the operator's setting (`reversal_retries`, core-internal 1.0.0; the
+/// coordinator's ruling on round 3 of #355): set to two minutes, the origin reserve is asked its confirmation again only
+/// two minutes after the last, not at Core's default of half a minute, and a Core that reopens holds the setting again
+/// from its log.
+// verifies: REQ-ORD-3, NFR-6
+#[test]
+fn reversal_retry_cadence_is_the_operators_setting_and_holds_across_a_restart() {
+    use rutent_core_orch::reversal::DEFAULT_REVERSAL_RETRY_SECONDS;
+    let (mut core, order, exchange) = reversal_left_unknown("AC-4");
+    core.set_reversal_retry_cadence(120);
+    let confirmed = |core: &mut Core| {
+        core.tick()
+            .runs
+            .reversed(&order)
+            .iter()
+            .any(|r| r.confirmed.is_some())
+    };
+    core.clock.advance(DEFAULT_REVERSAL_RETRY_SECONDS);
+    assert!(
+        !confirmed(&mut core),
+        "not at Core's default once the operator set another"
+    );
+    core.clock.advance(120 - DEFAULT_REVERSAL_RETRY_SECONDS);
+    assert!(confirmed(&mut core), "at the operator's cadence");
+    let given = execution_support::given(&[IN, EXCHANGE, QUICK, OUT]);
+    let mut core = rutent_scenarios::harness::Scenario::new("execution", "AC-4", given).reopen(
+        core,
+        1,
+        &mut rutent_scenarios::assembly::machine::Reference,
+    );
+    // The reopened Core's first tick records the reversal owed again, its own step.
+    assert!(!confirmed(&mut core));
+    core.clock.advance(DEFAULT_REVERSAL_RETRY_SECONDS);
+    assert!(
+        !confirmed(&mut core),
+        "the reopened Core holds the operator's cadence"
+    );
+    core.clock.advance(120 - DEFAULT_REVERSAL_RETRY_SECONDS);
+    assert!(confirmed(&mut core));
+    assert_eq!(core.confirmations_asked(&order, &exchange), 3);
+}

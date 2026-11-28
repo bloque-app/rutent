@@ -537,6 +537,9 @@ accepted, so a fixture breaking two rules can't pass on its first refusal (`T-02
   public list by the network, never by this provider.
 - **A provider's status cadence**: a `cadence` setting may name a `provider`, for the status question's job
   (`status_asks`, `STATUS_ASKS_JOB`) alone; the change's `provider` is then that provider (`T-020-49`).
+- **A reversal's retry cadence**: a `cadence` setting for `reversal_retries` (`REVERSAL_RETRIES_JOB`), named for no
+  provider, is how often Core asks a failed segment's reversal again: its confirmation, and an ask its provider refused,
+  which moved nothing (`T-020-61`). It is no job on the schedule; Core's order run takes the step on it.
 - **A filed order's read** (`Reads::FiledOrder {order, requester}`): the status of an order whose acceptance the log
   doesn't hold yet, naming the filed request's requester. A provider never reads one; the operator reads one without
   a permission, as an order's state.
