@@ -19,6 +19,9 @@
 //!   the customer, with the floor the customer set, to the original order's destination and to asset. Where policy
 //!   permits none, the linked order never starts: Core's run composes no authorisation in the customer's name.
 //!
+//! - **Kept**: the route it was accepted on goes into Core's own register of linked routes ([`Ports::with_linked`]),
+//!   which the mover holds a hand-on's route to; the deployment writes nothing there (`T-020-68`).
+//!
 //! It starts nothing: the order's `route_chosen` is the hand-on's, recorded by Core's run once the value is handed on.
 
 use std::collections::BTreeMap;
@@ -351,20 +354,32 @@ pub fn accept_linked(
     if !permitted {
         return Err(LinkedError::NotAuthorised);
     }
-    Ok(AcceptedLinked {
+    // Core keeps the route the order was accepted on in its own register of linked routes, which the mover holds a
+    // hand-on's route to (`T-020-68`, the check of `T-020-60`'s Low-Medium 2): no deployment writes it there. A register
+    // the deployment doesn't lend is no acceptance, so nothing is handed on to a route Core holds none of.
+    let route = AcceptedRoute {
         order: planned.order.clone(),
+        decision_record: planned.record,
         acceptance: acceptance.clone(),
+        plan: planned.plan,
+    };
+    let mut kept = false;
+    ports.with_linked(&mut |linked| {
+        linked.keep_route(route.clone());
+        kept = true;
+    });
+    if !kept {
+        return Err(LinkedError::Unrecorded("the register of linked routes"));
+    }
+    Ok(AcceptedLinked {
+        order: planned.order,
+        acceptance,
         authorisation,
         shown: shown_entry,
         yes,
         entry,
         inputs: planned.inputs,
-        route: AcceptedRoute {
-            order: planned.order,
-            decision_record: planned.record,
-            acceptance,
-            plan: planned.plan,
-        },
+        route,
     })
 }
 

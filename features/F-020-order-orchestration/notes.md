@@ -11952,3 +11952,174 @@ scratch folder (`RUTENT_PLAIN_WALLET`, `RUTENT_WASM_STANDINS`) and deleted after
 - After the last refactors (the unwritten carry-on as a struct, which `core-authz`'s entry-point scan holds no type
   alias to name; the disk's refusal state), clippy, `rutent-core-orch`, `rutent-core-authz --lib` and the touched
   scenario binaries were run again: clean.
+
+## T-020-68: what `T-025-05`'s third pass left, and the check of `T-020-60`
+
+What the third security pass (#357, 2026-11-28) left, its M2 and its Lows L8, L9 and L10, and item (3): the milestone
+reviewer's check of `T-020-60` at `47a2b2a0`, which closes #143's first blocker. Branch `f-020/t-020-68`, cut from
+`m3` at `f616967d`, and merged with `m3` at `44f0d351` for item (3)'s plan text.
+
+### Design, item by item
+
+1. **M2, `REQ-AUD-6`: no balance in a holding raise.** `Difference::Holding` loses `by`. The raise carries the
+   difference's direction (`short` or `over`), with the account, the asset and whose word the balance was. It has no
+   figure and no bucket: where nothing is held, a figure is the balance and a bucket bounds it, and elsewhere the
+   balance is what is held plus the figure. The change is folded into `core-internal`'s unreleased 1.0.0, with its
+   fixtures, its changelog and the README's "the log holds no balance". core-audit's `judge` forms no figure. Core's
+   holding check needs no change of its own, since it hands the reading to core-audit and the reading to the round.
+   The operator reads the amount through the decided `read_holding_balance`, whose answer reaches it in the round's
+   `HoldingChecked` and never the log. The secrets scan reads every raise whole, and `without_the_difference` and
+   `states_a_holding_difference` are gone. Its control is now `holding_raise_is_scanned_whole`: a balance given as
+   a figure of a holding raise, or put in any other field of it, is found. The tests that asserted `by` assert the
+   direction, and those that need the figure read it from the round's reading.
+2. **L8: the operator's acceptance of a fault is decided.** `Permission::AcceptFault` sits beside `DisputeFault`. It is
+   held by a login of the deployment operator's (`Source::OfOperator`, as `RefileArrival` is). The roles' rule holds the
+   operator's `accept_fault` to it, naming the showing (`Source::Showing`) and no session. The customer's is held to
+   its session, and naming none is refused. `Action::AcceptFault.session` is present exactly where the customer asks
+   it. Core's `command::accept_fault` asks policy for either party. The operator's act is still its `accept_fault`
+   command, but `reversal-carrier-rests-on-its-acceptance` holds an operator's carrier also to that login's permitted
+   decision: about the order and segment, naming the showing and no session, decided before the command (field
+   `decided`). The permission sweep covers the new call (44 permissions, 47 calls). The entry-point scan needs nothing:
+   `Reversals::accept_fault` is Core's own, not an outer library's carrier.
+3. **L10: end and dispute are tied to their permits by the log.** Two rows. `end-requested-rests-on-a-permitted-end`
+   holds an `end_requested` input to a permitted `decide` of `end_order` naming its order. `dispute-rests-on-a-permitted-dispute`
+   holds a `stuck_declared` input of `dispute` to a permitted `decide` of `dispute_fault` about its order, naming a
+   segment of the part it declares stuck (by the order's plans). `Reversals::end` and `Reversals::dispute` take policy's
+   `Decisions` and ask it themselves, before anything of the order. So the decided path is the only one, and the commands
+   no longer ask on their behalf. The methods stay `pub`, since the reversal tests drive them, but none reaches an end or
+   a dispute undecided, and the log refuses one that is.
+4. **L9: `Segments::rests_on`.** Kept, and its doc names what for: the by-hand seam for an input resting on a judgement
+   no figure cites (none in v0), and the seam the reliance write path's tests drive (`reliance.rs`, `stuck_mover.rs`).
+   Core's own path is `declare_cited`. The third pass ruled that `REQ-CPL-8` is met by the reserve's attributed answer
+   on the production path.
+5. **Item (3), Low-Medium 1: a delisting.** Policy decides first, before anything is checked, so a caller policy refuses
+   learns nothing of whether a network is listed or in use. Then `may_delist` holds the delisting to `listing::in_use`:
+   `Segments::touches_node` (value resting there, a segment not final, a failed one whose reversal is owed, an order
+   not ended whose route names it) or `uses_network`, the open-order rule (a quoted order's route). `NetworkDesk` lends
+   the segments. Where it is refused, no effect is recorded.
+6. **Item (3), Low-Medium 2: `accept_linked` keeps its route.** `Ports::with_linked` lends Core's own register of linked
+   routes, and `accept_linked` keeps the accepted route there itself. A deployment that lends none accepts no linked
+   order (`Unrecorded`). The assembly's `keep_route` call and `Core::accepted_linked` are gone. `assembly_hand_on.rs`
+   injects no route: the register holds none for `ord-2`, and the log no acceptance of it, so the move is refused at
+   the log as before.
+7. **Item (3), the Lows.**
+   - *The stand-in holder* (`kit::LEDGER_HOLDER`) echoes what Core's own orders rest at a simulated provider's private
+     node, so a holding check there is vacuous by construction: it shows the check runs and is recorded, never that a
+     balance agrees. Its ledger is set by `Core::set_stand_in_ledger`, a named test aid, each time the segments are
+     lent, the holding check's read among them, and no longer inside the `publisher_accounts()` getter.
+   - *A late answer's `presented_by`* on Core's tick path is the segment's provider, as Core follows it, never the maker
+     the answer's envelope claims. There is one `handed_over_by` (`schedule::jobs::handed_over_by`, over
+     `relay::presenter`), and the assembly calls it.
+   - *Finality and reorg rule in the listing*: not added (default below).
+   - *The request-id guard and the deserialise-time checks, as they stand.* A request id is drawn only from Core's
+     random source: `RequestId::from_random`, 16 bytes with the top half not zero. The source scan
+     `core_makes_a_request_id_only_from_its_random_source` (`closing/readers/mod.rs`) holds that the crate builds none
+     otherwise. The reader contract checks on deserialisation: its checked texts (`try_from = "String"`), `Depth`
+     (at least one block), and `TrustRule` and `ReaderAnswer` (`checked_serde!`, each running its `check`). So a reader
+     answer that breaks a rule isn't read at all. `check_reader_answer` then holds it to the question.
+   - *`NeverListed` and `NetworkNotStarted`* are tested in `listing_whose_reader_fails_its_check_is_done_but_its_network_is_held_off_and_raised`:
+     a second delisting finds no listing, a delisted network's tuples are left out as `NetworkNotListed`, and a listed
+     one whose reader failed is left out as `NetworkNotStarted`.
+   - *The start-up check stays sequential* (default below).
+   - *The past-deadline test* (`question_past_its_deadline_is_dropped_by_the_reader_host`) sends deadlines a second
+     before they are sent, so no sleep makes them past. The busy reader's endpoints take 400 ms each, about 1.2 s in
+     all, down from about 3 s. Its comment states the margins exactly.
+   - *The assembly's test aids*: `check_balance` and `check_by_dry_run`, `reprice_deposits`, `withdraw_handed_on`,
+     `ask_wallet_stating`, `kit::list`, and now `Core::set_stand_in_ledger`. Each lets a scenario drive or inspect what
+     a deployment's operator or a provider would. None is Core's, and none is reached from Core's production path.
+
+### Named tests
+
+| Test | Where | Tag |
+|---|---|---|
+| `holding raise carries the difference's direction and no balance` | `components/core-audit/tests/compare.rs` | `REQ-AUD-6` |
+| `public network cannot be delisted while value rests there or a reversal is owed there` | `conformance/scenarios/tests/simulated_faults.rs` | `REQ-CAT-22` |
+| `operator's acceptance of a fault is decided by policy` | `components/core-authz/src/roles/tests.rs` | `REQ-AUZ-1` |
+| `end or dispute without a permitted decision is refused by the log` | `contracts/tests/core-internal.rs` | `REQ-AUZ-4` |
+
+The L8 test sits with policy, which decides. Its end-to-end half is in `simulated_faults.rs`: an operator's login the
+register lists, without the permission, is refused `NotPermitted`, and nothing is carried. The delisting test uses
+the joined providers' world, whose quick ramp moves onto the public network `sim-join-chain`, because the base world
+(`bank_only`) has no segment that owes a reversal at a listed network. It has three cases: the ramp failed and its
+reversal owed; that reversal complete, with nothing held in flight and the order's value waiting on its route; and, in
+a second run, the reserve out of the chain failing its deposit. The second is the one the open-order rule alone let
+through. Asked again at the same instant under the operator's same request id, policy's decision is the same entry,
+which the log holds once, so the test reads it anywhere in the log.
+
+### Tests changed, and why
+
+- `shared_holding_account_raises_on_a_difference_and_only_then` (`private_nodes.rs`): Core's own comparison of the
+  wallet's account runs at the same instant of Core's clock on each check in that test. With no figure, that check
+  names no balance and no order, so it is the same entry, which the log holds once, and its raise is the one made
+  before. The test counts raises by direction and reads each figure from the round's reading. It is a test artefact
+  (the clock doesn't move between checks), not a lost raise: a raise identical in what it rests on, its time and its
+  difference is the same raise.
+- `order_ends_without_completing_only_before_its_first_segment_settles` (`core-orch/tests/reversal.rs`): an end asks
+  policy first, so a refused or inapplicable end leaves policy's decision in the log and nothing of Core's
+  (`only_decided`).
+
+### Defaults taken (reversible, each failing closed)
+
+- `SumPastTheBound` stays: a short past what an amount states is still raised as not comparable, never as a `short`.
+  With no figure it could be a plain `short`. Keeping it changes no fixture and still fails closed.
+- The operator's acceptance stays its `accept_fault` command, which now rests on the decision. It is not replaced by
+  the decision, so the world's histories keep their command and gain a decision before it. Replacing it would drop
+  `OperatorCommand::AcceptFault` and rewrite every world history.
+- The operator's acceptance is held to `Source::OfOperator`, the deployment operator's logins, not to any operator role.
+- `Reversals::end` and `dispute` stay `pub` and ask policy themselves, rather than `pub(crate)`. The reversal tests
+  drive them, and the log refuses an end or a dispute that isn't decided.
+- `rests_on` is kept and named, not removed.
+- A late answer whose segment Core follows no provider for is kept nowhere and not tried again ("Core follows no
+  provider for the segment"), as one naming no maker was.
+- **The listing carries no finality or reorg rule.** The listing names who the reader is (CA, subject name, statement
+  key), its version, the network's identity and the reader's trust rule. The reader answers the network's finality and
+  reorg rule itself, in its signed `network_rules`, which Core holds to the listed identity at start-up. What a reader
+  says of finality is its content, which `DEC-28` leaves to the operator (R-READER-CONTENT). A finality rule in the
+  listing would bind only what the reader states, not what the network does. Owner, if the operator wants Core to hold
+  a reader to a listed rule: `F-020` with `F-015`, a `core-internal` item.
+- **The start-up check stays sequential.** `Readers::start` asks each listed reader its rules in turn, each bounded by
+  `ANSWER_WINDOW` (30 s), at Core's start and reopening. v0 lists a few networks, so the bound is a few multiples of
+  30 s, and only for readers that hang. Checking in parallel would need concurrent connections in Core's adapter,
+  which asks one question at a time and caches one pass's answers. Owner: `F-020`, if a deployment lists many networks.
+
+### Gaps, with owners
+
+- A late answer's `presented_by` change has no test that goes red: in every scenario the maker an answer claims and
+  the segment's provider are the same. It removes trust in the envelope, and nothing a test can observe. Owner: `F-020`,
+  with a relayed late answer in `F-024`'s scenarios.
+- `REQ-CPL-12`'s evidence should name the `declare_cited` tests beside `rests_on`'s (`F-024`, `T-024-10`).
+
+### Rule-off (each rule switched off alone, its test run, the file restored; scripts in the row's scratch folder)
+
+| Rule | Switched off | Result |
+|---|---|---|
+| M2: a holding raise names no figure | the contract and `judge` as before (`by` formed) | `holding_raise_carries_the_differences_direction_and_no_balance` red on its field assertion |
+| M2: the secrets scan reads every raise whole | a removal, with no rule left to switch off | `holding_raise_is_scanned_whole` holds that the scanner finds a figure in any field of a holding raise |
+| L8: an operator's carrier rests on the login's permitted decision | the relation's operator cite at index 1 | `every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say` red (the five operator cases) |
+| L8: the operator's `accept_fault` needs `Permission::AcceptFault` | the rule's needs emptied | `operators_acceptance_of_a_fault_is_decided_by_policy` red |
+| L10: `end_requested` rests on a permitted `end_order` | the row's cite | `end_or_dispute_without_a_permitted_decision_is_refused_by_the_log` red |
+| L10: a dispute's declaration rests on a permitted `dispute_fault` | the row's cite | the same, red |
+| L10: `Reversals::end` asks policy | its `decided` call | `order_ends_without_completing_only_before_its_first_segment_settles` red (the log refuses the end) |
+| L10: `Reversals::dispute` asks policy | its `decided` call | `dispute_over_a_fault_makes_the_order_stuck` (core-orch) red |
+| (3): a delisting is decided before it is checked | the whole fix reverted | `public_network_cannot_be_delisted_while_value_rests_there_or_a_reversal_is_owed_there` red ("policy decided it before anything was checked") |
+| (3): a delisting is held to `touches_node` | `in_use` read as `uses_network` alone | the same test red (the delisting carried out) |
+| (3): `accept_linked` keeps its route | the `keep_route` call | four linked scenarios of `assembly_real_wallet` red |
+| (3): `presented_by` is the segment's provider | none goes red | see the gaps |
+
+### Local checks
+
+`contracts/src/lib.rs` was touched first. The stand-ins and the plain wallet were built into the row's scratch folder
+at the branch's start (`RUTENT_WASM_STANDINS`, `RUTENT_PLAIN_WALLET`), and deleted after. No guest source changed
+here.
+
+- fmt: clean. clippy `-D warnings`, `--workspace --all-targets`: clean.
+- `rutent-contracts`: every binary, 113 in `core-internal`. `rutent-core-audit`: every binary.
+- The contract guard: no violations against `origin/develop` (2275 paths) or `origin/m3` (263 paths).
+- `rutent-core-orch`: every binary, 27 binaries, 419 tests, `--no-fail-fast`. One test artefact was fixed first:
+  `notice.rs`'s log builds no end decision, so `end-requested-rests-on-a-permitted-end` joins its unbuilt citations.
+  `rutent-core-authz --lib`: 174.
+- `rutent-scenarios`: `secrets_scan`, `private_nodes`, `assembly_real_wallet`, `simulated_faults`, `reader_adapter`,
+  `assembly_hand_on`, `ending`, `reversing`, `failure`, `reliance`, `stuck_mover`, `hand_on`; `assembly` and
+  `invariants` under seeds 11 to 15. `rutent-reader-host --test readers`: 11.
+- plan-check and tag-check `--strict`: 0 findings, 2796 tests.
+- `cargo doc` wasn't run locally. Every new intra-doc link was read by eye: `crate::`, `super::` or an item in scope.

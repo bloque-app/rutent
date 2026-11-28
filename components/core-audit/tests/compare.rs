@@ -1193,8 +1193,66 @@ fn last_raise(log: &Shared) -> Option<Raise> {
     }
 }
 
+/// A holding raise carries which way the account is off and nothing that states its balance (`REQ-AUD-6`,
+/// `T-020-68`, the third security pass's M2): no figure and no bucket, whether nothing is held at the account (where a
+/// figure would be the balance itself) or something is (where the balance would be what is held plus the figure). The
+/// raise the log records and the one the operator is handed are the same, and neither names the balance anywhere. A
+/// raise that names a figure is no raise Core's contract reads.
+// verifies: REQ-AUD-6
+#[test]
+fn holding_raise_carries_the_differences_direction_and_no_balance() {
+    let log = bare();
+    let desk = Desk::new();
+    let mut compare = checks(&log, &desk);
+    for (account, balance, held, direction) in [
+        // Nothing held: over by the whole balance, 42.
+        ("hold-empty", "42", &[][..], "over"),
+        // Something held: over by 42, which with the value held would give the balance, 1 000 042.
+        ("hold-some", "1000042", &[("ord-17", "1000000")][..], "over"),
+        // Short of what is held by 4 200 000.
+        (
+            "hold-short",
+            "5800000",
+            &[("ord-19", "10000000")][..],
+            "short",
+        ),
+    ] {
+        compare
+            .holding_reading(&holding(account, balance, held, "checked"))
+            .unwrap();
+        let raised = desk.raised().pop().expect("a raise");
+        let logged = last_raise(&log).expect("the raise is in the log");
+        assert_eq!(raised, logged, "the operator is handed what the log holds");
+        let wire = serde_json::to_value(&logged.difference).unwrap();
+        let fields: Vec<&str> = wire
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            fields,
+            ["account", "asset", "direction", "kind", "word"],
+            "{account}: the difference names which way and nothing more: {wire}"
+        );
+        assert_eq!(wire["direction"], direction, "{account}");
+        let whole = serde_json::to_string(&logged).unwrap();
+        for figure in ["42", "4200000", balance] {
+            assert!(
+                !whole.contains(&format!("\"{figure}\"")),
+                "{account}: the raise states {figure}: {whole}"
+            );
+        }
+    }
+    // A holding difference naming a figure is refused as a raise, as the schema refuses it.
+    let mut named = serde_json::to_value(last_raise(&log).unwrap()).unwrap();
+    named["difference"]["by"] = json!("4200000");
+    assert!(serde_json::from_value::<Raise>(named).is_err());
+}
+
 /// An account whose balance matches what its orders hold raises nothing; one short and one over each raise the
-/// operator, by how much, and the log gains the check's record and the raise's and nothing else.
+/// operator, which way it is off and by no figure, and the log gains the check's record and the raise's and nothing
+/// else.
 // verifies: AC-39, REQ-AUD-15
 #[test]
 fn holding_account_short_or_over_raises_the_operator_and_changes_nothing() {
@@ -1222,25 +1280,32 @@ fn holding_account_short_or_over_raises_the_operator_and_changes_nothing() {
     assert_eq!(raise.cites, [receipt]);
     assert_eq!(
         serde_json::to_value(&raise.difference).unwrap(),
-        json!({"kind": "holding", "account": "hold-short", "direction": "short", "by": "5000000",
+        json!({"kind": "holding", "account": "hold-short", "direction": "short",
                "asset": asset("USDC", 6), "word": "checked"})
     );
     assert_eq!(&log.borrow().entries()[..before.len()], &before[..]);
 
-    // Over by 7 000 000, and over by its whole balance where no order holds anything there.
+    // Over by 7 000 000, and over by its whole balance where no order holds anything there: each raised as over, by no
+    // figure, which would state the balance (`REQ-AUD-6`, `T-020-68`).
     compare
         .holding_reading(&holding("hold-over", "3007000000", &held, "checked"))
         .unwrap();
     assert!(matches!(
         desk.raised().last().unwrap().difference,
-        Difference::Holding { direction: Direction::Over, ref by, .. } if by.amount().as_str() == "7000000"
+        Difference::Holding {
+            direction: Direction::Over,
+            ..
+        }
     ));
     compare
         .holding_reading(&holding("hold-empty", "42", &[], "checked"))
         .unwrap();
     assert!(matches!(
         desk.raised().last().unwrap().difference,
-        Difference::Holding { direction: Direction::Over, ref by, .. } if by.amount().as_str() == "42"
+        Difference::Holding {
+            direction: Direction::Over,
+            ..
+        }
     ));
     assert_eq!(desk.raised().len(), 3);
     assert!(last_raise(&log).is_some());
@@ -1250,7 +1315,7 @@ fn holding_account_short_or_over_raises_the_operator_and_changes_nothing() {
         .unwrap();
     assert_eq!(desk.raised().len(), 3);
 
-    // The check, over seeded readings: short, over or matching by exactly the difference of the balance and the sum.
+    // The check, over seeded readings: short, over or matching as the balance sits against the sum.
     let mut rng = Rng(0xdead_beef_cafe_f00d);
     let (mut short, mut over, mut equal) = (0, 0, 0);
     for case in 0..400 {
@@ -1285,23 +1350,18 @@ fn holding_account_short_or_over_raises_the_operator_and_changes_nothing() {
                 );
             }
             order => {
-                let (direction, distance) = if order.is_lt() {
+                let direction = if order.is_lt() {
                     short += 1;
-                    (Direction::Short, sum - balance)
+                    Direction::Short
                 } else {
                     over += 1;
-                    (Direction::Over, balance - sum)
+                    Direction::Over
                 };
-                let HoldingVerdict::Differs(Difference::Holding {
-                    direction: d, by, ..
-                }) = verdict
+                let HoldingVerdict::Differs(Difference::Holding { direction: d, .. }) = verdict
                 else {
                     panic!("case {case}, seed {seed:#x}: {verdict:?}");
                 };
-                assert_eq!(
-                    (d, by.amount().as_str()),
-                    (direction, distance.to_string().as_str())
-                );
+                assert_eq!(d, direction, "case {case}, seed {seed:#x}");
             }
         }
     }
@@ -1321,13 +1381,11 @@ fn holding_account_short_or_over_raises_the_operator_and_changes_nothing() {
     );
     let HoldingVerdict::Differs(Difference::Holding {
         direction: Direction::Short,
-        ref by,
         ..
     }) = check_holding(&edge)
     else {
         panic!("{:?}", check_holding(&edge));
     };
-    assert_eq!(by.amount().as_str(), "1");
     let under = holding(
         "hold-under",
         &max,
@@ -1336,13 +1394,11 @@ fn holding_account_short_or_over_raises_the_operator_and_changes_nothing() {
     );
     let HoldingVerdict::Differs(Difference::Holding {
         direction: Direction::Over,
-        ref by,
         ..
     }) = check_holding(&under)
     else {
         panic!("{:?}", check_holding(&under));
     };
-    assert_eq!(by.amount().as_str(), format!("{}6", "9".repeat(77)));
 
     // A short past what an amount states can't be stated: it is raised as not comparable.
     let huge = "9".repeat(78);
@@ -1472,7 +1528,7 @@ fn private_nodes_balance_is_labelled_its_publishers_word() {
 // --- INV-1 ---------------------------------------------------------------------------------------------------------
 
 /// Across orders, the value evidenced at nodes equals the holding accounts' balances: accounts whose balances equal
-/// what is evidenced are not raised, and one that differs is, by exactly the difference.
+/// what is evidenced are not raised, and one that differs is, the way it differs.
 // verifies: INV-1
 #[test]
 fn value_evidenced_at_nodes_equals_the_holding_accounts_balances() {
@@ -1526,7 +1582,7 @@ fn value_evidenced_at_nodes_equals_the_holding_accounts_balances() {
         );
         clean_total += 1;
 
-        // One account's balance drifts from what is evidenced: that account differs, by exactly the drift.
+        // One account's balance drifts from what is evidenced: that account differs, the way it drifted.
         let which = rng.below(accounts as u64) as usize;
         let drift = 1 + u128::from(rng.below(1_000_000));
         let down = rng.below(2) == 0 && sums[which] >= drift;
@@ -1542,7 +1598,6 @@ fn value_evidenced_at_nodes_equals_the_holding_accounts_balances() {
             if i == which {
                 let HoldingVerdict::Differs(Difference::Holding {
                     direction,
-                    by,
                     word,
                     account,
                     ..
@@ -1558,7 +1613,6 @@ fn value_evidenced_at_nodes_equals_the_holding_accounts_balances() {
                         Direction::Over
                     }
                 );
-                assert_eq!(by.amount().as_str(), drift.to_string());
                 assert_eq!(*word, drifted[which].word);
                 assert_eq!(account, &drifted[which].account);
                 raised_total += 1;
@@ -1621,7 +1675,13 @@ fn value_evidenced_at_nodes_equals_the_holding_accounts_balances() {
         ],
     );
     assert!(
-        matches!(&findings[0].verdict, HoldingVerdict::Differs(Difference::Holding { direction: Direction::Short, by, .. }) if by.amount().as_str() == "1"),
+        matches!(
+            &findings[0].verdict,
+            HoldingVerdict::Differs(Difference::Holding {
+                direction: Direction::Short,
+                ..
+            })
+        ),
         "{findings:?}"
     );
 
@@ -1682,7 +1742,11 @@ fn value_evidenced_at_nodes_equals_the_holding_accounts_balances() {
     assert_eq!(raised[0].cites, [checked[0].clone(), rests[1].clone()]);
     assert!(matches!(
         raised[0].difference,
-        Difference::Holding { direction: Direction::Short, word: Word::Publisher, ref by, .. } if by.amount().as_str() == "5"
+        Difference::Holding {
+            direction: Direction::Short,
+            word: Word::Publisher,
+            ..
+        }
     ));
     assert_eq!(raised[1].cites, [checked[1].clone(), rests[3].clone()]);
     assert_eq!(

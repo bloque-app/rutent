@@ -438,16 +438,9 @@ fn holding_accounts_balance_reading_is_found_only_in_the_evidence_store() {
         log.contains("holding_check") && log.contains(&format!("holding-{}", run.node)),
         "the log holds no record of the check"
     );
-    // Not the figure, but for the difference a raise states where Core's own segments rest nothing at the node, which is
-    // a figure of the raise and not a reading (`T-020-63`).
-    let mut whole = serde_json::to_value(&run.scanned.run.log).expect("the log is JSON");
-    whole
-        .as_array_mut()
-        .expect("a list")
-        .iter_mut()
-        .for_each(rutent_scenarios::secrets::without_the_difference);
-    let without_differences = serde_json::to_string(&whole).expect("JSON");
-    assert!(!without_differences.contains(&run.holding.to_string()));
+    // Nor anywhere else in it, a raise of the account's difference included: Core's own segments rest nothing at the node,
+    // so a figure of the difference would be the balance, and the raise states which way alone (`REQ-AUD-6`, `T-020-68`).
+    assert!(!log.contains(&run.holding.to_string()));
 }
 
 /// What a surface is, by the part of its name that says so.
@@ -663,21 +656,20 @@ fn decision_record_that_does_not_read_back_is_refused_and_not_dropped_from_the_s
     let _ = run_balanced(&mut Reference, 1, Some(&Planted::CorruptDecisionRecord));
 }
 
-/// The one value a holding raise is left without is its difference's `by`: a figure planted in any other field of a
-/// holding raise is found by the scan, and the difference itself is not sought there (`REQ-AUD-6`, `T-020-63`; review M3).
+/// A holding raise is scanned whole (`REQ-AUD-6`, `T-020-68`, the third security pass's ruling 2): the scan leaves no
+/// field of it out, so a balance stated anywhere in one, a figure of its difference among them, is found. The contract
+/// gives the difference no figure, so a record naming one is a planted leak, and it is found as any other.
 // verifies: REQ-AUD-6
 #[test]
-fn secret_planted_elsewhere_in_a_holding_raise_is_still_found() {
-    use rutent_scenarios::secrets::{states_a_holding_difference, without_the_difference};
+fn holding_raise_is_scanned_whole() {
     let raise = |asset: &str| {
         serde_json::json!({
             "kind": "verified",
             "what": { "call": "raise", "raise": {
                 "raise": "raise-1", "cites": [],
                 "difference": {
-                    "kind": "holding", "account": "holding-sim-wallet-node", "node": "sim-wallet-node",
+                    "kind": "holding", "account": "holding-sim-wallet-node",
                     "asset": { "id": asset, "decimals": 2 }, "direction": "over",
-                    "by": { "asset": asset, "amount": "424242424" },
                     "word": "checked",
                 },
             } },
@@ -692,24 +684,19 @@ fn secret_planted_elsewhere_in_a_holding_raise_is_still_found() {
             serde_json::to_vec(record),
         )]
     };
-    // The record as the scan reads it: the figure by which the account is over is not there.
-    let mut clean = raise("USDC");
-    assert!(states_a_holding_difference(&clean));
-    without_the_difference(&mut clean);
-    assert!(
-        scan.find(&surface(&clean)).is_empty(),
-        "the difference is left out"
-    );
-    // A secret put in the asset's name, anywhere but `by`, is found in the same record.
-    let mut planted = raise("909090909");
-    planted["what"]["raise"]["difference"]["by"]["asset"] = "USDC".into();
-    without_the_difference(&mut planted);
-    let hits = scan.find(&surface(&planted));
+    // The raise as the contract has it: which way, no figure, and nothing found.
+    assert!(scan.find(&surface(&raise("USDC"))).is_empty());
+    // The balance given as a figure of the difference is found.
+    let mut figured = raise("USDC");
+    figured["what"]["raise"]["difference"]["by"] = "424242424".into();
+    let hits = scan.find(&surface(&figured));
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(hits[0].canary, "balance of the holding account");
+    // And a secret put in any other field of it, the asset's name or the account, is found too.
+    let hits = scan.find(&surface(&raise("909090909")));
     assert_eq!(hits.len(), 1, "{hits:?}");
     assert_eq!(hits[0].canary, "a planted secret");
-    // And the balance itself put in another field is found too: only `by` is left out.
     let mut elsewhere = raise("USDC");
     elsewhere["what"]["raise"]["difference"]["account"] = "424242424".into();
-    without_the_difference(&mut elsewhere);
     assert_eq!(scan.find(&surface(&elsewhere)).len(), 1);
 }

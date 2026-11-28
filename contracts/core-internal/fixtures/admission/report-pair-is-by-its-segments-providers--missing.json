@@ -2064,6 +2064,58 @@
     {
       "receipt": {
         "log": "log-main",
+        "index": 211,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "operator",
+          "acts": "op-login-2",
+          "role": "operator",
+          "kind": "person"
+        },
+        "what": {
+          "call": "decide",
+          "decision": "dec-accept-fault-op",
+          "request": {
+            "request": "req-accept-fault-op",
+            "caller": {
+              "party": "operator",
+              "acts": "op-login-2",
+              "role": "operator",
+              "kind": "person"
+            },
+            "action": {
+              "kind": "accept_fault",
+              "order": "ord-1",
+              "segment": "p1-s2",
+              "showing": {
+                "transaction": "tx-f2",
+                "commitment": {
+                  "algorithm": "sha-256",
+                  "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                }
+              }
+            },
+            "at": "2026-11-10T09:00:00Z"
+          }
+        },
+        "when": {
+          "at": "2026-11-10T09:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "permitted"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
         "index": 208,
         "entry": {
           "algorithm": "sha-256",

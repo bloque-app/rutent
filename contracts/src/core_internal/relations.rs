@@ -392,7 +392,11 @@ fn fault_session<'a>(
             What::Decide {
                 request:
                     DecisionRequest {
-                        action: Action::AcceptFault { session, .. },
+                        action:
+                            Action::AcceptFault {
+                                session: Some(session),
+                                ..
+                            },
                         ..
                     },
                 ..
@@ -530,7 +534,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 123] = [
+pub static RELATIONS: [Relation; 125] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -2818,6 +2822,10 @@ pub static RELATIONS: [Relation; 123] = [
                 "showing",
                 "an acceptance of fault names the showing it accepts, by its transaction and commitment, and comes after it",
             ),
+            (
+                "decided",
+                "an operator's accept_fault command rests on policy's permitted decision of that login's accept_fault, decided before it",
+            ),
         ],
         // The act, not a writer's label. The customer's is a decision of policy's on the policy handle, as an order's
         // authorisation is: a `decide` of `accept_fault` (`Action::AcceptFault`), permitted, asked by the order's
@@ -2825,7 +2833,10 @@ pub static RELATIONS: [Relation; 123] = [
         // result is about and the commitment its stated entry names, decided no earlier than the showing was
         // received and appended after it. No customer signs a statement Core can attribute: the log knows no
         // customer's key (`StatementKeys`), so the decision, which the log holds whole, is what it reads. The
-        // operator's is its `accept_fault` command, by the deployment operator's party, appended after the showing.
+        // operator's is its `accept_fault` command, by the deployment operator's party, appended after the showing,
+        // and resting in turn on policy's permitted decision of that same login's `accept_fault`, naming the showing and
+        // no session, decided before the command (`T-020-68`, the third security pass's L8): no login of the operator's
+        // accepts a fault for it undecided.
         cites: |e, h| match &e.what {
             What::ReversalCarrier {
                 accepted_with: Some(act),
@@ -2833,7 +2844,9 @@ pub static RELATIONS: [Relation; 123] = [
                 ..
             } => {
                 let mut cites = alloc::vec![by_receipt(act, 0)];
-                if *carrier == Carrier::Customer && fault_session(act, h).is_some() {
+                if (*carrier == Carrier::Customer && fault_session(act, h).is_some())
+                    || *carrier == Carrier::Operator
+                {
                     cites.extend(by_fields(1));
                 }
                 cites
@@ -2919,6 +2932,41 @@ pub static RELATIONS: [Relation; 123] = [
                     ),
                     _ => Match::NotTarget,
                 },
+                (1, Carrier::Operator, Entry::Verified(v)) => {
+                    let What::Decide { request, .. } = &v.what else {
+                        return Match::NotTarget;
+                    };
+                    let Action::AcceptFault {
+                        order: o,
+                        segment: s,
+                        showing: named,
+                        session,
+                    } = &request.action
+                    else {
+                        return Match::NotTarget;
+                    };
+                    let commanded = h.iter().position(|(r, _)| r == act);
+                    judge(
+                        o == order && s == segment,
+                        &[
+                            &request.caller == by && by.role == Role::Operator,
+                            true,
+                            v.outcome == (Outcome::Permitted {}),
+                            session.is_none(),
+                            after_showing(t)
+                                && shown.and_then(|(_, x)| stated(x)).is_some_and(|showing| {
+                                    v.when.at.unix_nanos() >= showing.received_at.unix_nanos()
+                                        && named.commitment == showing.commitment
+                                        && showing
+                                            .about
+                                            .as_ref()
+                                            .and_then(|a| a.transaction.as_ref())
+                                            == Some(&named.transaction)
+                                }),
+                            matches!((position(t, h), commanded), (Some(here), Some(at)) if here < at),
+                        ],
+                    )
+                }
                 (1, Carrier::Customer, _) => {
                     let Some((session, decided_at)) = fault_session(act, h) else {
                         return Match::NotTarget;
@@ -2940,6 +2988,84 @@ pub static RELATIONS: [Relation; 123] = [
                         _ => Match::NotTarget,
                     }
                 }
+                _ => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "end-requested-rests-on-a-permitted-end",
+        spec: &["REQ-ORD-12", "REQ-AUZ-1", "REQ-AUZ-4"],
+        quantifier: Quantifier::Exists,
+        refusal: "an order ended on request rests on policy's decision of its end_order in this log",
+        fields: &[(
+            "yes",
+            "an order ended on request rests on a permitted end_order, not a refused one",
+        )],
+        // An `end_requested` input is Core's record of an end policy permitted (`Action::EndOrder`), which policy
+        // appends on its own handle before Core records the end (`T-020-68`, the third security pass's L10): no caller
+        // that holds Core's reversals ends an order undecided.
+        cites: |e, _| match ended_on_request(e) {
+            Some(_) => by_fields(0),
+            None => none(),
+        },
+        answers: |e, _, t, _| {
+            let Some(order) = ended_on_request(e) else {
+                return Match::NotTarget;
+            };
+            let Some(v) = verified(t) else {
+                return Match::NotTarget;
+            };
+            match &v.what {
+                What::Decide { request, .. } => match &request.action {
+                    Action::EndOrder { order: o } => {
+                        judge(o.as_str() == order, &[v.outcome == (Outcome::Permitted {})])
+                    }
+                    _ => Match::NotTarget,
+                },
+                _ => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "dispute-rests-on-a-permitted-dispute",
+        spec: &["REQ-ORD-11", "REQ-AUZ-1", "REQ-AUZ-4"],
+        quantifier: Quantifier::Exists,
+        refusal: "a part declared stuck in a dispute rests on policy's decision of a dispute_fault about its order in this log",
+        fields: &[
+            (
+                "part",
+                "a dispute's decision names a segment of the part declared stuck",
+            ),
+            (
+                "yes",
+                "a part declared stuck in a dispute rests on a permitted dispute_fault, not a refused one",
+            ),
+        ],
+        // A `stuck_declared` input of `dispute` is Core's record of a dispute policy permitted
+        // (`Action::DisputeFault`), about a segment of the part it declares stuck, which policy appends on its own handle
+        // before Core declares it (`T-020-68`, the third security pass's L10).
+        cites: |e, _| match disputed_part(e) {
+            Some(_) => by_fields(0),
+            None => none(),
+        },
+        answers: |e, _, t, h| {
+            let Some((order, part)) = disputed_part(e) else {
+                return Match::NotTarget;
+            };
+            let Some(v) = verified(t) else {
+                return Match::NotTarget;
+            };
+            match &v.what {
+                What::Decide { request, .. } => match &request.action {
+                    Action::DisputeFault { order: o, segment } => judge(
+                        o.as_str() == order,
+                        &[
+                            part_of_segment(order, segment.as_str(), h) == Some(part),
+                            v.outcome == (Outcome::Permitted {}),
+                        ],
+                    ),
+                    _ => Match::NotTarget,
+                },
                 _ => Match::NotTarget,
             }
         },
@@ -6538,6 +6664,20 @@ fn standing_at(
 /// The part `entry` would move value from where it sits, where it is one that waits for value in motion: a
 /// `route_recalculated`, `destination_changed`, `waiting_at_floor` or `handed_on` of the part, a stuck decision
 /// for it, or its resolution's effect.
+/// The order and part a `stuck_declared` input of `dispute` declares stuck, where `entry` is one.
+fn disputed_part(entry: &VerifiedEntry) -> Option<(&str, &str)> {
+    input(entry)
+        .filter(|i| {
+            matches!(
+                i.observed,
+                Observed::StuckDeclared {
+                    reason: crate::state_machine::StuckReason::Dispute
+                }
+            )
+        })
+        .and_then(|i| Some((i.subject.order.as_str(), i.subject.part.as_ref()?.as_str())))
+}
+
 /// The order an `end_requested` input ends, where `entry` is one.
 fn ended_on_request(entry: &VerifiedEntry) -> Option<&str> {
     input(entry)

@@ -373,7 +373,7 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 161] = [
+const SCHEMA_RULES: [SchemaRule; 162] = [
     (
         "verified-entry-of-graded-evidence-whose-movement-names-no-reader",
         &[("/what/movement", "required")],
@@ -990,6 +990,11 @@ const SCHEMA_RULES: [SchemaRule; 161] = [
         "raise-of-a-pair-not-built-citing-one-receipt-twice",
         &[("/cites", "uniqueItems")],
         "a raise cites the entries it rests on, each once",
+    ),
+    (
+        "raise-of-a-holding-difference-naming-its-figure",
+        &[("/difference", "additionalProperties")],
+        "unknown field `by`",
     ),
     (
         "raise-of-a-holding-not-read-naming-a-balance",
@@ -3286,6 +3291,65 @@ fn the_log_refuses_an_authorisation_naming_no_part_or_one_part_twice() {
     }
 }
 
+// --- T-020-68: what the third security pass left -------------------------------------------------------------
+
+/// An order's end on request, and a part's stuck declaration in a dispute, are each refused by the log unless policy
+/// permitted them (`T-025-05`'s third pass, L10): with no decision in the log, with a refused one, or with one about
+/// another order or another part, the entry is refused; with the permitted decision before it, it is admitted. The rows
+/// are `end-requested-rests-on-a-permitted-end` and `dispute-rests-on-a-permitted-dispute`.
+// verifies: REQ-AUZ-4
+#[test]
+fn end_or_dispute_without_a_permitted_decision_is_refused_by_the_log() {
+    for row in [
+        "end-requested-rests-on-a-permitted-end",
+        "dispute-rests-on-a-permitted-dispute",
+    ] {
+        let admitted = if row.starts_with("end") {
+            "the-customers-end"
+        } else {
+            "the-customers-dispute"
+        };
+        assert_case(&format!("{row}--{admitted}"));
+        let mut refused = vec!["missing", "yes"];
+        refused.push(if row.starts_with("end") {
+            "another-orders-end"
+        } else {
+            "part"
+        });
+        for case in refused {
+            let name = format!("{row}--{case}");
+            assert_case_refused(&name);
+            assert_case(&name);
+        }
+    }
+    // The end the in-motion row admits rests on its decision too: without it, the log refuses it.
+    let case = read_json(
+        &contract_dir()
+            .join("fixtures/admission")
+            .join("part-waits-for-value-in-motion--an-end-requested-with-nothing-moving.json"),
+    );
+    let history: Vec<(Receipt, Entry)> = case["history"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| {
+            (
+                serde_json::from_value(item["receipt"].clone()).unwrap(),
+                serde_json::from_value(item["entry"].clone()).unwrap(),
+            )
+        })
+        .filter(|(_, entry): &(Receipt, Entry)| {
+            !matches!(entry, Entry::Verified(v) if matches!(&v.what, What::Decide { request, .. }
+                if matches!(request.action, Action::EndOrder { .. })))
+        })
+        .collect();
+    let entry: Entry = serde_json::from_value(case["entry"].clone()).unwrap();
+    assert!(
+        admit_entry(&history, &entry, Through::General, &deployment_operator()).is_err(),
+        "an end with no decision is refused"
+    );
+}
+
 // --- T-020-21: core-internal's next round ---------------------------------------------------------------------
 
 /// Runs one admission case through [`admit_entry`] and holds it to what the case expects.
@@ -3746,6 +3810,9 @@ fn raise_of_a_holding_not_read_carries_no_balance_and_cites_only_its_accounts_ch
     assert_accepted_by_both("raise-of-a-holding-account-not-read-citing-its-last-check");
     assert_rejected("raise-of-a-holding-not-read-naming-a-balance");
     assert_rejected("raise-of-a-holding-not-read-for-a-reason-it-has-no-name-for");
+    // Nor does a holding difference name its figure: by how much would state the balance (`T-020-68`).
+    assert_accepted_by_both("raise-of-a-holding-account-short");
+    assert_rejected("raise-of-a-holding-difference-naming-its-figure");
     // It may cite nothing, as a pair never built may, and no other kind may.
     let mut unread = fixture("valid", "raise-of-a-holding-account-not-read");
     assert!(validator("raise").is_valid(&unread));

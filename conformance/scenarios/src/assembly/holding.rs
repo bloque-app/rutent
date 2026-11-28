@@ -25,7 +25,7 @@ use rutent_core_authz::roles::Permission;
 use rutent_core_orch::hand_on::HandOnError;
 use rutent_core_orch::segments::{Answered, Landed, Landings, Modules};
 use rutent_core_orch::snapshot::Clock;
-use rutent_core_orch::stuck::{AcceptedRoute, LogRead, OperatorSigns, Show, Wallets, Withdrawals};
+use rutent_core_orch::stuck::{LogRead, OperatorSigns, Show, Wallets, Withdrawals};
 use rutent_prov::catalogue::Instant;
 use rutent_prov::holding::wallet::{HandedOnStart, Holdings, Operator, StartError, WalletError};
 use rutent_prov::module::lifecycle::{LifecycleRefusal, SegmentRecord};
@@ -420,12 +420,6 @@ impl Core {
             resting: held,
         };
         wallets.withdraw(route, order, amount, &mut |_| true)
-    }
-
-    /// Records the route a linked order was accepted on, which the mover holds a hand-on's route to before the
-    /// holding account is asked anything (`T-020-17`). The acceptance and the decision record it names are the log's.
-    pub fn accepted_linked(&mut self, route: AcceptedRoute) {
-        self.linked.keep_route(route);
     }
 
     /// Installs the operator's plain wallet as the holding account of the public node `node`, holding `asset`

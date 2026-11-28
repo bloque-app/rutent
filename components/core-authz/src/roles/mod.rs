@@ -181,6 +181,11 @@ pub enum Permission {
     /// An operator's login disputing a provider's showing that a failure was the operator's (`REQ-ORD-11`, `T-020-61`); the
     /// order's requester disputes one that names the customer with no permission of the operator's.
     DisputeFault,
+    /// An operator's login, the deployment operator's by the register, accepting a provider's showing that a failure was
+    /// the operator's, so the operator carries its reversal (`REQ-ORD-11`, `REQ-AUZ-6`, `T-020-68`): a permission of its
+    /// own, beside [`Permission::DisputeFault`]. The order's requester accepts one that names the customer in its open
+    /// session, with no permission of the operator's.
+    AcceptFault,
     /// An operator's login filing an arrival anew against the order it differed from (`REQ-ORD-23`, `T-020-52`),
     /// a permission of its own: the deployment operator's, by the register. A reserve files its own arrival by being
     /// the order's origin reserve, with no permission of the operator's.
@@ -400,11 +405,13 @@ fn needs_of(asked: Asked<'_>) -> Option<Needs> {
                 // register lists for it, a permission of its own, or one of Core's own actors carrying the order on.
                 // Which provider is asked, and that its segment owes the reversal, the log holds
                 // (`reversal-is-asked-of-its-failed-provider`).
-                // The customer's acceptance of a showing that a failure was its fault (`REQ-ORD-11`): the order's
-                // requester, or its agent, the party the order's record says, and nobody else, not even the
-                // operator, which accepts by its own `accept_fault` command. The showing must be one the log holds,
-                // received no later than the acceptance is decided. That its session is open the register holds
-                // (`Register::refuses_acceptance`). It is decided and never an effect
+                // The acceptance of a showing that a failure was its party's fault (`REQ-ORD-11`): the customer's, by the
+                // order's requester, or its agent, the party the order's record says, in its session, which must be
+                // open (`Register::refuses_acceptance`); the operator's, by a login of the deployment operator's the
+                // register lists for a permission of its own (`T-020-68`, the third security pass's L8), naming no
+                // session. Nobody else, Core's own actors included. The showing must be one the log holds, received no
+                // later than the acceptance is decided. Which party the showing names is the reversals' to hold
+                // (`Reversals::accept_fault`). It is decided and never an effect
                 // (`reversal-carrier-rests-on-its-acceptance`).
                 // Ending an order, and disputing a showing of fault (`REQ-ORD-12`, `REQ-ORD-11`, `T-020-61`): the order's
                 // requester, or its agent, in the customer's role; or an operator's login holding the permission. Which
@@ -432,30 +439,36 @@ fn needs_of(asked: Asked<'_>) -> Option<Needs> {
                     order,
                     segment,
                     showing,
-                    ..
-                } => match caller.role {
-                    Role::Customer => Some(
-                        vec![
-                            requester(caller, order),
-                            Need {
-                                input: order.clone(),
-                                from: Source::Showing {
-                                    order: order.clone(),
-                                    segment: segment.clone(),
-                                    showing: showing.clone(),
-                                    decided_at: request.at.clone(),
-                                },
-                            },
-                        ]
-                        .into(),
-                    ),
-                    Role::Operator
-                    | Role::Provider
-                    | Role::Verifier
-                    | Role::Regulator
-                    | Role::Checker
-                    | Role::Core => None,
-                },
+                    session,
+                } => {
+                    let shown = Need {
+                        input: order.clone(),
+                        from: Source::Showing {
+                            order: order.clone(),
+                            segment: segment.clone(),
+                            showing: showing.clone(),
+                            decided_at: request.at.clone(),
+                        },
+                    };
+                    match caller.role {
+                        Role::Customer if session.is_some() => {
+                            Some(vec![requester(caller, order), shown].into())
+                        }
+                        Role::Operator if session.is_none() => {
+                            of_operator_holds(caller, Permission::AcceptFault).map(|mut needs| {
+                                needs.all.push(shown);
+                                needs
+                            })
+                        }
+                        Role::Customer
+                        | Role::Operator
+                        | Role::Provider
+                        | Role::Verifier
+                        | Role::Regulator
+                        | Role::Checker
+                        | Role::Core => None,
+                    }
+                }
                 // Filing an arrival anew against its order (`REQ-ORD-23`, `T-020-52`): the filer is the caller itself, a
                 // login of the deployment operator's the register lists for a permission of its own, or the reserve the
                 // arrival came to, acting for itself, which the order's record says is its origin. Nobody else, Core's

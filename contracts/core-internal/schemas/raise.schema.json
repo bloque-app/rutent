@@ -374,14 +374,13 @@
       }
     },
     "difference_holding": {
-      "description": "A holding account's balance and the value held there for orders disagree (REQ-AUD-15).",
+      "description": "A holding account's balance and the value held there for orders disagree (REQ-AUD-15): which way, and no figure. By how much would state the balance, the value held being the log's own, so the operator reads the amount through the decided read_holding_balance, whose answer reaches it outside the log (REQ-AUD-6).",
       "type": "object",
       "additionalProperties": false,
       "required": [
         "kind",
         "account",
         "direction",
-        "by",
         "asset",
         "word"
       ],
@@ -394,15 +393,11 @@
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         },
         "direction": {
-          "description": "Which way it is off.",
+          "description": "Which way it is off: short of the value held, or over it.",
           "enum": [
             "short",
             "over"
           ]
-        },
-        "by": {
-          "description": "By how much, in the asset's unit.",
-          "$ref": "urn:rutent:provider-role:common#/$defs/positive_amount"
         },
         "asset": {
           "$ref": "urn:rutent:provider-role:advertisement#/$defs/denomination"

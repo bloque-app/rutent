@@ -113,12 +113,18 @@ pub fn question(reader: &str, network: &str, asked: Asked) -> ReaderQuestion {
     }
 }
 
-/// The time `after` from now on this machine's clock, to the millisecond, as the contracts write a time.
-pub fn timestamp_after(after: Duration) -> Timestamp {
-    let at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("after the epoch")
-        + after;
+/// The time `before` now on this machine's clock, to the millisecond: a deadline already past when it is sent.
+pub fn timestamp_before(before: Duration) -> Timestamp {
+    written(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("after the epoch")
+            .saturating_sub(before),
+    )
+}
+
+/// `at`, time since the epoch, as the contracts write a time.
+fn written(at: Duration) -> Timestamp {
     let (seconds, millis) = (at.as_secs(), at.subsec_millis());
     // H. Hinnant's `civil_from_days`.
     let z = (seconds / 86_400) as i64 + 719_468;

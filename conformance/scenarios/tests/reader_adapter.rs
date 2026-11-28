@@ -23,7 +23,7 @@ use rutent_core_orch::closing::{PublicRecords as _, Unreadable};
 use rutent_core_orch::intake::{OrderRequest, Status, Told};
 use rutent_core_orch::snapshot::{Clock, Reading, SystemClock};
 use rutent_evidence::MovementId;
-use rutent_prov::catalogue::{Catalogue, NodeError};
+use rutent_prov::catalogue::{Catalogue, LeftOutReason, NodeError};
 use rutent_scenarios::assembly::Core;
 use rutent_scenarios::kit::{self, AMOUNT, RESERVE};
 use rutent_scenarios::sim::readers::{HOST_NAME, HOST_SETTING, READER_VERSION, reader_name};
@@ -202,6 +202,24 @@ fn listing_whose_reader_fails_its_check_is_done_but_its_network_is_held_off_and_
     core.delist_public_network(&id(&bank))
         .expect("delisted: no order uses it");
     assert!(!core.catalogue().nodes().is_started_network(&bank));
+    // Delisted, it is on no list (`T-020-68`, the check of `T-020-60`): delisting it again finds no listing in force
+    // (`NeverListed`), and the catalogue routes no tuple over it (`NetworkNotListed`).
+    let again = core
+        .delist_public_network(&id(&bank))
+        .expect_err("nothing is left to delist");
+    assert!(format!("{again:?}").contains("NeverListed"), "{again:?}");
+    let left_out = |core: &Core| {
+        core.catalogue()
+            .snapshot("snap-left-out", core.clock.instant())
+            .expect("a snapshot")
+            .left_out
+    };
+    assert!(
+        left_out(&core)
+            .iter()
+            .any(|l| l.reason == LeftOutReason::NetworkNotListed(bank.clone())),
+        "no tuple is routed over a network on no list"
+    );
     let nowhere = TcpListener::bind("127.0.0.1:0")
         .and_then(|l| l.local_addr())
         .expect("a port");
@@ -253,6 +271,12 @@ fn listing_whose_reader_fails_its_check_is_done_but_its_network_is_held_off_and_
     assert!(
         core.catalogue().nodes().is_withheld_network(&bank),
         "held off the public list's routes"
+    );
+    assert!(
+        left_out(&core)
+            .iter()
+            .any(|l| l.reason == LeftOutReason::NetworkNotStarted(bank.clone())),
+        "and every tuple over it is left out of the router's snapshot as not started"
     );
     let raises = core.reader_raises();
     assert_eq!(raises.len(), raised_before + 1, "raised: {raises:?}");

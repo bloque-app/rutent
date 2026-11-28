@@ -562,16 +562,15 @@ fn shared_holding_account_raises_on_a_difference_and_only_then() {
         .install_wallet(WALLET_NODE, "USDC")
         .expect("the wallet is installed");
     three_orders_hold(&mut core);
-    let raised_by = |core: &Core, direction: Direction| -> Vec<String> {
+    // How many raises say the account is off `direction`: a raise says which way and never by how much, which would
+    // state the balance (`REQ-AUD-6`, `T-020-68`); the figure is the round's reading, the decided read's answer.
+    let raised_by = |core: &Core, direction: Direction| -> usize {
         core.raised()
             .into_iter()
-            .filter_map(|r| match r.difference {
-                Difference::Holding {
-                    direction: d, by, ..
-                } if d == direction => Some(by.amount().as_str().to_owned()),
-                _ => None,
+            .filter(|r| {
+                matches!(r.difference, Difference::Holding { direction: d, .. } if d == direction)
             })
-            .collect()
+            .count()
     };
 
     // The three orders were landed by the host alone, not by a segment of Core's: what Core's own segments rest at the node
@@ -592,13 +591,8 @@ fn shared_holding_account_raises_on_a_difference_and_only_then() {
     assert_eq!(hosts.reading.balance.as_str(), "4000");
     assert_eq!(hosts.reading.held_for.len(), 3);
     hosts.check.expect("the host's check is recorded too");
-    assert_eq!(
-        raised_by(&core, Direction::Over),
-        ["4000"],
-        "{:?}",
-        core.raised()
-    );
-    assert!(raised_by(&core, Direction::Short).is_empty());
+    assert_eq!(raised_by(&core, Direction::Over), 1, "{:?}", core.raised());
+    assert_eq!(raised_by(&core, Direction::Short), 0);
     // The wallet's node's checks: the simulated ledgers' stand-in holders are checked too (`kit::LEDGER_HOLDER`).
     let wallets_checks = entries(&core)
         .into_iter()
@@ -612,7 +606,7 @@ fn shared_holding_account_raises_on_a_difference_and_only_then() {
     );
 
     // Short: the wallet gave 500 out that the host attributes to an order. The host's record says so: the operator is
-    // raised, by how much and whose word; the attribution and the log's earlier entries are as they were.
+    // raised, which way and whose word; the attribution and the log's earlier entries are as they were.
     ask_directly(&mut core, &wallet.provider, "withdrawal", "ord-2", "500");
     let attributed = core.holdings().attributions();
     let before = entries(&core);
@@ -624,10 +618,13 @@ fn shared_holding_account_raises_on_a_difference_and_only_then() {
     round.check.expect("the check is recorded");
     assert_eq!(
         raised_by(&core, Direction::Short),
-        ["500"],
+        1,
         "short of what the host attributes, whose word it is"
     );
-    assert_eq!(raised_by(&core, Direction::Over), ["4000", "3500"]);
+    // Core's own comparison says what it said before, at the same instant of Core's clock: a check naming no balance
+    // and no order is the same entry, which the log holds once, so its raise is the one made before (`T-020-68`: the
+    // raise carries no figure that would tell the two apart, and none is needed).
+    assert_eq!(raised_by(&core, Direction::Over), 1, "{:?}", core.raised());
     assert_eq!(
         core.holdings().attributions(),
         attributed,
@@ -645,8 +642,8 @@ fn shared_holding_account_raises_on_a_difference_and_only_then() {
     round.check.expect("the check is recorded");
     assert_eq!(
         raised_by(&core, Direction::Over),
-        ["4000", "3500", "4700", "700"],
-        "Core's, then the host's: 700 more than the host attributes"
+        2,
+        "Core's, as before, then the host's: more than the host attributes"
     );
 }
 
@@ -714,17 +711,24 @@ fn holding_account_check_runs_on_cores_schedule_and_a_difference_raises_the_oper
         Some("3500".to_owned()),
         "the module's figure, not one the schedule was handed"
     );
-    // Core's comparison says the wallet holds 3500 where Core attributes nothing; the host's record, the second, says it
-    // holds 500 less than the host attributes.
+    // Core's comparison says the wallet holds more than Core attributes, which is nothing; the host's record, the second,
+    // says it holds less than the host attributes. Neither raise says by how much (`REQ-AUD-6`, `T-020-68`): the 3500 is
+    // the round's reading.
     let raised = core.raised();
     assert_eq!(raised.len(), 3, "{raised:?}");
     assert!(matches!(
         &raised[1].difference,
-        Difference::Holding { direction: Direction::Over, by, .. } if by.amount().as_str() == "3500"
+        Difference::Holding {
+            direction: Direction::Over,
+            ..
+        }
     ));
     assert!(matches!(
         &raised[2].difference,
-        Difference::Holding { direction: Direction::Short, by, .. } if by.amount().as_str() == "500"
+        Difference::Holding {
+            direction: Direction::Short,
+            ..
+        }
     ));
     // The operator's cadence is the job's: set to a day, an hour's ticks check nothing.
     core.set_cadence(Job::HoldingCheck, 86_400);
@@ -998,9 +1002,8 @@ fn private_nodes_holding_reading_is_its_publishers_signed_word() {
             Difference::Holding {
                 direction: Direction::Over,
                 word: Word::Publisher,
-                by,
                 ..
-            } if by.amount().as_str() == "3990"
+            }
         ),
         "{:?}",
         raised[0].difference

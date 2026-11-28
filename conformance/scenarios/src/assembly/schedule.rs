@@ -53,6 +53,22 @@ impl Core {
         u64::try_from(self.clock.peek() / 1_000_000_000).unwrap_or(u64::MAX)
     }
 
+    /// A test aid, not Core's (`T-020-68`, the check of `T-020-60`): sets what the simulated providers' stand-in holder
+    /// answers a balance question with (`kit::LEDGER_HOLDER`) to what Core's own orders rest at each of their private
+    /// nodes now. The holder echoes Core, so a holding check of such a node is vacuous by construction: it shows the
+    /// check runs and is recorded, never that a balance agrees. Set each time the segments are lent, the holding check's
+    /// read among them, apart from any getter Core reads.
+    pub(super) fn set_stand_in_ledger(&mut self) {
+        let mut ledger: std::collections::BTreeMap<(String, String), u128> =
+            std::collections::BTreeMap::new();
+        for ((node, _, asset), amount) in self.segments.resting_totals_by_asset() {
+            if let Ok(units) = amount.as_str().parse::<u128>() {
+                *ledger.entry((node, asset)).or_insert(0) += units;
+            }
+        }
+        self.fleet.platform.world.set_ledger(ledger);
+    }
+
     /// One tick of Core's schedule (`T-020-48`): runs each job that is due on Core's clock, Core's own body of it over
     /// the ports the assembly answers, and answers what ran and what it came to. The deployment calls it on a timer; a
     /// scenario calls it where the deployment's timer would have. A job not yet due is left for a later tick.
@@ -413,6 +429,10 @@ impl Ports for Due<'_> {
         with(&mut policy);
     }
 
+    fn with_linked(&mut self, with: &mut dyn FnMut(&mut rutent_core_orch::stuck::Linked)) {
+        with(&mut self.0.linked);
+    }
+
     fn with_recalculations(&mut self, with: &mut RecalculationsLent<'_>) {
         let core = &mut *self.0;
         let mut charges = core.policy.clone();
@@ -622,15 +642,6 @@ impl Ports for Due<'_> {
     }
 
     fn publisher_accounts(&self) -> Vec<PublisherAccount> {
-        // The stand-in holder's answer is what Core's orders rest at each node now (`kit::LEDGER_HOLDER`).
-        let mut ledger: std::collections::BTreeMap<(String, String), u128> =
-            std::collections::BTreeMap::new();
-        for ((node, _, asset), amount) in self.0.segments.resting_totals_by_asset() {
-            if let Ok(units) = amount.as_str().parse::<u128>() {
-                *ledger.entry((node, asset)).or_insert(0) += units;
-            }
-        }
-        self.0.fleet.platform.world.set_ledger(ledger);
         self.0
             .deployed
             .registers
@@ -650,6 +661,8 @@ impl Ports for Due<'_> {
     }
 
     fn with_segments(&mut self, with: &mut dyn FnMut(&mut Segments, &mut SegmentParts<'_>)) {
+        // The stand-in holder answers what Core's orders rest now (a test aid, `Core::set_stand_in_ledger`).
+        self.0.set_stand_in_ledger();
         let core = &mut *self.0;
         let booked = core.booked.clone();
         let mut running = Running {

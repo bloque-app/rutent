@@ -55,9 +55,14 @@
 //!   failed result naming the fault (provider-role's `Failure.fault`), kept as its result statement, and the party it
 //!   names accepting it by its act: the customer's permitted decision of policy's `accept_fault` in its open session (it
 //!   signs nothing the log can attribute, so Core cites the decision, which the log holds whole), or the operator's
-//!   `accept_fault` command. The `reversal_carrier` records it, resting on both. A dispute over it, by the party it
-//!   names, declares the part stuck through [`Stuck::dispute`], so it is resolved in the stuck order's two steps.
-//! - **Ending** ([`Reversals::end`], `REQ-ORD-12`). An order ends without completing only until its first segment
+//!   `accept_fault` command, which rests on policy's permitted decision of that login's `accept_fault` under a permission
+//!   of its own (`T-020-68`). The `reversal_carrier` records it, resting on both. A dispute over it, by the party it
+//!   names, is policy's `dispute_fault`, which [`Reversals::dispute`] asks itself, and on its permit declares the part
+//!   stuck through [`Stuck::dispute`], so it is resolved in the stuck order's two steps; the log refuses a dispute's
+//!   declaration no permitted decision is behind (`dispute-rests-on-a-permitted-dispute`).
+//! - **Ending** ([`Reversals::end`], `REQ-ORD-12`). Policy's `end_order`, which [`Reversals::end`] asks itself before
+//!   anything of the order, the log refusing an `end_requested` no permitted decision is behind
+//!   (`end-requested-rests-on-a-permitted-end`, `T-020-68`). An order ends without completing only until its first segment
 //!   settles, and never while a segment of a part that would end moves value: the `end_requested` input, once the
 //!   state machine takes it. After that, a part ends only when its start is proven undone ([`Reversals::confirm_reversal`] on
 //!   the part's withdrawal): the origin reserve's own word, labelled so, and the part, and so the order, is marked
@@ -86,7 +91,7 @@ mod judge;
 
 use std::collections::BTreeMap;
 
-use rutent_contracts::core_internal::calls::{AppendFailure, Evidence, Reads};
+use rutent_contracts::core_internal::calls::{AppendFailure, Decisions, Evidence, Reads};
 use rutent_contracts::core_internal::{
     About, Action, Actor, Afterwards, Answer, Carrier as Carries, DecisionRequest, Effect, Entry,
     OperatorCommand, Outcome, Permit, PublicMovement, ReadCheck, ReadOutcome, Receipt, Role, What,
@@ -1793,9 +1798,10 @@ impl Reversals {
         if requester.as_ref() != Some(&by.party) && by.party != parts.operator.party {
             return Err(ReversalError::NotTheParty);
         }
-        // The operator's act is its own command, which policy doesn't decide: the register of actors is the check that
-        // binds the login to the party and role it states, as it does for the customer's path (policy's `requester`) and
-        // the arrival filing's `listed_filer` (`T-020-62`).
+        // The operator's act is its own command, which rests on policy's permitted decision of the login's own
+        // `accept_fault` (`T-020-68`; the log holds it, `reversal-carrier-rests-on-its-acceptance`, and
+        // [`command::accept_fault`] asks it first). The register of actors binds the login to the party and role it
+        // states besides, as it does for the arrival filing's `listed_filer` (`T-020-62`).
         if matches!(accepting, Accepting::Operator { .. })
             && !actors.acts_for(&by.acts, &by.party, by.kind, by.role)
         {
@@ -1932,16 +1938,33 @@ impl Reversals {
         Ok(carries)
     }
 
-    /// The party the provider's showing names, disputing it: the part is declared stuck, `dispute`, through the stuck
-    /// orders, and resolved in their two steps (`REQ-ORD-11`, `REQ-AUZ-4`). The provider carries the reversal until
-    /// then.
+    /// The party the provider's showing names, `by`, disputing it, as policy decides its `dispute_fault`, which this
+    /// asks first, before anything of the order: on the permit the part is declared stuck, `dispute`, through the
+    /// stuck orders, and resolved in their two steps (`REQ-ORD-11`, `REQ-AUZ-4`). The provider carries the reversal
+    /// until then. There is no other way to it: the log refuses a dispute's declaration no permitted decision is behind
+    /// (`dispute-rests-on-a-permitted-dispute`, `T-020-68`).
+    ///
+    /// # Errors
+    ///
+    /// [`ReversalError::NotPermitted`] where policy refuses it, [`ReversalError::NotAnAcceptance`] where it couldn't
+    /// decide; otherwise why the dispute can't be declared.
     pub fn dispute(
         &mut self,
         parts: &mut Parts<'_>,
+        decisions: &mut dyn Decisions,
         stuck: &mut Stuck,
         at: At<'_>,
         by: &Actor,
     ) -> Result<Receipt, ReversalError> {
+        decided(
+            parts,
+            decisions,
+            by,
+            Action::DisputeFault {
+                order: at.order.clone(),
+                segment: at.segment.clone(),
+            },
+        )?;
         let reversal = self
             .reversals
             .get_mut(&key(at.order, at.segment))
@@ -1979,11 +2002,32 @@ impl Reversals {
         Ok(declared.map_err(ReversalError::Stuck)?.receipt)
     }
 
-    /// Ends `order` without completing, on its customer's request (see the module's docs): only while a part of it
-    /// hasn't passed its first segment, and none of such a part's segments moves value. The `end_requested` input is
-    /// built once and appended until the log takes it; then the order Core follows takes it, and no segment of an
-    /// ended part is handed over ([`crate::segments::SegmentsError::Ended`]).
-    pub fn end(&mut self, parts: &mut Parts<'_>, order: &Id) -> Result<Receipt, ReversalError> {
+    /// Ends `order` without completing, on `by`'s request, as policy decides its `end_order`, which this asks first,
+    /// before anything of the order (see the module's docs): only while a part of it hasn't passed its first segment,
+    /// and none of such a part's segments moves value. The `end_requested` input is built once and appended until the
+    /// log takes it; then the order Core follows takes it, and no segment of an ended part is handed over
+    /// ([`crate::segments::SegmentsError::Ended`]). There is no other way to it: the log refuses an `end_requested` no
+    /// permitted decision is behind (`end-requested-rests-on-a-permitted-end`, `T-020-68`).
+    ///
+    /// # Errors
+    ///
+    /// [`ReversalError::NotPermitted`] where policy refuses it, [`ReversalError::NotAnAcceptance`] where it couldn't
+    /// decide; otherwise why the order can't end now.
+    pub fn end(
+        &mut self,
+        parts: &mut Parts<'_>,
+        decisions: &mut dyn Decisions,
+        order: &Id,
+        by: &Actor,
+    ) -> Result<Receipt, ReversalError> {
+        decided(
+            parts,
+            decisions,
+            by,
+            Action::EndOrder {
+                order: order.clone(),
+            },
+        )?;
         if !self.ends.contains_key(order.as_str()) {
             if let Some(moving) = in_motion(parts.segments, order)? {
                 return Err(ReversalError::InMotion(moving));
@@ -2981,6 +3025,33 @@ fn party_of(fault: Fault, by: &Actor) -> Result<Carrier, ReversalError> {
         (Fault::Operator, Role::Operator) => Ok(Carrier::Operator),
         _ => Err(ReversalError::NotTheParty),
     }
+}
+
+/// Asks policy to decide `action`, asked by `by`: policy appends its decision to the log on its own handle, and only
+/// its permit goes on.
+///
+/// # Errors
+///
+/// [`ReversalError::NotAnAcceptance`] where policy couldn't decide; [`ReversalError::NotPermitted`] where it refused.
+pub(crate) fn decided(
+    parts: &mut Parts<'_>,
+    decisions: &mut dyn Decisions,
+    by: &Actor,
+    action: Action,
+) -> Result<(), ReversalError> {
+    let request = DecisionRequest {
+        request: parts.fresh.id(),
+        caller: by.clone(),
+        action,
+        at: journal::now(parts.clock)?,
+    };
+    let decision = decisions
+        .decide(&request)
+        .map_err(|_| ReversalError::NotAnAcceptance)?;
+    if decision.permit().is_none() {
+        return Err(ReversalError::NotPermitted(decision.outcome));
+    }
+    Ok(())
 }
 
 /// A state-machine input about `order`, and its `part` and `segment` where named, written by Core at its clock,

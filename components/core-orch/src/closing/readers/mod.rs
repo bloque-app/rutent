@@ -821,17 +821,19 @@ pub fn listings_of(history: &[(Receipt, Entry)]) -> Vec<PublicNetwork> {
 }
 
 /// Why a delisting of `network` is refused (#343's review, L7; #346's review, L3): a network no listing names has
-/// nothing to delist, and a network an open or quoted order uses (`in_use`) keeps its standing while it does, as a node
-/// does under `T-020-66`'s unlist rule.
+/// nothing to delist, and a network anything of Core's is at (`in_use`, [`listing::in_use`]: value resting there, a
+/// segment not final, a reversal owed, an open or quoted order whose route names it) keeps its standing while it is, as
+/// a node does under `T-020-66`'s unlist rule. Only a caller policy permitted is told either (`T-020-68`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DelistRefused {
     /// No listing in force names it.
     NeverListed,
-    /// An open or quoted order uses it.
+    /// Something of Core's is at it: value resting there, a segment not final, a reversal owed, or an open or quoted
+    /// order whose route names it.
     InUse,
 }
 
-/// Whether `network` may be delisted now, given the listings in force and whether an open or quoted order uses it.
+/// Whether `network` may be delisted now, given the listings in force and whether anything of Core's is at it.
 ///
 /// # Errors
 ///

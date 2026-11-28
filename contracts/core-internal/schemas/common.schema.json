@@ -1053,15 +1053,14 @@
       ]
     },
     "action_accept_fault": {
-      "description": "The customer accepting a provider's showing that a failed segment's failure was its fault (REQ-ORD-11): a decision of policy's on the policy handle, as an order's authorisation is, asked by the order's requester in its open session and naming the showing it accepts. It takes no effect; the reversal_carrier that rests on it records who carries the reversal. The operator accepts a showing by its accept_fault command instead.",
+      "description": "The party a provider's showing names accepting that a failed segment's failure was its fault (REQ-ORD-11): a decision of policy's on the policy handle, as an order's authorisation is, naming the showing it accepts. The customer asks it as the order's requester in its open session; an operator's login asks it under a permission of its own, naming no session, and then records its accept_fault command (T-020-68). It takes no effect; the reversal_carrier that rests on it records who carries the reversal.",
       "type": "object",
       "additionalProperties": false,
       "required": [
         "kind",
         "order",
         "segment",
-        "showing",
-        "session"
+        "showing"
       ],
       "properties": {
         "kind": {
@@ -1078,7 +1077,7 @@
           "$ref": "#/$defs/showing_named"
         },
         "session": {
-          "description": "The customer's session it is asked in (REQ-ORD-32).",
+          "description": "The customer's session it is asked in (REQ-ORD-32): present exactly where the customer asks it.",
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         }
       }

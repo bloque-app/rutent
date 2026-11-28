@@ -5046,6 +5046,50 @@
           "status": "to_take_effect"
         }
       }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 230,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "cust-1",
+          "acts": "cust-1",
+          "role": "customer",
+          "kind": "person"
+        },
+        "what": {
+          "call": "decide",
+          "decision": "dec-end-1",
+          "request": {
+            "request": "req-end-1",
+            "caller": {
+              "party": "cust-1",
+              "acts": "cust-1",
+              "role": "customer",
+              "kind": "person"
+            },
+            "action": {
+              "kind": "end_order",
+              "order": "ord-1"
+            },
+            "at": "2026-11-10T09:00:00Z"
+          }
+        },
+        "when": {
+          "at": "2026-11-10T09:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "permitted"
+        }
+      }
     }
   ],
   "entry": {

@@ -310,7 +310,13 @@ impl Register {
     /// The time the request states is read only against the session's end, as the log reads it; whether the session is
     /// open now is Core's clock's. Any other action passes.
     pub(crate) fn refuses_acceptance(&self, request: &DecisionRequest) -> Option<RefusalClass> {
-        let Action::AcceptFault { session, .. } = &request.action else {
+        // The operator's names no session, and its login is held to its permission instead (`T-020-68`); a customer's
+        // naming none is refused by the roles' rule.
+        let Action::AcceptFault {
+            session: Some(session),
+            ..
+        } = &request.action
+        else {
             return None;
         };
         // An unread register can't say whether the session is open: an input the engine doesn't have.

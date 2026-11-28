@@ -4,13 +4,15 @@
 //! step is Core's. The reversal a failed segment owes is never a command: Core's run owes, asks and confirms it on its
 //! ticks ([`crate::schedule::run`]).
 //!
-//! - [`end`]: the customer's request to end an order without completing (`REQ-ORD-12`). core-internal has no decided
-//!   action for it, so Core holds the caller to the order's customer, as the log's acceptance names it, or to the
-//!   deployment's operator, bound by the register of actors, before anything of the order is told.
+//! - [`end`]: the customer's request to end an order without completing (`REQ-ORD-12`): policy's `end_order`, which
+//!   [`super::Reversals::end`] asks itself before anything of the order is told, the order's requester in the customer's
+//!   role or an operator's login holding the permission.
 //! - [`show_fault`], [`accept_fault`], [`dispute`]: the failed provider's showing that the fault was the customer's or the
 //!   operator's, and the named party's acceptance or dispute of it (`REQ-ORD-11`). The customer's acceptance is policy's
 //!   permitted decision of its `accept_fault` in its open session, which Core asks itself and then reads from its own
-//!   log; the operator's is its command, bound by the register.
+//!   log; the operator's is its command, bound by the register, on policy's permitted decision of the login's own
+//!   `accept_fault`, which Core asks first under the operator's permission (`T-020-68`). A dispute is policy's
+//!   `dispute_fault`, which [`super::Reversals::dispute`] asks itself.
 //! - [`returned`], [`late_approval`], [`report_late`]: statements that arrive after an order ended or a segment's answer
 //!   was taken, kept as their maker's and moving nothing (`REQ-ORD-31`, `REQ-ORD-25`, `REQ-STM-6`).
 //! - [`confirm_undone`]: the question whether a complete part's start was undone, asked of its origin reserve where a
@@ -91,21 +93,14 @@ fn decided(ports: &mut dyn Ports, by: &Actor, action: Action) -> Result<(), Reve
 
 /// Ends `order` without completing, on `by`'s request, as policy decides its `end_order` (`Action::EndOrder`): the
 /// order's requester in the customer's role, or an operator's login holding the permission (see
-/// [`super::Reversals::end`]).
+/// [`super::Reversals::end`], which asks it).
 ///
 /// # Errors
 ///
 /// Where policy doesn't permit it, before anything of the order; otherwise as [`super::Reversals::end`].
 pub fn end(ports: &mut dyn Ports, order: &Id, by: &Actor) -> Result<Receipt, ReversalError> {
-    decided(
-        ports,
-        by,
-        Action::EndOrder {
-            order: order.clone(),
-        },
-    )?;
-    lent(ports, order, &mut |reversals, parts, _| {
-        reversals.end(parts, order)
+    lent(ports, order, &mut |reversals, parts, desk| {
+        reversals.end(parts, &mut *desk.decisions, order, by)
     })
 }
 
@@ -138,12 +133,13 @@ pub fn show_fault(
 
 /// The party the showing of `segment` names, `by`, accepting it: the customer through policy's decision of its
 /// `accept_fault` in `session`, which Core asks and then reads from its own log; the operator by its command, bound by
-/// the register of actors (see [`super::Reversals::accept_fault`]).
+/// the register of actors, once policy permitted the login's own `accept_fault`, which names no session and which Core
+/// asks first (`T-020-68`; see [`super::Reversals::accept_fault`]).
 ///
 /// # Errors
 ///
 /// [`ReversalError::NoShowing`] where the log holds no showing of the segment; [`ReversalError::NotPermitted`] where
-/// policy didn't permit the customer's; otherwise as [`super::Reversals::accept_fault`].
+/// policy didn't permit the acceptance; otherwise as [`super::Reversals::accept_fault`].
 pub fn accept_fault(
     ports: &mut dyn Ports,
     order: &Id,
@@ -153,7 +149,9 @@ pub fn accept_fault(
 ) -> Result<Carrier, ReversalError> {
     let part = part_of(ports, order, segment)?;
     let customer = by.role == Role::Customer;
-    let decision = if customer {
+    // Policy decides either party's acceptance, naming the showing the log holds (`T-020-68`): the customer's in its
+    // session, the operator's in none, under the operator's permission.
+    let action = {
         let showing = ports
             .history()
             .iter()
@@ -175,22 +173,18 @@ pub fn accept_fault(
             .as_ref()
             .and_then(|a| a.transaction.clone())
             .ok_or(ReversalError::NoShowing)?;
-        Some(Action::AcceptFault {
+        Action::AcceptFault {
             order: order.clone(),
             segment: segment.clone(),
             showing: ShowingNamed {
                 transaction,
                 commitment: showing.commitment,
             },
-            session: session.clone(),
-        })
-    } else {
-        None
+            session: customer.then(|| session.clone()),
+        }
     };
     // Policy appends its decision to the log, where the reversals find it: asked first, then the log read again.
-    if let Some(action) = decision {
-        decided(ports, by, action)?;
-    }
+    decided(ports, by, action)?;
     lent(ports, order, &mut |reversals, parts, desk| {
         reversals.accept_fault(
             parts,
@@ -210,8 +204,8 @@ pub fn accept_fault(
 }
 
 /// The party the showing of `segment` names, `by`, disputing it, as policy decides its `dispute_fault`
-/// (`Action::DisputeFault`): the part is declared stuck, in a dispute, through the stuck orders (see
-/// [`super::Reversals::dispute`]), which holds `by` to the party the showing names.
+/// (`Action::DisputeFault`), which [`super::Reversals::dispute`] asks: the part is declared stuck, in a dispute, through
+/// the stuck orders, holding `by` to the party the showing names.
 ///
 /// # Errors
 ///
@@ -223,17 +217,10 @@ pub fn dispute(
     by: &Actor,
 ) -> Result<Receipt, ReversalError> {
     let part = part_of(ports, order, segment)?;
-    decided(
-        ports,
-        by,
-        Action::DisputeFault {
-            order: order.clone(),
-            segment: segment.clone(),
-        },
-    )?;
     lent(ports, order, &mut |reversals, parts, desk| {
         reversals.dispute(
             parts,
+            &mut *desk.decisions,
             &mut *desk.stuck,
             At {
                 order,

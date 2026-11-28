@@ -2301,7 +2301,7 @@
           "$ref": "urn:rutent:core-internal:common#/$defs/actor"
         },
         "accepted_with": {
-          "description": "The act the acceptance rests on, by receipt: for the customer, policy's permitted decide of its accept_fault, asked in its open session and naming the showing; for the operator, its accept_fault command.",
+          "description": "The act the acceptance rests on, by receipt: for the customer, policy's permitted decide of its accept_fault, asked in its open session and naming the showing; for the operator, its accept_fault command, which rests on policy's permitted decide of that login's accept_fault (T-020-68).",
           "$ref": "urn:rutent:core-internal:receipt"
         }
       },

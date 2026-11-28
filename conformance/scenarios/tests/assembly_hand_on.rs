@@ -11,9 +11,8 @@ use rutent_contracts::core_internal::{
 };
 use rutent_contracts::provider_role::Denomination;
 use rutent_contracts::router_api::PositiveAmount;
-use rutent_contracts::state_machine::{self as stm, OperationKind, PartPlan, SegmentPlan};
 use rutent_core_authz::roles::Permission;
-use rutent_core_orch::stuck::{AcceptedRoute, LogRead};
+use rutent_core_orch::stuck::LogRead;
 use rutent_scenarios::assembly::machine::Reference;
 use rutent_scenarios::assembly::{Core, Staged};
 use rutent_scenarios::harness::{Given, Scenario, Step};
@@ -124,24 +123,8 @@ fn stuck_order_of_the_assembled_core_is_handed_on_only_where_a_holding_account_h
         registers.permit(&alice, Permission::DecideStuck);
         registers.permit(&bob, Permission::MoveStuck);
     }
-    // The linked order's accepted route, which the mover holds the hand-on's route to: starting where the value rests.
-    let ledger = serde_json::from_value(kit::ledger(RESERVE)).unwrap();
-    let bank = serde_json::from_value(kit::bank(RESERVE)).unwrap();
-    core.accepted_linked(AcceptedRoute {
-        order: id("ord-2"),
-        decision_record: id("dr-linked-ord-2"),
-        acceptance: id("acc-ord-2"),
-        plan: vec![PartPlan {
-            part_id: stm::Id::new(part.as_str()).unwrap(),
-            segments: vec![SegmentPlan {
-                segment_id: stm::Id::new("p1-s1-of-2").unwrap(),
-                provider: stm::Id::new(RESERVE).unwrap(),
-                kind: OperationKind::Deposit,
-                from: ledger,
-                to: bank,
-            }],
-        }],
-    });
+    // No linked order was accepted: Core's register of linked routes, which only Core's own acceptance writes
+    // (`T-020-68`), holds no route for `ord-2`, and the log no acceptance of it.
     let resolution = Resolution::HandOn {
         by: id(RESERVE),
         linked_order: id("ord-2"),
