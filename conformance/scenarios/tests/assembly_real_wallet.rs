@@ -1127,6 +1127,60 @@ fn holding_account_whose_module_restarted_is_re_landed_from_the_log_before_a_rel
     handed_on_once(&mut stuck, &linked, &bob, &decided);
 }
 
+/// A landing Core owes at a holding account whose module runs no process now is not tried (`Landing::restore`'s
+/// `NotNow`, `T-020-46`, `T-024-21`; `T-020-61`, item 9's Low): the wallet's record gone, Core and its platform restart
+/// with every release held until the operator confirms it, so the wallet runs nothing, and the restarted Core asks it
+/// nothing and lands nothing. Once the operator confirmed its releases, a Core opened again lands the log's amount, once.
+// verifies: NFR-6, INV-1
+#[test]
+fn landing_owed_at_a_holding_account_that_runs_nothing_now_is_tried_once_it_runs() {
+    let names = [CHAIN_IN, RAMP_B, OUT_B];
+    let scenario = || Scenario::new("execution", "AC-6", given(&names));
+    let mut stuck = stuck_at_the_public_node();
+    let wallet = stuck.wallet.clone();
+    let order = stuck.order.as_str().to_owned();
+    let held = stuck.core.holdings().attributions();
+    assert!(stuck.core.restart_module(&wallet.provider));
+    assert!(
+        !wallet_holds(&mut stuck.core, &wallet, &order, "ask-1"),
+        "the wallet's record is gone"
+    );
+    stuck.core = scenario().restart_holding(stuck.core, 1, &mut Reference);
+    assert!(
+        stuck
+            .core
+            .fleet()
+            .platform
+            .awaiting_confirmation(&wallet.provider)
+            .is_some(),
+        "the wallet's release is held"
+    );
+    assert_eq!(
+        stuck.core.restore_transaction(NODE, &order),
+        None,
+        "no process runs, so no restore can go under a transaction now"
+    );
+    assert_eq!(
+        stuck.core.operations_received(&wallet.provider),
+        0,
+        "not now: since its platform restarted, the restarted Core asked the wallet nothing"
+    );
+    stuck
+        .core
+        .confirm_releases()
+        .expect("the operator confirms the releases");
+    stuck.core = scenario().reopen(stuck.core, 1, &mut Reference);
+    assert!(
+        wallet_holds(&mut stuck.core, &wallet, &order, "ask-2"),
+        "landed once the wallet runs"
+    );
+    assert_eq!(
+        stuck.core.holdings().attributions(),
+        held,
+        "attributed once"
+    );
+}
+
 /// The wallet's module restarts after the operator decided to hand the stuck order's value on, and the wallet's record
 /// of the order goes with it. Core, which ran on, reads the platform's report of the restart and restores in the account
 /// what the log holds for the order before the withdrawal, under a transaction of its own: the move is done, the order

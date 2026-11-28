@@ -1324,16 +1324,32 @@ fn no_recalculation_changes_destination_or_to_asset() {
 /// `NFR-6` over the runs Core and its platform were restarted in mid-order (`T-024-21`): every order the customer had
 /// accepted before the restart is one the restarted Core knows, opened in its log, followed by it for its customer, held
 /// by the state machine's host restarted on its journal as the log's own inputs say; each one the crash caught is
-/// carried on by a step of its own after the restart, and each ends as its run's kind says (`Sim::expected_end`).
+/// carried on by a step of its own after the restart, and each ends as its run's kind says (`Sim::expected_end`). And
+/// at each restart, every order Core knew right before it, its id, the state Core followed it in and the amount its
+/// request asked, the restarted Core knows right after it, unchanged (`T-020-61`).
 // verifies: NFR-6
 #[test]
 fn core_and_the_platform_restarted_mid_order_lose_no_order() {
-    let (mut kept, mut started_before, mut completed_across) = (0, 0, 0);
+    let (mut kept, mut started_before, mut completed_across, mut snapshotted) = (0, 0, 0, 0);
     let found = violations_in(restarted, |sim| {
         let mut bad = Vec::new();
         let log = entries(&sim.run);
         let restart = confirmations(&log).first().map_or(log.len(), |(at, _)| *at);
         let replayed = sim.run.replayed_states();
+        // Each restart: every order Core knew right before it, the restarted Core knows right after it, in the same
+        // state and at the same amount (`T-020-61`, item 9's Low).
+        for (at, (before, after)) in sim.snapshots.iter().enumerate() {
+            snapshotted += before.len();
+            for (o, was) in before {
+                match after.get(o) {
+                    None => bad.push(format!("{o}: known before restart {at}, unknown after it")),
+                    Some(is) if is != was => {
+                        bad.push(format!("{o}: {was:?} before restart {at}, {is:?} after it"))
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
         for order in &sim.run.orders {
             let o = order.as_str();
             kept += 1;
@@ -1398,6 +1414,10 @@ fn core_and_the_platform_restarted_mid_order_lose_no_order() {
     none(&found);
     assert!(kept >= 6, "only {kept} orders of restarted runs read");
     assert!(
+        snapshotted >= 6,
+        "only {snapshotted} orders read before a restart"
+    );
+    assert!(
         started_before >= 4,
         "only {started_before} orders were started before a restart"
     );
@@ -1405,6 +1425,56 @@ fn core_and_the_platform_restarted_mid_order_lose_no_order() {
         completed_across >= 2,
         "only {completed_across} orders started before a restart completed after it"
     );
+}
+
+/// A `RestartWhileStuck` run with two orders (the pinned seed 117) reads each order's end by its own place in the
+/// caught set (`T-020-61`, item 9's Low): the order stuck when Core and its platform restarted is the one caught, and
+/// stays stuck for the operator; the other, not caught, completes by itself after the restart. Neither is read by the
+/// other's.
+// verifies: NFR-6
+#[test]
+fn restart_while_stuck_with_two_orders_reads_each_orders_end_by_its_own_caught_set() {
+    let two: Vec<&Sim> = runs()
+        .iter()
+        .filter(|sim| {
+            sim.plan.kind == Kind::RestartWhileStuck && restarted(sim) && sim.run.orders.len() >= 2
+        })
+        .collect();
+    assert!(
+        !two.is_empty(),
+        "no RestartWhileStuck run with two orders was played"
+    );
+    for sim in two {
+        let ends = sim.run.state_names();
+        let caught: Vec<&str> = sim
+            .run
+            .orders
+            .iter()
+            .map(|o| o.as_str())
+            .filter(|o| sim.caught.iter().any(|c| c == o))
+            .collect();
+        assert_eq!(
+            caught.len(),
+            1,
+            "{}: one order stuck when it restarted: {caught:?}",
+            sim.name()
+        );
+        for order in &sim.run.orders {
+            let o = order.as_str();
+            let want = if caught.contains(&o) {
+                "stuck"
+            } else {
+                "complete"
+            };
+            assert_eq!(sim.expected_end(o), want, "{}: {o}", sim.name());
+            assert_eq!(
+                ends.get(o).cloned().flatten().as_deref(),
+                Some(want),
+                "{}: {o} ends by its own caught set",
+                sim.name()
+            );
+        }
+    }
 }
 
 /// Whether the log holds a step of `order`'s own after `at`, written by the restarted Core: an effect or an input of
