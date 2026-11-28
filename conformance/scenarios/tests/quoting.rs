@@ -12,6 +12,7 @@ use rutent_scenarios::assembly::machine::Reference;
 use rutent_scenarios::assembly::{Core, Staged};
 use rutent_scenarios::harness::{Given, Scenario};
 use rutent_scenarios::kit;
+use rutent_scenarios::on_tick::OnTick;
 
 const SLOW: &str = "sim-reserve-slow";
 
@@ -78,8 +79,10 @@ fn segment_over_three_days_has_no_firm_rate_and_waits_for_acceptance() {
     else {
         panic!("quoted");
     };
-    core.run(&order)
-        .expect_err("an order not accepted has no route to run");
+    assert!(
+        matches!(core.ran_on_tick(&order), Ok(ran) if ran.is_empty()),
+        "an order not accepted has no route to run"
+    );
     assert!(core.world().journal(SLOW).is_empty(), "still nothing moved");
     let accepted = core
         .accept(&kit::customer(), &order, &digest)
@@ -137,7 +140,7 @@ fn charge_above_the_formulas_maximum_is_flagged() {
     core.accept(&kit::customer(), &order, &digest)
         .expect("accepted");
     // Core's own segments check what they settle (`T-020-14`): nothing here calls a check.
-    core.run(&order).expect("the order runs");
+    core.ran_on_tick(&order).expect("the order runs");
 
     // The provider quoted no charge and charged 7 on each movement, which only the movement tells.
     let segments = core.charged_segments(&order);
@@ -160,7 +163,7 @@ fn charge_above_the_formulas_maximum_is_flagged() {
         assert_eq!(maximum.as_str(), "0");
         assert_eq!(provider.as_str(), CHARGING);
     }
-    assert_eq!(core.raised().len(), 2);
+    assert_eq!(charges_raised(&core), 2);
     // Recorded as raised and done, once each; run again, nothing more is raised.
     let raises = |core: &Core| {
         core.log()
@@ -168,13 +171,14 @@ fn charge_above_the_formulas_maximum_is_flagged() {
             .iter()
             .filter(|(_, e)| {
                 matches!(e, rutent_contracts::core_internal::Entry::Verified(v)
-                if matches!(v.what, What::Raise { .. }) && v.outcome == Outcome::Done {})
+                if matches!(&v.what, What::Raise { raise } if matches!(raise.difference, rutent_contracts::core_internal::Difference::Charge { .. }))
+                    && v.outcome == Outcome::Done {})
             })
             .count()
     };
     assert_eq!(raises(&core), 2);
-    core.run(&order).expect("runs again");
-    assert_eq!(core.raised().len(), 2);
+    core.ran_on_tick(&order).expect("runs again");
+    assert_eq!(charges_raised(&core), 2);
     assert_eq!(raises(&core), 2);
 
     // A reserve that charges what it quoted raises nothing.
@@ -199,7 +203,7 @@ fn charge_above_the_formulas_maximum_is_flagged() {
     honest
         .accept(&kit::customer(), &order, &digest)
         .expect("accepted");
-    honest.run(&order).expect("runs");
+    honest.ran_on_tick(&order).expect("runs");
     let segments = honest.charged_segments(&order);
     assert_eq!(segments.len(), 2);
     assert!(
@@ -207,5 +211,19 @@ fn charge_above_the_formulas_maximum_is_flagged() {
             .iter()
             .all(|s| matches!(honest.charge_checked(&order, s), Some(Checked::Within)))
     );
-    assert!(honest.raised().is_empty());
+    assert_eq!(charges_raised(&honest), 0);
+}
+
+/// How many charges were raised to the operator: a tick also runs the holding check (`T-020-61`), which raises the holders
+/// this world's register doesn't name (`T-020-63`), not charges.
+fn charges_raised(core: &Core) -> usize {
+    core.raised()
+        .iter()
+        .filter(|r| {
+            matches!(
+                r.difference,
+                rutent_contracts::core_internal::Difference::Charge { .. }
+            )
+        })
+        .count()
 }

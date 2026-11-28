@@ -95,6 +95,9 @@ pub enum Fault {
     /// The process crashes right before the platform carries out the `nth` effect, from 0: its record is in the
     /// log, answered, and nothing is carried out.
     CrashBeforeEffect(usize),
+    /// The process crashes right after the platform carried out the `nth` effect, from 0, its provider having moved and
+    /// answered, before Core took the answer (`T-020-61`, item 9).
+    CrashAfterEffect(usize),
     /// The state machine moves to the swap environment right before the platform carries out the `nth` effect.
     SwapBeforeEffect(usize),
     /// Every operation the segments carry out from now on reaches its provider twice, under its transaction, and Core
@@ -551,21 +554,27 @@ fn take(
             core.accept(&customer, &order, &digest)?;
             orders.push(order);
         }
+        // Core runs every order it started on its own tick (`T-020-61`): the step is the deployment's timer firing. A part
+        // that stops is what the round tells, not a failed step: its segment waits.
         Step::Run => {
+            let round = core.tick();
             for order in orders.iter() {
                 if !ran.contains(order) {
                     ran.push(order.clone());
-                    // A part that stops is what the run tells, not a failed step: its segment waits.
-                    if let Err(e) = core.run(order) {
-                        stopped.push((order.as_str().to_owned(), format!("{e:?}")));
-                    }
+                }
+            }
+            for part in &round.runs.parts {
+                if let Some(Err(e)) = &part.ran {
+                    stopped.push((part.order.as_str().to_owned(), e.clone()));
                 }
             }
         }
+        // The whole route asked of Core again: another tick, which hands nothing over twice.
         Step::Rerun => {
-            for order in ran.iter() {
-                if let Err(e) = core.run(order) {
-                    stopped.push((order.as_str().to_owned(), format!("again: {e:?}")));
+            let round = core.tick();
+            for part in &round.runs.parts {
+                if let Some(Err(e)) = &part.ran {
+                    stopped.push((part.order.as_str().to_owned(), format!("again: {e}")));
                 }
             }
         }
@@ -588,6 +597,7 @@ fn take(
 pub fn unplant_crashes(core: &mut Core) {
     core.disk.unplant();
     core.faults.crash_before_effect = None;
+    core.faults.crash_after_effect = None;
 }
 
 /// Plants `fault` in `core`: what a [`Step::Plant`] does, for a test that drives Core's own calls and plants the
@@ -598,6 +608,7 @@ pub fn plant(core: &mut Core, fault: &Fault) {
             core.disk.plant(Crash::AfterRecord { call, nth: *nth });
         }
         Fault::CrashBeforeEffect(n) => core.faults.crash_before_effect = Some(*n),
+        Fault::CrashAfterEffect(n) => core.faults.crash_after_effect = Some(*n),
         Fault::SwapBeforeEffect(n) => core.faults.swap_before_effect = Some(*n),
         Fault::Deliver(delivery) => core.feed.deliver(*delivery),
         Fault::DeliverTwice => core.faults.deliver_twice = true,

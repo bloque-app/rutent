@@ -888,6 +888,8 @@ fn every_permission_held() -> Vec<Permission> {
         Permission::ReadNodeRecord,
         Permission::ReadHoldingBalance,
         Permission::RepeatOperation,
+        Permission::EndOrder,
+        Permission::DisputeFault,
         Permission::RefileArrival,
         Permission::DeclineOutcome,
         Permission::EraseStatement,
@@ -911,6 +913,8 @@ fn every_permission_held() -> Vec<Permission> {
             | Permission::ReadNodeRecord
             | Permission::ReadHoldingBalance
             | Permission::RepeatOperation
+            | Permission::EndOrder
+            | Permission::DisputeFault
             | Permission::RefileArrival
             | Permission::DeclineOutcome
             | Permission::EraseStatement
@@ -1143,6 +1147,36 @@ fn every_call() -> Vec<Call> {
         repeat_asked(&operator()),
         false,
     ));
+    // Ending an order and disputing a showing, decided and never an effect (`T-020-61`): no effect is tried.
+    for (name, owner, fixture) in [
+        ("end an order", Permission::EndOrder, "end"),
+        (
+            "dispute a showing of fault",
+            Permission::DisputeFault,
+            "dispute",
+        ),
+    ] {
+        let asked = ended_or_disputed(fixture, &operator());
+        calls.push(Call {
+            name: name.into(),
+            owner,
+            caller: asked.caller.clone(),
+            run: Box::new(move |holders| {
+                let mut policy = engine(Kept::with_a_decision_record(), swept(holders));
+                let decision = policy.decide(&asked).unwrap();
+                let entry = policy.log().entry_of(&decision).clone();
+                assert!(
+                    matches!(&entry.what, What::Decide { request: r, .. } if r == &asked),
+                    "recorded with its action"
+                );
+                Ran {
+                    answer: decision.outcome,
+                    who: Some(entry.who),
+                    ruled: policy.policy.1.ruled == 1,
+                }
+            }),
+        });
+    }
     calls.push(decide(
         "read a holding balance by the operator".into(),
         Permission::ReadHoldingBalance,
@@ -1362,9 +1396,9 @@ fn every_call() -> Vec<Call> {
 #[test]
 fn each_permission_alone_allows_only_its_own_action() {
     let all = every_permission_held();
-    assert_eq!(all.len(), 41, "every permission of the register's");
+    assert_eq!(all.len(), 43, "every permission of the register's");
     let calls = every_call();
-    assert_eq!(calls.len(), 44, "every call a permission lets through");
+    assert_eq!(calls.len(), 46, "every call a permission lets through");
     for permission in &all {
         assert!(
             calls.iter().any(|c| &c.owner == permission),
@@ -4324,4 +4358,73 @@ fn listing_a_public_network_is_permitted_to_the_operator_only() {
         policy.policy.1.ruled, 0,
         "none reached the deployment's policy"
     );
+}
+
+/// The request that `caller` end `ord-17`, or dispute the showing of fault for its `seg-2` (`T-020-61`).
+fn ended_or_disputed(fixture: &str, caller: &Actor) -> DecisionRequest {
+    let mut request: DecisionRequest = match fixture {
+        "end" => valid!("decision-request-to-end-an-order"),
+        _ => valid!("decision-request-to-dispute-a-fault"),
+    };
+    request.request = id(&format!("req-{fixture}-{}", caller.acts.as_str()));
+    request.caller = caller.clone();
+    request
+}
+
+/// An order is ended, and a showing of fault disputed, by the order's requester in the customer's role, or by an
+/// operator's login holding the permission each is; another customer, the operator without it, Core and a provider are
+/// refused (`REQ-ORD-12`, `REQ-ORD-11`, `REQ-AUZ-1`, `T-020-61`).
+// verifies: REQ-AUZ-1, REQ-ORD-12, REQ-ORD-11
+#[test]
+fn an_order_is_ended_and_a_fault_disputed_by_its_requester_or_the_operator_holding_the_permission()
+{
+    let requester = actor("cust-1", "cust-1", Role::Customer, ActorKind::Person);
+    let stranger = actor("cust-9", "cust-9", Role::Customer, ActorKind::Person);
+    let provider = actor(
+        "bridge-pay",
+        "bridge-pay",
+        Role::Provider,
+        ActorKind::Component,
+    );
+    for (fixture, permission) in [
+        ("end", Permission::EndOrder),
+        ("dispute", Permission::DisputeFault),
+    ] {
+        let mut policy = engine(
+            Kept::with_a_decision_record(),
+            Register::holding(&operator(), &[permission]).with_order("ord-17", "cust-1", "us-bank"),
+        );
+        for caller in [requester.clone(), operator()] {
+            assert_eq!(
+                policy
+                    .decide(&ended_or_disputed(fixture, &caller))
+                    .unwrap()
+                    .outcome,
+                Answer::Permit {},
+                "{fixture}: {caller:?}"
+            );
+        }
+        for caller in [stranger.clone(), core(), provider.clone()] {
+            assert_ne!(
+                policy
+                    .decide(&ended_or_disputed(fixture, &caller))
+                    .unwrap()
+                    .outcome,
+                Answer::Permit {},
+                "{fixture}: {caller:?}"
+            );
+        }
+        let mut policy = engine(
+            Kept::with_a_decision_record(),
+            Register::holding(&operator(), &[]).with_order("ord-17", "cust-1", "us-bank"),
+        );
+        assert_ne!(
+            policy
+                .decide(&ended_or_disputed(fixture, &operator()))
+                .unwrap()
+                .outcome,
+            Answer::Permit {},
+            "{fixture}: the operator without the permission"
+        );
+    }
 }

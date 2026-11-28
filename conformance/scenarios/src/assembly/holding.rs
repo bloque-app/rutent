@@ -13,22 +13,16 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use rutent_contracts::core_internal::calls::{
-    AppendFailure, Decisions, Evidence, GeneralEntry, Log,
-};
+use rutent_contracts::core_internal::calls::{AppendFailure, Evidence, GeneralEntry, Log};
 use rutent_contracts::core_internal::{
-    About, Action, Actor, CatalogueChange, DecisionRequest, Effect, Entry, Outcome, Receipt,
-    Violation, What,
+    About, Action, Actor, CatalogueChange, Effect, Entry, Receipt, Violation, What,
 };
 use rutent_contracts::module_interface::{Identifier, PlatformRefusal};
 use rutent_contracts::provider_role::{Operation, Statement};
 use rutent_contracts::router_api::{DecisionRecord, Id, PolicyBounds};
 use rutent_contracts::state_machine::SegmentPlan;
 use rutent_core_authz::roles::Permission;
-use rutent_core_orch::hand_on::{
-    Basis, HandOn, HandOnError, HandedOn, Handing, Parts as HandParts, Start,
-};
-use rutent_core_orch::rounds::Fresh;
+use rutent_core_orch::hand_on::HandOnError;
 use rutent_core_orch::segments::{Answered, Landed, Landings, Modules};
 use rutent_core_orch::snapshot::Clock;
 use rutent_core_orch::stuck::{
@@ -446,242 +440,10 @@ impl Core {
         self.linked.insert(route.order.as_str().to_owned(), route);
     }
 
-    /// Hands `order`'s stuck part on to the linked order of the hand-on `effect` carried out, once the move is done,
-    /// then records the holding account's withdrawal as the linked order's start, so its segments are handed over
-    /// (`REQ-ORD-43`, `REQ-ORD-40`). The route is the one the mover withdrew for. The record is the holding
-    /// account's own answer, which the mover kept as its stated entry; at a private node it is labelled its
-    /// publisher's word, as the catalogue names the node's publisher.
-    ///
-    /// # Errors
-    ///
-    /// If the mover holds no done withdrawal for the effect, or the hand-on or the start is refused.
-    pub fn hand_on(
-        &mut self,
-        order: &Id,
-        effect: &Receipt,
-        by: &Actor,
-    ) -> Result<HandedOn, HandingError> {
-        let part = self
-            .first_part(order)
-            .ok_or(StepError::NotNow("the order has a part"))?;
-        let withdrawn = match self.mover.withdrawn(effect) {
-            Some(withdrawn) => Some((
-                withdrawn.linked.clone(),
-                withdrawn.route.clone(),
-                withdrawn.start.clone(),
-                withdrawn
-                    .statement
-                    .cloned()
-                    .ok_or(HandingError::NotWithdrawn)?,
-            )),
-            // A Core that reopened holds no mover's record of the withdrawal: the log's is read (`T-020-46`).
-            None => self.withdrawn_in_the_log(effect),
-        };
-        let (linked, route, start, statement) = withdrawn.ok_or(HandingError::NotWithdrawn)?;
-        let recorded: Vec<(Receipt, Entry)> = self
-            .log
-            .borrow()
-            .entries()
-            .iter()
-            .map(|(receipt, entry)| (receipt.clone(), entry.clone()))
-            .collect();
-        let core = kit::core();
-        let publisher = self
-            .catalogue
-            .publishers()
-            .publisher_of_node(&start.node)
-            .and_then(Id::new);
-        let handed = {
-            let mut parts = HandParts {
-                clock: &self.clock,
-                log: &mut self.general,
-                fresh: &mut self.fresh,
-                segments: &mut self.segments,
-                exposures: &mut self.exposures,
-                stuck: &mut self.stuck,
-            };
-            let handed = self.hand_on.hand_on(
-                &mut parts,
-                Handing {
-                    order,
-                    part: &part,
-                    linked: &linked,
-                    decision_record: &route.decision_record,
-                    plan: &route.plan,
-                    acceptance: &route.acceptance,
-                    basis: Basis::Resolution { effect },
-                    recorded: &recorded,
-                    by,
-                    core: &core,
-                },
-            )?;
-            self.hand_on.prove_start(
-                &mut parts,
-                Start {
-                    linked: &linked,
-                    record: &start.record,
-                    statement: &statement,
-                    core: &core,
-                    publisher: publisher.as_ref(),
-                },
-            )?;
-            handed
-        };
-        self.feed()?;
-        Ok(handed)
-    }
-
-    /// The route the linked order `linked` was accepted on, from the log (`T-020-46`): its acceptance (its id and its
-    /// part) and the decision record its route was chosen by, read from the records Core keeps, each segment under the
-    /// identifier [`Core::accept_linked`] derives. `None` where any of it isn't there.
-    pub(super) fn accepted_in_the_log(
-        &self,
-        history: &[(Receipt, Entry)],
-        linked: &Id,
-    ) -> Option<AcceptedRoute> {
-        let (acceptance, part) = history.iter().find_map(|(_, e)| match e {
-            Entry::Verified(v) => match &v.what {
-                What::Acceptance {
-                    acceptance,
-                    order: o,
-                    yeses,
-                    ..
-                } if o == linked => Some((acceptance.clone(), yeses.first()?.part.clone())),
-                _ => None,
-            },
-            Entry::Stated(_) => None,
-        })?;
-        let decision_record = history.iter().rev().find_map(|(_, e)| match e {
-            Entry::Verified(v) => match &v.what {
-                What::DecisionRecord {
-                    decision_record,
-                    order: o,
-                    ..
-                } if o == linked => Some(decision_record.clone()),
-                _ => None,
-            },
-            Entry::Stated(_) => None,
-        })?;
-        let record = super::reopen::held_record(&self.signer.records, history, &decision_record)?;
-        let [only] = record.chosen()?.parts.as_slice() else {
-            return None;
-        };
-        let part_id = rutent_contracts::state_machine::Id::new(part.as_str())?;
-        let mut segments = Vec::new();
-        for (place, operation) in only.operations.iter().enumerate() {
-            segments.push(SegmentPlan {
-                segment_id: super::linked::segment_id(&part_id, place).ok()?,
-                provider: rutent_contracts::state_machine::Id::new(operation.provider.as_str())?,
-                kind: operation.kind,
-                from: operation.from.clone(),
-                to: operation.to.clone(),
-            });
-        }
-        Some(AcceptedRoute {
-            order: linked.clone(),
-            decision_record,
-            acceptance,
-            plan: vec![rutent_contracts::state_machine::PartPlan { part_id, segments }],
-        })
-    }
-
-    /// The holding account's withdrawal for the hand-on `effect` carried out, as the log holds it, for a Core that
-    /// reopened and holds no mover's record of it (`T-020-46`): the effect's `resolve_stuck` with its `done` result,
-    /// handing the part's value on to its linked order; the linked order's accepted route, from its acceptance (its
-    /// part) and the decision record its route was chosen by, each segment under the identifier
-    /// [`Core::accept_linked`] derives; and the holding account's own answer, verified, about the linked order, its
-    /// record read from the bytes the evidence store keeps (`proof_of_withdrawal`). `None` where any of it isn't there.
-    fn withdrawn_in_the_log(
-        &mut self,
-        effect: &Receipt,
-    ) -> Option<(Id, AcceptedRoute, HandedOnStart, Receipt)> {
-        use rutent_contracts::core_internal::{Attribution, Resolution};
-        use rutent_contracts::provider_role::{RESULT_SHAPE, ReserveMovementOutcome, ResultBody};
-        let history: Vec<(Receipt, Entry)> = self.log.borrow().entries().to_vec();
-        let (order, holder, linked) = history.iter().find_map(|(r, e)| match e {
-            Entry::Verified(v) if r == effect => match &v.what {
-                What::Effect {
-                    action:
-                        rutent_contracts::core_internal::Action::ResolveStuck {
-                            order,
-                            resolution:
-                                Resolution::HandOn {
-                                    by, linked_order, ..
-                                },
-                            ..
-                        },
-                    ..
-                } => Some((order.clone(), by.clone(), linked_order.clone())),
-                _ => None,
-            },
-            _ => None,
-        })?;
-        let done = history.iter().any(|(_, e)| {
-            matches!(e, Entry::Verified(v) if matches!(&v.what, What::Result { effect: of } if of == effect)
-                && matches!(v.outcome, rutent_contracts::core_internal::Outcome::Done {}))
-        });
-        if !done {
-            return None;
-        }
-        let route = self.accepted_in_the_log(&history, &linked)?;
-        let segments = route.plan.first()?.segments.clone();
-        let first = segments.first()?.clone();
-        let rutent_contracts::provider_role::NodeRef::Inner(node) = &first.from.node else {
-            return None;
-        };
-        let (statement, commitment) = history.iter().find_map(|(r, e)| match e {
-            Entry::Stated(s)
-                if s.what.statement.as_str() == RESULT_SHAPE
-                    && matches!(&s.attribution, Attribution::Verified { who } if who.acts == holder)
-                    && s.about
-                        .as_ref()
-                        .is_some_and(|a| a.order.as_ref() == Some(&linked)) =>
-            {
-                Some((r.clone(), s.commitment.clone()))
-            }
-            _ => None,
-        })?;
-        let kept = rutent_contracts::core_internal::calls::KeptStatements::kept(
-            &mut self.kept,
-            &commitment,
-        )
-        .ok()??;
-        let answer = rutent_core_audit::receipts::store::bearing_out(&kept)?;
-        let result: Statement<ResultBody> = serde_json::from_slice(&answer).ok()?;
-        let ResultBody::Withdrawal(withdrawal) = result.statement else {
-            return None;
-        };
-        let ReserveMovementOutcome::Succeeded(settled) = withdrawal.outcome else {
-            return None;
-        };
-        let reference = rutent_prov::holding::wallet::proof_of_withdrawal(
-            holder.as_str(),
-            &withdrawal.transaction,
-            &settled.evidence,
-        )
-        .ok()?;
-        let start = HandedOnStart {
-            reserve: holder.as_str().to_owned(),
-            node: node.clone(),
-            first_segment: first.segment_id.clone(),
-            record: rutent_prov::holding::wallet::WithdrawalRecord {
-                by: holder.as_str().to_owned(),
-                node: node.clone(),
-                asset: first.from.asset.id.clone(),
-                order: order.as_str().to_owned(),
-                amount: settled.amount_out.parse().ok()?,
-                reference,
-            },
-            transaction: withdrawal.transaction,
-            answer,
-        };
-        Some((linked, route, start, statement))
-    }
-
     /// Installs the operator's plain wallet as the holding account of the public node `node`, holding `asset`
     /// (`REQ-CAT-23`, `T-024-17`): the wallet's two components admitted to the platform on the operator's own signed
-    /// release, the node on the operator's public list, and the wallet registered as the node's account. Its release
-    /// isn't accepted in the log yet ([`Core::accept_release`]), so the log verifies none of its answers.
+    /// release and accepted through Core's decided accept (`Core::accept_release`), the node on the operator's public
+    /// list, and the wallet registered as the node's account. The platform runs none of it before Core accepted it.
     ///
     /// # Errors
     ///
@@ -692,6 +454,8 @@ impl Core {
         asset: &str,
     ) -> Result<InstalledWallet, AssemblyError> {
         let wallet = self.fleet.install_wallet(kit::OPERATOR_WALLET);
+        // Its release runs once Core's decided accept takes it (`T-020-61`).
+        self.accept_release(&wallet)?;
         let _ = self.catalogue.publish_operator_module(&wallet.provider);
         let _ = self.catalogue.add_public_node(node);
         self.holdings
@@ -726,89 +490,84 @@ impl Core {
         Ok(wallet)
     }
 
-    /// Accepts `wallet`'s release in the log, as a decided catalogue change (`REQ-CAT-23`, `REQ-AUD-2`): the operator's
-    /// login decides it, Core records its effect naming the release's statements key, and its result is `done`. From
-    /// then the log verifies the wallet's statements by that key, as it does any module the operator publishes.
+    /// Accepts `wallet`'s release, waiting at the platform since its install, through Core's decided accept
+    /// (`ReleaseChange::Accept`, `Segments::change_release`; `REQ-CAT-23`, `REQ-AUD-2`, `T-020-61`): the operator's
+    /// login decides it, Core records its effect naming the release's statements key before the platform accepts the
+    /// release, and its result after. From then the wallet runs, and the log verifies its statements by that key, as
+    /// it does any module the operator publishes. The assembly only names the operator's permission in the
+    /// deployment's register of actors. The receipt of the effect.
     ///
     /// # Errors
     ///
-    /// If policy doesn't permit the change, or the log takes no step of it.
-    pub fn accept_release(&mut self, wallet: &InstalledWallet) -> Result<Receipt, AssemblyError> {
-        self.log_wallet_release_change(
+    /// If policy doesn't permit the change, no release of it waits, or the platform refuses it.
+    pub(super) fn accept_release(
+        &mut self,
+        wallet: &InstalledWallet,
+    ) -> Result<Receipt, AssemblyError> {
+        let (version, key) = (kit::id(&wallet.version), wallet.statement_key());
+        self.wallet_release_change(
             wallet,
             CatalogueChange::AcceptModule,
-            Some(wallet.statement_key()),
+            rutent_core_orch::segments::lifecycle::ReleaseChange::Accept {
+                version: &version,
+                statement_key: &key,
+            },
         )
     }
 
-    /// Revokes `wallet`'s release in the log, as a decided catalogue change (`REQ-CAT-23`): from then the log attributes
-    /// none of its statements but for a transaction a segment of it ran on, and Core asks it nothing more
-    /// (`T-020-57`'s review, L1).
+    /// Revokes `wallet`'s release through Core's decided revoke (`ReleaseChange::Revoke`, `REQ-CAT-23`): from then the
+    /// platform runs none of it, the log attributes none of its statements but for a transaction a segment of it ran on,
+    /// and Core asks it nothing more (`T-020-57`'s review, L1).
     ///
     /// # Errors
     ///
-    /// If policy doesn't permit the change, or the log takes no step of it.
+    /// If policy doesn't permit the change, or the platform refuses it.
     pub fn revoke_release(&mut self, wallet: &InstalledWallet) -> Result<Receipt, AssemblyError> {
-        self.log_wallet_release_change(wallet, CatalogueChange::RevokeRelease, None)
+        let version = kit::id(&wallet.version);
+        self.wallet_release_change(
+            wallet,
+            CatalogueChange::RevokeRelease,
+            rutent_core_orch::segments::lifecycle::ReleaseChange::Revoke { version: &version },
+        )
     }
 
-    /// `change` of `wallet`'s release, decided by the operator's login, its effect recorded and its result `done`
-    /// (`T-020-57`; named apart from the lifecycle command, `Core::change_release`, of `T-020-49`).
-    fn log_wallet_release_change(
+    /// `change` of `wallet`'s release, by the operator's login, through Core's decided lifecycle path
+    /// ([`Core::change_release`]); `named` is the catalogue change it records, whose permission the deployment's
+    /// register names for the operator. The receipt of the effect Core recorded.
+    fn wallet_release_change(
         &mut self,
         wallet: &InstalledWallet,
-        change: CatalogueChange,
-        statement_key: Option<rutent_contracts::provider_role::PublicKey>,
+        named: CatalogueChange,
+        change: rutent_core_orch::segments::lifecycle::ReleaseChange<'_>,
     ) -> Result<Receipt, AssemblyError> {
-        let listing =
-            |step: &str, e: AppendFailure| AssemblyError::Listing(format!("{step}: {e:?}"));
         self.deployed
             .registers
             .borrow_mut()
-            .permit(&kit::operator_login(), Permission::Change(change));
-        let action = Action::ChangeCatalogue {
-            change,
-            provider: kit::id(&wallet.provider),
-            version: Some(kit::id(&wallet.version)),
-            tuple: None,
-            class: None,
-            advertising_keys: Vec::new(),
-            statement_key,
-            setting: None,
-            versions: Vec::new(),
-            public_network: None,
-        };
-        let request = DecisionRequest {
-            request: self.fresh.id(),
-            caller: kit::operator_login(),
-            action: action.clone(),
-            at: self.clock.timestamp(),
-        };
-        let decision = Decisions::decide(&mut self.policy, &request)
-            .map_err(|e| listing("the release's decision", e))?;
-        let permit = decision.permit().ok_or_else(|| {
-            AssemblyError::Listing(format!(
-                "the release wasn't permitted: {:?}",
-                decision.outcome
-            ))
-        })?;
-        let effect = self
-            .verified(
-                What::Effect {
-                    action,
-                    decision: permit,
+            .permit(&kit::operator_login(), Permission::Change(named));
+        self.change_release(&wallet.provider, change)
+            .map_err(|e| AssemblyError::Listing(format!("the release's change: {e:?}")))?;
+        self.log()
+            .entries()
+            .iter()
+            .rev()
+            .find_map(|(receipt, entry)| match entry {
+                Entry::Verified(v) => match &v.what {
+                    What::Effect {
+                        action:
+                            Action::ChangeCatalogue {
+                                change, provider, ..
+                            },
+                        ..
+                    } if *change == named && provider.as_str() == wallet.provider => {
+                        Some(receipt.clone())
+                    }
+                    _ => None,
                 },
-                Outcome::ToTakeEffect {},
-            )
-            .map_err(|e| listing("the release's effect", e))?;
-        self.verified(
-            What::Result {
-                effect: effect.clone(),
-            },
-            Outcome::Done {},
-        )
-        .map_err(|e| listing("the release's result", e))?;
-        Ok(effect)
+                Entry::Stated(_) => None,
+            })
+            .ok_or_else(|| {
+                AssemblyError::Listing("the release's effect isn't in the log".to_owned())
+            })
     }
 
     /// What a reopened Core finds of the landings its segments owed (`Segments::reconcile_landings`, `T-020-46`): each
@@ -1029,18 +788,5 @@ impl Core {
     /// The mover's read of the log: the log's own handle, never a copy of its entries.
     pub fn log_read(&self) -> impl LogRead + use<> {
         LogHandle(Rc::clone(&self.log))
-    }
-
-    /// Proves again, from the log, the starts of the routes handed on whose `holding_withdrawal` it holds: what a
-    /// restarted Core's segments forget (`REQ-ORD-43`).
-    pub(super) fn recover_starts(&mut self) -> usize {
-        let entries: Vec<Entry> = self
-            .log
-            .borrow()
-            .entries()
-            .iter()
-            .map(|(_, entry)| entry.clone())
-            .collect();
-        HandOn::recover_starts(&mut self.segments, &entries)
     }
 }

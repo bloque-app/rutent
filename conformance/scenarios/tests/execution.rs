@@ -16,6 +16,7 @@ use rutent_core_orch::intake::{Status, Told};
 use rutent_core_orch::segments::{Ran, SegmentOutcome};
 use rutent_scenarios::assembly::Core;
 use rutent_scenarios::kit::{self, AMOUNT, RESERVE};
+use rutent_scenarios::on_tick::OnTick;
 
 /// The segments of the one part `ran` ran, as it accounted for each.
 fn accounted(ran: &[Ran]) -> &[rutent_core_orch::segments::Accounted] {
@@ -68,7 +69,7 @@ fn one_reserves_withdrawal_and_deposit_make_a_route_of_two_segments() {
         };
         core.accept(&kit::customer(), &order, &digest)
             .expect("accepted");
-        let ran = core.run(&order).expect("the order ran");
+        let ran = core.ran_on_tick(&order).expect("the order ran");
         let segments = accounted(&ran);
         assert_eq!(segments.len(), 2, "two segments ran, for {account}");
         assert!(

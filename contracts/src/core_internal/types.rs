@@ -387,6 +387,12 @@ pub const LIFECYCLE_ACTIONS: [(&str, CatalogueChange); 5] = [
 /// provider's own cadence is for (`OperatorSetting::Cadence::provider`, `T-020-49`).
 pub const STATUS_ASKS_JOB: &str = "status_asks";
 
+/// The name a `cadence` setting gives how often Core asks a failed segment's reversal again (`T-020-61`, the coordinator's
+/// ruling on round 3 of #355): its confirmation of the origin reserve, and an ask its provider refused, which moved
+/// nothing. No job of its own on the schedule: Core's order run takes the step on that cadence, and up to its cap, and
+/// a Core that reopens holds it again from its settings. Named for no provider.
+pub const REVERSAL_RETRIES_JOB: &str = "reversal_retries";
+
 /// The platform's confirmation of a provider's releases after an unclean end (`T-013-11`, `T-020-49`): a sixth
 /// lifecycle action, about a provider's versions as the platform's record holds them rather than one release, so it is
 /// apart from [`LIFECYCLE_ACTIONS`]: the action's name on the platform and its change.
@@ -855,6 +861,40 @@ pub enum Action {
         provider: Id,
         /// The segment's own transaction, which the repeat is of.
         transaction: Id,
+    },
+    /// Reading back the answer the platform recorded for a segment's own operation, where Core recorded the move's effect
+    /// and lost its answer in a stop, at a provider that declares neither a status query nor a safe repeat (`INV-8`,
+    /// `NFR-6`, `T-020-61` item 10): a decided action, taken as an effect before the platform is asked. The platform hands
+    /// over the answer its record holds for that provider's operation under the transaction, running no module, and moves
+    /// nothing; with none recorded, nothing comes back and the segment waits for the stuck check. It names the segment's
+    /// own transaction.
+    ReadRecordedAnswer {
+        /// The order.
+        order: Id,
+        /// The segment whose answer is read back.
+        segment: Id,
+        /// The segment's provider, whose operation it was.
+        provider: Id,
+        /// The segment's own transaction, which the recorded answer is to.
+        transaction: Id,
+    },
+    /// Ending an order without completing (`REQ-ORD-12`, `T-020-61` item 10): a decision of policy's, asked by the order's
+    /// requester, or its agent, in the customer's role, or by an operator's login holding the permission. It takes no
+    /// effect: Core records the order's `end_requested` input on its permit, only while no segment of a part that would
+    /// end moves value.
+    EndOrder {
+        /// The order.
+        order: Id,
+    },
+    /// Disputing a provider's showing that a failed segment's failure was the customer's or the operator's
+    /// (`REQ-ORD-11`, `T-020-61` item 10): a decision of policy's, asked by the order's requester in the customer's role,
+    /// or by an operator's login holding the permission, for the party the showing names. It takes no effect: Core then
+    /// declares the part stuck, in a dispute, and the provider carries the reversal meanwhile.
+    DisputeFault {
+        /// The order.
+        order: Id,
+        /// The failed segment whose showing is disputed.
+        segment: Id,
     },
     /// The customer accepting a provider's showing that a failed segment's failure was its fault (`REQ-ORD-11`): a
     /// decision of policy's on the policy handle, as an order's authorisation is, asked by the order's requester in its

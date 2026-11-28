@@ -6,6 +6,7 @@
 //! a mover the engine refuses, by chain, by permission or as the provider's own desk, hands the reserve nothing and
 //! records no effect; the permitted one's move is carried out on the platform, once, and the part is resolved.
 
+use rutent_conformance::sim::{Act, Behaviour};
 use rutent_contracts::core_internal::{
     Action, Actor, ActorKind, Answer, Decided, Destination, Entry, Outcome, RefusalClass,
     Resolution, Role, What,
@@ -16,9 +17,10 @@ use rutent_contracts::state_machine::{Observed, ResolvedTo};
 use rutent_core_authz::roles::Permission;
 use rutent_core_orch::stuck::{Moved, ResolveError, Resolved};
 use rutent_scenarios::assembly::machine::Reference;
-use rutent_scenarios::assembly::{Core, Staged, StepError};
+use rutent_scenarios::assembly::{Core, Staged};
 use rutent_scenarios::harness::{Given, Scenario, Step};
 use rutent_scenarios::kit::{self, AMOUNT, RESERVE, id};
+use rutent_scenarios::on_tick::OnTick;
 
 /// An operator login: a person of its own desk, which acts for the operator.
 fn staff(core: &Core, desk: &str, login: &str) -> Actor {
@@ -100,6 +102,28 @@ fn moves_by_the_engine(core: &Core) -> Vec<Outcome> {
         .collect()
 }
 
+/// The part of `order` whose deposit failed made stuck by Core's own run, with no route left (`REQ-ORD-28`, `T-020-61`,
+/// the review's L6): the reserve refuses the deposit's dry run as Core recalculates the part from its ledger, so the
+/// recalculation finds no route, and Core's run declares the part stuck for want of one. No test caller declares it.
+fn stuck_on_ticks(
+    core: &mut Core,
+    order: &rutent_contracts::router_api::Id,
+    part: &rutent_contracts::router_api::Id,
+) {
+    core.world()
+        .script_dry_run(RESERVE, "deposit", Behaviour::act(Act::Refuse));
+    for _ in 0..4 {
+        if core.is_stuck(order, part) {
+            break;
+        }
+        core.tick();
+    }
+    assert!(
+        core.is_stuck(order, part),
+        "Core's run left the part with no route, stuck"
+    );
+}
+
 /// A stuck order of the assembled Core is resolved through the production mover, on the real engine's permits for
 /// both steps. The engine refuses a mover whose chain reaches the decider's party (`same_actor`), one holding no
 /// permission to move, and the desk of the provider holding the funds: each is answered not permitted, no effect is
@@ -123,9 +147,8 @@ fn stuck_order_of_the_assembled_core_is_resolved_through_the_mover_and_the_real_
     let part = core.first_part(&order).expect("a started order");
     // The withdrawal settles; the platform won't begin the deposit: its value rests at the reserve's ledger.
     core.faults.refuse_begin = Some(1);
-    core.run(&order).expect("the order runs");
-    core.leave_no_route(&order).expect("the part is stuck");
-    assert!(core.is_stuck(&order, &part));
+    core.ran_on_tick(&order).expect("the order runs");
+    stuck_on_ticks(&mut core, &order, &part);
 
     // Who acts. Alice's desk decides; bob's moves; carol's desk acts for alice's, so carol is alice's by chain;
     // dave holds no permission to move; the reserve's own desk may not move what the reserve holds.
@@ -166,7 +189,7 @@ fn stuck_order_of_the_assembled_core_is_resolved_through_the_mover_and_the_real_
 
     // A decider the engine doesn't permit (no permission to decide) decides nothing.
     let refused = core
-        .decide_stuck(&order, &dave, &resolution, &evidence)
+        .decide_stuck_in_core(&order, &dave, &resolution, &evidence)
         .expect("asked");
     assert!(
         matches!(refused.outcome, Answer::Refuse { .. }),
@@ -175,7 +198,7 @@ fn stuck_order_of_the_assembled_core_is_resolved_through_the_mover_and_the_real_
     );
 
     let decision = core
-        .decide_stuck(&order, &alice, &resolution, &evidence)
+        .decide_stuck_in_core(&order, &alice, &resolution, &evidence)
         .expect("asked");
     assert_eq!(decision.outcome, Answer::Permit {});
     let carries_out = Decided {
@@ -190,7 +213,7 @@ fn stuck_order_of_the_assembled_core_is_resolved_through_the_mover_and_the_real_
         (&reserve_desk, "the desk of the provider holding the funds"),
     ] {
         let moved = core
-            .move_stuck(&order, &carries_out, mover)
+            .move_stuck_in_core(&order, &carries_out, mover)
             .unwrap_or_else(|e| panic!("{why}: asked: {e:?}"));
         assert!(
             matches!(moved, Moved::NotPermitted(Answer::Refuse { .. })),
@@ -218,12 +241,12 @@ fn stuck_order_of_the_assembled_core_is_resolved_through_the_mover_and_the_real_
 
     // Core's own rule holds whatever the engine says: the decider doesn't move its own decision.
     assert!(matches!(
-        core.move_stuck(&order, &carries_out, &alice),
-        Err(StepError::Resolve(ResolveError::SameParty))
+        core.move_stuck_in_core(&order, &carries_out, &alice),
+        Err(ResolveError::SameParty)
     ));
 
     // The permitted mover's move is carried out on the platform, once.
-    let moved = core.move_stuck(&order, &carries_out, &bob);
+    let moved = core.move_stuck_in_core(&order, &carries_out, &bob);
     let moved = moved.expect("moved");
     assert!(
         matches!(
@@ -252,6 +275,99 @@ fn stuck_order_of_the_assembled_core_is_resolved_through_the_mover_and_the_real_
         .collect();
     assert_eq!(resolved, vec![ResolvedTo::Destination]);
     // Nothing moves a second time.
-    assert!(core.move_stuck(&order, &carries_out, &bob).is_err());
+    assert!(core.move_stuck_in_core(&order, &carries_out, &bob).is_err());
     assert_eq!(core.operations_received(RESERVE), handled + 1);
+}
+
+/// The operator's decided commands on a stuck order are Core's own entry points (`T-020-61`, item 4): the deployment hands
+/// each to `rutent_core_orch::stuck::{decide_stuck, move_stuck}` over its ports, and Core reads the stuck part from the order
+/// it started, asks policy for each step and carries the move out through its mover. An order Core didn't start has no
+/// stuck part to decide; the decider never moves its own decision; the permitted mover's move is carried out once.
+// verifies: REQ-AUZ-4, AC-6
+#[test]
+fn stuck_command_is_a_core_entry_point() {
+    let (mut core, orders) = Scenario::new(
+        "a stuck order, resolved through Core's entry points",
+        "AC-6",
+        Given::one_reserve(Staged::AtOnce),
+    )
+    .when(Step::Order {
+        request: "req-1".to_owned(),
+        amount: AMOUNT.to_owned(),
+    })
+    .core(1, &mut Reference);
+    let order = orders[0].clone();
+    let part = core.first_part(&order).expect("a started order");
+    core.faults.refuse_begin = Some(1);
+    core.tick();
+    stuck_on_ticks(&mut core, &order, &part);
+    let alice = staff(&core, "desk-a", "alice");
+    let bob = staff(&core, "desk-b", "bob");
+    {
+        let mut registers = core.registers();
+        registers.permit(&alice, Permission::DecideStuck);
+        registers.permit(&bob, Permission::MoveStuck);
+    }
+    let resolution = Resolution::Deliver {
+        by: id(RESERVE),
+        to: destination(&core),
+        asset: Denomination {
+            id: "COP".into(),
+            decimals: 2,
+        },
+        amount: PositiveAmount::new(AMOUNT).unwrap(),
+    };
+    let evidence = evidence_about(&core, &order);
+    // No stuck part of an order Core never started.
+    assert_eq!(
+        rutent_core_orch::stuck::decide_stuck(
+            &mut core.ports(),
+            &id("ord-never-started"),
+            &alice,
+            &resolution,
+            &evidence
+        ),
+        Err(ResolveError::NotStuck)
+    );
+    let decides = |core: &Core| {
+        core.verified_whats()
+            .iter()
+            .filter(|w| matches!(w, What::StuckDecide { .. }))
+            .count()
+    };
+    let before = decides(&core);
+    let decision = rutent_core_orch::stuck::decide_stuck(
+        &mut core.ports(),
+        &order,
+        &alice,
+        &resolution,
+        &evidence,
+    )
+    .expect("asked");
+    assert_eq!(decision.outcome, Answer::Permit {});
+    assert_eq!(decides(&core), before + 1, "policy decided it, on the log");
+    let carries_out = Decided {
+        request: decision.request.clone(),
+        decision: decision.decision.clone(),
+    };
+    assert_eq!(
+        rutent_core_orch::stuck::move_stuck(&mut core.ports(), &order, &carries_out, &alice),
+        Err(ResolveError::SameParty),
+        "the decider doesn't move its own decision"
+    );
+    let handled = core.operations_received(RESERVE);
+    let moved = rutent_core_orch::stuck::move_stuck(&mut core.ports(), &order, &carries_out, &bob)
+        .expect("moved");
+    assert!(
+        matches!(
+            moved,
+            Moved::CarriedOut {
+                resolved: Resolved::Done,
+                ..
+            }
+        ),
+        "{moved:?}"
+    );
+    assert_eq!(core.operations_received(RESERVE), handled + 1);
+    assert!(!core.is_stuck(&order, &part));
 }

@@ -27,6 +27,7 @@ use rutent_core_orch::quote::Checked;
 use rutent_core_orch::segments::{Accounted, Ran, SegmentOutcome};
 use rutent_scenarios::assembly::Core;
 use rutent_scenarios::kit::{self, AMOUNT};
+use rutent_scenarios::on_tick::OnTick;
 use serde_json::json;
 
 const GROSS: &str = "sim-reserve-gross";
@@ -95,7 +96,7 @@ fn ran(core: &mut Core, session: &Id, reserve: &str, name: &str) -> (Id, Quote, 
     };
     core.accept(&kit::customer(), &order, &digest)
         .expect("accepted");
-    let ran = core.run(&order).expect("the order ran");
+    let ran = core.ran_on_tick(&order).expect("the order ran");
     (order, *quote, ran)
 }
 
@@ -175,7 +176,7 @@ fn gross_charged_segment_hands_the_next_segment_what_arrives() {
         );
     }
     assert!(
-        core.raised().is_empty(),
+        charges_raised(&core).is_empty(),
         "the charge was within its formula"
     );
 }
@@ -323,7 +324,7 @@ fn final_deposit_that_reaches_the_network_at_its_stated_gross_figure_does_not_cl
             ..Behaviour::default()
         },
     );
-    let ran = core.run(&order).expect("the order ran");
+    let ran = core.ran_on_tick(&order).expect("the order ran");
     let segments = accounted(&ran);
     assert!(settled(&segments[0]));
     assert!(
@@ -380,7 +381,7 @@ fn withdrawal_that_reaches_the_network_at_what_arrived_is_no_public_record() {
             ..Behaviour::default()
         },
     );
-    let ran = core.run(&order).expect("the order ran");
+    let ran = core.ran_on_tick(&order).expect("the order ran");
     let segments = accounted(&ran);
     let first: Vec<_> = evidence_of(&core, &order)
         .into_iter()
@@ -430,7 +431,7 @@ fn charge_above_the_formulas_maximum_on_a_gross_segment_is_flagged_by_core() {
             amount("5007")
         );
     }
-    let raised = core.raised();
+    let raised = charges_raised(&core);
     assert_eq!(raised.len(), 2, "both charges reached the operator");
     for raise in &raised {
         let Difference::Charge {
@@ -476,4 +477,13 @@ fn charge_above_the_formulas_maximum_on_a_gross_segment_is_flagged_by_core() {
     );
     // What arrives is the gross figure less the charge actually taken: 1 000 000 less 5 007.
     assert_eq!(handed_on(&segments[0]), amount("994993"));
+}
+
+/// The charges raised to the operator. Core's tick also runs its holding check, which raises the stand-in reserve's
+/// ledger node, a holder the scenario's register of holding accounts doesn't name (`T-020-63`): that is not a charge.
+fn charges_raised(core: &Core) -> Vec<rutent_contracts::core_internal::Raise> {
+    core.raised()
+        .into_iter()
+        .filter(|r| matches!(r.difference, Difference::Charge { .. }))
+        .collect()
 }

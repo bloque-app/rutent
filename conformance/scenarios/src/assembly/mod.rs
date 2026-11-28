@@ -73,32 +73,28 @@ use rutent_contracts::core_internal::calls::{AppendFailure, GeneralEntry, Log, R
 use rutent_contracts::core_internal::{
     Action, Actor, ActorKind, Authorisation, CatalogueChange, Decision, DecisionRequest, Entry,
     OperatorSetting, Outcome, PermissionChange, ReadAnswer, ReadCheck, Receipt, RefusalClass, Role,
-    RouteEnd, SessionOutcome, SessionRequest, SettingKind, TimeSource, VerifiedEntry, VerifiedKind,
-    What, When,
+    SessionOutcome, SessionRequest, SettingKind, TimeSource, VerifiedEntry, VerifiedKind, What,
+    When,
 };
 use rutent_contracts::provider_role::{
     ADVERTISEMENT_SHAPE, JudgementOutcome, JudgementResult, Operation, ResultBody, Statement,
 };
 use rutent_contracts::router_api::{DECISION_RECORD_SHAPE, DecisionRecord, Id, PolicyBounds};
-use rutent_contracts::state_machine::{Observed, PartPlan, RecordedInput};
+use rutent_contracts::state_machine::RecordedInput;
 use rutent_core_audit::log::{AuditLog, Settings};
 use rutent_core_audit::receipts::store::{BoundStore, EvidenceStore, Keeper, LogsRead};
 use rutent_core_authz::engine::Engine;
 use rutent_core_authz::roles::Permission;
 use rutent_core_authz::session::LONGEST_SESSION_SECS;
 use rutent_core_orch::intake::{
-    Actors, DESTINATION_INPUT, Desk, Destinations, HeldSession, Intake, IntakeError, OrderRecord,
-    OrderRequest, Quote, Resolution, SessionRegister, Status as IntakeStatus, StatusReads, Told,
+    Actors, Desk, Destinations, HeldSession, Intake, IntakeError, OrderRecord, OrderRequest, Quote,
+    Resolution, SessionRegister, Status as IntakeStatus, StatusReads, Told,
 };
 use rutent_core_orch::rounds::{Fresh, Issued, OperatorKey, Parts as Rounds, Providers};
-use rutent_core_orch::segments::{
-    Live, Modules, NoProxy, Parts as SegmentParts, Ran, Segments, SegmentsError, Status,
-    StatusError,
-};
+use rutent_core_orch::segments::{Modules, NoProxy, Segments, SegmentsError, Status, StatusError};
 use rutent_core_orch::snapshot::{Exposures, Price, Releases};
 use rutent_core_orch::stuck::{
-    Deciding, Moved, Mover, Moving, NoRouteLeft, Parts as StuckParts, Ports, ResolveError, Stuck,
-    StuckError,
+    Mover, NoRouteLeft, Parts as StuckParts, ResolveError, Stuck, StuckError,
 };
 use rutent_prov::catalogue::Catalogue;
 use rutent_prov::module::lifecycle::Staging;
@@ -231,15 +227,6 @@ pub enum AssemblyError {
     Host(rutent_contracts::state_machine::host::HostError),
 }
 
-/// What an order's start takes from its intake or its filing: its origin reserve, the session its withdrawal goes in,
-/// the inputs its tuples need, and what its route delivers before the operator's fee.
-struct Begun {
-    origin: Id,
-    session: Option<Id>,
-    inputs: BTreeMap<String, String>,
-    delivers: rutent_contracts::router_api::Amount,
-}
-
 /// The operator's key, watched: every decision record Core signs is kept by its id, for the segments to run the
 /// route it chose (`Live::record`). Intake hands no record back; the log names it by digest, which Core holds the
 /// kept record to before it runs the route.
@@ -306,19 +293,47 @@ struct Asking<'a> {
 
 impl Providers for Asking<'_> {
     fn ask(&mut self, provider: &Id, question: &[u8]) -> Option<Vec<u8>> {
-        let operation: Statement<Operation> = serde_json::from_slice(question).ok()?;
-        self.fleet.platform.world.set_clock(self.clock.instant());
-        // A verifier's module answers like any other (`T-024-18`), and the judgement its result carries inside, its own
-        // signed statement, is what the rounds read. A refused judgement stays the result.
-        match self.fleet.platform.handle(provider.as_str(), &operation) {
-            Handled::Answered(result) => match result.statement {
-                ResultBody::Judgement(JudgementResult {
-                    outcome: JudgementOutcome::Judged(judged),
-                }) => serde_json::to_vec(&*judged.judgement).ok(),
-                _ => serde_json::to_vec(&*result).ok(),
-            },
-            Handled::Refused(_) => None,
-        }
+        ask_platform(&mut self.fleet.platform, self.clock, provider, question)
+    }
+}
+
+/// The platform as Core's reversals reach it: the modules a decided reversal is carried out through, and the providers'
+/// modules a confirmation question is handed to, both the platform's.
+impl rutent_core_orch::schedule::ReversalPlatform for Running<'_> {
+    fn modules(&mut self) -> &mut dyn Modules {
+        self
+    }
+
+    fn providers(&mut self) -> &mut dyn Providers {
+        self
+    }
+}
+
+impl Providers for Running<'_> {
+    fn ask(&mut self, provider: &Id, question: &[u8]) -> Option<Vec<u8>> {
+        ask_platform(self.platform, self.clock, provider, question)
+    }
+}
+
+/// Hands `question` to `provider`'s module on the platform, at Core's clock, and answers what came back.
+fn ask_platform(
+    platform: &mut Platform<SimWorld>,
+    clock: &SharedClock,
+    provider: &Id,
+    question: &[u8],
+) -> Option<Vec<u8>> {
+    let operation: Statement<Operation> = serde_json::from_slice(question).ok()?;
+    platform.world.set_clock(clock.instant());
+    // A verifier's module answers like any other (`T-024-18`), and the judgement its result carries inside, its own
+    // signed statement, is what the rounds read. A refused judgement stays the result.
+    match platform.handle(provider.as_str(), &operation) {
+        Handled::Answered(result) => match result.statement {
+            ResultBody::Judgement(JudgementResult {
+                outcome: JudgementOutcome::Judged(judged),
+            }) => serde_json::to_vec(&*judged.judgement).ok(),
+            _ => serde_json::to_vec(&*result).ok(),
+        },
+        Handled::Refused(_) => None,
     }
 }
 
@@ -328,6 +343,10 @@ pub struct Faults {
     /// Right before the platform carries out this effect, the process crashes: the effect's record is in the log,
     /// and answered, and nothing was carried out (`INV-7`).
     pub crash_before_effect: Option<usize>,
+    /// Right after the platform carried out this effect, its provider having answered, and before Core took the answer,
+    /// the process crashes: the effect's record is in the log, the platform's record holds the operation carried out,
+    /// and the answer went with the Core that stopped (`T-020-61`, item 9).
+    pub crash_after_effect: Option<usize>,
     /// Right before the platform carries out this effect, the state machine moves to [`Core::swap_to`]: halted,
     /// exported and imported there, mid-order (`REQ-OPS-3`).
     pub swap_before_effect: Option<usize>,
@@ -416,6 +435,9 @@ impl Modules for Running<'_> {
         self.platform.world.set_clock(self.clock.instant());
         let first = Modules::carry_out(self.platform, effect, provider, operation);
         self.readings.refresh(&self.platform.world);
+        if self.faults.crash_after_effect == Some(n) {
+            panic!("{}", durable::CRASHED);
+        }
         if self.faults.operation_takes > 0 {
             self.clock.advance(self.faults.operation_takes);
         }
@@ -504,6 +526,16 @@ impl Modules for Running<'_> {
         answered
     }
 
+    fn recorded_answer(
+        &mut self,
+        effect: &rutent_contracts::core_internal::Effect,
+        provider: &Id,
+        transaction: &Id,
+    ) -> rutent_core_orch::segments::Answered {
+        // The production platform reads it from its record (`T-020-61`, item 10).
+        Modules::recorded_answer(self.platform, effect, provider, transaction)
+    }
+
     fn take_events(&mut self) -> rutent_prov::module::types::Events {
         Modules::take_events(self.platform)
     }
@@ -565,6 +597,10 @@ pub(crate) struct LogNow<'a>(pub(crate) &'a RefCell<CoreLog>);
 impl rutent_core_orch::quote::Recorded for LogNow<'_> {
     fn entry(&self, receipt: &Receipt) -> Option<Entry> {
         rutent_core_orch::quote::Recorded::entry(&charges::Log(self.0.borrow().entries()), receipt)
+    }
+
+    fn history(&self) -> Vec<(Receipt, Entry)> {
+        self.0.borrow().entries().to_vec()
     }
 }
 
@@ -749,7 +785,6 @@ pub struct Core {
     prices: Vec<Price>,
     quotes: BTreeMap<String, Quote>,
     requests: BTreeMap<String, OrderRequest>,
-    started: BTreeMap<String, Started>,
     /// The state machine, fed from the log.
     pub feed: Feed,
     /// The deployment's policy, which a scenario may set to refuse.
@@ -767,6 +802,9 @@ pub struct Core {
     checkpoints: Option<checking::ScheduledCheckpointer>,
     /// What the checkpointer published, as the deployment's publication channel received it, in order.
     published: Vec<Vec<u8>>,
+    /// The recalculation each order's last tick tried, as the round told it, until a reader takes it
+    /// ([`Core::take_recalculation`]): the operator's view of what Core's run did, kept as the round answered it.
+    recalculations_told: BTreeMap<String, Result<rutent_core_orch::recalc::Recalculation, String>>,
 }
 
 /// Why a step of Core's failed.
@@ -1108,6 +1146,11 @@ impl Core {
             r.permit(&kit::core(), Permission::ReadHoldingBalance);
             // And carries a segment's own operation out again where policy decides it (`REQ-ORD-1`, `T-020-63`).
             r.permit(&kit::core(), Permission::RepeatOperation);
+            // The operator ends an order, and disputes a showing that names its fault, where policy decides it (`T-020-61`).
+            for login in [kit::operator(), kit::operator_login()] {
+                r.permit(&login, Permission::EndOrder);
+                r.permit(&login, Permission::DisputeFault);
+            }
             for change in [
                 CatalogueChange::Grant,
                 CatalogueChange::Promote,
@@ -1280,7 +1323,6 @@ impl Core {
             prices,
             quotes: BTreeMap::new(),
             requests: BTreeMap::new(),
-            started: BTreeMap::new(),
             feed,
             deployment,
             faults: Faults::default(),
@@ -1288,6 +1330,7 @@ impl Core {
             schedule: rutent_core_orch::schedule::Schedule::new(),
             checkpoints: None,
             published: Vec::new(),
+            recalculations_told: BTreeMap::new(),
         };
         // Core's checkpointer, over its log and the disk's checkpoint store, which a reopened Core reads back.
         core.checkpoints = checking::ScheduledCheckpointer::new(
@@ -1312,59 +1355,14 @@ impl Core {
             if confirm.is_some() {
                 core.reopen_holdings();
             }
-            // The providers were listed before Core stopped: its catalogue is rebuilt from what its log holds, the host's
-            // holding accounts listed again first.
-            core.relist_holdings();
-            core.relist_publisher_accounts();
-            core.relist()?;
+            // Core reopens itself on its log, every part rebuilt in Core's own order (`schedule::reopen`, the review of
+            // #355's round 2, M3); the assembly hands it only the deployment's pieces and holds what it answers.
+            core.reopen_core()?;
             // A platform restarted beside Core holds its releases until the operator confirms them, which the operator's
-            // login does through Core's decided path before anything is asked of a provider (`T-024-21`).
+            // login does through Core's decided path before anything is asked of a provider, and the landings owed are
+            // asked of the holding accounts again once their wallets run (`T-024-21`).
             if confirm == Some(true) {
                 core.confirm_releases()?;
-            }
-            // Core's own state, rebuilt from the log (`T-020-46`), the proven starts of `T-020-26` among it.
-            core.rebuild_from_log();
-            // The schedule's own state: when each segment was last asked its status, so the first tick after a restart
-            // keeps each provider's cadence (`T-020-63`).
-            core.schedule =
-                rutent_core_orch::schedule::Schedule::recorded(core.log.borrow().entries());
-            // The operator's settings, rebuilt from the log, a setting's missing result completed, and put back where they
-            // are read (`T-020-49`).
-            let (settings, completed) = rutent_core_orch::settings::Settings::reopen(
-                &mut core.general,
-                &core.clock,
-                &kit::core(),
-                &mut rutent_core_orch::settings::Targets {
-                    catalogue: Some(&mut core.catalogue),
-                    ..rutent_core_orch::settings::Targets::default()
-                },
-            );
-            completed.map_err(|e| {
-                AssemblyError::Listing(format!("a setting's result wasn't completed: {e:?}"))
-            })?;
-            core.settings = settings;
-            core.bounds = core.settings.bounds(&core.base_bounds);
-            core.settings
-                .apply(&mut rutent_core_orch::settings::Targets {
-                    catalogue: Some(&mut core.catalogue),
-                    cadences: Some(core.schedule.cadences_mut()),
-                    arrivals: Some(&mut core.arrivals),
-                    platform: Some(&mut core.fleet.platform),
-                    segments: None,
-                });
-            // The operator's `publishers_records` cadence, rebuilt from the log's settings, is also how often the segments ask
-            // again for a node's record Core didn't take (`T-020-67`).
-            core.sync_record_retry();
-            // A restrictive lifecycle effect whose result the log never took is completed from what the platform holds
-            // (`T-020-65`), as a setting's is.
-            {
-                let releases = core.fleet.releases();
-                Segments::reopen_lifecycle(&mut core.general, &releases, &core.clock, &kit::core())
-                    .map_err(|e| {
-                        AssemblyError::Listing(format!(
-                            "a lifecycle effect's result wasn't completed: {e:?}"
-                        ))
-                    })?;
             }
             return Ok(core);
         }
@@ -1661,6 +1659,7 @@ impl Core {
                 arrivals: Some(&mut self.arrivals),
                 platform: Some(&mut self.fleet.platform),
                 segments: Some(&self.segments),
+                reversals: Some(&mut self.life.reversals),
             },
             &rutent_core_orch::settings::SettingAsked {
                 setting,
@@ -1891,21 +1890,18 @@ impl Core {
         self.deployed.registers.borrow_mut()
     }
 
-    /// Grants `installed`, tuple by tuple: each decided by the operator's login as a catalogue change naming the
-    /// tuple and the advertising key, and its effect recorded; then that tuple granted in Core's catalogue, at its
-    /// effect's time, by the decider, under the key; then the effect's `done` result. So nothing is granted before its
-    /// record.
-    ///
-    /// The catalogue's grant equals the log's on what the log's grant holds: the tuple, the advertising key, the
-    /// decider and the effect's time. Its party, expiry, categories and reversal capacity are the deployment's
-    /// settings ([`kit::grant_terms`]), which core-internal's `change_catalogue` doesn't carry.
+    /// Grants `installed`, tuple by tuple, through Core's command ([`rutent_core_orch::settings::grant::grant`],
+    /// `T-020-61`): each decided by the operator's login as a catalogue change naming the tuple (or a verifier's class)
+    /// and the advertising key, its effect recorded, then granted in Core's catalogue at its effect's time, by the
+    /// decider, under the key, then its result. So nothing is granted before its record. The assembly hands Core the
+    /// deployment's terms ([`kit::grant_terms`]: the party, expiry, categories and reversal capacity, which
+    /// core-internal's `change_catalogue` doesn't carry) and the log's name of each tuple ([`kit::tuple_id`]).
     ///
     /// # Errors
     ///
-    /// If policy doesn't permit a tuple's grant, or the log takes no step of it.
+    /// If policy doesn't permit a tuple's grant, the catalogue refuses it, or the log takes no step of it.
     pub fn grant(&mut self, installed: &Installed) -> Result<(), AssemblyError> {
-        let listing =
-            |step: &str, e: AppendFailure| AssemblyError::Listing(format!("{step}: {e:?}"));
+        use rutent_core_orch::settings::grant::{GrantAsked, Granted};
         let statement = installed.advertisement.statement();
         let provider = kit::id(&statement.statement.provider);
         let key = statement.signature.key.clone();
@@ -1920,68 +1916,36 @@ impl Core {
             .filter(|_| statement.statement.offers.reserve.is_none())
             .map(|v| v.classes.clone())
             .unwrap_or_default();
-        let tuples: Vec<(
-            Option<Id>,
-            Option<Id>,
-            Option<rutent_prov::catalogue::TupleKey>,
-        )> = rutent_prov::catalogue::tuples_of(&statement.statement)
+        let granting: Vec<Granted> = rutent_prov::catalogue::tuples_of(&statement.statement)
             .into_iter()
-            .map(|t| (Some(kit::tuple_id(provider.as_str(), &t)), None, Some(t)))
+            .map(|tuple| Granted::Tuple {
+                id: kit::tuple_id(provider.as_str(), &tuple),
+                tuple,
+            })
             .chain(
                 verifier_classes
                     .iter()
-                    .map(|class| (None, Some(kit::id(class)), None)),
+                    .map(|class| Granted::Class(kit::id(class))),
             )
             .collect();
-        for (tuple_id, class, tuple) in tuples {
-            let action = Action::ChangeCatalogue {
-                change: CatalogueChange::Grant,
-                provider: provider.clone(),
-                version: None,
-                tuple: tuple_id,
-                class,
-                advertising_keys: vec![key.clone()],
-                statement_key: None,
-                setting: None,
-                versions: Vec::new(),
-                public_network: None,
-            };
-            let request = DecisionRequest {
-                request: self.fresh.id(),
-                caller: decider.clone(),
-                action: action.clone(),
-                at: self.clock.timestamp(),
-            };
-            let decision = rutent_contracts::core_internal::calls::Decisions::decide(
-                &mut self.policy,
-                &request,
-            )
-            .map_err(|e| listing("the grant's decision", e))?;
-            let permit = decision.permit().ok_or_else(|| {
-                AssemblyError::Listing(format!(
-                    "the grant wasn't permitted: {:?}",
-                    decision.outcome
-                ))
-            })?;
-            let effect = self
-                .verified(
-                    What::Effect {
-                        action,
-                        decision: permit,
-                    },
-                    Outcome::ToTakeEffect {},
-                )
-                .map_err(|e| listing("the grant's effect", e))?;
-            // Carried out on the terms the log holds, under an id of its own, the effect's place in the log, so a
-            // tuple granted again is granted anew.
-            let mut terms =
-                kit::grant_terms(installed, decider.acts.as_str(), self.time_of(&effect));
-            terms.id = format!("grant-{}-{}", provider.as_str(), u64::from(effect.index));
-            terms.tuples = tuple.into_iter().collect();
-            kit::grant(&mut self.catalogue, installed, terms);
-            self.verified(What::Result { effect }, Outcome::Done {})
-                .map_err(|e| listing("the grant's result", e))?;
-        }
+        let terms = kit::grant_terms(installed, decider.acts.as_str(), self.clock.instant());
+        let mut decisions = self.policy.clone();
+        rutent_core_orch::settings::grant::grant(
+            &mut self.general,
+            &mut decisions,
+            &mut self.catalogue,
+            &self.clock,
+            &mut self.fresh,
+            &GrantAsked {
+                provider: &provider,
+                advertising_key: &key,
+                granting: &granting,
+                terms: &terms,
+                caller: &decider,
+                core: &kit::core(),
+            },
+        )
+        .map_err(|e| AssemblyError::Listing(format!("the grant: {e:?}")))?;
         self.record_release(installed);
         Ok(())
     }
@@ -2145,225 +2109,6 @@ impl Core {
         }
     }
 
-    /// Grants a verifier its category in the catalogue where the log's grants are replayed (`Core::relist`), which
-    /// finds no tuple behind a class grant. Nothing for a provider that offers a tuple.
-    fn grant_verifier(&mut self, installed: &Installed) {
-        self.record_release(installed);
-        let ad = &installed.advertisement.statement().statement;
-        if ad.offers.verifier.is_some() && rutent_prov::catalogue::tuples_of(ad).is_empty() {
-            let terms = kit::grant_terms(
-                installed,
-                kit::operator_login().acts.as_str(),
-                rutent_prov::catalogue::Instant(1_000),
-            );
-            kit::grant(&mut self.catalogue, installed, terms);
-        }
-    }
-
-    /// Core's catalogue rebuilt from its log, as after a restart: each tuple granted by a `done` grant, at its effect's
-    /// time and under its id, as [`Core::grant`] granted it, and each advertisement the log holds joined at the time
-    /// the log received it, as [`Core::advertise`] joined it, once the bytes the evidence store kept under the log's
-    /// commitment are the installed provider's advertisement. A `done` catalogue change of any other kind (a revoke, a
-    /// release accepted, revoked or promoted) refuses the reopening: it isn't replayed, and a catalogue rebuilt
-    /// without it would grant what the log revoked.
-    ///
-    /// # Errors
-    ///
-    /// On a catalogue change it doesn't replay, or an advertisement whose kept bytes aren't the installed one's.
-    fn relist(&mut self) -> Result<(), AssemblyError> {
-        let entries: Vec<(Receipt, Entry)> = self.log.borrow().entries().to_vec();
-        let kept = rutent_core_audit::receipts::store::Shelf::load(&mut self.disk.shelf())
-            .map_err(|e| AssemblyError::Listing(format!("the evidence store's shelf: {e:?}")))?
-            .kept;
-        let done: Vec<&Receipt> = entries
-            .iter()
-            .filter_map(|(_, e)| match e {
-                Entry::Verified(v) if v.outcome == (Outcome::Done {}) => match &v.what {
-                    What::Result { effect } => Some(effect),
-                    _ => None,
-                },
-                _ => None,
-            })
-            .collect();
-        let decider = kit::operator_login();
-        // Each installed provider the log holds an advertisement of, and whether the log committed to the installed
-        // advertisement's own bytes in one of its stated entries (`REQ-AUD-2`).
-        let mut committed: BTreeMap<String, bool> = BTreeMap::new();
-        for (place, (receipt, entry)) in entries.iter().enumerate() {
-            let Entry::Verified(v) = entry else {
-                if let Entry::Stated(s) = entry
-                    && s.what.statement.as_str() == ADVERTISEMENT_SHAPE
-                    && let Some(one) = self.installed.iter().find(|one| {
-                        one.advertisement.statement().maker == s.attribution.maker().acts.as_str()
-                    })
-                {
-                    let these = kept
-                        .iter()
-                        .find(|k| k.kept.commitment == s.commitment)
-                        .and_then(|k| rutent_core_audit::receipts::store::bearing_out(&k.kept));
-                    *committed
-                        .entry(s.attribution.maker().acts.as_str().to_owned())
-                        .or_default() |= these.as_deref() == Some(one.advertisement.bytes());
-                    // The advertisement the log's key register accepted last for the provider is what Core lists again,
-                    // as the register took it in (`T-024-21`): a re-advertisement it accepted after the installed one
-                    // is listed as such, and a stated entry it refused, or one it accepted and then saw replaced, is
-                    // not listed at all. Only the entry that brought the accepted one is replayed.
-                    let maker = s.attribution.maker().acts.as_str().to_owned();
-                    let Some(accepted) = self.log.borrow().accepted_advertisement(&maker) else {
-                        continue;
-                    };
-                    if accepted.commitment != s.commitment {
-                        continue;
-                    }
-                    let Some(bytes) = kept
-                        .iter()
-                        .find(|k| k.kept.commitment == s.commitment)
-                        .and_then(|k| rutent_core_audit::receipts::store::bearing_out(&k.kept))
-                    else {
-                        return Err(AssemblyError::Listing(format!(
-                            "the advertisement the log's register accepted for {maker} isn't kept: its bytes can't be read"
-                        )));
-                    };
-                    let mut one = one.clone();
-                    one.advertisement = rutent_conformance::role::Received::from_bytes(bytes).map_err(|e| {
-                        AssemblyError::Listing(format!(
-                            "the advertisement the log's register accepted for {maker} doesn't read: {e}"
-                        ))
-                    })?;
-                    let at = rutent_core_authz::session::instant(&s.received_at);
-                    self.grant_verifier(&one);
-                    // The advertisement is judged by the cutovers the log held when it was received, not by those it
-                    // holds now: a cutover moved earlier since doesn't void what was taken before (`REQ-PRT-4`,
-                    // `T-020-54`, #143's blocker b).
-                    let held = rutent_core_orch::settings::Settings::reopened(&entries[..place]);
-                    held.apply_listings(&mut rutent_core_orch::settings::Targets {
-                        catalogue: Some(&mut self.catalogue),
-                        ..rutent_core_orch::settings::Targets::default()
-                    });
-                    held.apply_cutovers(&mut rutent_core_orch::settings::Targets {
-                        catalogue: Some(&mut self.catalogue),
-                        ..rutent_core_orch::settings::Targets::default()
-                    });
-                    kit::join(&mut self.catalogue, &one, at);
-                }
-                continue;
-            };
-            let What::Effect {
-                action:
-                    Action::ChangeCatalogue {
-                        change,
-                        provider,
-                        tuple,
-                        class,
-                        ..
-                    },
-                ..
-            } = &v.what
-            else {
-                continue;
-            };
-            if !done.contains(&receipt) {
-                continue;
-            }
-            // An operator's setting is Core's to rebuild, from the log, apart (`Settings::reopened`, `T-020-49`).
-            if *change == CatalogueChange::SetSetting {
-                continue;
-            }
-            // The operator's confirmation of a provider's releases held after a platform's restart is the platform's to
-            // hold, in its own record (`T-013-11`): Core's catalogue lists nothing for it (`T-024-21`).
-            if *change == CatalogueChange::ConfirmReleases {
-                continue;
-            }
-            // A public network listed with its reader service (`T-024-25`): until `T-020-60` puts Core on its reader
-            // and the catalogue's public list on the listing, the log holds it and Core's catalogue takes nothing from
-            // it.
-            if change.is_about_a_public_network() {
-                continue;
-            }
-            // A verifier's class grant has no tuple to rebuild: the category grant is made where its advertisement is
-            // replayed (`grant_verifier`).
-            if *change == CatalogueChange::Grant && tuple.is_none() && class.is_some() {
-                continue;
-            }
-            // A holding account's release the operator accepted: its wallet is one of the host's accounts, which go on
-            // beside the platform and are listed again first (`Core::relist_holdings`, `T-020-46`).
-            if *change == CatalogueChange::AcceptModule
-                && self
-                    .catalogue
-                    .publishers()
-                    .published_by_operator(provider.as_str())
-            {
-                continue;
-            }
-            let (CatalogueChange::Grant, Some(tuple_id)) = (change, tuple) else {
-                return Err(AssemblyError::Listing(format!(
-                    "the log holds a {change:?} of {} that Core::relist doesn't replay",
-                    provider.as_str()
-                )));
-            };
-            let Some(one) = self
-                .installed
-                .iter()
-                .find(|one| one.advertisement.statement().statement.provider == provider.as_str())
-                .cloned()
-            else {
-                continue;
-            };
-            let statement = one.advertisement.statement();
-            let Some(tuple) = rutent_prov::catalogue::tuples_of(&statement.statement)
-                .into_iter()
-                .find(|t| &kit::tuple_id(provider.as_str(), t) == tuple_id)
-            else {
-                continue;
-            };
-            let mut terms = kit::grant_terms(
-                &one,
-                decider.acts.as_str(),
-                rutent_core_authz::session::instant(&v.when.at),
-            );
-            terms.id = format!("grant-{}-{}", provider.as_str(), u64::from(receipt.index));
-            terms.tuples = vec![tuple];
-            kit::grant(&mut self.catalogue, &one, terms);
-        }
-        // An installed advertisement the log committed to in none of its stated entries is no advertisement this Core
-        // ever recorded: tampered with, or never received. The reopening is refused (`REQ-AUD-2`), whatever the register
-        // accepted since; a re-advertisement the register accepted after the installed one leaves the installed one
-        // committed to.
-        if let Some((maker, _)) = committed.iter().find(|(_, committed)| !**committed) {
-            return Err(AssemblyError::Listing(format!(
-                "the advertisement installed for {maker} isn't one the log committed to: no commitment's bytes are its"
-            )));
-        }
-        // Every cutover the log holds now stands in the catalogue and the platform, before the log's results are judged
-        // again (`REQ-PRT-4`, `T-020-54`).
-        rutent_core_orch::settings::Settings::reopened(&entries).apply_cutovers(
-            &mut rutent_core_orch::settings::Targets {
-                catalogue: Some(&mut self.catalogue),
-                platform: Some(&mut self.fleet.platform),
-                ..rutent_core_orch::settings::Targets::default()
-            },
-        );
-        Ok(())
-    }
-
-    /// When the log received the stated entry at `receipt`, on the catalogue's clock.
-    fn time_of_stated(&self, receipt: &Receipt) -> rutent_prov::catalogue::Instant {
-        let index = usize::try_from(u64::from(receipt.index)).unwrap_or(usize::MAX);
-        match self.log.borrow().entries().get(index) {
-            Some((_, Entry::Stated(s))) => rutent_core_authz::session::instant(&s.received_at),
-            _ => self.clock.instant(),
-        }
-    }
-
-    /// The time of the verified entry at `receipt`, on the catalogue's clock.
-    fn time_of(&self, receipt: &Receipt) -> rutent_prov::catalogue::Instant {
-        let index = usize::try_from(u64::from(receipt.index)).unwrap_or(usize::MAX);
-        match self.log.borrow().entries().get(index) {
-            Some((_, Entry::Verified(v))) => rutent_core_authz::session::instant(&v.when.at),
-            _ => self.clock.instant(),
-        }
-    }
-
     /// Records `installed`'s advertisement in the log, received now: its bytes kept, and its stated entry
     /// appended, claimed by its maker for its publisher.
     ///
@@ -2371,37 +2116,70 @@ impl Core {
     ///
     /// If the evidence store doesn't keep its bytes, or the log doesn't take its entry.
     pub fn advertise(&mut self, installed: &Installed) -> Result<(), AssemblyError> {
-        let listing =
-            |step: &str, e: AppendFailure| AssemblyError::Listing(format!("{step}: {e:?}"));
-        let statement = installed.advertisement.statement();
-        let publisher = &statement.statement.publisher;
-        let bytes = installed.advertisement.bytes();
-        let kept = rutent_contracts::core_internal::calls::Evidence::keep(&mut self.keeper, bytes)
-            .map_err(|e| listing("the advertisement's bytes", e))?;
-        let maker = &statement.maker;
-        let entry: GeneralEntry = serde_json::from_value(json!({
-            "kind": "stated",
-            "attribution": {"signature": "unverified", "claimed_by": {
-                "party": publisher, "acts": maker, "role": "provider", "kind": "component"
-            }},
-            "what": {"statement": ADVERTISEMENT_SHAPE},
-            "when": {"at": statement.made_at, "source": "party_stated"},
-            "received_at": self.clock.timestamp(),
-            "outcome": {"status": "stated"},
-            "signed_with": {"scheme": "ed25519", "key": statement.signature.key},
-            "commitment": kept.commitment,
-        }))
-        .map_err(|e| AssemblyError::Listing(format!("the advertisement's entry: {e}")))?;
-        let receipt = self
-            .general
-            .append(&entry)
-            .map_err(|e| listing("the advertisement", e))?;
-        // Into Core's catalogue once the log holds it, at the time the log received it; the deployment's defaults the join
-        // sets (a floor on each tuple, the public nodes listed) give way to the operator's settings (L2 of #337's review).
-        let at = self.time_of_stated(&receipt);
-        kit::join(&mut self.catalogue, installed, at);
+        use rutent_core_orch::settings::listing::Advertised;
+        match self.receive_advertisement(installed.advertisement.bytes(), &installed.spec)? {
+            Advertised::Listed(_) => Ok(()),
+            Advertised::NotAccepted(_) => Err(AssemblyError::Listing(format!(
+                "the log's key register didn't accept {}'s advertisement",
+                installed.advertisement.statement().maker
+            ))),
+        }
+    }
+
+    /// The providers the deployment installed, as installed.
+    pub fn installed(&self) -> &[Installed] {
+        &self.installed
+    }
+
+    /// Hands `bytes`, an advertisement a provider sent, to Core's entry point (`settings::listing::advertise`, the review
+    /// of #355's round 2, M2): kept, stated in the log, and listed in Core's catalogue only where the log's key register
+    /// accepted that very statement, as a reopened Core lists it. The deployment hands in only what the log doesn't
+    /// hold: what it sets on a joined advertisement of the provider installed as `spec`.
+    ///
+    /// # Errors
+    ///
+    /// As Core's entry point refuses it.
+    pub fn receive_advertisement(
+        &mut self,
+        bytes: &[u8],
+        spec: &rutent_conformance::sim::Spec,
+    ) -> Result<rutent_core_orch::settings::listing::Advertised, AssemblyError> {
+        use rutent_core_orch::settings::listing::{Advertising, advertise};
+        let log = Rc::clone(&self.log);
+        let history = move || log.borrow().entries().to_vec();
+        let register = Rc::clone(&self.log);
+        let accepted = move |maker: &str| {
+            register
+                .borrow()
+                .accepted_advertisement(maker)
+                .map(|a| a.commitment)
+        };
+        let mut joined = |catalogue: &mut Catalogue, bytes: &[u8]| {
+            if let Ok(ad) = serde_json::from_slice::<
+                Statement<rutent_contracts::provider_role::Advertisement>,
+            >(bytes)
+            {
+                kit::joined(catalogue, &ad.statement, spec);
+            }
+        };
+        let received_at = self.clock.timestamp();
+        let advertised = advertise(
+            bytes,
+            &mut self.catalogue,
+            &mut Advertising {
+                log: &mut self.general,
+                history: &history,
+                evidence: &mut self.keeper,
+                received_at,
+                accepted: &accepted,
+                joined: &mut joined,
+            },
+        )
+        .map_err(|e| AssemblyError::Listing(format!("the advertisement: {e:?}")))?;
+        // The deployment's defaults the join sets (a floor on each tuple, the public nodes listed) give way to the
+        // operator's settings (L2 of #337's review).
         self.reapply_catalogue_settings();
-        Ok(())
+        Ok(advertised)
     }
 
     /// Puts the operator's catalogue settings back after the deployment's own listing touched the catalogue: each
@@ -2703,204 +2481,13 @@ impl Core {
         digest: &rutent_contracts::module_interface::Digest,
         hold: Option<&Id>,
     ) -> Result<Told, StepError> {
+        // Intake's accept path builds and holds what the order runs on, once it starts (`T-020-61`); Core's run takes it
+        // up on its next tick.
         let told = self
             .with_desk(|intake, desk| intake.accept_holding(desk, order, by, digest, None, hold))?;
-        if let Some(start) = self.intake.start(order).cloned()
-            && !self.started.contains_key(order.as_str())
-        {
-            self.follow(order, &start)?;
-        }
+        rutent_core_orch::schedule::resume(&mut schedule::Due(self));
         self.feed()?;
         Ok(told)
-    }
-
-    /// Follows `order` from its start as intake answered it.
-    fn follow(&mut self, order: &Id, start: &RecordedInput) -> Result<(), StepError> {
-        let Observed::RouteChosen {
-            decision_record,
-            parts,
-            ..
-        } = &start.observed
-        else {
-            return Err(StepError::NotNow("an order starts on its route chosen"));
-        };
-        let record = self.record_of(order, &kit::id(decision_record.as_str()))?;
-        let entries: Vec<What> = self.verified_whats();
-        let authorisation = entries
-            .iter()
-            .find_map(|w| match w {
-                What::Acceptance {
-                    order: o,
-                    authorisation,
-                    ..
-                } if o == order => Some(authorisation.clone()),
-                _ => None,
-            })
-            .ok_or(StepError::NotNow("an order starts on its acceptance"))?;
-        let logged: Vec<Entry> = self
-            .log
-            .borrow()
-            .entries()
-            .iter()
-            .map(|(_, e)| e.clone())
-            .collect();
-        let authorised = authorised(&logged, order, &authorisation).ok_or(StepError::NotNow(
-            "an acceptance rests on its authorisation",
-        ))?;
-        let quote = self
-            .quotes
-            .get(order.as_str())
-            .ok_or(StepError::NotNow("an order starts on the quote shown"))?;
-        let request = self
-            .requests
-            .get(order.as_str())
-            .ok_or(StepError::NotNow("an order starts on its request"))?;
-        let mut inputs = request.inputs.clone();
-        inputs.insert(
-            DESTINATION_INPUT.to_owned(),
-            request.destination.account.as_str().to_owned(),
-        );
-        let begun = Begun {
-            origin: request.origin_reserve.clone(),
-            session: Some(request.session.clone()),
-            inputs,
-            delivers: quote.delivers.clone(),
-        };
-        self.follow_on(
-            order,
-            start,
-            record,
-            parts.clone(),
-            authorisation,
-            authorised,
-            begun,
-        )
-    }
-
-    /// Follows `order` from `start`, its route `record` and `plan`, under `authorisation` as the log holds it
-    /// (`authorised`), with what its intake or its filing gave (`begun`).
-    #[allow(clippy::too_many_arguments)]
-    fn follow_on(
-        &mut self,
-        order: &Id,
-        start: &RecordedInput,
-        record: DecisionRecord,
-        plan: Vec<PartPlan>,
-        authorisation: Id,
-        authorised: rutent_contracts::core_internal::Authorisation,
-        begun: Begun,
-    ) -> Result<(), StepError> {
-        let started = Started {
-            record,
-            plan,
-            authorisation,
-            origin: begun.origin,
-            route: RouteEnd {
-                destination: authorised.destination.clone(),
-                to_asset: authorised.to_asset.clone(),
-                delivers: begun.delivers,
-            },
-            session: begun.session,
-            inputs: begun.inputs,
-            floor: authorised.floor.clone(),
-        };
-        if !self.segments.follow(&self.clock, start) {
-            return Err(StepError::NotNow("the state machine opens the order"));
-        }
-        self.started.insert(order.as_str().to_owned(), started);
-        Ok(())
-    }
-
-    /// The decision record `id` of `order`, as Core signed it, held to the digest the log names it by.
-    fn record_of(&self, order: &Id, id: &Id) -> Result<DecisionRecord, StepError> {
-        let recorded = self
-            .signer
-            .records
-            .get(id.as_str())
-            .ok_or(StepError::NotNow("Core signed the decision record"))?;
-        let named = self
-            .verified_whats()
-            .into_iter()
-            .find_map(|w| match w {
-                What::DecisionRecord {
-                    decision_record,
-                    order: o,
-                    record,
-                    ..
-                } if &decision_record == id && &o == order => Some(record),
-                _ => None,
-            })
-            .ok_or(StepError::NotNow("the log names the decision record"))?;
-        let canonical = rutent_contracts::provider_role::to_canonical(
-            &serde_json::from_slice::<serde_json::Value>(recorded)
-                .map_err(|_| StepError::NotNow("a decision record is JSON"))?,
-        )
-        .map_err(|_| StepError::NotNow("a decision record has a canonical form"))?;
-        if named.value.as_str() != rutent_prov::module::wire::sha256(&canonical) {
-            return Err(StepError::NotNow(
-                "the decision record is the one the log names by digest",
-            ));
-        }
-        // Read only from the bytes the digest holds.
-        record_in(recorded).ok_or(StepError::NotNow("a decision record in its envelope"))
-    }
-
-    /// The receipt of the log's `decision_record` entry for `record`, which holds the answers the route was
-    /// evaluated with (`T-020-31`).
-    pub(crate) fn record_entry_of(&self, record: &DecisionRecord) -> Option<Receipt> {
-        self.log
-            .borrow()
-            .entries()
-            .iter()
-            .find_map(|(receipt, e)| match e {
-                Entry::Verified(v) => match &v.what {
-                    What::DecisionRecord {
-                        decision_record, ..
-                    } if decision_record == record.record_id() => Some(receipt.clone()),
-                    _ => None,
-                },
-                Entry::Stated(_) => None,
-            })
-    }
-
-    /// Runs every part of `order`'s route, each segment after the one before settles.
-    pub fn run(&mut self, order: &Id) -> Result<Vec<Ran>, StepError> {
-        let started = self
-            .started
-            .get(order.as_str())
-            .cloned()
-            .ok_or(StepError::NotNow("the order started"))?;
-        let core = kit::core();
-        let operator = kit::operator();
-        let record_entry = self.record_entry_of(&started.record);
-        let mut ran = Vec::new();
-        for (at, part) in started.plan.iter().enumerate() {
-            let segments: Vec<Id> = part
-                .segments
-                .iter()
-                .map(|s| kit::id(s.segment_id.as_str()))
-                .collect();
-            let part_id = kit::id(part.part_id.as_str());
-            let live = Live {
-                order,
-                part: &part_id,
-                segments: &segments,
-                record: &started.record,
-                at,
-                authorisation: &started.authorisation,
-                origin_reserve: &started.origin,
-                route: &started.route,
-                caller: &core,
-                core: &core,
-                operator: &operator,
-                session: started.session.as_ref(),
-                inputs: &started.inputs,
-                floor: started.floor.as_ref(),
-                record_entry: record_entry.as_ref(),
-            };
-            ran.push(self.run_live(&live)?);
-        }
-        Ok(ran)
     }
 
     /// Declares the part of `order` stuck for want of a route (`REQ-ORD-28`): its recalculations at their bound, the
@@ -2912,8 +2499,8 @@ impl Core {
     /// If the order hasn't started, or the part can't be declared.
     pub fn leave_no_route(&mut self, order: &Id) -> Result<(), StepError> {
         let started = self
-            .started
-            .get(order.as_str())
+            .intake
+            .started(order)
             .cloned()
             .ok_or(StepError::NotNow("the order started"))?;
         let part = kit::id(
@@ -2957,149 +2544,6 @@ impl Core {
         Ok(())
     }
 
-    /// The decide step of `order`'s stuck part, asked of the engine through the assembly's policy
-    /// (`REQ-AUZ-4`).
-    ///
-    /// # Errors
-    ///
-    /// If Core refuses it before policy is asked, or the log can't take it.
-    pub fn decide_stuck(
-        &mut self,
-        order: &Id,
-        decider: &Actor,
-        resolution: &rutent_contracts::core_internal::Resolution,
-        evidence: &[rutent_contracts::module_interface::Digest],
-    ) -> Result<rutent_contracts::core_internal::Decision, StepError> {
-        let started = self
-            .started
-            .get(order.as_str())
-            .cloned()
-            .ok_or(StepError::NotNow("the order started"))?;
-        let part = kit::id(
-            started
-                .plan
-                .first()
-                .ok_or(StepError::NotNow("the order has a part"))?
-                .part_id
-                .as_str(),
-        );
-        let mut policy = self.policy.clone();
-        let mut parts = StuckParts {
-            clock: &self.clock,
-            log: &mut self.general,
-            fresh: &mut self.fresh,
-            issued: &self.issued,
-            segments: &mut self.segments,
-            exposures: &mut self.exposures,
-        };
-        let history: Vec<_> = self.log.borrow().entries().to_vec();
-        Ok(self.stuck.decide(
-            &mut parts,
-            &mut policy,
-            Deciding {
-                order,
-                part: &part,
-                decider,
-                resolution,
-                evidence,
-            },
-            &history,
-        )?)
-    }
-
-    /// The move step of `order`'s stuck part, carrying out `carries_out`: policy decides it through the assembly's
-    /// engine, and the production mover hands the platform the effect it records (`REQ-AUZ-4`, `T-020-16`).
-    ///
-    /// # Errors
-    ///
-    /// If Core refuses it before policy is asked, or the log can't take a step of it.
-    pub fn move_stuck(
-        &mut self,
-        order: &Id,
-        carries_out: &rutent_contracts::core_internal::Decided,
-        mover: &Actor,
-    ) -> Result<Moved, StepError> {
-        let core = kit::core();
-        let operator = kit::operator();
-        let mut policy = self.policy.clone();
-        let resting = self.segments.resting_totals();
-        let readings = self.readings.clone();
-        readings.refresh(&self.fleet.platform.world);
-        let running = RefCell::new(Running {
-            platform: &mut self.fleet.platform,
-            clock: &self.clock,
-            faults: &mut self.faults,
-            feed: &mut self.feed,
-            log: &self.log,
-            swap_to: self.swap_to.as_deref_mut(),
-            readings: &readings,
-        });
-        let mut parts = StuckParts {
-            clock: &self.clock,
-            log: &mut self.general,
-            fresh: &mut self.fresh,
-            issued: &self.issued,
-            segments: &mut self.segments,
-            exposures: &mut self.exposures,
-        };
-        let mut no_proxy = NoProxy;
-        // The hand-on's reach (`T-020-26`): the operator's holding accounts, run on the platform the move's other
-        // calls go to; the linked orders' accepted routes; and the log's own handle, read as it stands each time.
-        let mut modules = holding::Shared(&running);
-        let mut wallets = holding::HeldWallets {
-            holdings: &self.holdings,
-            running: &running,
-            bounds: &self.bounds,
-            resting,
-        };
-        let accepted = holding::Accepted(&self.linked);
-        let log = holding::LogHandle(Rc::clone(&self.log));
-        let mut delivering = self
-            .mover
-            .on(Ports {
-                modules: &mut modules,
-                uses: &mut no_proxy,
-                evidence: &mut self.keeper,
-                catalogue: &self.catalogue,
-                operator_key: &mut self.signer,
-                bounds: &self.bounds,
-                operator: &operator,
-            })
-            .handing_on(rutent_core_orch::stuck::HandingOn {
-                withdrawals: &mut wallets,
-                routes: &accepted,
-                log: &log,
-            });
-        let moved = self.stuck.carry_out(
-            &mut parts,
-            &mut policy,
-            &mut delivering,
-            Moving {
-                order,
-                carries_out,
-                mover,
-                core: &core,
-            },
-        );
-        self.feed()?;
-        Ok(moved?)
-    }
-
-    /// Declares that `order`'s input `input` rests on `judgement`, before the segment that carries it is handed over,
-    /// so Core writes the `reliance` entry before it sends (`T-020-23`).
-    ///
-    /// # Errors
-    ///
-    /// As [`Segments::rests_on`](rutent_core_orch::segments::Segments::rests_on).
-    pub fn rests_on(
-        &mut self,
-        order: &Id,
-        input: &str,
-        judgement: rutent_core_orch::reliance::Judgement,
-    ) -> Result<(), rutent_core_orch::reliance::Rests> {
-        self.segments.rests_on(order, input, judgement)
-    }
-
     /// The judgement the log holds of `verifier`: the receipt of its stated entry of the judgement's shape, which
     /// the routing doesn't hand back (`T-020-23`, gap 1), and its maker. The latest, if it made several.
     pub fn judgement_of(&self, verifier: &str) -> Option<rutent_core_orch::reliance::Judgement> {
@@ -3123,12 +2567,128 @@ impl Core {
             })
     }
 
+    /// Each order Core knows, by id: the state Core follows it in (`None` where it follows none yet) and the amount its
+    /// request asks (`T-020-61`, item 9's Low: what a restart of Core and its platform must lose none of, read before
+    /// the restart and again after it).
+    pub fn order_snapshot(&self) -> BTreeMap<String, (Option<String>, Option<String>)> {
+        self.intake
+            .orders()
+            .map(|order| {
+                let id = kit::id(order);
+                let state = self.segments.order(&id).map(|o| {
+                    serde_json::to_value(o.state)
+                        .ok()
+                        .and_then(|v| v.as_str().map(str::to_owned))
+                        .unwrap_or_else(|| format!("{:?}", o.state))
+                });
+                let amount = self
+                    .intake
+                    .request_of(&id)
+                    .map(|r| r.route.amount.amount().as_str().to_owned());
+                (order.to_owned(), (state, amount))
+            })
+            .collect()
+    }
+
+    /// What Core's parts hold, read through each part's own reads (the review of #355's round 2, M3): what a reopen
+    /// through Core's entry point must rebuild, compared before a restart and after it. The orders and their states,
+    /// whether each runs, its parts stuck, every followed segment's reversal (its asks, its confirmations, its carrier),
+    /// the operator's settings, each job's cadence, the segments' node-record retry, the advertisement the catalogue
+    /// lists for each installed provider and the value Core holds in flight.
+    pub fn parts_snapshot(&self) -> PartsSnapshot {
+        let mut reversals = BTreeMap::new();
+        let mut running = BTreeMap::new();
+        let mut stuck = BTreeMap::new();
+        for order in self.intake.orders() {
+            let id = kit::id(order);
+            running.insert(order.to_owned(), self.intake.started(&id).is_some());
+            let Some(followed) = self.segments.order(&id) else {
+                continue;
+            };
+            for part in &followed.parts {
+                let part_id = kit::id(part.part_id.as_str());
+                stuck.insert(
+                    (order.to_owned(), part_id.as_str().to_owned()),
+                    self.segments.stuck(&id, &part_id),
+                );
+                for segment in &part.segments {
+                    let segment_id = kit::id(segment.segment_id.as_str());
+                    let asks = self.life.reversals.asks_sent(&id, &segment_id);
+                    let confirmations = self.life.reversals.confirmations_asked(&id, &segment_id);
+                    if asks == 0 && confirmations == 0 {
+                        continue;
+                    }
+                    reversals.insert(
+                        (order.to_owned(), segment_id.as_str().to_owned()),
+                        (
+                            asks,
+                            confirmations,
+                            self.life
+                                .reversals
+                                .carrier(&id, &segment_id)
+                                .map(|c| format!("{c:?}")),
+                        ),
+                    );
+                }
+            }
+        }
+        PartsSnapshot {
+            orders: self.order_snapshot(),
+            running,
+            stuck,
+            reversals,
+            settings: self.settings.clone(),
+            cadences: rutent_core_orch::schedule::Job::ALL
+                .iter()
+                .map(|job| (job.name().to_owned(), self.schedule.cadences().of(*job)))
+                .collect(),
+            record_retry: self.segments.record_retry_seconds(),
+            advertisements: self
+                .installed
+                .iter()
+                .map(|one| {
+                    let maker = one.advertisement.statement().maker.clone();
+                    let listed = self
+                        .catalogue
+                        .accepted_advertisement(&maker)
+                        .map(|a| a.made_at.clone());
+                    (maker, listed)
+                })
+                .collect(),
+            in_flight: self
+                .exposures
+                .totals()
+                .into_iter()
+                .map(|(provider, asset, amount)| {
+                    (
+                        provider.as_str().to_owned(),
+                        asset.id.clone(),
+                        amount.as_str().to_owned(),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    /// A planted fault (the review of #355's round 2, M3): the reversals' state, as Core held it in memory, dropped, as a
+    /// deployment that composed its own reopening and left `Reversals::reopened` out would hold it. Core's own reopen
+    /// rebuilds it from the log.
+    pub fn forget_reversals(&mut self) {
+        self.life.reversals = rutent_core_orch::reversal::Reversals::new();
+    }
+
     /// The first part of a started `order`'s plan.
     pub fn first_part(&self, order: &Id) -> Option<Id> {
-        self.started
-            .get(order.as_str())
+        self.intake
+            .started(order)
             .and_then(|s| s.plan.first())
             .map(|p| kit::id(p.part_id.as_str()))
+    }
+
+    /// What `order` runs on, as Core holds it (`T-020-61`): built by intake on its acceptance, or by Core's run from the
+    /// log.
+    pub fn started(&self, order: &Id) -> Option<&Started> {
+        self.intake.started(order)
     }
 
     /// Whether Core holds the stuck part of `order` unresolved (`T-020-11`).
@@ -3139,58 +2699,6 @@ impl Core {
     /// The platform's count of operations handed to `provider`.
     pub fn operations_received(&self, provider: &str) -> usize {
         self.fleet.platform.operations_received(provider)
-    }
-
-    /// Runs one part as `live` says, each segment after the one before settles.
-    pub(crate) fn run_live(&mut self, live: &Live<'_>) -> Result<Ran, StepError> {
-        let readings = self.readings.clone();
-        readings.refresh(&self.fleet.platform.world);
-        let mut running = Running {
-            platform: &mut self.fleet.platform,
-            clock: &self.clock,
-            faults: &mut self.faults,
-            feed: &mut self.feed,
-            log: &self.log,
-            swap_to: self.swap_to.as_deref_mut(),
-            readings: &readings,
-        };
-        let mut grading = rutent_core_orch::closing::Evidenced {
-            catalogue: &self.catalogue,
-            records: &readings,
-            books: &readings,
-            closing: &mut self.closing,
-        };
-        let mut decisions = self.policy.clone();
-        let mut channel = rutent_core_orch::notice::Channel {
-            notices: &mut self.notices,
-            key: &mut self.notice_signer,
-            transport: &mut self.wire,
-        };
-        let mut parts = SegmentParts {
-            clock: &self.clock,
-            catalogue: &self.catalogue,
-            log: &mut self.general,
-            evidence: &mut self.keeper,
-            decisions: &mut decisions,
-            modules: &mut running,
-            uses: &mut NoProxy,
-            grading: &mut grading,
-            operator_key: &mut self.signer,
-            fresh: &mut self.fresh,
-            issued: &self.issued,
-            exposures: &mut self.exposures,
-            channel: &mut channel,
-        };
-        let result = self.segments.run_part(&mut parts, live);
-        // What settled at a public node a holding account holds is landed in it by Core's schedule, on its next tick
-        // (`T-020-33`, `T-020-48`): a run lands nothing itself.
-        // Core's closing is its schedule's (`REQ-QTE-7`, `T-020-48`): a run closes nothing.
-        self.feed()?;
-        // A segment the run left unknown is asked where it stands, once, at a provider that declares a status query
-        // (`REQ-ORD-1`, `T-020-47`).
-        self.ask_unknown_status(live);
-        self.feed()?;
-        Ok(result?)
     }
 
     /// `reader`'s read of `order`'s state and age, checked by policy.
@@ -3304,6 +2812,29 @@ pub fn inputs_of(log: &CoreLog) -> Vec<RecordedInput> {
         .collect()
 }
 
+/// What Core's parts hold, as [`Core::parts_snapshot`] reads them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartsSnapshot {
+    /// Each order, its state and amount ([`Core::order_snapshot`]).
+    pub orders: BTreeMap<String, (Option<String>, Option<String>)>,
+    /// Whether Core holds what each order runs on.
+    pub running: BTreeMap<String, bool>,
+    /// Whether each followed part is stuck.
+    pub stuck: BTreeMap<(String, String), bool>,
+    /// Each reversal Core took a step on: its asks sent, its confirmations asked, its carrier.
+    pub reversals: BTreeMap<(String, String), (usize, u32, Option<String>)>,
+    /// The operator's settings.
+    pub settings: rutent_core_orch::settings::Settings,
+    /// Each job's cadence, by name.
+    pub cadences: Vec<(String, u64)>,
+    /// The segments' node-record retry.
+    pub record_retry: u64,
+    /// The advertisement the catalogue lists for each installed provider, by its `made_at`.
+    pub advertisements: Vec<(String, Option<String>)>,
+    /// The value Core holds in flight: provider, asset and amount.
+    pub in_flight: Vec<(String, String, String)>,
+}
+
 /// The account the base order delivers to, held by the customer at the destination reserve.
 pub const DESTINATION_ACCOUNT: &str = "acct-2";
 
@@ -3323,15 +2854,19 @@ pub fn component(party: &str, acts: &str, role: Role) -> Actor {
 
 #[cfg(test)]
 mod tests {
+    use rutent_contracts::state_machine::Observed;
     use rutent_core_orch::intake::{Status, Told};
 
     use super::*;
     use crate::harness::{Given, Scenario, base_request};
     use crate::kit::AMOUNT;
 
-    // verifies: DEC-18
+    /// The record Core runs an order on is the one the log names by digest (the review's L6, `T-020-61`): where the
+    /// evidence store's read gives back other bytes for the chosen record than the log's `decision_record` names, the
+    /// acceptance is recorded, and Core builds nothing to run on and hands nothing over, however often it ticks.
+    // verifies: REQ-AUD-4, INV-4
     #[test]
-    fn route_whose_signed_record_differs_from_the_logs_digest_is_not_run() {
+    fn decision_record_that_does_not_match_the_logs_digest_starts_nothing() {
         let (mut core, _) =
             Scenario::new("Core alone", "AC-28", Given::one_reserve(Staged::AtOnce))
                 .core(1, &mut machine::Reference);
@@ -3348,22 +2883,77 @@ mod tests {
         else {
             panic!("no quote")
         };
-        // The record Core kept, changed after the log took its digest.
-        let kept = core
+        // The chosen record, as signed, changed after the log took its digest; the store's read answers it so.
+        let signed = core
             .signer
             .records
-            .get_mut(quote.decision_record.as_str())
+            .get(quote.decision_record.as_str())
+            .cloned()
             .expect("the chosen record is kept");
-        let mut value: serde_json::Value = serde_json::from_slice(kept).unwrap();
+        let mut value: serde_json::Value = serde_json::from_slice(&signed).unwrap();
         value["made_at"] = "2026-11-09T02:00:00Z".into();
-        *kept = serde_json::to_vec(&value).unwrap();
-        assert!(matches!(
-            core.accept(&customer, &order, &digest),
-            Err(StepError::NotNow(
-                "the decision record is the one the log names by digest"
-            ))
-        ));
-        assert!(!core.started.contains_key(order.as_str()));
+        let changed = serde_json::to_vec(&value).unwrap();
+        let commitments: Vec<rutent_contracts::module_interface::Digest> = core
+            .log()
+            .entries()
+            .iter()
+            .filter_map(|(_, e)| match e {
+                Entry::Stated(s) if s.what.statement.as_str() == DECISION_RECORD_SHAPE => {
+                    Some(s.commitment.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        core.read_kept_through(Some(Box::new(move |found| {
+            found.map(|kept| {
+                if commitments.contains(&kept.commitment) {
+                    rutent_contracts::core_internal::KeptStatement {
+                        bytes: rutent_contracts::core_internal::Encoded::new(
+                            rutent_conformance::signing::base64url(&changed),
+                        )
+                        .expect("bytes"),
+                        ..kept
+                    }
+                } else {
+                    kept
+                }
+            })
+        })));
+        core.accept(&customer, &order, &digest).unwrap();
+        assert!(
+            core.intake.start(&order).is_some(),
+            "the start is the log's"
+        );
+        let asked = core.operations_received(kit::RESERVE);
+        let moves = |core: &Core| {
+            core.verified_whats()
+                .iter()
+                .filter(|w| {
+                    matches!(
+                        w,
+                        What::Effect {
+                            action: Action::MoveValue { .. },
+                            ..
+                        }
+                    )
+                })
+                .count()
+        };
+        for _ in 0..3 {
+            core.tick();
+        }
+        assert!(core.started(&order).is_none(), "nothing to run on");
+        assert_eq!(
+            core.operations_received(kit::RESERVE),
+            asked,
+            "nothing handed over"
+        );
+        assert_eq!(moves(&core), 0, "no move");
+        // Read as kept again, the record is the log's: the next tick builds what the order runs on, and runs it.
+        core.read_kept_through(None);
+        core.tick();
+        assert!(core.started(&order).is_some());
+        assert!(moves(&core) > 0);
     }
 
     /// Core alone, put together, and the config it was put together under.
@@ -3371,6 +2961,57 @@ mod tests {
         let scenario = Scenario::new("Core alone", "AC-28", Given::one_reserve(Staged::AtOnce));
         let (core, _) = scenario.core(1, &mut machine::Reference);
         (core, scenario.config(1))
+    }
+
+    /// What Core's catalogue lists of each installed provider: each grant's id, tuples, decider, time and keys, and the
+    /// advertisement it accepted.
+    fn listed(core: &Core) -> Vec<String> {
+        core.installed
+            .iter()
+            .map(|one| {
+                let provider = one.advertisement.statement().statement.provider.clone();
+                let grants: Vec<String> = core
+                    .catalogue
+                    .grants_of_provider(&provider)
+                    .iter()
+                    .map(|g| {
+                        format!(
+                            "{} {:?} {} {:?} {:?}",
+                            g.id(),
+                            g.terms().tuples,
+                            g.terms().granted_by,
+                            g.terms().granted_at,
+                            g.advertising_keys()
+                        )
+                    })
+                    .collect();
+                format!(
+                    "{provider}: {grants:?}; {:?}",
+                    core.catalogue.accepted_advertisement(&provider)
+                )
+            })
+            .collect()
+    }
+
+    /// A Core opened again lists what it listed before, rebuilt by Core from its log alone (`T-020-61`, the
+    /// coordinator's ruling: `NFR-6`'s first reading, no durable store beside the log): the reopened Core starts from
+    /// an empty catalogue, the old one dropped with the Core that stopped, and Core's rebuild grants each provider its
+    /// tuples again at the same times under the same ids and keys, and joins the advertisement its log accepted.
+    // verifies: NFR-6, REQ-CAT-1
+    #[test]
+    fn reopened_core_rebuilds_its_catalogue_from_its_log_alone() {
+        let (core, config) = alone();
+        let before = listed(&core);
+        assert!(
+            before
+                .iter()
+                .all(|l| l.contains("grant-") && l.contains("Some(")),
+            "every provider granted and its advertisement joined: {before:?}"
+        );
+        let reopened = core
+            .reopened(&config, &mut machine::Reference)
+            .expect("reopened");
+        assert_eq!(listed(&reopened), before, "listed again, as it was");
     }
 
     /// A Core opened again rebuilds its catalogue from the grants and advertisements its log holds, and from nothing
@@ -3502,7 +3143,7 @@ mod tests {
     #[test]
     fn floor_the_authorisation_names_holds_the_part_at_the_segment_that_crosses_it() {
         let (mut core, order) = floored();
-        core.run(&order).unwrap();
+        core.tick();
         let moves = core
             .verified_whats()
             .into_iter()
@@ -3517,7 +3158,7 @@ mod tests {
             })
             .count();
         assert_eq!(moves, 1, "the deposit is not handed over");
-        let started = &core.started[order.as_str()];
+        let started = core.started(&order).expect("started").clone();
         let part = kit::id(started.plan[0].part_id.as_str());
         let since = core
             .segments

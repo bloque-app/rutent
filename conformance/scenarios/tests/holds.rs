@@ -18,6 +18,7 @@ use rutent_scenarios::assembly::StepError;
 use rutent_scenarios::assembly::machine::Reference;
 use rutent_scenarios::harness::Scenario;
 use rutent_scenarios::kit;
+use rutent_scenarios::on_tick::OnTick;
 
 /// The simulated reserve whose declaration says it answers hold requests.
 const HOLDING: &str = "sim-reserve-holding";
@@ -211,7 +212,8 @@ fn hold_a_reserve_gave_in_its_answer_is_redeemed_on_acceptance() {
         .expect("accepted on the hold");
     assert_eq!(acceptances(&core), vec![(order.clone(), Some(receipt))]);
     assert_eq!(core.holds().redeemed_by(&hold), Some(&order));
-    core.run(&order).expect("the order runs on the quote held");
+    core.ran_on_tick(&order)
+        .expect("the order runs on the quote held");
 }
 
 /// A reserve whose declaration says nothing of hold requests is asked none: quoting at it appends no hold request and
@@ -360,4 +362,46 @@ fn quote_held_for_less_than_its_figures_is_valid_no_longer_than_its_hold() {
         "{refused:?}"
     );
     assert!(acceptances(&core).is_empty(), "nothing was recorded");
+}
+
+/// A quote shown and held before Core stops, its acceptance not in the log: the reopened Core rebuilds it from the log
+/// while its validity stands, the same quote under the same digest on the record the log holds to its digest, with the
+/// reserve's hold (`T-020-61`, item 7, the milestone reviewer's check of `T-020-57`). The customer's acceptance of the quote
+/// shown before the restart is recorded after it, redeeming that hold, and the order starts. Past the quote's validity the
+/// quote shown is gone, and the order is quoted again on a new routing (`T-020-46`'s default).
+// verifies: NFR-6, REQ-QTE-3
+#[test]
+fn quote_held_before_a_restart_is_accepted_after_core_reopens_while_its_validity_stands() {
+    let (mut core, session) = core_with("AC-23", &[HOLDING]);
+    let (order, digest) = offered_at(&mut core, HOLDING, &session, "req-held-restart");
+    let (lapsing, lapsing_digest) = offered_at(&mut core, HOLDING, &session, "req-lapsing");
+    let held = core.holds_taken();
+    assert_eq!(held.len(), 2, "each quote shown is held: {held:?}");
+    let (hold, receipt) = held[0].clone();
+    let mut core = reopened(core);
+    core.accept(&kit::customer(), &order, &digest)
+        .expect("the quote shown before the restart is accepted after it");
+    assert!(
+        acceptances(&core).contains(&(order.clone(), Some(receipt))),
+        "the acceptance names the hold the reserve gave before the restart: {:?}",
+        acceptances(&core)
+    );
+    assert_eq!(core.holds().redeemed_by(&hold), Some(&order));
+    assert!(core.started(&order).is_some(), "the order starts");
+    // Past its validity, the other quote shown is gone: its acceptance is refused, and nothing is recorded.
+    core.clock.advance(30 * 86_400);
+    let recorded = acceptances(&core).len();
+    assert!(
+        core.accept(&kit::customer(), &lapsing, &lapsing_digest)
+            .is_err(),
+        "a quote past its validity isn't accepted"
+    );
+    assert_eq!(acceptances(&core).len(), recorded, "nothing was recorded");
+    // Its hold lapsed with it: Core holds it no more, and nothing redeems it (the review of #355, L2).
+    let (lapsed_hold, _) = held[1].clone();
+    assert!(
+        core.holds().held(&lapsed_hold).is_none(),
+        "the lapsed quote's hold is released"
+    );
+    assert_eq!(core.holds().redeemed_by(&lapsed_hold), None);
 }

@@ -129,6 +129,16 @@ pub trait Modules {
         Answered::Refused(PlatformRefusal::NotHandled)
     }
 
+    /// Hands over the answer the platform recorded for `provider`'s operation of `transaction`, as `effect` (the permitted
+    /// `read_recorded_answer`) lets (`INV-8`, `NFR-6`, `T-020-61` item 10): where Core recorded the move's effect and lost
+    /// its answer in a stop, at a provider that declares neither a status query nor a safe repeat. Nothing is handed
+    /// over again and nothing moves. The default answers that the platform holds no such record, so the segment waits for
+    /// the stuck check; the production platform answers it ([`Platform::recorded_answer`]).
+    fn recorded_answer(&mut self, effect: &Effect, provider: &Id, transaction: &Id) -> Answered {
+        let _ = (effect, provider, transaction);
+        Answered::Refused(PlatformRefusal::NotHandled)
+    }
+
     /// What the platform saw since it was last asked (`Platform::take_events`).
     fn take_events(&mut self) -> Events;
 
@@ -247,6 +257,17 @@ impl<W: World> Modules for Platform<W> {
     fn repeat_operation(&mut self, effect: &Effect, provider: &Id, transaction: &Id) -> Answered {
         let _permitted = effect;
         match Platform::repeat_operation(self, provider.as_str(), transaction.as_str()) {
+            Handled::Answered(result) => serde_json::to_vec(&*result).map_or(
+                Answered::Refused(PlatformRefusal::OutcomeUnknown),
+                Answered::Bytes,
+            ),
+            Handled::Refused(refusal) => Answered::Refused(refusal),
+        }
+    }
+
+    fn recorded_answer(&mut self, effect: &Effect, provider: &Id, transaction: &Id) -> Answered {
+        let _permitted = effect;
+        match Platform::recorded_answer(self, provider.as_str(), transaction.as_str()) {
             Handled::Answered(result) => serde_json::to_vec(&*result).map_or(
                 Answered::Refused(PlatformRefusal::OutcomeUnknown),
                 Answered::Bytes,

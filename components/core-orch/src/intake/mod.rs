@@ -58,9 +58,14 @@
 
 mod class;
 mod hold;
+pub mod linked;
 mod record;
+mod started;
 
 pub use hold::HOLD_SECONDS;
+pub use started::{
+    Begun, Placed, Started, accepted_authorisation, held_record, kept_bytes, start_in, started_on,
+};
 
 use std::collections::BTreeMap;
 
@@ -75,7 +80,8 @@ use rutent_contracts::core_internal::{
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{NodeRef, to_canonical};
 use rutent_contracts::router_api::{
-    Amount, Candidate, Endpoint, Id, PolicyBounds, PositiveAmount, Request, Router, Timestamp,
+    Amount, Candidate, DecisionRecord, Endpoint, Id, PolicyBounds, PositiveAmount, Request, Router,
+    Timestamp,
 };
 use rutent_contracts::state_machine::{
     self as stm, Observed, PartPlan, RecordId, RecordedInput, SegmentPlan, Source, SourceKind,
@@ -417,6 +423,8 @@ struct Accepting {
     /// The authorisation the acceptance gives, until policy permits it: asked once the acceptance is in the log, so
     /// policy reads the order's parties from it (the payer among them), and before the start is appended.
     authorisation: Option<Authorisation>,
+    /// The authorisation as policy permitted it: the terms the order's route runs on once it starts (`T-020-61`).
+    permitted: Option<Authorisation>,
 }
 
 /// One request identifier's record, under its requester.
@@ -442,6 +450,9 @@ struct Kept {
     ended: bool,
     /// The `route_chosen` input the log took: the order's start, once it has one.
     started: Option<RecordedInput>,
+    /// What the order runs on, once it started ([`Started`], `T-020-61`): built on its acceptance, rebuilt from the log
+    /// on reopening. `None` where its record isn't held to the log's digest: nothing runs on it.
+    run: Option<Box<Started>>,
     /// The order's acceptance is in the log, though the order may have ended since: its parties are the log's to
     /// say, so its status is read as `Reads::OrderState`, not as a filed order's (`T-020-52`).
     logged: bool,
@@ -480,10 +491,10 @@ impl Kept {
 /// Core opens, by intake or by the arrival filing, draws its identifier through [`draw_order`].
 pub(crate) const REQUEST_NAME: &str = "request-";
 
-/// A fresh identifier for an order: one that doesn't begin with [`REQUEST_NAME`], so a refused request's record can never
+/// A fresh identifier for an order: one that doesn't begin with `request-`, the prefix of a refused request's record's name, so a refused request's record can never
 /// take an order's name in the deployment's map. A source that draws only such names gives none, and the call is
 /// refused as an identifier Core used before is.
-pub(crate) fn draw_order(fresh: &mut dyn crate::rounds::Fresh) -> Option<Id> {
+pub fn draw_order(fresh: &mut dyn crate::rounds::Fresh) -> Option<Id> {
     (0..16)
         .map(|_| fresh.id())
         .find(|id| !id.as_str().starts_with(REQUEST_NAME))
@@ -504,6 +515,12 @@ pub struct Intake {
     /// The orders a Core that reopened couldn't read the inputs of (`T-020-46`): the statement `order_opened` names is
     /// gone, unreadable, of another shape or of another order. They are held: never run again with inputs missing.
     held: std::collections::BTreeSet<String>,
+    /// What each order Core started that intake didn't open runs on (`T-020-61`): an order filed on an automatic
+    /// deposit, or a linked order a hand-on started. Core's run builds each from the log as it builds intake's own.
+    others: BTreeMap<String, Started>,
+    /// The decision records of the routes Core recalculated since an order started, by id, each held to the log's
+    /// digest when it was taken (`T-020-61`): what a part's current route runs on.
+    records: BTreeMap<String, DecisionRecord>,
 }
 
 impl Intake {
@@ -835,6 +852,31 @@ impl Intake {
                         if matches!(&v.what, What::DecisionRecord { order: o, .. } if o == order))
                 })
                 .map(|(receipt, _)| receipt.clone());
+            // What the order runs on, rebuilt from the log as its acceptance built it (`T-020-61`): the record held to
+            // the log's digest, the authorisation its acceptance names as policy holds it in force, and the order's own
+            // origin, session and inputs. A held order runs on nothing (`T-020-46`, `T-020-52`).
+            let run = match (&started, intake.held.contains(order.as_str()), logged) {
+                (Some(start), false, true) => {
+                    accepted_authorisation(history, order).and_then(|authorisation| {
+                        let authorised = reading.in_force(order, &authorisation)?;
+                        let begun = Begun {
+                            origin: origin_reserve.clone(),
+                            session: Some(session.clone()),
+                            inputs: ran.inputs.clone(),
+                            delivers: None,
+                        };
+                        started_on(
+                            history,
+                            &mut |commitment| reading.kept(commitment),
+                            order,
+                            start,
+                            &authorised,
+                            begun,
+                        )
+                    })
+                }
+                _ => None,
+            };
             let key = key(&caller.party, request);
             intake.orders.insert(order.as_str().to_owned(), key.clone());
             intake.requests.insert(
@@ -853,6 +895,7 @@ impl Intake {
                     accepting: None,
                     ended: false,
                     started,
+                    run: run.map(Box::new),
                     logged,
                     reopened: true,
                 },
@@ -878,6 +921,92 @@ impl Intake {
     /// Whether a reopened Core holds `order` because it couldn't read its inputs back (`T-020-46`).
     pub fn held(&self, order: &Id) -> bool {
         self.held.contains(order.as_str())
+    }
+
+    /// What `order` runs on, once it started (`T-020-61`): built on its acceptance and held here, or held for an order
+    /// intake didn't open ([`Intake::hold_started`]). `None` for an order that didn't start, one a reopened Core holds
+    /// ([`Intake::held`]), and one whose record the log doesn't hold to its digest.
+    pub fn started(&self, order: &Id) -> Option<&Started> {
+        if self.held.contains(order.as_str()) {
+            return None;
+        }
+        self.orders
+            .get(order.as_str())
+            .and_then(|key| self.requests.get(key))
+            .and_then(|kept| kept.run.as_deref())
+            .or_else(|| self.others.get(order.as_str()))
+    }
+
+    /// Every order Core started that runs on something, by id, in order.
+    pub fn started_orders(&self) -> Vec<Id> {
+        let mut orders: Vec<Id> = self
+            .orders
+            .keys()
+            .filter_map(Id::new)
+            .filter(|order| self.started(order).is_some())
+            .chain(self.others.keys().filter_map(Id::new))
+            .collect();
+        orders.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        orders.dedup();
+        orders
+    }
+
+    /// Holds what `order` runs on, for an order Core started that intake didn't open (`T-020-61`): one filed on an
+    /// automatic deposit, or a linked order. An order intake opened, or one already held, is left as it is; an order
+    /// a reopened Core holds is never given anything to run on.
+    pub fn hold_started(&mut self, order: &Id, started: Started) {
+        if self.held.contains(order.as_str()) || self.started(order).is_some() {
+            return;
+        }
+        if let Some(kept) = self
+            .orders
+            .get(order.as_str())
+            .and_then(|key| self.requests.get_mut(key))
+        {
+            if kept.started.is_some() {
+                kept.run = Some(Box::new(started));
+            }
+            return;
+        }
+        self.others.insert(order.as_str().to_owned(), started);
+    }
+
+    /// What `order` runs on, to change: a fault a scenario plants on what Core holds (`T-020-63`'s unpriced route).
+    pub fn started_mut(&mut self, order: &Id) -> Option<&mut Started> {
+        if self.held.contains(order.as_str()) {
+            return None;
+        }
+        if let Some(key) = self.orders.get(order.as_str()) {
+            return self
+                .requests
+                .get_mut(key)
+                .and_then(|kept| kept.run.as_deref_mut());
+        }
+        self.others.get_mut(order.as_str())
+    }
+
+    /// Holds `record`, the decision record of a route Core recalculated, held to the log's digest (`T-020-61`).
+    pub fn hold_record(&mut self, record: DecisionRecord) {
+        self.records
+            .insert(record.record_id().as_str().to_owned(), record);
+    }
+
+    /// Forgets the decision record `id` of a route Core recalculated, as a Core whose evidence store no longer gives it back
+    /// would hold none: a fault a scenario plants (#316's round-3 L7), which Core's run fails closed on.
+    pub fn forget_record(&mut self, id: &Id) {
+        self.records.remove(id.as_str());
+    }
+
+    /// The decision record `id` a started order runs on: the one its route was chosen by, or one of a route Core
+    /// recalculated since ([`Intake::hold_record`]).
+    pub fn decision_record(&self, id: &Id) -> Option<&DecisionRecord> {
+        self.records.get(id.as_str()).or_else(|| {
+            self.started_orders().into_iter().find_map(|order| {
+                self.started(&order)
+                    .map(|s| &s.record)
+                    .filter(|r| r.record_id() == id)
+            })
+        })
     }
 
     /// The record of `order`, for the assembly to answer policy's sources from.
@@ -1242,6 +1371,24 @@ impl Intake {
         if held {
             return Err(IntakeError::NotNow);
         }
+        // A quote shown before Core reopened, its acceptance not in the log, is the log's to rebuild while its validity
+        // stands (`T-020-61`, item 7): the same quote, held to the digest the `shown` entry named, on the record the log
+        // holds to its digest, with the reserve's yes and its hold as the log holds them. Past its validity it is gone, and
+        // the order is quoted again on a new routing (`T-020-46`'s default); the hold it named lapses with it.
+        if kept.reopened
+            && kept.offered.is_none()
+            && kept.accepting.is_none()
+            && matches!(kept.status, Status::OutcomeToCome)
+            && let Some((offered, valid_until)) =
+                shown_in_the_log(desk, order, &kept.request, quote)
+        {
+            kept.status = Status::Quoted {
+                quote: Box::new(offered.quote.clone()),
+                digest: offered.digest.clone(),
+                valid_until,
+            };
+            kept.offered = Some(offered);
+        }
         if let Some(accepting) = kept.accepting.as_mut() {
             // Carried on from where it stopped, by the actor that accepted; the destination isn't resolved again,
             // since policy permitted on it. Where the acceptance is in the log and policy hasn't decided its
@@ -1262,6 +1409,7 @@ impl Intake {
                 let decision = desk.authorisations.authorise(&authorisation)?;
                 if decision.permit().is_some() {
                     accepting.authorisation = None;
+                    accepting.permitted = Some(authorisation);
                     accepting.by = by.clone();
                 } else if matches!(decision.outcome, Answer::NotKnown { .. }) {
                     kept.status = Status::Waiting {
@@ -1466,9 +1614,172 @@ impl Intake {
             input,
             pending: vec![accepted, start],
             authorisation: Some(authorisation),
+            permitted: None,
         });
         carry_on(desk, kept)
     }
+}
+
+/// The quote of `order` shown under `digest` before Core reopened, rebuilt from the log while its validity stands
+/// (`T-020-61`, item 7): the order's last `shown` entry of that digest, the choice round's record before it (read back from
+/// the evidence store and held to the log's digest), its chosen candidate and its price as intake shows them, held to the
+/// digest; each part's origin reserve's yes, its verified statement about the order before the quote was shown; and the
+/// reserve's hold of it, where the log holds one. `None` where any of it isn't there, the quote rebuilt isn't the one
+/// shown, or its validity has passed (fails closed: the order is quoted again).
+fn shown_in_the_log(
+    desk: &mut Desk<'_, '_>,
+    order: &Id,
+    request: &OrderRequest,
+    digest: &Digest,
+) -> Option<(Offered, Option<Timestamp>)> {
+    use rutent_contracts::core_internal::Attribution;
+    let history = desk.recorded.history();
+    let shown_at = history.iter().rposition(|(_, e)| {
+        matches!(e, Entry::Verified(v) if matches!(&v.what,
+            What::Shown { order: o, shown, awaiting: None, .. } if o == order && shown == digest))
+    })?;
+    let record_id = history[..shown_at]
+        .iter()
+        .rev()
+        .find_map(|(_, e)| match e {
+            Entry::Verified(v) => match &v.what {
+                What::DecisionRecord {
+                    decision_record,
+                    order: o,
+                    ..
+                } if o == order => Some(decision_record.clone()),
+                _ => None,
+            },
+            Entry::Stated(_) => None,
+        })?;
+    let store = &mut *desk.kept;
+    let record = held_record(
+        &history,
+        &mut |commitment| kept_bytes(store, commitment),
+        &record_id,
+    )?;
+    let candidate = record.chosen()?.clone();
+    let price = crate::quote::show(&record, &candidate, request.route.floor.as_ref()).ok()?;
+    let quote = Quote {
+        order: order.clone(),
+        decision_record: record_id,
+        candidate: candidate.candidate_id.clone(),
+        from: request.route.from.clone(),
+        to: request.route.to.clone(),
+        amount: request.route.amount.clone(),
+        delivers: price.arrives.clone(),
+        shown_as: price.shown_as,
+        price,
+    };
+    if digest_of(&quote).as_ref() != Some(digest) {
+        return None;
+    }
+    // Each part's yes, by its shape and transaction, never guessed (the review of #355, L3): the last verified result its
+    // origin reserve stated about the order before the quote was shown, answering a question Core stated about the
+    // order under that transaction (its dry run). A hold, or any other statement of the reserve's, is no yes.
+    let asked: Vec<&Id> = history[..shown_at]
+        .iter()
+        .filter_map(|(_, e)| match e {
+            Entry::Stated(s)
+                if s.what.statement.as_str()
+                    == rutent_contracts::provider_role::OPERATION_SHAPE
+                    && s.about.as_ref().and_then(|a| a.order.as_ref()) == Some(order) =>
+            {
+                s.about.as_ref().and_then(|a| a.transaction.as_ref())
+            }
+            _ => None,
+        })
+        .collect();
+    let mut reserve_yes = Vec::new();
+    for part in candidate.parts.iter() {
+        let reserve = &part.operations.first().provider;
+        let yes = history[..shown_at].iter().rev().find_map(|(receipt, e)| match e {
+            Entry::Stated(s)
+                if s.what.statement.as_str() == rutent_contracts::provider_role::RESULT_SHAPE
+                    && matches!(&s.attribution, Attribution::Verified { who } if &who.acts == reserve)
+                    && s.about.as_ref().and_then(|a| a.order.as_ref()) == Some(order)
+                    && s
+                        .about
+                        .as_ref()
+                        .and_then(|a| a.transaction.as_ref())
+                        .is_some_and(|t| asked.contains(&t)) =>
+            {
+                Some(receipt.clone())
+            }
+            _ => None,
+        })?;
+        reserve_yes.push(yes);
+    }
+    // The reserve's hold of this quote: one Core keeps (`Holds::reopened`) of the record the quote was chosen by, and
+    // redeemed by no order.
+    let hold = history.iter().rev().find_map(|(_, e)| match e {
+        Entry::Stated(s)
+            if s.what.statement.as_str() == rutent_contracts::provider_role::HOLD_SHAPE =>
+        {
+            let transaction = s.about.as_ref()?.transaction.clone()?;
+            let held = desk.holds.held(&transaction)?;
+            (held.record() == &quote.decision_record
+                && desk.holds.redeemed_by(&transaction).is_none())
+            .then_some(transaction)
+        }
+        _ => None,
+    });
+    let validity = quote_validity(
+        record.earliest_expiry(&candidate),
+        hold.as_ref()
+            .and_then(|h| desk.holds.held(h))
+            .map(|h| h.valid_until()),
+    );
+    let now = record::now(desk.parts.clock).ok()?;
+    if validity
+        .as_ref()
+        .is_some_and(|until| until.unix_nanos() <= now.unix_nanos())
+    {
+        // Past its validity the quote is gone, and the hold it named lapses with it: Core holds it no more (item 7).
+        if let Some(lapsed) = &hold {
+            desk.holds.drop_hold(lapsed);
+        }
+        return None;
+    }
+    Some((
+        Offered {
+            quote,
+            digest: digest.clone(),
+            candidate,
+            reserve_yes,
+            session: request.session.clone(),
+            hold,
+        },
+        validity,
+    ))
+}
+
+/// What the order `kept` runs on, from its start `input` the log took and the authorisation policy permitted
+/// (`T-020-61`): built as a reopened Core rebuilds it ([`started_on`]), the record read back from the evidence store and
+/// held to the log's digest.
+fn run_on(
+    desk: &mut Desk<'_, '_>,
+    kept: &Kept,
+    input: &RecordedInput,
+    authorised: &Authorisation,
+) -> Option<Started> {
+    let order = kept.order.as_ref()?;
+    let history = desk.recorded.history();
+    let begun = Begun {
+        origin: kept.request.origin_reserve.clone(),
+        session: Some(kept.request.session.clone()),
+        inputs: kept.request.inputs.clone(),
+        delivers: kept.offered.as_ref().map(|o| o.quote.delivers.clone()),
+    };
+    let store = &mut *desk.kept;
+    started_on(
+        &history,
+        &mut |commitment| kept_bytes(store, commitment),
+        order,
+        input,
+        authorised,
+        begun,
+    )
 }
 
 /// Appends an acceptance's entries not yet appended, as built. The order is told accepted only once its start is
@@ -1512,6 +1823,7 @@ fn carry_on(desk: &mut Desk<'_, '_>, kept: &mut Kept) -> Result<Told, IntakeErro
         let decision = desk.authorisations.authorise(&authorisation)?;
         if decision.permit().is_some() {
             accepting.authorisation = None;
+            accepting.permitted = Some(authorisation);
         } else if matches!(decision.outcome, Answer::NotKnown { .. }) {
             // Not known: the order waits, and accepting again asks the same authorisation of policy again.
             kept.status = Status::Waiting {
@@ -1534,7 +1846,14 @@ fn carry_on(desk: &mut Desk<'_, '_>, kept: &mut Kept) -> Result<Told, IntakeErro
             kept.status = Status::Accepted {
                 acceptance: accepting.acceptance.clone(),
             };
-            kept.started = Some(accepting.input.clone());
+            let (input, permitted) = (accepting.input.clone(), accepting.permitted.clone());
+            // What the order runs on, built and held now, on the start the log took (`T-020-61`, item 1): the record
+            // read back from the evidence store and held to the log's digest, the authorisation as policy permitted it,
+            // and the order's own origin, session, inputs and what its quote delivers.
+            kept.run = permitted
+                .and_then(|authorised| run_on(desk, kept, &input, &authorised))
+                .map(Box::new);
+            kept.started = Some(input);
             Ok(kept.told())
         }
         Err(AppendFailure::Refused(_)) => ended(desk, kept, OrderRefusalClass::NoRouteRightNow),
@@ -1617,6 +1936,7 @@ fn opened(desk: &mut Desk<'_, '_>, request: OrderRequest) -> Result<Kept, Intake
         accepting: None,
         ended: false,
         started: None,
+        run: None,
         logged: false,
         reopened: false,
     };

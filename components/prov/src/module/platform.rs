@@ -3351,6 +3351,26 @@ impl<W: World> Platform<W> {
         handled
     }
 
+    /// The answer the platform's record holds for `provider`'s operation under `transaction`, handed over as it was
+    /// recorded, running no module and moving nothing (`INV-8`, `NFR-6`, `T-020-61` item 10). Core takes it only as a
+    /// decided effect lets it (`Modules::recorded_answer`): where it recorded the move's effect and lost the answer in a
+    /// stop, at a provider that declares neither a status query nor a safe repeat, so the operation is never handed over
+    /// again. Refused as `NotHandled` where the record holds no answered operation of that provider's under the
+    /// transaction: the segment then waits for the stuck check.
+    pub fn recorded_answer(&mut self, provider: &str, transaction: &str) -> Handled {
+        self.restart_ended();
+        match self
+            .carried
+            .get(transaction)
+            .and_then(|scopes| scopes.get(TOP_LEVEL))
+            .filter(|carried| carried.provider == provider)
+            .and_then(|carried| carried.answer.clone())
+        {
+            Some(answer) => Handled::Answered(answer),
+            None => Handled::Refused(PlatformRefusal::NotHandled),
+        }
+    }
+
     /// The late answers held for the operations of `transactions`: its provider, its transaction and the answer's
     /// bytes, each handed over again every time this is asked until [`Platform::late_kept`] says it was kept (`AC-5`,
     /// `NFR-6`, `T-020-63`). One is held by [`Platform::repeat_operation`]'s answer; the record holds it, so a platform

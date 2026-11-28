@@ -82,6 +82,7 @@
 //! ([`SegmentsError::Ended`]).
 
 mod balances;
+mod carry_on;
 mod charges;
 mod drain;
 pub(crate) mod journal;
@@ -134,6 +135,7 @@ use crate::snapshot::{
 };
 
 pub use balances::{Balance, BalanceRead};
+pub use carry_on::{CarriedOn, CarryOn};
 pub use drain::Uncarried;
 /// What a stuck resolution's mover reuses of the segments' own writing: the drains it hands the log, its signed
 /// operation and the stated entry of a statement kept (`T-020-16`).
@@ -670,6 +672,11 @@ struct InFlight {
     /// Rebuilt from the log by a Core that reopened (`T-020-46`): carried out, its answer, if any, gone with the Core
     /// that stopped, so it is never carried out again, and with no final outcome it stays in flight.
     reopened: bool,
+    /// Rebuilt by a Core that reopened with its provider's answer, or its evidence, in the log, though the answer isn't
+    /// taken up again (its grading cut short): it is not one to carry on (`T-020-61`, item 8), and waits for the stuck check.
+    answer_logged: bool,
+    /// Carried on once by a Core that reopened (`T-020-61`, item 8): asked its status, or repeated, and not again.
+    carried_on: bool,
     /// The answers its operation was evaluated with: its provider's dry runs, a verifier's judgements.
     heard: Vec<measured::Heard>,
     /// The entry that carries those answers: the order's `decision_record` entry.
@@ -846,6 +853,68 @@ impl Segments {
             return Err(Rests::TooLate);
         }
         Ok(())
+    }
+
+    /// Core's own declarations of what the live part's inputs rest on, made as it hands the part's segments over
+    /// (`REQ-CPL-12`, `T-020-61`): for each segment not yet handed over, every input its operation carries rests on the
+    /// verifier's judgement that the operation's eligibility figure cites, its stated entry found in the log by `found`
+    /// ([`crate::reliance::stated_judgement`]). A provider handed one of those inputs is then recorded as relying on that
+    /// judgement before its operation is sent, as [`Segments::rests_on`] records it. An operation that cites no
+    /// judgement, or one the log doesn't hold, declares nothing; an input that rests on another judgement already
+    /// keeps the first ([`Rests::Another`]: one input rests on one judgement). Declared again on every run, it changes
+    /// nothing. Answers what was declared: the segment, the input and the judgement.
+    pub fn declare_cited(
+        &mut self,
+        live: &Live<'_>,
+        found: &mut dyn FnMut(
+            &Statement<rutent_contracts::provider_role::Judgement>,
+        ) -> Option<Judgement>,
+    ) -> Vec<(Id, String, Judgement)> {
+        let mut declared = Vec::new();
+        let Some(part) = live.record.chosen().and_then(|c| c.parts.get(live.at)) else {
+            return declared;
+        };
+        for (segment, operation) in live.segments.iter().zip(part.operations.iter()) {
+            let at = (live.order.as_str().to_owned(), segment.as_str().to_owned());
+            if self.flights.contains_key(&at) {
+                continue;
+            }
+            let Some(cited) = sign::cited(live.record, operation) else {
+                continue;
+            };
+            let judgement = operation.figures.iter().find_map(|id| {
+                live.record
+                    .snapshot
+                    .figures
+                    .iter()
+                    .find(|f| &f.figure_id == id)
+                    .and_then(|f| match &f.value {
+                        rutent_contracts::router_api::FigureValue::Eligibility {
+                            judgement,
+                            ..
+                        } => found(judgement),
+                        _ => None,
+                    })
+            });
+            let Some(judgement) = judgement else {
+                continue;
+            };
+            for input in cited
+                .terms
+                .required_inputs
+                .iter()
+                .filter(|name| live.inputs.contains_key(name.as_str()))
+            {
+                if self
+                    .reliances
+                    .rests_on(live.order, input, judgement.clone())
+                    .is_ok()
+                {
+                    declared.push((segment.clone(), input.clone(), judgement.clone()));
+                }
+            }
+        }
+        declared
     }
 
     /// The judgements the order's `inputs` rest on, each once (`T-020-23`): what the stuck mover consults before it
@@ -2582,6 +2651,8 @@ impl Segments {
                 heard: measured::hear(live.record, operation),
                 record_entry: live.record_entry.cloned(),
                 reopened: false,
+                answer_logged: false,
+                carried_on: false,
             },
         );
         self.advance(parts, live, &at, operation, true)

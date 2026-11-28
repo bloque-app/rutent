@@ -1,0 +1,15 @@
+{
+  "request": "req-106",
+  "caller": {
+    "party": "cust-1",
+    "acts": "cust-1",
+    "role": "customer",
+    "kind": "person"
+  },
+  "action": {
+    "kind": "dispute_fault",
+    "order": "ord-17",
+    "segment": "seg-2"
+  },
+  "at": "2026-11-10T09:00:00Z"
+}

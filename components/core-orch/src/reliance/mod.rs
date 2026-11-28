@@ -24,7 +24,8 @@ use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 
 use rutent_contracts::core_internal::calls::{AppendFailure, GeneralEntry, Log};
-use rutent_contracts::core_internal::{Actor, Outcome, Receipt, What};
+use rutent_contracts::core_internal::{Actor, Attribution, Outcome, Receipt, What};
+use rutent_contracts::provider_role::{self, JUDGEMENT_SHAPE, Statement};
 use rutent_contracts::router_api::{Id, Timestamp};
 
 use crate::segments::journal::{append_general, verified};
@@ -218,6 +219,36 @@ impl Reliances {
     }
 }
 
+/// The judgement whose stated entry the log holds as `statement`, the verifier's judgement an operation's eligibility
+/// figure carries whole (`REQ-CPL-12`, `T-020-61`): the entry of the judgement's shape, attributed to the maker the
+/// statement names, whose bytes the evidence store kept under its commitment are that statement. Core finds the entry
+/// itself, so the receipt a reliance cites is never a caller's word. `None` where the log holds none: the input then
+/// rests on nothing Core can cite, and no reliance is declared for it.
+pub fn stated_judgement(
+    history: &[(Receipt, rutent_contracts::core_internal::Entry)],
+    kept: &mut dyn FnMut(&rutent_contracts::module_interface::Digest) -> Option<Vec<u8>>,
+    statement: &Statement<provider_role::Judgement>,
+) -> Option<Judgement> {
+    history.iter().find_map(|(receipt, entry)| {
+        let rutent_contracts::core_internal::Entry::Stated(stated) = entry else {
+            return None;
+        };
+        let Attribution::Verified { who } = &stated.attribution else {
+            return None;
+        };
+        if stated.what.statement.as_str() != JUDGEMENT_SHAPE || who.acts.as_str() != statement.maker
+        {
+            return None;
+        }
+        let bytes = kept(&stated.commitment)?;
+        let held = serde_json::from_slice::<Statement<provider_role::Judgement>>(&bytes).ok()?;
+        (held == *statement).then(|| Judgement {
+            receipt: receipt.clone(),
+            judge: who.acts.clone(),
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use rutent_contracts::core_internal::{ActorKind, Role};
@@ -271,6 +302,103 @@ mod tests {
 
     fn at() -> Timestamp {
         Timestamp::new("2026-11-10T09:00:00Z".to_owned()).unwrap()
+    }
+
+    /// The verifier's judgement as an eligibility figure carries it: by `maker`, about `subject`.
+    fn statement(maker: &str, subject: &str) -> Statement<provider_role::Judgement> {
+        serde_json::from_value(serde_json::json!({
+            "deployment": {
+                "name": "rutent-test",
+                "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+            },
+            "protocol_version": "2.0.1",
+            "shape": JUDGEMENT_SHAPE,
+            "maker": maker,
+            "made_at": "2026-11-06T15:04:05Z",
+            "signature": {
+                "scheme": "ed25519",
+                "key": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8",
+                "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+            },
+            "statement": {
+                "subject": subject,
+                "class": "kyc.natural_person",
+                "answer": "yes",
+                "valid_until": "2026-11-13T15:04:05Z"
+            }
+        }))
+        .unwrap()
+    }
+
+    /// A stated entry of the judgement's shape by `maker`, kept under the commitment `kept`, attributed or not: read
+    /// as the log hands it back, so no stated entry is built here but through `relay`'s helper.
+    fn stated(maker: &str, kept: u8, attributed: bool) -> rutent_contracts::core_internal::Entry {
+        let who = serde_json::json!({
+            "party": "acme-checks", "acts": maker, "role": "verifier", "kind": "component",
+        });
+        let attribution = if attributed {
+            serde_json::json!({ "signature": "verified", "who": who })
+        } else {
+            serde_json::json!({ "signature": "unverified", "claimed_by": who })
+        };
+        serde_json::from_value(serde_json::json!({
+            "kind": "stated",
+            "attribution": attribution,
+            "what": { "statement": JUDGEMENT_SHAPE },
+            "when": { "at": "2026-11-06T15:04:05Z", "source": "party_stated" },
+            "received_at": "2026-11-10T09:00:00Z",
+            "outcome": { "status": "stated" },
+            "signed_with": { "scheme": "ed25519", "key": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8" },
+            "commitment": commitment(kept),
+        }))
+        .unwrap()
+    }
+
+    fn commitment(at: u8) -> rutent_contracts::module_interface::Digest {
+        serde_json::from_value(serde_json::json!({
+            "algorithm": "sha-256", "value": format!("{at:064x}"),
+        }))
+        .unwrap()
+    }
+
+    /// Core finds the judgement an eligibility figure carries in the log itself (`T-020-61`): the stated entry of its
+    /// maker whose kept bytes are that statement, never another judgement of the same verifier, and never one the log
+    /// didn't attribute to it.
+    // verifies: REQ-CPL-12
+    #[test]
+    fn the_judgement_a_figure_carries_is_found_by_its_kept_bytes_and_its_attribution() {
+        let wanted = statement("id-check", "payer-ref");
+        let other = statement("id-check", "beneficiary-ref");
+        let bytes = |s: &Statement<provider_role::Judgement>| serde_json::to_vec(s).unwrap();
+        let kept_bytes = [
+            (1u8, bytes(&other)),
+            (2, bytes(&wanted)),
+            (3, bytes(&wanted)),
+        ];
+        let mut kept = |c: &rutent_contracts::module_interface::Digest| {
+            kept_bytes
+                .iter()
+                .find(|(at, _)| commitment(*at) == *c)
+                .map(|(_, b)| b.clone())
+        };
+        let history = vec![
+            (receipt(0), stated("id-check", 3, false)),
+            (receipt(1), stated("id-check", 1, true)),
+            (receipt(2), stated("id-check", 2, true)),
+        ];
+        assert_eq!(
+            stated_judgement(&history, &mut kept, &wanted),
+            Some(Judgement {
+                receipt: receipt(2),
+                judge: id("id-check"),
+            }),
+            "the attributed entry whose bytes are the statement"
+        );
+        assert_eq!(
+            stated_judgement(&history[..2], &mut kept, &wanted),
+            None,
+            "an unattributed copy, or another judgement of the same maker, is never it"
+        );
     }
 
     /// One entry for each provider that relies on a judgement, and one only for a provider that relies on it again.

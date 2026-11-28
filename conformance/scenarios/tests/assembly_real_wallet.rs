@@ -13,6 +13,7 @@
 
 mod execution_support;
 
+use rutent_scenarios::on_tick::OnTick;
 use std::collections::BTreeMap;
 
 use execution_support::*;
@@ -111,7 +112,7 @@ fn stuck_before_the_schedule_runs() -> Stuck {
     let order = accepted(&mut core, asked);
     let part = core.first_part(&order).expect("a started order");
     core.faults.refuse_begin = Some(2);
-    core.run(&order).expect("the order runs");
+    core.ran_on_tick(&order).expect("the order runs");
     core.leave_no_route(&order).expect("the part is stuck");
     assert!(core.is_stuck(&order, &part));
     Stuck {
@@ -188,7 +189,7 @@ fn value_that_passes_through_the_wallets_node_is_not_held_for_the_order() {
         "lowest_total_cost",
     );
     let order = accepted(&mut core, asked);
-    core.run(&order).expect("the order runs");
+    core.ran_on_tick(&order).expect("the order runs");
     assert_eq!(core.tick().landed, 0, "nothing rests at the node");
     assert_eq!(
         core.holdings().attributions(),
@@ -218,6 +219,7 @@ fn linked_order(stuck: &Stuck) -> LinkedOrder {
             ("payer.bank_account".to_owned(), "acct-1".to_owned()),
             ("beneficiary.address".to_owned(), ADDRESS.to_owned()),
         ]),
+        floor: None,
     }
 }
 
@@ -271,10 +273,9 @@ fn balance_asked(
     .expect("the wallet is asked and its answer recorded")
 }
 
-/// The wallet is a module the operator publishes, whose release the log accepts by a decided catalogue change: until
-/// then none of its answers is verified (the log knows no key that signs for it), and once it is, the same answer is
-/// verified to the wallet, for the operator's party, by the key the release names; a key the release doesn't name
-/// verifies nothing.
+/// The wallet is a module the operator publishes, whose release Core accepts by its decided accept: the platform runs
+/// none of it before, and once it is accepted its answer is verified to the wallet, for the operator's party, by the
+/// key the release names.
 // verifies: REQ-CAT-23, REQ-AUD-2
 #[test]
 fn release_of_an_operator_published_wallet_is_accepted_in_the_log_and_its_answers_are_verified() {
@@ -282,24 +283,33 @@ fn release_of_an_operator_published_wallet_is_accepted_in_the_log_and_its_answer
     let (wallet, order) = (stuck.wallet.clone(), stuck.order.clone());
     let core = &mut stuck.core;
 
-    // Before the release is accepted the log holds no key for the wallet: the answer is recorded, attributed to no one.
-    let (_, before, _) = balance_asked(core, &wallet, "tx-before", order.as_str());
-    assert!(
-        !is_verified(&attribution_at(core, &before)),
-        "no accepted release, no verified statement"
-    );
-
-    // The release is accepted through the log's own catalogue change: decided, its effect and its done result.
-    let effect = core
-        .accept_release(&wallet)
-        .expect("the release is accepted");
+    // The platform runs no wallet whose release Core hasn't accepted, so there is no answer from before it: the release
+    // was accepted at its install through Core's decided accept (`T-020-61`), decided, its effect naming the release's
+    // statements key and its done result.
     let whats = core.verified_whats();
-    assert!(
-        whats.iter().any(|w| matches!(w,
-            What::Effect { action: Action::ChangeCatalogue { provider, statement_key: Some(key), .. }, .. }
-                if provider.as_str() == wallet.provider && *key == wallet.statement_key())),
-        "the effect names the release's statements key"
-    );
+    let effect = core
+        .log()
+        .entries()
+        .iter()
+        .find_map(|(receipt, e)| match e {
+            Entry::Verified(v) => match &v.what {
+                What::Effect {
+                    action:
+                        Action::ChangeCatalogue {
+                            change: rutent_contracts::core_internal::CatalogueChange::AcceptModule,
+                            provider,
+                            statement_key: Some(key),
+                            ..
+                        },
+                    ..
+                } if provider.as_str() == wallet.provider && *key == wallet.statement_key() => {
+                    Some(receipt.clone())
+                }
+                _ => None,
+            },
+            Entry::Stated(_) => None,
+        })
+        .expect("the effect names the release's statements key");
     assert!(
         whats
             .iter()
@@ -358,7 +368,7 @@ fn operator_decides(
     by: &str,
 ) -> (
     Actor,
-    Result<rutent_contracts::core_internal::Decision, StepError>,
+    Result<rutent_contracts::core_internal::Decision, rutent_core_orch::stuck::ResolveError>,
 ) {
     let (alice, bob) = (
         staff(&stuck.core, "desk-a", "alice"),
@@ -378,7 +388,7 @@ fn operator_decides(
     let evidence = evidence_about(&stuck.core, &stuck.order);
     let decision = stuck
         .core
-        .decide_stuck(&stuck.order, &alice, &resolution, &evidence);
+        .decide_stuck_in_core(&stuck.order, &alice, &resolution, &evidence);
     (bob, decision)
 }
 
@@ -390,11 +400,6 @@ fn operator_decides(
 #[test]
 fn linked_order_is_accepted_through_the_assembled_core_and_starts_at_an_inner_node() {
     let mut stuck = stuck_at_the_public_node();
-    let wallet = stuck.wallet.clone();
-    stuck
-        .core
-        .accept_release(&wallet)
-        .expect("the release is accepted");
     let linked = stuck
         .core
         .accept_linked(&linked_order(&stuck))
@@ -504,10 +509,6 @@ fn linked_order_is_accepted_through_the_assembled_core_and_starts_at_an_inner_no
 fn hand_on_through_a_public_nodes_wallet_names_the_wallet_and_refuses_any_other_holder() {
     let mut stuck = stuck_at_the_public_node();
     let wallet = stuck.wallet.clone();
-    stuck
-        .core
-        .accept_release(&wallet)
-        .expect("the release is accepted");
     let linked = stuck
         .core
         .accept_linked(&linked_order(&stuck))
@@ -526,7 +527,7 @@ fn hand_on_through_a_public_nodes_wallet_names_the_wallet_and_refuses_any_other_
         };
         let moved = stuck
             .core
-            .move_stuck(&stuck.order, &carries_out, &bob)
+            .move_stuck_in_core(&stuck.order, &carries_out, &bob)
             .expect("moved");
         assert!(
             matches!(
@@ -896,10 +897,6 @@ fn one_unreadable_account_does_not_make_the_check_read_every_account_every_tick(
 fn stuck_order_of_the_assembled_core_is_handed_on_through_the_real_plain_wallet() {
     let mut stuck = stuck_at_the_public_node();
     let wallet = stuck.wallet.clone();
-    stuck
-        .core
-        .accept_release(&wallet)
-        .expect("the release is accepted");
     let linked = stuck
         .core
         .accept_linked(&linked_order(&stuck))
@@ -913,10 +910,10 @@ fn stuck_order_of_the_assembled_core_is_handed_on_through_the_real_plain_wallet(
     };
     let moved = stuck
         .core
-        .move_stuck(&stuck.order, &carries_out, &bob)
+        .move_stuck_in_core(&stuck.order, &carries_out, &bob)
         .expect("moved");
     let Moved::CarriedOut {
-        effect,
+        effect: _,
         resolved: Resolved::Done,
         ..
     } = moved
@@ -942,7 +939,7 @@ fn stuck_order_of_the_assembled_core_is_handed_on_through_the_real_plain_wallet(
     assert!(is_verified(&answered.1.attribution));
     let handed = stuck
         .core
-        .hand_on(&stuck.order, &effect, &bob)
+        .handed_on_on_tick(&stuck.order)
         .expect("handed on");
     assert_eq!(node_name(&handed.at.node), NODE);
     let whats = stuck.core.verified_whats();
@@ -969,7 +966,7 @@ fn stuck_order_of_the_assembled_core_is_handed_on_through_the_real_plain_wallet(
     let moves_before = stuck.core.operations_received(&wallet.provider);
     let ran = stuck
         .core
-        .run_linked(&stuck.order, &linked_order(&stuck), &linked)
+        .ran_on_tick(&linked.order)
         .expect("the linked order's route runs");
     let Some(Ran::Segments(done)) = ran.first() else {
         panic!("the linked order ran: {ran:?}")
@@ -1045,10 +1042,10 @@ fn wallet_holds_in(
 fn handed_on_once(stuck: &mut Stuck, linked: &AcceptedLinked, bob: &Actor, decision: &Decided) {
     let moved = stuck
         .core
-        .move_stuck(&stuck.order, decision, bob)
+        .move_stuck_in_core(&stuck.order, decision, bob)
         .expect("moved");
     let Moved::CarriedOut {
-        effect,
+        effect: _,
         resolved: Resolved::Done,
         ..
     } = moved
@@ -1057,7 +1054,7 @@ fn handed_on_once(stuck: &mut Stuck, linked: &AcceptedLinked, bob: &Actor, decis
     };
     stuck
         .core
-        .hand_on(&stuck.order, &effect, bob)
+        .handed_on_on_tick(&stuck.order)
         .expect("handed on");
     let withdrawals = stuck
         .core
@@ -1086,10 +1083,6 @@ fn holding_account_whose_module_restarted_is_re_landed_from_the_log_before_a_rel
     let mut stuck = stuck_at_the_public_node();
     let wallet = stuck.wallet.clone();
     let order = stuck.order.as_str().to_owned();
-    stuck
-        .core
-        .accept_release(&wallet)
-        .expect("the release is accepted");
     let held = stuck.core.holdings().attributions();
     assert!(stuck.core.restart_module(&wallet.provider));
     assert!(
@@ -1134,6 +1127,60 @@ fn holding_account_whose_module_restarted_is_re_landed_from_the_log_before_a_rel
     handed_on_once(&mut stuck, &linked, &bob, &decided);
 }
 
+/// A landing Core owes at a holding account whose module runs no process now is not tried (`Landing::restore`'s
+/// `NotNow`, `T-020-46`, `T-024-21`; `T-020-61`, item 9's Low): the wallet's record gone, Core and its platform restart
+/// with every release held until the operator confirms it, so the wallet runs nothing, and the restarted Core asks it
+/// nothing and lands nothing. Once the operator confirmed its releases, a Core opened again lands the log's amount, once.
+// verifies: NFR-6, INV-1
+#[test]
+fn landing_owed_at_a_holding_account_that_runs_nothing_now_is_tried_once_it_runs() {
+    let names = [CHAIN_IN, RAMP_B, OUT_B];
+    let scenario = || Scenario::new("execution", "AC-6", given(&names));
+    let mut stuck = stuck_at_the_public_node();
+    let wallet = stuck.wallet.clone();
+    let order = stuck.order.as_str().to_owned();
+    let held = stuck.core.holdings().attributions();
+    assert!(stuck.core.restart_module(&wallet.provider));
+    assert!(
+        !wallet_holds(&mut stuck.core, &wallet, &order, "ask-1"),
+        "the wallet's record is gone"
+    );
+    stuck.core = scenario().restart_holding(stuck.core, 1, &mut Reference);
+    assert!(
+        stuck
+            .core
+            .fleet()
+            .platform
+            .awaiting_confirmation(&wallet.provider)
+            .is_some(),
+        "the wallet's release is held"
+    );
+    assert_eq!(
+        stuck.core.restore_transaction(NODE, &order),
+        None,
+        "no process runs, so no restore can go under a transaction now"
+    );
+    assert_eq!(
+        stuck.core.operations_received(&wallet.provider),
+        0,
+        "not now: since its platform restarted, the restarted Core asked the wallet nothing"
+    );
+    stuck
+        .core
+        .confirm_releases()
+        .expect("the operator confirms the releases");
+    stuck.core = scenario().reopen(stuck.core, 1, &mut Reference);
+    assert!(
+        wallet_holds(&mut stuck.core, &wallet, &order, "ask-2"),
+        "landed once the wallet runs"
+    );
+    assert_eq!(
+        stuck.core.holdings().attributions(),
+        held,
+        "attributed once"
+    );
+}
+
 /// The wallet's module restarts after the operator decided to hand the stuck order's value on, and the wallet's record
 /// of the order goes with it. Core, which ran on, reads the platform's report of the restart and restores in the account
 /// what the log holds for the order before the withdrawal, under a transaction of its own: the move is done, the order
@@ -1144,10 +1191,6 @@ fn stuck_order_is_handed_on_after_the_holding_accounts_module_restarts() {
     let mut stuck = stuck_at_the_public_node();
     let wallet = stuck.wallet.clone();
     let order = stuck.order.as_str().to_owned();
-    stuck
-        .core
-        .accept_release(&wallet)
-        .expect("the release is accepted");
     let linked = stuck
         .core
         .accept_linked(&linked_order(&stuck))
@@ -1183,10 +1226,6 @@ fn stuck_order_is_handed_on_after_the_holding_account_restarts_mid_run() {
     let mut stuck = stuck_at_the_public_node();
     let wallet = stuck.wallet.clone();
     let order = stuck.order.as_str().to_owned();
-    stuck
-        .core
-        .accept_release(&wallet)
-        .expect("the release is accepted");
     let linked = stuck
         .core
         .accept_linked(&linked_order(&stuck))
@@ -1264,10 +1303,6 @@ fn module_restarted_under_the_same_process_id_is_seen_as_restarted() {
     let mut stuck = stuck_at_the_public_node();
     let wallet = stuck.wallet.clone();
     let order = stuck.order.as_str().to_owned();
-    stuck
-        .core
-        .accept_release(&wallet)
-        .expect("the release is accepted");
     let held = stuck.core.holdings().attributions();
     let pid = stuck
         .core
@@ -1351,10 +1386,6 @@ fn pending_hand_on_is_rebuilt_from_the_log_through_the_assembly() {
     let names = [CHAIN_IN, RAMP_B, OUT_B];
     let mut stuck = stuck_at_the_public_node();
     let wallet = stuck.wallet.clone();
-    stuck
-        .core
-        .accept_release(&wallet)
-        .expect("the release is accepted");
     let linked = stuck
         .core
         .accept_linked(&linked_order(&stuck))
@@ -1367,10 +1398,10 @@ fn pending_hand_on_is_rebuilt_from_the_log_through_the_assembly() {
     };
     let moved = stuck
         .core
-        .move_stuck(&stuck.order, &decided, &bob)
+        .move_stuck_in_core(&stuck.order, &decided, &bob)
         .expect("moved");
     let Moved::CarriedOut {
-        effect,
+        effect: _,
         resolved: Resolved::Done,
         ..
     } = moved
@@ -1385,12 +1416,12 @@ fn pending_hand_on_is_rebuilt_from_the_log_through_the_assembly() {
         },
     );
     let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        stuck.core.hand_on(&stuck.order, &effect, &bob)
+        stuck.core.handed_on_on_tick(&stuck.order)
     }));
     assert!(crashed.is_err(), "the crash stopped Core");
     stuck.core =
         Scenario::new("execution", "AC-6", given(&names)).reopen(stuck.core, 1, &mut Reference);
-    let bob = staff(&stuck.core, "desk-b", "bob");
+    let _bob = staff(&stuck.core, "desk-b", "bob");
     let handed_on = |o: &rutent_contracts::state_machine::Observed| {
         matches!(
             o,
@@ -1415,7 +1446,7 @@ fn pending_hand_on_is_rebuilt_from_the_log_through_the_assembly() {
     );
     stuck
         .core
-        .hand_on(&stuck.order, &effect, &bob)
+        .handed_on_on_tick(&stuck.order)
         .expect("the hand-on, rebuilt from the log, completes");
     assert_eq!(
         inputs_of(&stuck.core, &stuck.order, handed_on),
@@ -1441,7 +1472,7 @@ fn pending_hand_on_is_rebuilt_from_the_log_through_the_assembly() {
     // move runs on it and settles.
     let ran = stuck
         .core
-        .run_linked(&stuck.order, &linked_order(&stuck), &linked)
+        .ran_on_tick(&linked.order)
         .expect("the linked order's route runs");
     let Some(Ran::Segments(done)) = ran.first() else {
         panic!("the linked order ran: {ran:?}")
@@ -1455,8 +1486,8 @@ fn pending_hand_on_is_rebuilt_from_the_log_through_the_assembly() {
 /// A stuck order whose value rests in the wallet's account, its linked order accepted, when Core reopens: the
 /// reopened Core holds the account's attribution of the order as the log has it, and the linked order's accepted
 /// route rebuilt from the log (its acceptance and the record its route was chosen by), so the operator's hand-on goes
-/// ahead on it. Then the linked order, stopped right after policy registered its authorisation, is started again from
-/// the log by a second reopening and runs its first move (`NFR-6`, `REQ-ORD-43`).
+/// ahead on it. Then the linked order, stopped right after policy decided its first move, is started again from the log
+/// by a second reopening and runs its first move (`NFR-6`, `REQ-ORD-43`).
 // verifies: NFR-6
 #[test]
 fn holdings_and_accepted_routes_of_a_reopened_order_are_rebuilt_from_the_log() {
@@ -1464,10 +1495,6 @@ fn holdings_and_accepted_routes_of_a_reopened_order_are_rebuilt_from_the_log() {
     let scenario = || Scenario::new("execution", "AC-6", given(&names));
     let mut stuck = stuck_at_the_public_node();
     let wallet = stuck.wallet.clone();
-    stuck
-        .core
-        .accept_release(&wallet)
-        .expect("the release is accepted");
     let linked = stuck
         .core
         .accept_linked(&linked_order(&stuck))
@@ -1488,21 +1515,21 @@ fn holdings_and_accepted_routes_of_a_reopened_order_are_rebuilt_from_the_log() {
     handed_on_once(&mut stuck, &linked, &bob, &decided);
     rutent_scenarios::harness::plant(
         &mut stuck.core,
+        // The linked order's authorisation is the customer's, registered at its acceptance (`T-020-61`, H2): the run
+        // stops right after policy decided its first move, before the effect is recorded.
         &rutent_scenarios::harness::Fault::CrashAfterRecord {
-            call: "authorise",
+            call: "decide",
             nth: 0,
         },
     );
     let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        stuck
-            .core
-            .run_linked(&stuck.order, &linked_order(&stuck), &linked)
+        stuck.core.ran_on_tick(&linked.order)
     }));
     assert!(crashed.is_err(), "the crash stopped Core");
     stuck.core = scenario().reopen(stuck.core, 1, &mut Reference);
     let ran = stuck
         .core
-        .run(&linked.order)
+        .ran_on_tick(&linked.order)
         .expect("the linked order runs on from the log");
     let Some(Ran::Segments(done)) = ran.first() else {
         panic!("the linked order ran: {ran:?}")
@@ -1522,10 +1549,6 @@ fn holdings_and_accepted_routes_of_a_reopened_order_are_rebuilt_from_the_log() {
 fn real_plain_wallets_re_serialised_answer_verifies_under_its_published_key() {
     let mut stuck = stuck_at_the_public_node();
     let wallet = stuck.wallet.clone();
-    stuck
-        .core
-        .accept_release(&wallet)
-        .expect("the release is accepted");
     let linked = stuck
         .core
         .accept_linked(&linked_order(&stuck))
@@ -1601,10 +1624,6 @@ fn hand_on_after_a_module_restart_restores_the_orders_whole_value_at_the_node() 
     let mut stuck = stuck_at_the_public_node();
     let wallet = stuck.wallet.clone();
     let order = stuck.order.as_str().to_owned();
-    stuck
-        .core
-        .accept_release(&wallet)
-        .expect("the release is accepted");
     let linked = stuck
         .core
         .accept_linked(&linked_order(&stuck))
@@ -1658,10 +1677,6 @@ fn handed_on_value_is_not_landed_again_after_core_reopens() {
     let mut stuck = stuck_at_the_public_node();
     let wallet = stuck.wallet.clone();
     let order = stuck.order.as_str().to_owned();
-    stuck
-        .core
-        .accept_release(&wallet)
-        .expect("the release is accepted");
     let linked = stuck
         .core
         .accept_linked(&linked_order(&stuck))
@@ -1696,10 +1711,6 @@ fn value_withdrawn_for_a_hand_on_is_not_landed_again_when_core_reopens_before_th
     let mut stuck = stuck_at_the_public_node();
     let wallet = stuck.wallet.clone();
     let order = stuck.order.as_str().to_owned();
-    stuck
-        .core
-        .accept_release(&wallet)
-        .expect("the release is accepted");
     let linked = stuck
         .core
         .accept_linked(&linked_order(&stuck))
@@ -1712,10 +1723,10 @@ fn value_withdrawn_for_a_hand_on_is_not_landed_again_when_core_reopens_before_th
     };
     let moved = stuck
         .core
-        .move_stuck(&stuck.order, &decided, &bob)
+        .move_stuck_in_core(&stuck.order, &decided, &bob)
         .expect("moved");
     let Moved::CarriedOut {
-        effect,
+        effect: _,
         resolved: Resolved::Done,
         ..
     } = moved
@@ -1735,7 +1746,7 @@ fn value_withdrawn_for_a_hand_on_is_not_landed_again_when_core_reopens_before_th
     );
     stuck
         .core
-        .hand_on(&stuck.order, &effect, &bob)
+        .handed_on_on_tick(&stuck.order)
         .expect("handed on");
     assert_eq!(attributed_at(&mut stuck.core, NODE), Vec::new());
 }
@@ -1794,10 +1805,6 @@ fn holding_account_answer_reads_the_deployments_register_not_holdings_carried_ac
     );
 
     // The hand-on the register no longer backs is refused.
-    stuck
-        .core
-        .accept_release(&stuck.wallet.clone())
-        .expect("the release is accepted");
     let linked = stuck
         .core
         .accept_linked(&linked_order(&stuck))
@@ -1826,8 +1833,6 @@ fn stuck_before_the_second_ramp() -> Stuck {
     let wallet = core
         .install_wallet(NODE, "USDC")
         .expect("the wallet is installed");
-    core.accept_release(&wallet)
-        .expect("the release is accepted");
     let asked = request(
         "req-stuck",
         &session,
@@ -1842,7 +1847,7 @@ fn stuck_before_the_second_ramp() -> Stuck {
     let order = accepted(&mut core, asked);
     let part = core.first_part(&order).expect("a started order");
     core.faults.refuse_begin = Some(2);
-    core.run(&order).expect("the order runs");
+    core.ran_on_tick(&order).expect("the order runs");
     assert_eq!(core.tick().landed, 1, "the schedule lands the value");
     core.leave_no_route(&order).expect("the part is stuck");
     assert!(core.is_stuck(&order, &part));
@@ -1894,7 +1899,7 @@ fn linked_first_move_failed() -> (Stuck, LinkedOrder, AcceptedLinked, Id) {
     );
     let ran = stuck
         .core
-        .run_linked(&stuck.order, &asked, &linked)
+        .ran_on_tick(&linked.order)
         .expect("the linked order's route runs");
     let Some(Ran::Segments(done)) = ran.first() else {
         panic!("the linked order ran: {ran:?}")
@@ -1921,7 +1926,7 @@ fn linked_orders_reversal_back_into_a_held_node_is_confirmed_by_the_nodes_wallet
     let wallet = stuck.wallet.clone();
     let owing = stuck
         .core
-        .owe_reversal(&linked.order, &segment)
+        .owed_reversal(&linked.order, &segment)
         .expect("the reversal is owed");
     assert_eq!(owing.provider.as_str(), RAMP_C, "owed by the failed ramp");
 
@@ -1935,7 +1940,7 @@ fn linked_orders_reversal_back_into_a_held_node_is_confirmed_by_the_nodes_wallet
         }
         let answer = stuck
             .core
-            .confirm_reversal(&linked.order, &segment)
+            .confirmed_on_tick(&linked.order, &segment)
             .expect("the wallet is asked");
         assert!(
             matches!(
@@ -1967,7 +1972,7 @@ fn linked_orders_reversal_back_into_a_held_node_is_confirmed_by_the_nodes_wallet
         .credit_wallet(&wallet.provider, owing.transaction.as_str(), "USDC", AMOUNT);
     let answer = stuck
         .core
-        .confirm_reversal(&linked.order, &segment)
+        .confirmed_on_tick(&linked.order, &segment)
         .expect("the wallet is asked");
     let Confirmation::Completed(done) = answer else {
         panic!("completed: {answer:?}")
@@ -2017,7 +2022,7 @@ fn returned_value_retired_by_a_recalculation_is_rebuilt_after_core_reopens() {
     let wallet = stuck.wallet.clone();
     let owing = stuck
         .core
-        .owe_reversal(&linked.order, &segment)
+        .owed_reversal(&linked.order, &segment)
         .expect("the reversal is owed");
     // The world's credit back into the account: it stands in for the network reader's confirmation (`T-020-60`).
     stuck
@@ -2025,7 +2030,7 @@ fn returned_value_retired_by_a_recalculation_is_rebuilt_after_core_reopens() {
         .credit_wallet(&wallet.provider, owing.transaction.as_str(), "USDC", AMOUNT);
     let answer = stuck
         .core
-        .confirm_reversal(&linked.order, &segment)
+        .confirmed_on_tick(&linked.order, &segment)
         .expect("the wallet is asked");
     assert!(matches!(answer, Confirmation::Completed(_)), "{answer:?}");
     stuck.core.tick();
@@ -2035,9 +2040,9 @@ fn returned_value_retired_by_a_recalculation_is_rebuilt_after_core_reopens() {
     );
 
     // Recalculated from the node: the reversed move is retired, and the new route waits to run.
-    let recalculated = match stuck
+    let _recalculated = match stuck
         .core
-        .recalculate(&linked.order)
+        .recalculated_on_tick(&linked.order)
         .expect("the part is recalculated")
     {
         Recalculation::Recalculated(recalculated) => recalculated,
@@ -2069,7 +2074,7 @@ fn returned_value_retired_by_a_recalculation_is_rebuilt_after_core_reopens() {
     // The new route's first move takes the value out of the node: its landing is released, once.
     stuck
         .core
-        .run_recalculated(&linked.order, &recalculated)
+        .ran_once_on_tick(&linked.order)
         .expect("the recalculated route runs");
     stuck.core.tick();
     stuck.core.tick();
@@ -2106,7 +2111,7 @@ fn reversal_is_asked_of_the_holder_the_log_names_after_the_node_is_registered_ag
         .expect("the node is registered to another module");
     let owing = stuck
         .core
-        .owe_reversal(&linked.order, &segment)
+        .owed_reversal(&linked.order, &segment)
         .expect("the reversal is owed");
     // The world's credit back into the account: it stands in for the network reader's confirmation (`T-020-60`).
     stuck
@@ -2114,7 +2119,7 @@ fn reversal_is_asked_of_the_holder_the_log_names_after_the_node_is_registered_ag
         .credit_wallet(&wallet.provider, owing.transaction.as_str(), "USDC", AMOUNT);
     let answer = stuck
         .core
-        .confirm_reversal(&linked.order, &segment)
+        .confirmed_on_tick(&linked.order, &segment)
         .expect("the holder the log names is asked");
     let Confirmation::Completed(done) = answer else {
         panic!("completed: {answer:?}")
@@ -2140,10 +2145,10 @@ fn holder_with_no_release_in_force_is_not_asked_and_the_reversal_stays_owed() {
         .expect("the release is revoked");
     let owing = stuck
         .core
-        .owe_reversal(&linked.order, &segment)
+        .owed_reversal(&linked.order, &segment)
         .expect("the reversal is owed");
     let asked = stuck.core.operations_received(&wallet.provider);
-    let refused = stuck.core.confirm_reversal(&linked.order, &segment);
+    let refused = stuck.core.confirmed_on_tick(&linked.order, &segment);
     assert!(
         matches!(
             &refused,
@@ -2160,7 +2165,7 @@ fn holder_with_no_release_in_force_is_not_asked_and_the_reversal_stays_owed() {
     assert_eq!(
         stuck
             .core
-            .owe_reversal(&linked.order, &segment)
+            .owed_reversal(&linked.order, &segment)
             .expect("still owed")
             .transaction,
         owing.transaction
@@ -2279,5 +2284,213 @@ fn public_node_cannot_be_unlisted_while_a_segment_or_holding_rests_there() {
             }
         ),
         "no route through the unlisted node: {told:?}"
+    );
+}
+
+/// A stuck part handed on and its linked order, each on Core's own ticks (`T-020-61`, item 3): the operator decides the
+/// hand-on and another desk moves it through Core's entry points; the next tick hands the part on, on the wallet's own
+/// record of the withdrawal, and the one after registers the linked order's authorisation as its acceptance names it,
+/// builds what it runs on from the log, and runs it from the node. No test's call carries either out.
+// verifies: REQ-ORD-43
+#[test]
+fn linked_order_and_its_hand_on_run_on_cores_ticks() {
+    let mut stuck = stuck_at_the_public_node();
+    let wallet = stuck.wallet.clone();
+    let linked = stuck
+        .core
+        .accept_linked(&linked_order(&stuck))
+        .expect("the linked order is accepted");
+    let (bob, decision) = operator_decides(&mut stuck, &linked, &wallet.provider);
+    let decision = decision.expect("asked");
+    let carries_out = Decided {
+        request: decision.request.clone(),
+        decision: decision.decision.clone(),
+    };
+    let moved = rutent_core_orch::stuck::move_stuck(
+        &mut stuck.core.ports(),
+        &stuck.order,
+        &carries_out,
+        &bob,
+    )
+    .expect("moved");
+    assert!(
+        matches!(
+            moved,
+            Moved::CarriedOut {
+                resolved: Resolved::Done,
+                ..
+            }
+        ),
+        "{moved:?}"
+    );
+    assert!(
+        stuck.core.started(&linked.order).is_none(),
+        "not started yet"
+    );
+    let round = stuck.core.tick();
+    let handed = round
+        .runs
+        .handed_on(&stuck.order)
+        .cloned()
+        .expect("the tick hands the part on")
+        .expect("handed on");
+    assert_eq!(node_name(&handed.at.node), NODE);
+    assert!(
+        stuck.core.verified_whats().iter().any(|w| matches!(
+            w,
+            What::HoldingWithdrawal { order, .. } if *order == linked.order
+        )),
+        "the holding account's record starts the linked order"
+    );
+    let round = stuck.core.tick();
+    assert!(
+        round.runs.started.contains(&linked.order),
+        "built from the log"
+    );
+    let ran = round
+        .runs
+        .ran(&linked.order)
+        .expect("the linked order runs");
+    let Some(Ran::Segments(done)) = ran.first() else {
+        panic!("the linked order ran: {ran:?}")
+    };
+    assert!(
+        matches!(done[0].outcome, SegmentOutcome::Settled { .. }),
+        "{done:?}"
+    );
+    // Both orders' records point to each other: the hand-on's input on the first, the route handed on from it on the second.
+    let inputs = stuck.core.inputs();
+    assert!(inputs.iter().any(|i| i.subject.order.as_str() == stuck.order.as_str()
+        && matches!(&i.observed, rutent_contracts::state_machine::Observed::HandedOn { linked_order, .. }
+            if linked_order.as_str() == linked.order.as_str())));
+    assert!(inputs.iter().any(|i| i.subject.order.as_str() == linked.order.as_str()
+        && matches!(&i.observed, rutent_contracts::state_machine::Observed::RouteChosen { handed_on_from: Some(from), .. }
+            if from.as_str() == stuck.order.as_str())));
+}
+
+/// A linked order is accepted by Core itself (`T-020-61`, item 10; the review of #355, H2): routed from the node by the
+/// rounds, planned, the quote shown and the customer's acceptance taken on the starting provider's yes; the customer's
+/// inputs kept as the operator's statement of them, the log holding its commitment, and read back when Core starts the
+/// order; and the authorisation the acceptance names given by the customer under its own floor, as policy holds it in force.
+// verifies: REQ-ORD-43
+#[test]
+fn linked_order_is_accepted_by_core_with_the_customers_inputs_logged() {
+    use rutent_contracts::core_internal::ORDER_INPUTS_SHAPE;
+    use rutent_contracts::router_api::PositiveAmount as Floor;
+    use rutent_core_orch::schedule::Ports as _;
+    let mut stuck = stuck_at_the_public_node();
+    let mut asked = linked_order(&stuck);
+    let floor = Floor::new("900000".to_owned()).expect("a floor");
+    asked.floor = Some(floor.clone());
+    let linked = stuck
+        .core
+        .accept_linked(&asked)
+        .expect("Core accepts the linked order");
+    // The customer's inputs, kept: the log holds the commitment of the operator's statement of them, and Core reads them back.
+    let commitment = linked.inputs.clone().expect("the inputs were kept");
+    assert!(
+        stuck.core.log().entries().iter().any(|(_, e)| matches!(e,
+            Entry::Stated(s) if s.what.statement.as_str() == ORDER_INPUTS_SHAPE && s.commitment == commitment)),
+        "the log holds the inputs' commitment"
+    );
+    let history = stuck.core.log().entries().to_vec();
+    let mut ports = stuck.core.ports();
+    let read = rutent_core_orch::intake::linked::linked_inputs(
+        &history,
+        &mut |c| ports.kept(c),
+        &linked.order,
+    );
+    assert_eq!(read, asked.inputs, "read back as the customer gave them");
+    // The authorisation the acceptance names: the customer's, under its own floor, in force.
+    let authorised = ports
+        .in_force(&linked.order, &linked.authorisation)
+        .expect("policy holds it in force");
+    assert_eq!(authorised.given_by, kit::customer());
+    assert_eq!(authorised.floor, Some(floor));
+    // The quote shown and the customer's acceptance, by the customer, naming that authorisation.
+    assert!(stuck.core.verified_whats().iter().any(|w| matches!(w,
+        What::Shown { order, .. } if *order == linked.order)));
+    assert!(stuck.core.verified_whats().iter().any(|w| matches!(w,
+        What::Acceptance { order, authorisation, .. } if *order == linked.order && *authorisation == linked.authorisation)));
+    assert_eq!(
+        linked.route.plan.len(),
+        1,
+        "one part, planned from the node"
+    );
+}
+
+/// A restart between a return's landing and its recalculation lands nothing twice (`T-020-61`, the review Lows of
+/// `T-020-57`): the reversal of the linked order's first move completes on the wallet's word and Core's tick lands the
+/// value again, its run held off for that tick; Core reopens, and the wallet holds exactly the value, once, before the
+/// part is recalculated and after; the recalculated route then takes it out of the node, and its landing is released once.
+// verifies: NFR-6, INV-4
+#[test]
+fn return_landed_before_a_restart_is_not_landed_again_before_its_recalculation() {
+    use rutent_core_orch::recalc::Recalculation;
+    use rutent_core_orch::reversal::Confirmation;
+    use rutent_core_orch::schedule::Job;
+    let (mut stuck, _, linked, segment) = linked_first_move_failed();
+    let wallet = stuck.wallet.clone();
+    let owing = stuck
+        .core
+        .owed_reversal(&linked.order, &segment)
+        .expect("the reversal is owed");
+    stuck
+        .core
+        .credit_wallet(&wallet.provider, owing.transaction.as_str(), "USDC", AMOUNT);
+    let answer = stuck
+        .core
+        .confirmed_on_tick(&linked.order, &segment)
+        .expect("the wallet is asked");
+    assert!(matches!(answer, Confirmation::Completed(_)), "{answer:?}");
+    // The landing's tick, Core's run held off by the operator's cadence, so the restart falls before the recalculation.
+    stuck.core.set_cadence(Job::Run, u64::MAX);
+    stuck.core.tick();
+    let exactly = |core: &mut Core, asking: &str| {
+        wallet_holds(
+            core,
+            &wallet,
+            linked.order.as_str(),
+            &format!("{asking}-once"),
+        ) && !wallet_holds_at_least(
+            core,
+            &wallet,
+            linked.order.as_str(),
+            &format!("{asking}-twice"),
+            &(2 * AMOUNT.parse::<u128>().unwrap()).to_string(),
+        )
+    };
+    assert!(exactly(&mut stuck.core, "ask-landed"), "landed again, once");
+    let names = [CHAIN_IN, RAMP_B, RAMP_C, OUT_C];
+    stuck.core =
+        Scenario::new("execution", "AC-6", given(&names)).reopen(stuck.core, 1, &mut Reference);
+    stuck.core.tick();
+    assert!(
+        exactly(&mut stuck.core, "ask-reopened"),
+        "a reopened Core lands nothing again"
+    );
+    // Core's run on again: the part is recalculated from the node, and the wallet still holds the value once.
+    stuck.core.set_cadence(Job::Run, 0);
+    assert!(
+        matches!(
+            stuck.core.recalculated_on_tick(&linked.order),
+            Ok(Recalculation::Recalculated(_))
+        ),
+        "recalculated after the restart"
+    );
+    assert!(
+        exactly(&mut stuck.core, "ask-recalculated"),
+        "nothing landed twice"
+    );
+    stuck
+        .core
+        .ran_once_on_tick(&linked.order)
+        .expect("the recalculated route runs");
+    stuck.core.tick();
+    stuck.core.tick();
+    assert_eq!(
+        stuck.core.holdings().attributions(),
+        [(NODE.to_owned(), Vec::new())],
+        "released once the value left the node: the account holds nothing for any order"
     );
 }

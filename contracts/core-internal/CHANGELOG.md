@@ -1,6 +1,46 @@
 # core-internal changelog
 
 ## 1.0.0
+- `T-020-61` (the coordinator's ruling on round 3 of #355; `REQ-ORD-3`, `NFR-6`): `REVERSAL_RETRIES_JOB`
+  (`reversal_retries`), the name a `cadence` setting gives how often Core asks a failed segment's reversal again (its
+  confirmation of the origin reserve, and an ask its provider refused), named for no provider; the `job` field's
+  description says so. Core holds it as it holds every setting, and again on reopening; until it is set, Core's own
+  default. No shape changes and no relation of its own, so the relation count is unmoved. Folded into this unreleased
+  version. Fixture: valid `decision-request-to-set-the-reversal-retry-cadence`. Ignorable: yes, a reader that ignores
+  it keeps Core's default cadence. (DEC-4, DEC-20, T-020-61)
+- `T-020-61` (the review of #355's round 2, H1; `REQ-ORD-3`, `INV-8`): the row `reversal-is-asked-again-only-after-a-refusal`
+  (none other): an `ask_reversal` effect is refused where an earlier `ask_reversal` effect of the same order and segment
+  has a result other than `failed`, or none. Each ask goes under a transaction of its own, so a provider can't tell a second
+  ask from a new reversal of the same move: an ask whose outcome is unknown, or one the provider said it carried out, is
+  never followed by another; only one that failed, moving nothing, may be. And `repeat-is-of-an-unsettled-segment-at-its-provider`
+  also admits a `repeat_operation` or `read_recorded_answer` of a failed segment whose `ask_reversal` has no final result,
+  under a transaction a stated `operation` about the segment names (the reversal's own), so a reversal whose outcome is
+  unknown is resolved as a segment's is (item (8)), never asked again. Admission cases: `--after-a-refusal` (admitted),
+  `--after-an-ask-whose-outcome-is-unknown`, `--after-an-ask-with-no-result`, `--after-an-ask-the-provider-carried-out`
+  (refused), and the repeat row's `--a-read-of-a-reversal-whose-outcome-is-unknown`, `--a-repeat-of-a-reversal-whose-outcome-is-unknown`
+  (admitted), `--a-read-of-a-reversal-the-provider-carried-out` (refused). One relation more. Folded into this unreleased
+  version. Ignorable: no, a reader that ignored it would admit a second reversal of one move. (DEC-4, DEC-20, T-020-61)
+- `T-020-61` (item 10, the coordinator's ruling on #355's round 1; `REQ-ORD-12`, `REQ-ORD-11`, `REQ-AUZ-1`):
+  `Action::EndOrder {order}` (`end_order`) and `Action::DisputeFault {order, segment}` (`dispute_fault`), the customer's
+  request to end an order without completing and the named party's dispute of a provider's showing of fault, each a
+  decision of policy's asked by the order's requester in the customer's role or by an operator's login holding the
+  permission. Neither takes an effect (`Effect::check` refuses one): Core records `end_requested`, or declares the part
+  stuck in a dispute, on the permit. No relation of their own, so the relation count is unmoved. Folded into this
+  unreleased version. Fixtures: valid `decision-request-to-end-an-order`, `decision-request-to-dispute-a-fault`; invalid
+  `…-to-end-an-order-without-its-order`, `…-to-dispute-a-fault-without-its-segment` (two schema rules more). Ignorable: no.
+  (DEC-4, DEC-20, T-020-61)
+- `T-020-61` (item 10, the review of #355, M2; `INV-8`, `NFR-6`): `Action::ReadRecordedAnswer {order, segment, provider,
+  transaction}` (`read_recorded_answer`), Core reading back the answer the platform recorded for a segment's own operation,
+  where Core recorded the move's effect and lost its answer in a stop, at a provider that declares neither a status query nor
+  a safe repeat: a decided action, taken as an effect before the platform is asked, which hands over its record's answer,
+  runs no module and moves nothing. It names the segment's own transaction, and `repeat-is-of-an-unsettled-segment-at-its-provider`
+  holds it as it does a repeat (its provider the move's, its transaction the segment's, the move with no final outcome), so
+  the relation count is unmoved. Folded into this unreleased version. Fixtures: valid `decision-request-to-read-a-recorded-answer`;
+  invalid `decision-request-to-read-a-recorded-answer-without-its-transaction` (one schema rule more); admission cases
+  (review round 2 of #355, M1) `world--decide_read_recorded`, `world--effect_read_recorded`, and refused
+  `--a-read-at-another-provider`, `--a-read-of-a-settled-segment`, `--a-read-under-another-segments-transaction`, so the
+  relation's arm for the read is held by cases of its own. Ignorable: no, it is a decided action a reader that ignored
+  would carry out undecided. (DEC-4, DEC-20, T-020-61)
 - `T-020-67` (the milestone reviewer's check of `T-020-58`, review round 2 of #351; `REQ-ORD-41`, `NFR-5`):
   `Action::ReadNodeRecord` gains `by` (`grading` or `tick`, `ReadBy`), who asked: a segment's grading, or the tick's read of the
   publishers' records, so a reopened Core counts each one's reads from the log and a restart after many tick reads leaves

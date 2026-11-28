@@ -15,28 +15,30 @@
 //! keeps the rest. No simulated provider stands in for a publisher's holding account, so a scenario installs the plain
 //! wallet as one ([`Core::install_publisher_account`]).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use rutent_contracts::core_internal::calls::{Comparisons, Measures, Operator, StuckOrders};
-use rutent_contracts::core_internal::{Actor, Entry, Receipt};
-use rutent_contracts::router_api::{DecisionRecord, Id, PolicyBounds};
+use rutent_contracts::core_internal::{Actor, Authorisation, Entry, Receipt};
+use rutent_contracts::router_api::{Id, PolicyBounds};
 use rutent_core_audit::compare::Compare;
 use rutent_core_audit::log::General;
 use rutent_core_orch::arrival::Arrivals;
 use rutent_core_orch::closing::PriceDesk;
 use rutent_core_orch::intake::Desk;
+use rutent_core_orch::intake::Intake;
 use rutent_core_orch::notice::{Channel, NoticeKey, Notices, Transport};
 use rutent_core_orch::reversal::{Moving, Parts as ReversalParts, Reversals};
 use rutent_core_orch::rounds::Fresh as _;
 use rutent_core_orch::schedule::{
-    Actors, Job, Jobs, Ports, PublicAccount, PublisherAccount, Round, Started, StuckLent,
+    Actors, Job, Jobs, MoverLent, Ports, PublicAccount, PublisherAccount, RecalculationsLent,
+    Round, StuckLent,
 };
-use rutent_core_orch::segments::{Landings, NoProxy, Parts as SegmentParts, Segments};
+use rutent_core_orch::segments::{Landings, Parts as SegmentParts, Segments};
 use rutent_core_orch::snapshot::Clock;
-use rutent_core_orch::stuck::{OperatorSigns, Parts as StuckParts, Stuck};
+use rutent_core_orch::stuck::{Mover, OperatorSigns, Parts as StuckParts, Stuck};
 use rutent_prov::catalogue::Catalogue;
 
-use super::{AssemblyError, Core, CoreLog, Running};
+use super::{AssemblyError, Core, CoreLog, NoProxy, Running};
 use crate::kit::{self, RealKey, SharedClock};
 use crate::sim::InstalledWallet;
 
@@ -59,8 +61,10 @@ impl Core {
         let mut schedule = std::mem::take(&mut self.schedule);
         let round = schedule.tick(now, &mut Jobs::new(&mut Due(self)));
         self.schedule = schedule;
-        // What the round answered, kept for the readers that ask after it.
-        for tried in &round.statuses {
+        // What the round answered, kept for the readers that ask after it: the run's own questions after each part, and
+        // the schedule's again.
+        let run_asked = round.runs.parts.iter().flat_map(|p| p.asked.iter());
+        for tried in run_asked.chain(round.statuses.iter()) {
             self.life.status_asks.insert(
                 (
                     tried.unknown.order.as_str().to_owned(),
@@ -74,8 +78,28 @@ impl Core {
             );
         }
         self.closed.took(&round.priced);
+        for part in &round.runs.parts {
+            // A reversal completed: what was told of the part's recalculation before it is superseded.
+            if part.reversed.iter().any(|r| r.completed()) {
+                self.recalculations_told.remove(part.order.as_str());
+            }
+            if let Some(recalculated) = &part.recalculated {
+                self.recalculations_told
+                    .insert(part.order.as_str().to_owned(), recalculated.clone());
+            }
+        }
+        self.told_reversals(&round);
         let _ = self.feed();
         round
+    }
+
+    /// The recalculation Core's run tried for `order` on a tick since this was last taken, as the round told it: what the
+    /// operator's view reads of it. Taken once.
+    pub fn take_recalculation(
+        &mut self,
+        order: &Id,
+    ) -> Option<Result<rutent_core_orch::recalc::Recalculation, String>> {
+        self.recalculations_told.remove(order.as_str())
     }
 
     /// Sets how often `job` runs, through the operator's command (`Core::set_setting`, `T-020-49`): decided by
@@ -88,6 +112,21 @@ impl Core {
     pub fn set_cadence(&mut self, job: Job, seconds: u64) {
         self.set_setting(&cadence(job.name(), seconds, None))
             .expect("the job's cadence is set");
+    }
+
+    /// Sets how often Core asks a failed segment's reversal again, its confirmation or an ask its provider refused,
+    /// through the operator's command, as [`Core::set_cadence`] does (`reversal_retries`, `T-020-61`).
+    ///
+    /// # Panics
+    ///
+    /// If policy doesn't permit the setting.
+    pub fn set_reversal_retry_cadence(&mut self, seconds: u64) {
+        self.set_setting(&cadence(
+            rutent_contracts::core_internal::REVERSAL_RETRIES_JOB,
+            seconds,
+            None,
+        ))
+        .expect("the reversals' retry cadence is set");
     }
 
     /// Sets how often a segment unknown at `provider` is asked its status again, through the operator's command, as
@@ -106,7 +145,7 @@ impl Core {
     /// scenarios plant to show Core's tick holds such a tuple to the floor window (`T-020-63`). Whether the order is one
     /// Core started.
     pub fn plant_unpriced_route(&mut self, order: &Id) -> bool {
-        let Some(started) = self.started.get_mut(order.as_str()) else {
+        let Some(started) = self.intake.started_mut(order) else {
             return false;
         };
         started.record.snapshot.figures.retain(|figure| {
@@ -120,8 +159,8 @@ impl Core {
     }
 
     /// Installs the plain wallet as the account `publisher` keeps for the private node `node`, holding `asset`: the
-    /// platform runs it, the catalogue records it as the node's holding account, and the deployment's register of
-    /// holding accounts names it, its publisher and its asset, so the schedule reads it as the publisher's word, and
+    /// platform runs it once Core's decided accept takes its release (`Core::accept_release`), the catalogue records
+    /// it as the node's holding account, and the deployment's register of holding accounts names it, its publisher and its asset, so the schedule reads it as the publisher's word, and
     /// reads it again after Core reopens. The node must be one a provider joined to the catalogue declares private.
     ///
     /// # Errors
@@ -151,27 +190,9 @@ impl Core {
                     decimals: DECIMALS,
                 },
             );
+        // Its release runs once Core's decided accept takes it (`T-020-61`).
+        self.accept_release(&wallet)?;
         Ok(wallet)
-    }
-
-    /// The private nodes' accounts the deployment's register names, listed again in the reopened catalogue, as
-    /// [`Core::install_publisher_account`] listed them (the review's S1).
-    pub(super) fn relist_publisher_accounts(&mut self) {
-        let accounts: Vec<PublisherAccount> = self
-            .deployed
-            .registers
-            .borrow()
-            .publisher_accounts
-            .values()
-            .cloned()
-            .collect();
-        for account in accounts {
-            let _ = self.catalogue.register_private_holding(
-                &account.node,
-                &account.publisher,
-                &account.module,
-            );
-        }
     }
 
     /// Confirms the failed outcome a mover reported for the unknown `segment` of `order`, as Core does
@@ -229,8 +250,8 @@ impl Core {
     > {
         use rutent_core_orch::closing::publishers;
         let Some(bounds) = self
-            .started
-            .get(order.as_str())
+            .intake
+            .started(order)
             .map(|started| started.record.bounds.clone())
         else {
             return Vec::new();
@@ -298,8 +319,18 @@ impl Core {
     }
 }
 
-/// The deployment's ports over a [`Core`]: each reads, asks or lends, and decides nothing.
-struct Due<'a>(&'a mut Core);
+/// The deployment's ports over a [`Core`]: each reads, asks or lends, and decides nothing. A scenario hands an operator's
+/// command to Core's entry point over them ([`Core::ports`]), as the deployment's own transport would.
+pub struct Due<'a>(pub(super) &'a mut Core);
+
+impl Core {
+    /// The deployment's ports over this Core, for a call to one of Core's entry points (`T-020-61`): the operator's
+    /// decided commands on a stuck order (`rutent_core_orch::stuck::decide_stuck`, `move_stuck`) and the reported
+    /// failure's confirmation. The deployment's transport hands those to Core so; nothing here decides anything.
+    pub fn ports(&mut self) -> Due<'_> {
+        Due(self)
+    }
+}
 
 impl Due<'_> {
     /// The operator's key, signing as the operator at Core's clock, for `with`; the world's clock set to Core's.
@@ -329,16 +360,170 @@ impl Ports for Due<'_> {
         }
     }
 
-    fn started(&self) -> &BTreeMap<String, Started> {
-        &self.0.started
-    }
-
     fn history(&self) -> Vec<(Receipt, Entry)> {
         self.0.log.borrow().entries().to_vec()
     }
 
-    fn decision_record(&self, order: &Id, id: &Id) -> Option<DecisionRecord> {
-        self.0.record_of(order, id).ok()
+    fn kept(&mut self, commitment: &rutent_contracts::module_interface::Digest) -> Option<Vec<u8>> {
+        let core = &mut *self.0;
+        let kept = rutent_contracts::core_internal::calls::KeptStatements::kept(
+            &mut super::Reading {
+                kept: &mut core.kept,
+                through: core.kept_through.as_deref_mut(),
+            },
+            commitment,
+        )
+        .ok()??;
+        rutent_core_audit::receipts::store::bearing_out(&kept)
+    }
+
+    fn in_force(&mut self, order: &Id, authorisation: &Id) -> Option<Authorisation> {
+        let logged: Vec<Entry> = self
+            .0
+            .log
+            .borrow()
+            .entries()
+            .iter()
+            .map(|(_, e)| e.clone())
+            .collect();
+        super::authorised(&logged, order, authorisation)
+    }
+
+    fn intake(&self) -> &Intake {
+        &self.0.intake
+    }
+
+    fn arrivals(&self) -> &Arrivals {
+        &self.0.arrivals
+    }
+
+    fn mover(&self) -> &Mover {
+        &self.0.mover
+    }
+
+    fn with_intake(&mut self, with: &mut dyn FnMut(&mut Intake)) {
+        with(&mut self.0.intake);
+    }
+
+    fn with_authorisations(
+        &mut self,
+        with: &mut dyn FnMut(&mut dyn rutent_contracts::core_internal::calls::Authorisations),
+    ) {
+        let mut policy = self.0.policy.clone();
+        with(&mut policy);
+    }
+
+    fn with_recalculations(&mut self, with: &mut RecalculationsLent<'_>) {
+        let core = &mut *self.0;
+        let mut charges = core.policy.clone();
+        let mut persons = core.policy.clone();
+        let mut asking = super::Asking {
+            fleet: &mut core.fleet,
+            clock: &core.clock,
+        };
+        let log = std::rc::Rc::clone(&core.log);
+        let recorded = super::LogNow(&log);
+        let mut kept = super::Reading {
+            kept: &mut core.kept,
+            through: core.kept_through.as_deref_mut(),
+        };
+        let mut parts = rutent_core_orch::recalc::Parts {
+            catalogue: &mut core.catalogue,
+            clock: &core.clock,
+            exposures: &mut core.exposures,
+            releases: &core.releases,
+            log: &mut core.general,
+            evidence: &mut core.keeper,
+            charges: &mut charges,
+            persons: &mut persons,
+            providers: &mut asking,
+            operator_key: &mut core.signer,
+            fresh: &mut core.fresh,
+            issued: &mut core.issued,
+            segments: &mut core.segments,
+            kept: &mut kept,
+            recorded: &recorded,
+        };
+        with(&mut core.life.recalculations, &mut parts, &core.prices);
+    }
+
+    fn with_hand_on(
+        &mut self,
+        with: &mut dyn FnMut(
+            &mut rutent_core_orch::hand_on::HandOn,
+            &mut rutent_core_orch::hand_on::Parts<'_>,
+        ),
+    ) {
+        let core = &mut *self.0;
+        let mut parts = rutent_core_orch::hand_on::Parts {
+            clock: &core.clock,
+            log: &mut core.general,
+            fresh: &mut core.fresh,
+            segments: &mut core.segments,
+            exposures: &mut core.exposures,
+            stuck: &mut core.stuck,
+        };
+        with(&mut core.hand_on, &mut parts);
+    }
+
+    fn with_mover(&mut self, with: &mut MoverLent<'_>) {
+        let core = &mut *self.0;
+        let operator = kit::operator();
+        let mut policy = core.policy.clone();
+        let resting = core.segments.resting_totals();
+        let readings = core.readings.clone();
+        readings.refresh(&core.fleet.platform.world);
+        let running = std::cell::RefCell::new(Running {
+            platform: &mut core.fleet.platform,
+            clock: &core.clock,
+            faults: &mut core.faults,
+            feed: &mut core.feed,
+            log: &core.log,
+            swap_to: core.swap_to.as_deref_mut(),
+            readings: &readings,
+        });
+        let mut parts = StuckParts {
+            clock: &core.clock,
+            log: &mut core.general,
+            fresh: &mut core.fresh,
+            issued: &core.issued,
+            segments: &mut core.segments,
+            exposures: &mut core.exposures,
+        };
+        let mut no_proxy = NoProxy;
+        // The hand-on's reach (`T-020-26`): the operator's holding accounts, run on the platform the move's other calls go
+        // to; the linked orders' accepted routes; and the log's own handle, read as it stands each time.
+        let mut modules = super::holding::Shared(&running);
+        let mut wallets = super::holding::HeldWallets {
+            holdings: &core.holdings,
+            running: &running,
+            bounds: &core.bounds,
+            resting,
+        };
+        let accepted = super::holding::Accepted(&core.linked);
+        let log = super::holding::LogHandle(std::rc::Rc::clone(&core.log));
+        let mut delivering = core
+            .mover
+            .on(rutent_core_orch::stuck::Ports {
+                modules: &mut modules,
+                uses: &mut no_proxy,
+                evidence: &mut core.keeper,
+                catalogue: &core.catalogue,
+                operator_key: &mut core.signer,
+                bounds: &core.bounds,
+                operator: &operator,
+            })
+            .handing_on(rutent_core_orch::stuck::HandingOn {
+                withdrawals: &mut wallets,
+                routes: &accepted,
+                log: &log,
+            });
+        with(
+            &mut core.stuck,
+            &mut parts,
+            &mut policy as &mut dyn StuckOrders,
+            &mut delivering,
+        );
     }
 
     fn segments(&self) -> &Segments {
@@ -499,6 +684,44 @@ impl Ports for Due<'_> {
             operator: &operator,
         };
         with(&mut core.life.reversals, &mut parts, &mut moving);
+    }
+
+    fn with_reversal_desk(&mut self, with: &mut rutent_core_orch::schedule::ReversalsLent<'_>) {
+        let core = &mut *self.0;
+        let (core_actor, operator) = (kit::core(), kit::operator());
+        let readings = core.readings.clone();
+        readings.refresh(&core.fleet.platform.world);
+        let mut running = Running {
+            platform: &mut core.fleet.platform,
+            clock: &core.clock,
+            faults: &mut core.faults,
+            feed: &mut core.feed,
+            log: &core.log,
+            swap_to: core.swap_to.as_deref_mut(),
+            readings: &readings,
+        };
+        let mut decisions = core.policy.clone();
+        let mut actors = super::Acting(std::rc::Rc::clone(&core.deployed.registers));
+        let mut desk = rutent_core_orch::schedule::ReversalDesk {
+            key: &mut core.signer,
+            decisions: &mut decisions,
+            platform: &mut running,
+            stuck: &mut core.stuck,
+            actors: &mut actors,
+        };
+        let mut parts = ReversalParts {
+            clock: &core.clock,
+            catalogue: &mut core.catalogue,
+            log: &mut core.general,
+            evidence: &mut core.keeper,
+            fresh: &mut core.fresh,
+            issued: &core.issued,
+            segments: &mut core.segments,
+            exposures: &mut core.exposures,
+            core: &core_actor,
+            operator: &operator,
+        };
+        with(&mut core.life.reversals, &mut parts, &mut desk);
     }
 
     fn with_stuck(&mut self, with: &mut StuckLent<'_>) {

@@ -1,0 +1,13 @@
+{
+  "request": "req-105",
+  "caller": {
+    "party": "cust-1",
+    "acts": "cust-1",
+    "role": "customer",
+    "kind": "person"
+  },
+  "action": {
+    "kind": "end_order"
+  },
+  "at": "2026-11-10T09:00:00Z"
+}

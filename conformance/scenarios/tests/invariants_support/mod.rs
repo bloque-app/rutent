@@ -13,6 +13,7 @@
 
 #![allow(dead_code)]
 
+use rutent_scenarios::on_tick::OnTick;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::OnceLock;
 
@@ -68,9 +69,10 @@ pub enum Kind {
     /// The process crashes right after the log's store took the `n`th effect, and Core and its platform are restarted
     /// from their disks and carry on from the log (`T-024-21`).
     RestartAfterRecord(usize),
-    /// The process crashes right before the platform carries out the `n`th effect, and Core and its platform are
-    /// restarted and carry on (`T-024-21`).
-    RestartBeforeEffect(usize),
+    /// The process crashes right after the platform carried out the `n`th effect, its provider having moved, and before
+    /// Core logged its answer, and Core and its platform are restarted and carry on (`T-020-61`, item 9: the one point a
+    /// restarted Core could move value twice; `RestartBeforeEffect` fell at `RestartAfterRecord`'s point).
+    RestartAfterEffect(usize),
     /// The process crashes right after the log's store took the `n`th provider's answer, its result statement, the
     /// provider having moved, before Core acted on it: Core and its platform are restarted, and the segment goes on
     /// from its logged answer (`T-024-21`).
@@ -80,17 +82,15 @@ pub enum Kind {
     RestartWhileStuck,
 }
 
-/// The restart kinds whose caught order ends stuck, not complete, until `T-020-61` lands (`T-024-21`): the crash falls
-/// after the log took a segment's effect and before its outcome was recorded, and the restarted Core never hands that
-/// segment over again (`Segments::AlreadyActed`: its value may be in motion, `INV-8`) nor asks its provider where it
-/// stands, so the order is held until its time passes and then declared stuck, for the operator. `T-020-61` carries such
-/// a segment on (a status question, then a repeat under its transaction where nothing moved); when it lands, emptying
-/// this is the whole change here, and every caught order must then complete.
-pub fn stuck_until_t020_61(kind: Kind) -> bool {
-    matches!(
-        kind,
-        Kind::RestartAfterRecord(_) | Kind::RestartBeforeEffect(_)
-    )
+/// The restart kinds whose caught order ends stuck, not complete, for the operator (`T-020-61`, item 8 as `T-020-63` designed
+/// it): a crash after the log took a segment's effect and before the platform carried it out leaves a segment whose provider
+/// knows no result of it; the restarted Core asks its status where it answers status queries, repeats only at a provider
+/// that declares a safe repeat and no status query, and otherwise reads back the answer the platform recorded, which it
+/// recorded none of, so it leaves the segment for the stuck check, never handing it again. A crash after the platform
+/// carried the operation out (`RestartAfterEffect`) completes at every provider, the exchange's included: its answer is read
+/// back from the platform's record (item 10).
+pub fn stuck_for_the_operator(plan: &Plan) -> bool {
+    matches!(plan.kind, Kind::RestartAfterRecord(_))
 }
 
 impl Kind {
@@ -99,7 +99,7 @@ impl Kind {
         matches!(
             self,
             Kind::RestartAfterRecord(_)
-                | Kind::RestartBeforeEffect(_)
+                | Kind::RestartAfterEffect(_)
                 | Kind::RestartAfterAnswer(_)
                 | Kind::RestartWhileStuck
         )
@@ -128,7 +128,7 @@ impl Kind {
                 if draw.below(2) == 0 {
                     Kind::CrashBeforeEffect(nth)
                 } else {
-                    Kind::RestartBeforeEffect(nth)
+                    Kind::RestartAfterEffect(nth)
                 }
             }
             6 => Kind::Repeated,
@@ -225,7 +225,7 @@ pub const PINNED: [Plan; 19] = [
     Plan {
         seed: 114,
         shape: Shape::Base,
-        kind: Kind::RestartBeforeEffect(1),
+        kind: Kind::RestartAfterEffect(1),
     },
     Plan {
         seed: 115,
@@ -235,7 +235,7 @@ pub const PINNED: [Plan; 19] = [
     Plan {
         seed: 116,
         shape: Shape::Joined,
-        kind: Kind::RestartBeforeEffect(1),
+        kind: Kind::RestartAfterEffect(1),
     },
     Plan {
         seed: 117,
@@ -267,13 +267,15 @@ pub struct Sim {
     pub notes: Vec<String>,
     /// The orders a planted crash caught mid-run, Core and its platform restarted under them (`T-024-21`).
     pub caught: Vec<String>,
+    /// What Core knew of its orders right before each restart and right after it (`T-020-61`, item 9's Low).
+    pub snapshots: Vec<(Snapshot, Snapshot)>,
 }
 
 impl Sim {
     /// The state a restarted run's `order` must end in (`T-024-21`): `stuck` where it was stuck when the run restarted
-    /// (`RestartWhileStuck`), or a crash caught it in a kind `stuck_until_t020_61` marks; `complete` otherwise.
+    /// (`RestartWhileStuck`), or a crash caught it in a kind `stuck_for_the_operator` marks; `complete` otherwise.
     pub fn expected_end(&self, order: &str) -> &'static str {
-        if (self.plan.kind == Kind::RestartWhileStuck || stuck_until_t020_61(self.plan.kind))
+        if (self.plan.kind == Kind::RestartWhileStuck || stuck_for_the_operator(&self.plan))
             && self.caught.iter().any(|o| o == order)
         {
             "stuck"
@@ -381,6 +383,7 @@ pub fn play(plan: Plan) -> Sim {
         plan,
         notes: Vec::new(),
         caught: Vec::new(),
+        snapshots: Vec::new(),
     };
     let mut orders: Vec<Id> = Vec::new();
     let crashed = match drive(&mut driving, &mut orders) {
@@ -391,6 +394,7 @@ pub fn play(plan: Plan) -> Sim {
         core,
         notes,
         caught,
+        snapshots,
         ..
     } = driving;
     let run = Run::read(
@@ -405,6 +409,7 @@ pub fn play(plan: Plan) -> Sim {
         run,
         notes,
         caught,
+        snapshots,
     }
 }
 
@@ -418,17 +423,25 @@ struct Driving<'a> {
     plan: Plan,
     notes: Vec<String>,
     caught: Vec<String>,
+    snapshots: Vec<(Snapshot, Snapshot)>,
 }
+
+/// The orders Core knows, by id: the state Core follows each in and the amount its request asks.
+pub type Snapshot = BTreeMap<String, (Option<String>, Option<String>)>;
 
 impl Driving<'_> {
     fn core(&mut self) -> &mut Core {
         self.core.as_mut().expect("Core")
     }
 
-    /// Core and its platform restarted after a crash (`Scenario::restart`, `T-024-21`).
+    /// Core and its platform restarted after a crash (`Scenario::restart`, `T-024-21`): the orders Core knows, their
+    /// states and amounts, read before and after it (`T-020-61`, item 9's Low).
     fn restart(&mut self, why: &str) {
         let core = self.core.take().expect("Core");
-        self.core = Some(self.scenario.restart(core, self.plan.seed, &mut Reference));
+        let before = core.order_snapshot();
+        let core = self.scenario.restart(core, self.plan.seed, &mut Reference);
+        self.snapshots.push((before, core.order_snapshot()));
+        self.core = Some(core);
         self.notes.push(format!("restarted: {why}"));
     }
 
@@ -527,8 +540,11 @@ fn drive(driving: &mut Driving<'_>, orders: &mut Vec<Id>) -> Result<(), Stopped>
                     nth,
                 },
             ),
-            Kind::CrashBeforeEffect(nth) | Kind::RestartBeforeEffect(nth) => {
+            Kind::CrashBeforeEffect(nth) => {
                 plant(core, &Fault::CrashBeforeEffect(nth));
+            }
+            Kind::RestartAfterEffect(nth) => {
+                plant(core, &Fault::CrashAfterEffect(nth));
             }
             // Planted as the first order runs, so the answers counted are its segments', not a quote's.
             Kind::RestartAfterAnswer(_) => {}
@@ -579,7 +595,7 @@ fn drive(driving: &mut Driving<'_>, orders: &mut Vec<Id>) -> Result<(), Stopped>
                 },
             );
         }
-        match driving.guarded(|core| core.run(&order))? {
+        match driving.guarded(|core| core.ran_on_tick(&order))? {
             Some(Ok(ran)) => unknown_of(&ran, &order, &mut unknown),
             Some(Err(e)) => driving.notes.push(format!("run {n}: {e:?}")),
             // Restarted where the crash fell: every order accepted so far carries on from the log, and the session the
@@ -588,7 +604,7 @@ fn drive(driving: &mut Driving<'_>, orders: &mut Vec<Id>) -> Result<(), Stopped>
                 driving.caught.push(order.as_str().to_owned());
                 session = driving.core().open_session(&customer).expect("a session");
                 for order in orders.clone() {
-                    match driving.guarded(|core| core.run(&order))? {
+                    match driving.guarded(|core| core.ran_on_tick(&order))? {
                         Some(Ok(ran)) => unknown_of(&ran, &order, &mut unknown),
                         Some(Err(e)) => driving.notes.push(format!("carried on: {e:?}")),
                         None => {}
@@ -603,7 +619,7 @@ fn drive(driving: &mut Driving<'_>, orders: &mut Vec<Id>) -> Result<(), Stopped>
     }
     if plan.kind == Kind::Rerun {
         for order in orders.clone() {
-            if let Err(e) = driving.core().run(&order) {
+            if let Err(e) = driving.core().ran_on_tick(&order) {
                 driving.notes.push(format!("rerun: {e:?}"));
             }
         }
@@ -612,14 +628,14 @@ fn drive(driving: &mut Driving<'_>, orders: &mut Vec<Id>) -> Result<(), Stopped>
     // each order is carried on from the log.
     if matches!(
         plan.kind,
-        Kind::RestartAfterRecord(_) | Kind::RestartBeforeEffect(_) | Kind::RestartAfterAnswer(_)
+        Kind::RestartAfterRecord(_) | Kind::RestartAfterEffect(_) | Kind::RestartAfterAnswer(_)
     ) && driving.core().restarts() == 0
     {
         // The crash never fell: it is taken back, so it never falls in the restart's own records.
         rutent_scenarios::harness::unplant_crashes(driving.core());
         driving.restart("after the orders ran, the planted crash having never fallen");
         for order in orders.clone() {
-            match driving.guarded(|core| core.run(&order))? {
+            match driving.guarded(|core| core.ran_on_tick(&order))? {
                 Some(Err(e)) => driving.notes.push(format!("carried on: {e:?}")),
                 Some(Ok(ran)) => unknown_of(&ran, &order, &mut unknown),
                 None => {}
@@ -628,8 +644,8 @@ fn drive(driving: &mut Driving<'_>, orders: &mut Vec<Id>) -> Result<(), Stopped>
     }
     // The order a crash caught after its segment's effect was recorded and before its outcome was is held by the
     // restarted Core until its time passes, and then declared stuck, for the operator: only those, of the kinds
-    // `stuck_until_t020_61` marks, are timed out. Every other order of a restarted run must have completed by itself.
-    if stuck_until_t020_61(plan.kind) && !driving.caught.is_empty() {
+    // `stuck_for_the_operator` marks, are timed out. Every other order of a restarted run must have completed by itself.
+    if stuck_for_the_operator(&plan) && !driving.caught.is_empty() {
         driving.core().clock.advance(2 * 86_400 + 60);
         for order in driving.caught.clone() {
             let order = rutent_contracts::router_api::Id::new(&order).expect("an order id");
@@ -650,26 +666,18 @@ fn drive(driving: &mut Driving<'_>, orders: &mut Vec<Id>) -> Result<(), Stopped>
     for order in orders.clone() {
         match plan.kind {
             Kind::FailsAtTheEnd | Kind::FailsInTheMiddle => {
-                match driving.core().recalculate(&order) {
+                match driving.core().recalculated_on_tick(&order) {
                     Ok(r) => {
                         driving.notes.push(format!(
                             "recalculate: {}",
                             format!("{r:?}").chars().take(60).collect::<String>()
                         ));
-                        match &r {
-                            Recalculation::Recalculated(recalculated) => {
-                                if let Err(e) =
-                                    driving.core().run_recalculated(&order, recalculated)
-                                {
-                                    driving.notes.push(format!("run recalculated: {e:?}"));
-                                }
-                            }
-                            Recalculation::NoRouteLeft { .. } => {
-                                if let Err(e) = driving.core().record_no_route(&order, &r) {
-                                    driving.notes.push(format!("no route: {e:?}"));
-                                }
-                            }
-                            _ => {}
+                        // The recalculated route runs on Core's next tick; where none was found, Core's run declared the
+                        // part left with no route on the same tick (`REQ-ORD-28`).
+                        if let Recalculation::Recalculated(_) = &r
+                            && let Err(e) = driving.core().ran_once_on_tick(&order)
+                        {
+                            driving.notes.push(format!("run recalculated: {e:?}"));
                         }
                     }
                     Err(e) => driving.notes.push(format!("recalculate: {e:?}")),
@@ -697,14 +705,14 @@ fn drive(driving: &mut Driving<'_>, orders: &mut Vec<Id>) -> Result<(), Stopped>
                 }
                 // A stuck order starts no new route and hands nothing over (`AC-5`): both are asked, and what the log
                 // then holds is what the invariants read.
-                match driving.core().recalculate(&order) {
+                match driving.core().recalculated_on_tick(&order) {
                     Ok(r) => driving.notes.push(format!(
                         "recalculate: {}",
                         format!("{r:?}").chars().take(60).collect::<String>()
                     )),
                     Err(e) => driving.notes.push(format!("recalculate: {e:?}")),
                 }
-                if let Err(e) = driving.core().run(&order) {
+                if let Err(e) = driving.core().ran_on_tick(&order) {
                     driving.notes.push(format!("run again: {e:?}"));
                 }
                 // The provider's answer comes late, twice: kept once, and it moves nothing.

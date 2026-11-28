@@ -1167,6 +1167,54 @@ fn old_advertisement_replayed_after_a_newer_accepted_one_changes_nothing() {
         accepted,
         "the replayed older one changes nothing"
     );
+
+    // A live Core lists by the same reading, through its own entry point (the review of #355's round 2, M2): a newer
+    // advertisement sent is accepted and listed, and the older one sent after it is kept and stated, but the register
+    // doesn't accept it, so the catalogue keeps listing the newer.
+    use rutent_core_orch::settings::listing::Advertised;
+    let spec = core
+        .installed()
+        .iter()
+        .find(|one| one.advertisement.statement().maker == origin.as_str())
+        .map(|one| one.spec.clone())
+        .expect("the origin is installed");
+    // (Its declarations as the catalogue joined them: a catalogue refuses declarations changed within a version.)
+    core.clock.advance(1);
+    let mut newer_again: serde_json::Value = serde_json::from_slice(&original).unwrap();
+    newer_again["made_at"] = serde_json::json!(core.clock.timestamp());
+    sign_value(&mut newer_again, &key);
+    let listed = core.receive_advertisement(&serde_json::to_vec(&newer_again).unwrap(), &spec);
+    assert!(matches!(listed, Ok(Advertised::Listed(_))), "{listed:?}");
+    assert!(
+        matches!(
+            core.receive_advertisement(&original, &spec),
+            Ok(Advertised::NotAccepted(_))
+        ),
+        "the replayed older one isn't accepted"
+    );
+    assert_eq!(
+        core.catalogue()
+            .accepted_advertisement(origin.as_str())
+            .map(|a| a.made_at.clone()),
+        newer_again["made_at"].as_str().map(str::to_owned),
+        "the live catalogue lists the register's accepted advertisement"
+    );
+    let newer = newer_again;
+
+    // Core reopened rebuilds its catalogue from the advertisement the log's key register accepted, the newer one, and
+    // not from the older one the log holds after it, nor from the installed bytes (`T-020-61`).
+    let core = Scenario::new("one order", "AC-28", Given::one_reserve(Staged::AtOnce)).reopen(
+        core,
+        1,
+        &mut Reference,
+    );
+    assert_eq!(
+        core.catalogue()
+            .accepted_advertisement(origin.as_str())
+            .map(|a| a.made_at.clone()),
+        newer["made_at"].as_str().map(str::to_owned),
+        "the register's accepted advertisement is the one listed again"
+    );
 }
 
 /// Core's `SegmentOrder` against the log, segment by segment (`T-020-55`, the review of `8f7ddefd`: no scenario asked

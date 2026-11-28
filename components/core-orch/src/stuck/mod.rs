@@ -94,6 +94,7 @@
 //! a bare id, which the log refuses since `T-020-30` holds it to an entry, so the part stays stuck. The hand-on's mover is
 //! `T-020-17`'s.
 //!
+mod command;
 mod handing;
 mod journal;
 mod mover;
@@ -132,6 +133,7 @@ use crate::segments::{
 };
 use crate::snapshot::{Clock, Exposures, HoldError, OrchestrationLog, Reading};
 
+pub use command::{decide_stuck, move_stuck};
 pub use handing::{
     AcceptedRoute, HandingOn, LinkedRoutes, LogRead, OperatorSigns, Show, Wallets, Withdrawals,
 };
@@ -847,6 +849,23 @@ impl Stuck {
     /// Nothing declared yet.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A test's plant: `part` of `order` held declared stuck since `since`, its value resting nowhere Core follows, as
+    /// the watch declares a part over time.
+    #[cfg(test)]
+    pub(crate) fn plant_stuck(&mut self, order: &Id, part: &Id, since: Reading) {
+        self.declared.insert(
+            key(order, part),
+            Declared {
+                state: OrderState::Stuck,
+                since,
+                segments: Vec::new(),
+                moved: Vec::new(),
+                in_motion: None,
+                resolved: false,
+            },
+        );
     }
 
     /// Whether Core declared `part` of `order` stuck and it is still unresolved.

@@ -365,7 +365,7 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 155] = [
+const SCHEMA_RULES: [SchemaRule; 158] = [
     (
         "decision-request-to-list-a-public-network-under-a-hexadecimal-ip-subject-name",
         &[("/action/public_network/listing/reader/subject_name", "not")],
@@ -547,6 +547,21 @@ const SCHEMA_RULES: [SchemaRule; 155] = [
         "decision-request-to-repeat-an-operation-without-its-transaction",
         &[("/action", "required")],
         "missing field `transaction`",
+    ),
+    (
+        "decision-request-to-read-a-recorded-answer-without-its-transaction",
+        &[("/action", "required")],
+        "missing field `transaction`",
+    ),
+    (
+        "decision-request-to-end-an-order-without-its-order",
+        &[("/action", "required")],
+        "missing field `order`",
+    ),
+    (
+        "decision-request-to-dispute-a-fault-without-its-segment",
+        &[("/action", "required")],
+        "missing field `segment`",
     ),
     (
         "stated-entry-naming-a-node-for-a-result",
@@ -3504,6 +3519,22 @@ fn request_to_repeat_an_operation_names_its_segment_and_transaction() {
     assert_rejected("decision-request-to-repeat-an-operation-without-its-transaction");
 }
 
+// verifies: REQ-ORD-12, REQ-ORD-11, REQ-AUZ-1
+#[test]
+fn requests_to_end_an_order_and_to_dispute_a_fault_are_decisions_naming_what_they_are_about() {
+    assert_accepted_by_both("decision-request-to-end-an-order");
+    assert_rejected("decision-request-to-end-an-order-without-its-order");
+    assert_accepted_by_both("decision-request-to-dispute-a-fault");
+    assert_rejected("decision-request-to-dispute-a-fault-without-its-segment");
+}
+
+// verifies: INV-8, NFR-6
+#[test]
+fn request_to_read_a_recorded_answer_names_its_segment_and_transaction() {
+    assert_accepted_by_both("decision-request-to-read-a-recorded-answer");
+    assert_rejected("decision-request-to-read-a-recorded-answer-without-its-transaction");
+}
+
 // verifies: REQ-ORD-41, REQ-AUZ-1
 #[test]
 fn request_to_read_a_private_nodes_record_names_its_node_and_provider() {
@@ -3544,6 +3575,54 @@ fn repeat_of_a_segment_that_already_has_an_outcome_is_refused_by_the_log() {
     // And only under the segment's own transaction, never another segment's of the same provider.
     assert_case_refused(
         "repeat-is-of-an-unsettled-segment-at-its-provider--another-segments-transaction",
+    );
+}
+
+// verifies: INV-8, NFR-6
+#[test]
+fn read_of_a_recorded_answer_is_held_to_the_segments_unsettled_move_at_its_provider() {
+    // The read of the platform's recorded answer is of the same move as a repeat (`T-020-61`, item 10): decided, then
+    // taken as an effect, at the segment's own provider, under its own transaction, while its move has no outcome.
+    assert_case("world--decide_read_recorded");
+    assert_case("world--effect_read_recorded");
+    for breaks in [
+        "a-read-at-another-provider",
+        "a-read-of-a-settled-segment",
+        "a-read-under-another-segments-transaction",
+    ] {
+        assert_case_refused(&format!(
+            "repeat-is-of-an-unsettled-segment-at-its-provider--{breaks}"
+        ));
+    }
+}
+
+// verifies: REQ-ORD-3, INV-8
+#[test]
+fn reversal_asked_again_after_an_ask_that_may_have_moved_is_refused_by_the_log() {
+    // A reversal is asked again only where every earlier ask of it failed, moving nothing (`T-020-61`, the review of
+    // #355's round 2, H1): an ask whose outcome is unknown, one with no result and one the provider carried out are
+    // resolved under their own transaction, never followed by a second ask under a fresh one.
+    assert_case("reversal-is-asked-again-only-after-a-refusal--after-a-refusal");
+    for breaks in [
+        "after-an-ask-whose-outcome-is-unknown",
+        "after-an-ask-with-no-result",
+        "after-an-ask-the-provider-carried-out",
+    ] {
+        assert_case_refused(&format!(
+            "reversal-is-asked-again-only-after-a-refusal--{breaks}"
+        ));
+    }
+    // That ask's own transaction is read back, or repeated, while its outcome is unknown, never once it is known.
+    for admitted in [
+        "a-read-of-a-reversal-whose-outcome-is-unknown",
+        "a-repeat-of-a-reversal-whose-outcome-is-unknown",
+    ] {
+        assert_case(&format!(
+            "repeat-is-of-an-unsettled-segment-at-its-provider--{admitted}"
+        ));
+    }
+    assert_case_refused(
+        "repeat-is-of-an-unsettled-segment-at-its-provider--a-read-of-a-reversal-the-provider-carried-out",
     );
 }
 
@@ -5339,6 +5418,22 @@ fn confirming_a_providers_releases_is_a_catalogue_change_of_its_own() {
     ] {
         assert_rejected(name);
     }
+    // How often Core asks a reversal again is a cadence of its own, named for no provider (`T-020-61`).
+    let name = "decision-request-to-set-the-reversal-retry-cadence";
+    assert_accepted_by_both(name);
+    let request: DecisionRequest = serde_json::from_value(fixture("valid", name)).unwrap();
+    let Action::ChangeCatalogue {
+        setting: Some(setting),
+        ..
+    } = &request.action
+    else {
+        panic!("a setting");
+    };
+    assert!(matches!(
+        setting.as_ref(),
+        OperatorSetting::Cadence { job, provider: None, .. }
+            if job.as_str() == rutent_contracts::core_internal::REVERSAL_RETRIES_JOB
+    ));
     let name = "decision-request-to-set-a-providers-status-cadence";
     assert_accepted_by_both(name);
     let request: DecisionRequest = serde_json::from_value(fixture("valid", name)).unwrap();

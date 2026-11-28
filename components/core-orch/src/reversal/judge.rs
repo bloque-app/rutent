@@ -67,7 +67,7 @@ pub enum NotCounted {
     /// Nothing came back to Core's question.
     Unanswered,
     /// It would count, but it answers no question of Core's: the log verifies only an answer under the transaction
-    /// Core asked it under, so Core asks the origin reserve ([`super::Reversals::confirm`]).
+    /// Core asked it under, so Core asks the origin reserve ([`super::Reversals::confirm_reversal`]).
     Unasked,
 }
 

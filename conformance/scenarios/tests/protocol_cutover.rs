@@ -16,6 +16,7 @@ use rutent_core_orch::segments::SegmentOutcome;
 use rutent_scenarios::assembly::machine::Reference;
 use rutent_scenarios::harness::Scenario;
 use rutent_scenarios::kit::{self, AMOUNT, RESERVE, START};
+use rutent_scenarios::on_tick::OnTick;
 
 const OLD: &str = "3.0.0";
 const IN: &str = "sim-join-in";
@@ -182,7 +183,13 @@ fn reversal_of_a_segment_begun_before_a_cutover_is_taken_when_a_holdouts_answer_
     core.set_cadence(rutent_core_orch::schedule::Job::StatusAsks, u64::MAX);
     core.set_cadence(rutent_core_orch::schedule::Job::StuckReports, u64::MAX);
     core.world().script(IN, Behaviour::crediting_a_reversal());
-    let done = core.confirm_reversal(&order, &exchange).expect("asked");
+    // Core's run asks the failed provider first, then the confirmation: the holdout refuses at first, moving nothing,
+    // so the reserve's confirmation is asked next.
+    core.world()
+        .script_for(EXCHANGE, "reversal", Behaviour::act(Act::Refuse));
+    let refused = core.asked_on_tick(&order, &exchange).expect("asked");
+    assert!(refused.completed.is_none(), "{refused:?}");
+    let done = core.confirmed_on_tick(&order, &exchange).expect("asked");
     assert!(
         matches!(
             done,
@@ -193,7 +200,13 @@ fn reversal_of_a_segment_begun_before_a_cutover_is_taken_when_a_holdouts_answer_
         ),
         "the holdout's confirmation is answered and judged, not refused for its version: {done:?}"
     );
-    let asked = core.ask_reversal(&order, &exchange).expect("asked");
+    // Asked again once the retry cadence has passed, which it may be since its first ask moved nothing (the review of
+    // #355's round 2, H1), the holdout answers.
+    core.world()
+        .script_for(EXCHANGE, "reversal", Behaviour::default());
+    core.clock
+        .advance(rutent_core_orch::reversal::DEFAULT_REVERSAL_RETRY_SECONDS);
+    let asked = core.asked_on_tick(&order, &exchange).expect("asked");
     assert!(
         asked.completed.is_some(),
         "the failed provider's answer under the old version is taken: {asked:?}"
@@ -285,7 +298,7 @@ fn status_answer_of_a_holdouts_late_deposit_is_taken_after_the_cutover_for_a_seg
     );
     core.world()
         .script_for(RESERVE, "deposit", Behaviour::late());
-    let ran = core.run(&order).expect("the order ran");
+    let ran = core.ran_on_tick(&order).expect("the order ran");
     let segments = segments_of(&ran);
     assert!(
         matches!(segments[0].outcome, SegmentOutcome::Settled { .. }),

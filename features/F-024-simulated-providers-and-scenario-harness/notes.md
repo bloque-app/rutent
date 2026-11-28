@@ -2187,6 +2187,16 @@ re-advertises), the bounded `WouldBlock` retry (it only shows as a flake).
 | the counter's rebuild (a reopened account starts at 0) | `reopened account takes up its transactions after the highest the record knows` |
 | the restore's raise of the attribution | `restore on a reopened account attributes what the wallet still holds` |
 
+**Run id.** CI's run 46043751901 at `86062919` (recorded by `T-020-61`, item 9).
+
+## T-020-61's changes here (Core's order run)
+
+The scenarios drive Core only through `tick` and Core's entry points: the harness's `Run` and `Rerun` steps are ticks,
+`on_tick::OnTick` reads what a round says, and the assembly's `Core::ports()` hands the stuck commands to
+`rutent_core_orch::stuck::{decide_stuck, move_stuck}`. `stuck_until_t020_61` is empty; `RestartBeforeEffect` is now
+`RestartAfterEffect`, a crash after the platform carried an effect out and before Core took its answer
+(`Fault::CrashAfterEffect`). See F-020's notes, `T-020-61`.
+
 **Run id.** Pending: CI's run on this row's pull request goes here.
 
 ## T-024-25: the simulated networks' readers as reader services

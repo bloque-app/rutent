@@ -29,6 +29,7 @@ use rutent_core_orch::segments::{Accounted, Ran, SegmentOutcome};
 use rutent_prov::catalogue::Verdict;
 use rutent_scenarios::assembly::Core;
 use rutent_scenarios::kit::{self, AMOUNT, RESERVE, id};
+use rutent_scenarios::on_tick::OnTick;
 use serde_json::json;
 
 /// One order run: its id, the providers' quotes by segment and what each segment came to.
@@ -65,7 +66,7 @@ fn ran(core: &mut Core, session: &Id, name: &str, script: impl FnOnce(&mut Core)
     core.accept(&kit::customer(), &order, &digest)
         .expect("accepted");
     script(core);
-    let ran = core.run(&order).expect("the order ran");
+    let ran = core.ran_on_tick(&order).expect("the order ran");
     let [Ran::Segments(segments)] = ran.as_slice() else {
         panic!("one part ran its segments: {ran:?}");
     };
@@ -202,6 +203,10 @@ fn expected(runs: &[&Run]) -> Expected {
 #[test]
 fn each_measure_is_computed_from_simulated_runs() {
     let (mut core, session) = core_with("AC-28", &[RESERVE]);
+    // The records here are this test's own, written by hand through the log's writer: Core's own writer, which its
+    // ticks run, is held off after its first tick, so the measures are of these records alone.
+    core.tick();
+    core.set_cadence(rutent_core_orch::schedule::Job::WriteMeasures, u64::MAX);
 
     // Four orders over the one simulated reserve. Each is dry-run first, so a dry run is measured against how its
     // order ended.
@@ -229,6 +234,10 @@ fn each_measure_is_computed_from_simulated_runs() {
             .script_for(RESERVE, "deposit", Behaviour::act(Act::Fail));
     });
     record(&core, &failed, dry);
+    // Left with no route, so Core's run recalculates nothing of it on the ticks the next orders run on: the measures are
+    // of the four runs alone.
+    core.leave_no_route(&failed.order)
+        .expect("left with no route");
 
     // The third order's final deposit fails at the reserve; the reserve says no to the fourth's dry run, then
     // refuses its final deposit.
@@ -241,6 +250,8 @@ fn each_measure_is_computed_from_simulated_runs() {
             .script_for(RESERVE, "deposit", Behaviour::act(Act::Refuse));
     });
     record(&core, &refused, dry);
+    core.leave_no_route(&refused.order)
+        .expect("left with no route");
 
     // What the runs came to, as Core accounted for them: the test's expectation, from the run and not the log.
     let runs = [&full, &short, &failed, &refused];

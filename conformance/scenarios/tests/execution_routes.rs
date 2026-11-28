@@ -20,6 +20,7 @@ use rutent_core_orch::segments::{Accounted, Ran, SegmentOutcome};
 use rutent_router::RouteFinder;
 use rutent_scenarios::assembly::{Core, component};
 use rutent_scenarios::kit::{self, AMOUNT};
+use rutent_scenarios::on_tick::OnTick;
 
 const IN: &str = "sim-join-in";
 const EXCHANGE: &str = "sim-join-exchange";
@@ -121,7 +122,7 @@ fn order_across_three_providers_completes_with_who_did_what_when_and_the_execute
     assert_eq!(quote.shown_as, ShownAs::Quote, "before it runs, a quote");
     core.accept(&kit::customer(), &order, &digest)
         .expect("accepted");
-    let ran = core.run(&order).expect("the order ran");
+    let ran = core.ran_on_tick(&order).expect("the order ran");
 
     // Every segment settles, and the order is complete.
     let segments = accounted(&ran);
@@ -223,7 +224,7 @@ fn order_across_three_providers_completes_with_who_did_what_when_and_the_execute
         shown(&core)
     );
     // Run again, the order reports nothing more: it has one price, and no second entry.
-    core.run(&order).expect("runs again");
+    core.ran_on_tick(&order).expect("runs again");
     assert_eq!(core.price_reported(&order).expect("still").0, digest);
     assert_eq!(
         shown(&core)
@@ -266,7 +267,7 @@ fn completed_orders_executed_price_is_reported_once_by_core() {
         core.price_reported(&order).is_none(),
         "nothing before it runs"
     );
-    let ran = core.run(&order).expect("the order ran");
+    let ran = core.ran_on_tick(&order).expect("the order ran");
     assert!(all_settled(accounted(&ran)));
     assert_eq!(state(&mut core, &order), OrderState::Complete);
     core.tick();
@@ -276,9 +277,9 @@ fn completed_orders_executed_price_is_reported_once_by_core() {
     assert_eq!(price.shown_as, ShownAs::Price);
     assert_eq!(price.segments.len(), 4, "one figure per segment it ran");
     assert!(core.price_unreported(&order).is_none());
-    core.run(&order).expect("runs again");
+    core.ran_on_tick(&order).expect("runs again");
     core.clock.advance(60);
-    core.run(&order).expect("and again");
+    core.ran_on_tick(&order).expect("and again");
     core.tick();
     assert_eq!(core.price_reported(&order), Some((digest, receipt)));
     assert_eq!(prices(&core), 1, "once");
@@ -364,7 +365,7 @@ fn changed_objective_changes_the_route_across_a_reserve_an_exchange_and_a_ramp_a
     };
     core.accept(&kit::customer(), &fast_order, digest)
         .expect("accepted");
-    let ran = core.run(&fast_order).expect("the order ran");
+    let ran = core.ran_on_tick(&fast_order).expect("the order ran");
     assert!(all_settled(accounted(&ran)));
     assert_eq!(state(&mut core, &fast_order), OrderState::Complete);
     let found: Vec<_> = entries(&core)
@@ -424,8 +425,8 @@ fn module_with_internal_steps_leaves_the_routes_segments_unchanged() {
         core.accept(&kit::customer(), order, digest)
             .expect("accepted");
     }
-    let plain_ran = plain.run(&plain_order).expect("ran");
-    let steps_ran = steps.run(&steps_order).expect("ran");
+    let plain_ran = plain.ran_on_tick(&plain_order).expect("ran");
+    let steps_ran = steps.ran_on_tick(&steps_order).expect("ran");
     // It complies with its role's contract: its segment is served as the contract says, and settles on the same
     // evidence, with the same grades and the same whose, as the plain ramp's. The order completes, with as many
     // effects of Core's as segments.
@@ -598,7 +599,7 @@ fn on_chain_origin_with_an_automatic_deposit_and_two_ramps_runs_with_no_exchange
 
     // It is expressed and run: a withdrawal, two ramps and a deposit, with no exchange, and no local money anywhere
     // on it, every segment in USDC.
-    let ran = core.run(&order).expect("the order ran");
+    let ran = core.ran_on_tick(&order).expect("the order ran");
     let segments = accounted(&ran);
     assert!(all_settled(segments), "{segments:?}");
     assert_eq!(state(&mut core, &order), OrderState::Complete);

@@ -50,5 +50,6 @@ pub use shown::{
     ReportedWithin, RouteRan, SegmentShown, Shown, SlowSegment, digest, executed, executed_across,
     show,
 };
+pub(crate) use terms::from_base64url;
 pub(crate) use terms::{HandedBack, take_handed_back};
 pub use terms::{InForce, NotTerms, Recorded, TakeError, Taken, TakesTerms, Terms, TermsDesk};

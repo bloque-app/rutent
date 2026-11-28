@@ -3,6 +3,7 @@
 //! stopped, its inputs read back from the operator's statement of them; no value moves twice; what is in flight is held
 //! again, so new orders respect the ceilings; a stuck part's kept decision and what moved are read back.
 
+use rutent_scenarios::on_tick::OnTick;
 use std::cell::RefCell;
 
 use rutent_contracts::core_internal::{
@@ -137,28 +138,32 @@ fn core_reopened_mid_order_carries_on_as_the_core_that_ran_on() {
 }
 
 /// A Core stopped after a segment's `move_value` effect reached the log, before or after its provider carried it out,
-/// opened again and asked twice to run the order on, moves nothing again for that segment: no second effect, no
-/// transaction moved twice, and no more movement than the Core that stopped made. The segment's value may be in
-/// motion, so the reopened Core never carries it out again (`INV-8`).
+/// opened again and ticked twice, moves nothing twice for that segment: no second `move_value` of it, no transaction moved
+/// twice. Where the platform never carried the operation out, the reopened Core carries the segment on through a decided
+/// repeat the platform carries out once (`T-020-61`, item 8), and where its provider's answer was taken, from that answer;
+/// either way the order then completes, each segment moved once (`INV-8`).
 // verifies: INV-8
 #[test]
 fn no_value_moves_twice_after_core_reopens() {
     for seed in SEEDS {
-        for (crash, moved_before) in [
-            (Fault::CrashBeforeEffect(0), 0),
+        // None completes: a move that never reached the platform is asked its status (the reserve answers status queries),
+        // its provider knows none, and it is left for the stuck check, never handed again (`T-020-63`'s design); one whose
+        // provider's answer is the log's, its grading cut short by the crash, is not carried on at all.
+        for (crash, completes) in [
+            (Fault::CrashBeforeEffect(0), false),
             (
                 Fault::CrashAfterRecord {
                     call: "effect",
                     nth: 0,
                 },
-                0,
+                false,
             ),
             (
                 Fault::CrashAfterRecord {
                     call: "evidence",
                     nth: 0,
                 },
-                1,
+                false,
             ),
         ] {
             let run = scenario("a Core reopened after a move took effect")
@@ -168,32 +173,89 @@ fn no_value_moves_twice_after_core_reopens() {
                 .when(Step::Restart)
                 .when(Step::Rerun)
                 .when(Step::Rerun)
+                // Restarted again after the segment was carried on: the log holds the carrying-on, so it isn't carried
+                // on a second time (the review of #355's round 2, its Low on `carried_on`).
+                .when(Step::Restart)
+                .when(Step::Rerun)
+                .when(Step::Rerun)
                 .play(seed, &mut Reference, reference());
             assert!(
                 run.crashed,
                 "seed {seed}, {crash:?}: the crash stopped Core"
             );
+            let moves = moves(&run);
+            let distinct: std::collections::BTreeSet<&String> = moves.iter().collect();
             assert_eq!(
-                moves(&run).len(),
-                1,
-                "seed {seed}, {crash:?}: no second move: {:?}",
-                moves(&run)
+                distinct.len(),
+                moves.len(),
+                "seed {seed}, {crash:?}: no segment moved twice: {moves:?}"
             );
             let moved = run.movements();
             assert!(
                 moved.values().all(|n| *n == 1),
                 "seed {seed}, {crash:?}: {moved:?}"
             );
-            assert_eq!(
-                moved.values().sum::<usize>(),
-                moved_before,
-                "seed {seed}, {crash:?}: {moved:?}"
-            );
+            let carried_on = run
+                .log
+                .iter()
+                .filter(|e| {
+                    matches!(e, Entry::Verified(v) if matches!(&v.what, What::Effect {
+                        action: Action::AskStatus { .. } | Action::RepeatOperation { .. },
+                        ..
+                    }))
+                })
+                .count();
+            let repeats = run
+                .log
+                .iter()
+                .filter(|e| {
+                    matches!(e, Entry::Verified(v) if matches!(&v.what, What::Effect {
+                        action: Action::RepeatOperation { .. },
+                        ..
+                    }))
+                })
+                .count();
+            assert_eq!(repeats, 0, "seed {seed}, {crash:?}: never handed again");
             assert!(
+                carried_on <= 1,
+                "seed {seed}, {crash:?}: carried on once, across two restarts: {carried_on}"
+            );
+            // The reserve answers status queries, so its status is the one step: a status that knows no result leaves
+            // the segment for the stuck check, and the platform's recorded answer, item (8)'s step for a provider that
+            // declares neither, is never read there (the review of #355's round 2, its Low).
+            let read_back = run
+                .log
+                .iter()
+                .filter(|e| {
+                    matches!(e, Entry::Verified(v) if matches!(&v.what, What::Effect {
+                        action: Action::ReadRecordedAnswer { .. },
+                        ..
+                    }))
+                })
+                .count();
+            assert_eq!(
+                read_back, 0,
+                "seed {seed}, {crash:?}: no recorded-answer read at a provider that answers status queries"
+            );
+            if matches!(
+                crash,
+                Fault::CrashAfterRecord {
+                    call: "evidence",
+                    ..
+                }
+            ) {
+                assert_eq!(
+                    carried_on, 0,
+                    "seed {seed}: a segment whose answer is the log's is not carried on"
+                );
+            }
+            assert_eq!(
                 run.state_names()
                     .values()
-                    .all(|s| s.as_deref() != Some("complete")),
-                "seed {seed}, {crash:?}"
+                    .all(|s| s.as_deref() == Some("complete")),
+                completes,
+                "seed {seed}, {crash:?}: {:?}",
+                run.state_names()
             );
         }
     }
@@ -411,7 +473,7 @@ fn stuck_parts_kept_decision_and_move_are_rebuilt_from_the_log() {
     let part = core.first_part(&order).expect("a started order");
     // The withdrawal settles; the platform won't begin the deposit: its value rests at the reserve's ledger.
     core.faults.refuse_begin = Some(1);
-    core.run(&order).expect("the order runs");
+    core.ran_on_tick(&order).expect("the order runs");
     core.leave_no_route(&order).expect("the part is stuck");
     let (alice, _) = desks(&core);
     let resolution = Resolution::Deliver {
@@ -422,7 +484,7 @@ fn stuck_parts_kept_decision_and_move_are_rebuilt_from_the_log() {
     };
     let evidence = evidence_about(&core, &order);
     let decision = core
-        .decide_stuck(&order, &alice, &resolution, &evidence)
+        .decide_stuck_in_core(&order, &alice, &resolution, &evidence)
         .expect("asked");
     assert_eq!(decision.outcome, Answer::Permit {});
     let carries_out = Decided {
@@ -439,7 +501,7 @@ fn stuck_parts_kept_decision_and_move_are_rebuilt_from_the_log() {
     assert_eq!(core.exposures().stuck().len(), stuck_value, "held again");
     let handled = core.operations_received(RESERVE);
     let moved = core
-        .move_stuck(&order, &carries_out, &bob)
+        .move_stuck_in_core(&order, &carries_out, &bob)
         .expect("moved on the decision kept");
     assert!(
         matches!(
@@ -459,7 +521,7 @@ fn stuck_parts_kept_decision_and_move_are_rebuilt_from_the_log() {
     let mut core = given.reopen(core, 1, &mut Reference);
     let (_, bob) = desks(&core);
     assert!(!core.is_stuck(&order, &part), "resolved");
-    assert!(core.move_stuck(&order, &carries_out, &bob).is_err());
+    assert!(core.move_stuck_in_core(&order, &carries_out, &bob).is_err());
     assert_eq!(core.operations_received(RESERVE), handled + 1);
     assert_eq!(resolve_effects(&core), 1);
     assert!(core.exposures().stuck().is_empty(), "nothing held for it");
@@ -477,7 +539,7 @@ fn done_move_is_counted_as_moved_after_a_restart() {
     let order = orders[0].clone();
     let part = core.first_part(&order).expect("a started order");
     core.faults.refuse_begin = Some(1);
-    core.run(&order).expect("the order runs");
+    core.ran_on_tick(&order).expect("the order runs");
     core.leave_no_route(&order).expect("the part is stuck");
     let (alice, bob) = desks(&core);
     let resolution = Resolution::Deliver {
@@ -488,7 +550,7 @@ fn done_move_is_counted_as_moved_after_a_restart() {
     };
     let evidence = evidence_about(&core, &order);
     let decision = core
-        .decide_stuck(&order, &alice, &resolution, &evidence)
+        .decide_stuck_in_core(&order, &alice, &resolution, &evidence)
         .expect("asked");
     let carries_out = Decided {
         request: decision.request.clone(),
@@ -502,7 +564,7 @@ fn done_move_is_counted_as_moved_after_a_restart() {
         },
     );
     let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        core.move_stuck(&order, &carries_out, &bob)
+        core.move_stuck_in_core(&order, &carries_out, &bob)
     }));
     assert!(crashed.is_err(), "the crash stopped Core");
     let mut core = given.reopen(core, 1, &mut Reference);
@@ -517,7 +579,7 @@ fn done_move_is_counted_as_moved_after_a_restart() {
     assert!(core.exposures().stuck().is_empty(), "nothing held for it");
     let handled = core.operations_received(RESERVE);
     assert!(
-        core.decide_stuck(&order, &alice, &resolution, &evidence)
+        core.decide_stuck_in_core(&order, &alice, &resolution, &evidence)
             .is_err(),
         "nothing more is decided for it"
     );
@@ -530,7 +592,7 @@ fn done_move_is_counted_as_moved_after_a_restart() {
     );
     let (alice, _) = desks(&core);
     assert!(
-        core.decide_stuck(&order, &alice, &resolution, &evidence)
+        core.decide_stuck_in_core(&order, &alice, &resolution, &evidence)
             .is_err()
     );
 }
@@ -726,6 +788,57 @@ fn segment_answered_before_core_reopens_goes_on_from_its_logged_answer() {
             ran_on.movements().len(),
             "seed {seed}: {moved:?}"
         );
+        assert!(moved.values().all(|n| *n == 1), "seed {seed}: {moved:?}");
+    }
+}
+
+/// A Core stopped right after the platform carried out the order's deposit, the reserve having moved and answered, and
+/// before Core took the answer, and Core and its platform restarted: the restarted Core carries the segment on (`T-020-61`,
+/// item 8) on its own ticks: the reserve, which answers status queries, is asked where it stands, a decided effect, and
+/// its answer is its own result of the transaction, which the segment takes. The order completes, the deposit moved once by
+/// one `move_value`, nothing handed again, and nothing timed it out.
+// verifies: NFR-6, INV-3
+#[test]
+fn segment_begun_before_core_stopped_is_carried_on_after_it_reopens() {
+    for seed in SEEDS {
+        let ran_on = scenario("the Core that ran on")
+            .when(order(1))
+            .when(Step::Run)
+            .play(seed, &mut Reference, reference());
+        let restarted = scenario("a Core stopped before the deposit was carried out")
+            .when(order(1))
+            .when(Step::Plant(Fault::CrashAfterEffect(1)))
+            .when(Step::Run)
+            .when(Step::Restart)
+            .when(Step::Rerun)
+            .when(Step::Rerun)
+            .play(seed, &mut Reference, reference());
+        assert!(restarted.crashed, "seed {seed}: the crash stopped Core");
+        assert!(
+            restarted
+                .state_names()
+                .values()
+                .all(|s| s.as_deref() == Some("complete")),
+            "seed {seed}: {:?}",
+            restarted.state_names()
+        );
+        assert_eq!(
+            moves(&restarted),
+            moves(&ran_on),
+            "seed {seed}: one move each"
+        );
+        let repeats = restarted
+            .log
+            .iter()
+            .filter(|e| {
+                matches!(e, Entry::Verified(v) if matches!(&v.what, What::Effect {
+                    action: Action::RepeatOperation { .. },
+                    ..
+                }))
+            })
+            .count();
+        assert_eq!(repeats, 0, "seed {seed}: never handed again");
+        let moved = restarted.movements();
         assert!(moved.values().all(|n| *n == 1), "seed {seed}: {moved:?}");
     }
 }

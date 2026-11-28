@@ -12,6 +12,7 @@
 mod execution_support;
 mod invariants_support;
 
+use rutent_scenarios::on_tick::OnTick;
 use std::collections::BTreeMap;
 
 use invariants_support::*;
@@ -409,7 +410,7 @@ fn every_segment_ends_settled_reversed_in_full_or_its_order_stuck() {
 #[test]
 fn every_segment_of_a_restarted_run_ends_settled_reversed_in_full_or_its_order_stuck() {
     let (complete, stuck, _) = segment_ends(restarted);
-    // And the end is the one the run's kind says: stuck only where `stuck_until_t020_61` or a stuck order says so, so an
+    // And the end is the one the run's kind says: stuck only where `stuck_for_the_operator` or a stuck order says so, so an
     // unexpected stuck order is red.
     let found = violations_in(restarted, |sim| {
         let states = sim.run.state_names();
@@ -1323,16 +1324,32 @@ fn no_recalculation_changes_destination_or_to_asset() {
 /// `NFR-6` over the runs Core and its platform were restarted in mid-order (`T-024-21`): every order the customer had
 /// accepted before the restart is one the restarted Core knows, opened in its log, followed by it for its customer, held
 /// by the state machine's host restarted on its journal as the log's own inputs say; each one the crash caught is
-/// carried on by a step of its own after the restart, and each ends as its run's kind says (`Sim::expected_end`).
+/// carried on by a step of its own after the restart, and each ends as its run's kind says (`Sim::expected_end`). And
+/// at each restart, every order Core knew right before it, its id, the state Core followed it in and the amount its
+/// request asked, the restarted Core knows right after it, unchanged (`T-020-61`).
 // verifies: NFR-6
 #[test]
 fn core_and_the_platform_restarted_mid_order_lose_no_order() {
-    let (mut kept, mut started_before, mut completed_across) = (0, 0, 0);
+    let (mut kept, mut started_before, mut completed_across, mut snapshotted) = (0, 0, 0, 0);
     let found = violations_in(restarted, |sim| {
         let mut bad = Vec::new();
         let log = entries(&sim.run);
         let restart = confirmations(&log).first().map_or(log.len(), |(at, _)| *at);
         let replayed = sim.run.replayed_states();
+        // Each restart: every order Core knew right before it, the restarted Core knows right after it, in the same
+        // state and at the same amount (`T-020-61`, item 9's Low).
+        for (at, (before, after)) in sim.snapshots.iter().enumerate() {
+            snapshotted += before.len();
+            for (o, was) in before {
+                match after.get(o) {
+                    None => bad.push(format!("{o}: known before restart {at}, unknown after it")),
+                    Some(is) if is != was => {
+                        bad.push(format!("{o}: {was:?} before restart {at}, {is:?} after it"))
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
         for order in &sim.run.orders {
             let o = order.as_str();
             kept += 1;
@@ -1382,7 +1399,7 @@ fn core_and_the_platform_restarted_mid_order_lose_no_order() {
                 }
             }
             // Each order ends where its run's kind says: a caught order the restarted Core can't yet carry on
-            // (`stuck_until_t020_61`) or one stuck when the run restarted is stuck, and every other completes.
+            // (`stuck_for_the_operator`) or one stuck when the run restarted is stuck, and every other completes.
             let want = sim.expected_end(o);
             let ended = sim.run.state_names().get(o).cloned().flatten();
             if ended.as_deref() != Some(want) {
@@ -1397,6 +1414,10 @@ fn core_and_the_platform_restarted_mid_order_lose_no_order() {
     none(&found);
     assert!(kept >= 6, "only {kept} orders of restarted runs read");
     assert!(
+        snapshotted >= 6,
+        "only {snapshotted} orders read before a restart"
+    );
+    assert!(
         started_before >= 4,
         "only {started_before} orders were started before a restart"
     );
@@ -1404,6 +1425,56 @@ fn core_and_the_platform_restarted_mid_order_lose_no_order() {
         completed_across >= 2,
         "only {completed_across} orders started before a restart completed after it"
     );
+}
+
+/// A `RestartWhileStuck` run with two orders (the pinned seed 117) reads each order's end by its own place in the
+/// caught set (`T-020-61`, item 9's Low): the order stuck when Core and its platform restarted is the one caught, and
+/// stays stuck for the operator; the other, not caught, completes by itself after the restart. Neither is read by the
+/// other's.
+// verifies: NFR-6
+#[test]
+fn restart_while_stuck_with_two_orders_reads_each_orders_end_by_its_own_caught_set() {
+    let two: Vec<&Sim> = runs()
+        .iter()
+        .filter(|sim| {
+            sim.plan.kind == Kind::RestartWhileStuck && restarted(sim) && sim.run.orders.len() >= 2
+        })
+        .collect();
+    assert!(
+        !two.is_empty(),
+        "no RestartWhileStuck run with two orders was played"
+    );
+    for sim in two {
+        let ends = sim.run.state_names();
+        let caught: Vec<&str> = sim
+            .run
+            .orders
+            .iter()
+            .map(|o| o.as_str())
+            .filter(|o| sim.caught.iter().any(|c| c == o))
+            .collect();
+        assert_eq!(
+            caught.len(),
+            1,
+            "{}: one order stuck when it restarted: {caught:?}",
+            sim.name()
+        );
+        for order in &sim.run.orders {
+            let o = order.as_str();
+            let want = if caught.contains(&o) {
+                "stuck"
+            } else {
+                "complete"
+            };
+            assert_eq!(sim.expected_end(o), want, "{}: {o}", sim.name());
+            assert_eq!(
+                ends.get(o).cloned().flatten().as_deref(),
+                Some(want),
+                "{}: {o} ends by its own caught set",
+                sim.name()
+            );
+        }
+    }
 }
 
 /// Whether the log holds a step of `order`'s own after `at`, written by the restarted Core: an effect or an input of
@@ -1482,7 +1553,8 @@ fn platform_restarted_mid_run_holds_its_releases_until_the_operator_confirms() {
                 nth: 0,
             },
         );
-        let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| core.run(&order)));
+        let crashed =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| core.ran_on_tick(&order)));
         assert!(crashed.is_err(), "seed {seed}: the crash stopped Core");
         let mut core = scenario.restart_holding(core, seed, &mut Reference);
         assert!(
@@ -1546,7 +1618,8 @@ fn platform_restarted_mid_run_holds_its_releases_until_the_operator_confirms() {
             matches!(answered, Handled::Answered(_)),
             "seed {seed}: answered once confirmed: {answered:?}"
         );
-        core.run(&order).expect("the stopped order carries on");
+        core.ran_on_tick(&order)
+            .expect("the stopped order carries on");
         core.flush()
             .expect("the state machine takes what the log did");
         let state = core.status(&kit::customer(), &order).expect("followed");
@@ -1682,4 +1755,111 @@ fn order_in_a_second_session_of_a_long_run_is_quoted() {
         quoted(&mut core, "req-second-session", &second),
         "quoted in the second session"
     );
+}
+
+/// The exchange's case of the one point a restarted Core could move value twice (`T-020-61`, item 10; the review of #355,
+/// M2): the joined route's crash after the platform carried the exchange's conversion out, the exchange having moved, and
+/// before Core logged its answer. The exchange answers no status query and declares no safe repeat, so the restarted Core
+/// never hands the operation over again: it reads back, as a decided effect, the answer the platform recorded for that
+/// transaction, and the segment takes it. The order completes; the conversion moved once, its transaction stated once, and
+/// nothing was sent to the exchange again.
+// verifies: INV-8, NFR-6
+#[test]
+fn answer_the_platform_recorded_before_core_lost_it_is_read_back_and_nothing_is_sent_again() {
+    let exchange = Plan {
+        seed: 116,
+        shape: Shape::Joined,
+        kind: Kind::RestartAfterEffect(1),
+    };
+    let sim = runs()
+        .iter()
+        .find(|sim| sim.plan == exchange)
+        .expect("the exchange's restart is pinned");
+    assert!(!sim.caught.is_empty(), "{}: the crash fell", sim.name());
+    let bad = moved_once(sim);
+    assert!(bad.is_empty(), "{}: {bad:?}", sim.name());
+    let states = sim.run.state_names();
+    for order in &sim.caught {
+        assert_eq!(
+            states.get(order).cloned().flatten().as_deref(),
+            Some("complete"),
+            "{}: the caught order completes",
+            sim.name()
+        );
+    }
+    let effects = |kind: &str| {
+        entries(&sim.run)
+            .iter()
+            .filter(|e| {
+                e["kind"] == "verified"
+                    && e["what"]["call"] == "effect"
+                    && e["what"]["action"]["kind"] == kind
+            })
+            .map(|e| {
+                e["what"]["action"]["provider"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        effects("read_recorded_answer"),
+        ["sim-join-exchange"],
+        "{}: the exchange's recorded answer read back once, as a decided effect",
+        sim.name()
+    );
+    assert!(
+        !effects("repeat_operation")
+            .iter()
+            .chain(effects("ask_status").iter())
+            .any(|p| p == "sim-join-exchange"),
+        "{}: nothing asked of the exchange again",
+        sim.name()
+    );
+}
+
+/// The one point a restarted Core could move value twice (`T-020-61`, item 9): the process crashes after the platform
+/// carried a segment's operation out, its provider having moved, and before Core logged the answer. The restarted Core
+/// carries the segment on (its status asked, the answer the provider's own result), and the order completes; the value moved
+/// once in the provider's books, each transaction stated once and each segment handed over once (the platform's record
+/// refuses a second carrying out, `DuplicateTransaction`). Every pinned run of a restarting kind asserts its crash fell.
+// verifies: INV-8, NFR-6
+#[test]
+fn restart_after_the_provider_moved_and_before_its_answer_was_logged_moves_nothing_twice() {
+    let mut fell = 0;
+    for sim in runs() {
+        let pinned = PINNED.contains(&sim.plan);
+        if pinned && sim.plan.kind.restarts() && sim.plan.kind != Kind::RestartWhileStuck {
+            assert!(!sim.caught.is_empty(), "{}: the crash fell", sim.name());
+        }
+        if !matches!(sim.plan.kind, Kind::RestartAfterEffect(_)) || sim.caught.is_empty() {
+            continue;
+        }
+        fell += 1;
+        let bad = moved_once(sim);
+        assert!(bad.is_empty(), "{}: {bad:?}", sim.name());
+        // The caught order ends as its kind says: complete, its answer the provider's status or, at the exchange, which
+        // answers no status query and declares no safe repeat, the answer the platform recorded, read back (item 10); never
+        // handed again either way.
+        let states = sim.run.state_names();
+        for order in &sim.caught {
+            assert_eq!(
+                states.get(order).cloned().flatten().as_deref(),
+                Some(sim.expected_end(order)),
+                "{}: the caught order ends as its kind says",
+                sim.name()
+            );
+        }
+        let repeats = entries(&sim.run)
+            .iter()
+            .filter(|e| {
+                e["kind"] == "verified"
+                    && e["what"]["call"] == "effect"
+                    && e["what"]["action"]["kind"] == "repeat_operation"
+            })
+            .count();
+        assert_eq!(repeats, 0, "{}: never handed again", sim.name());
+    }
+    assert!(fell >= 2, "only {fell} runs crashed after an effect");
 }

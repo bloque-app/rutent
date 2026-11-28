@@ -10662,6 +10662,591 @@ R3-1 is closed except for the hand-on take (R4-1).
 - **R4-1.** The mover's hand-on take (`Delivering::withdrawn`) reads `HandFlight.began` and has no holdout test: its route
   (a linked order handed on from a node) has no holdout fleet here. R4-2: `show_fault`, `after` as above.
 
+## T-020-61: Core's order run, in `core-orch` (#143's first agreed blocker)
+
+Branch `f-020/t-020-61`, from `m3-next` at `aea9488c` (m3 `ce68f7a2` with `T-024-21`, #350). Edits `components/core-orch/`
+(`schedule/`, `segments/`, `intake/`, `recalc/`, `hand_on/`, `stuck/`, `quote/terms.rs` for one port read, `reversal/` for one
+helper made crate-wide) and the `F-024` files the commit bodies name: the assembly (`conformance/scenarios/src/assembly/`), the
+harness, a new reader `conformance/scenarios/src/on_tick.rs`, and the scenario tests. No contract edited, no simulated provider,
+stand-in or prov file touched: no `DEC-20` path.
+
+### Design: where each piece of the run lives
+
+The plan's three readings hold throughout. **Core keeps no durable store beside the log**: everything below is rebuilt from the
+log and the evidence store the log already reads. **Every caller of v0 behaviour is Core's own**: the assembly defines none of
+`follow`, `run`, `run_live`, `recalculate`, `run_recalculated`, `run_linked`, `hand_on`, `decide_stuck`, `move_stuck` or
+`restart_orders`. **The assembly only wires ports and calls Core's entry points**, `tick` on a timer: the scenarios call `tick`
+(read through `on_tick::OnTick`, which reads a round and decides nothing) and the stuck commands' entry points over
+`Core::ports()`.
+
+- **`intake/` (`started.rs`): what an order runs on.** `Started` (moved here from `schedule::jobs`, re-exported there) is built on
+  the acceptance by intake's own accept path, once the log took the start (`carry_on` → `run_on`), and held in intake's record
+  of the order; `Intake::reopened` rebuilds it through the same reading of the log (`started_on`). Both read the decision record
+  from the evidence store and hold it to the digest the log's `decision_record` names it by (`held_record`, the review's L6): no
+  in-memory copy of a record is read. The authorisation is the one policy permitted (on an acceptance) or the one policy's register
+  holds in force for the acceptance's id (on a reopening, `Reopening::in_force`). Intake also holds what orders it didn't open run
+  on (`hold_started`: filed and linked orders), and the records of routes recalculated since (`hold_record`). The held gate
+  (`T-020-46`, `T-020-52`) is intake's: a held order runs on nothing.
+- **`schedule/` (`run.rs`): Core's order run, `Job::Run`, the first job of every tick.** `resume` builds what each order the log
+  started runs on where intake holds nothing yet (a reopened Core's filed and linked orders, any intake couldn't rebuild), and has
+  the segments follow it; the assembly calls it once as Core reopens and on an acceptance or a filing, and every tick calls it
+  first. Then each started order's parts, each on the route it runs on now (`Segments::routes_ran`'s last recalculated route,
+  its record intake's, else the first): a segment begun before a restart is carried on (item 8, below); a part with work left
+  (`Segments::work_left`) runs through `Segments::run_part`, then Core asks the status of each segment it left unknown (the step
+  `T-020-47` put after each run); a part with nothing left to run whose route failed is recalculated. One step of a part a tick:
+  a recalculated route runs on the next tick, and a hand-on recorded on a tick starts its linked order on the next.
+- **`segments/` (`carry_on.rs`): what the run asks of the segments.** `work_left`, `awaits_answer`, `carry_on` (item 8),
+  `ended_unsettled` and `guard_refused` (the recalculation's gate); `reopen.rs` rebuilds `answered` and the `bound` and `unknown`
+  input steps of every flight whose operation was handed over (seed 117, `T-020-63`'s gap 1).
+- **`recalc/`: recalculation, in Core.** `Recalculations` holds each order's history across its routings
+  (`recalculate_chained`), so the run chains each routing to the log's last record. Core's run recalculates only a part with nothing
+  left to run whose route failed (a segment Core holds ended unsettled, refused by policy among them, or refused by the guard,
+  or the state machine's next segment failed or reversed): a route recalculated and not yet run is never recalculated again;
+  and it refuses a part whose failed segment owes its reversal. Past the bound, or with no route offered, the run declares the part
+  stuck (`Stuck::no_route`, `REQ-ORD-28`).
+- **`hand_on/` (`withdrawn.rs`): hand-ons, in Core.** The run hands each stuck part on whose decided hand-on the mover carried
+  out and the holding account's own word proves (`HandOn::hand_on`, `prove_start`), from the mover's record or, for a reopened
+  Core, the log's (`withdrawn_in_the_log`, `accepted_in_the_log`, moved here from the assembly). The next tick registers the
+  linked order's authorisation with policy, as its acceptance names it, builds what it runs on and runs it.
+- **`stuck/` (`command.rs`): the operator's decided commands, as Core's entry points.** `decide_stuck` and `move_stuck` take
+  the deployment's ports and go through policy (`Stuck::decide`, `Stuck::carry_out` with the production mover); the part is the
+  order's as Core started it, never the caller's. `REQ-AUZ-4`'s one-actor rule is `Stuck`'s and policy's, unchanged.
+- **`Ports`** loses `started` and `decision_record` (`Ports::recalculated` named by the plan was never a member: the assembly's
+  recalculated routes were `Lifecycle::routes`, which goes too). It gains reads of the deployment's pieces (`kept`, the evidence
+  store's read; `in_force`, policy's register; `intake`, `arrivals`, `mover`, Core's parts to read as `segments` already is) and
+  lends Core's parts as `with_segments` does (`with_intake`, `with_authorisations`, `with_recalculations`, `with_hand_on`,
+  `with_mover`). None decides anything.
+- **`core-orch`'s own types are no versioned surface** (the milestone reviewer, 2026-11-26): the crate is at 0.0.0, and
+  `Status::Quoted.valid_until` (`T-020-57`) is core-orch's. The versioned surface is router-api; a quote answer there carrying the
+  validity would be a router-api change with its own changelog entry, which this row doesn't make.
+
+### Items and carry-overs, as built
+
+- **(1)** Intake's accept path builds and holds what the order runs on (`intake::started_on`, `Intake::started`); a reopened
+  Core rebuilds it from the log through the same reading. The record is read from the evidence store and held to the log's
+  digest at every build (L6): `decision_record_that_does_not_match_the_logs_digest_starts_nothing`.
+- **(2)** `Job::Run` runs each started part through `Segments::run_part` and asks the status of each segment it left unknown;
+  the same job resumes every started order with work left after a reopen: `accepted_order_runs_on_ticks_with_no_test_caller`
+  (the reviewer's probe: an accepted order, three ticks, no test's call), `started_order_resumes_after_a_restart`.
+- **(3)** Recalculation, the recalculated route's run, the hand-ons and the linked runs are Core's run, the current route read
+  from `Segments::routes_ran` with its record intake's: `failed_deposits_recalculated_route_runs_on_ticks`,
+  `linked_order_and_its_hand_on_run_on_cores_ticks`.
+- **(4)** `stuck::decide_stuck` and `stuck::move_stuck` are Core's entry points over the deployment's ports, through policy:
+  `stuck_command_is_a_core_entry_point`; every scenario that called the assembly's `decide_stuck` or `move_stuck` calls them
+  (through `on_tick::OnTick`, which hands the command over and decides nothing).
+- **(5)** A held order is held by Core's own resume (intake gives it nothing to run on, and `resume` builds nothing for it):
+  `held_order_accepted_before_a_restart_never_starts_after_core_reopens`,
+  `held_order_accepted_before_core_restarts_never_starts_after_the_run_resumes`.
+- **(6)** `Reversals::reopened` rebuilds `later` from the log's stated entries after each segment's first result, each with its
+  receipt, so a kept answer is reported after a restart and the same body again is that entry:
+  `late_answer_kept_before_a_restart_is_reported_after_it`. **Seed 117** and `T-020-63`'s gap 1: `segments::reopen` rebuilds
+  `answered` for every flight whose operation came to an outcome the log holds (an `unanswered` one included), and its
+  `bound` and `unknown` input steps, so a late answer and a status question after a restart are taken as before:
+  `late_answer_to_a_segment_left_unanswered_before_core_restarts_is_taken_after_it`; the reopened Core's status question is
+  put and then waits its cadence, never pressed each tick (`first_tick_after_a_restart_keeps_each_providers_ask_cadence`,
+  tightened). A late answer the platform's record can't mark stays with the platform (its record holds it, `T-020-63`'s gap 2,
+  closed in the platform), and is now taken after a restart rather than refused.
+- **(7)** A quote shown before Core reopened, its acceptance not in the log, is rebuilt at acceptance from the log while its
+  validity stands (`shown_in_the_log`): the same quote under the digest the `shown` entry named, on the record held to its
+  digest, each part's reserve yes and the reserve's hold as the log holds them; past its validity it is gone and the order is
+  quoted again (`T-020-46`'s default): `quote_held_before_a_restart_is_accepted_after_core_reopens_while_its_validity_stands`.
+- **(8)** A segment begun before Core stopped (its effect in the log, no result, no answer) is carried on by the reopened Core's
+  run (`Segments::carry_on`): its status asked at a provider that declares a status query, and, where that gives no result of
+  its transaction, its operation handed again under its own transaction through a decided `repeat_operation` effect. The
+  platform carries an operation out only under a transaction it never carried and refuses one it did (`DuplicateTransaction`,
+  `T-013-09`, held in its own record across its restart), so a move whose first carrying out never reached the platform is
+  carried out now, at any provider, and one that did is never carried out twice; where it carried it and got no answer, a
+  provider declaring a safe repeat has it run again (`T-020-63`). Otherwise it waits for the stuck check: Core writes no result
+  it has no answer for. `segment_begun_before_core_stopped_is_carried_on_after_it_reopens`; `T-024-21`'s marker
+  `stuck_until_t020_61` is empty, so every caught order of seeds 113 to 116 must complete.
+- **(9)** (the milestone reviewer's check of `T-024-21` at `2da9704f`, plan `6052e157`): `T-024-21`'s restart runs gain
+  `RestartAfterEffect` in place of `RestartBeforeEffect` (which fell at `RestartAfterRecord`'s point): the process crashes after
+  `Modules::carry_out` returned, the provider having moved and answered, and before Core took the answer (`Fault::CrashAfterEffect`
+  at the platform's seam). The restarted Core carries the segment on (item 8): the provider's status gives its own result, which
+  the segment takes; a hand-again would meet the platform's `DuplicateTransaction`. The order completes and `INV-8` holds:
+  `restart_after_the_provider_moved_and_before_its_answer_was_logged_moves_nothing_twice`, which also asserts that every pinned
+  restart's crash fell. On the joined route the crash falls at the ramp (`RestartAfterEffect(2)`; a drawn `(1)` is moved to
+  `(2)`): after the exchange carried its conversion out, only the platform's record holds the answer, and the exchange declares
+  neither a status query nor a safe repeat, so the segment waits for the stuck check (gap 5).
+- **Lows of `T-020-57`'s review.** A restart between a return's landing and its recalculation lands nothing twice, to the
+  exact balance: `return_landed_before_a_restart_is_not_landed_again_before_its_recalculation`. A second recalculation of a
+  route not yet run is never asked by Core's run (held by the recalculation test's "recalculated once"); one from a segment
+  whose reversal is owed is refused by Core's run. The zero-rebuilt confirmation: see the gaps.
+- **L7** (#316's round 3): a route Core can't name now is never timed on another: the watch records the part left with no
+  route (`Stuck::no_route`) on the last route the log names for it, so a failed final deposit's part waits for its customer
+  and any other is stuck for the operator: `part_whose_current_route_core_cannot_name_is_left_no_route_on_its_tick`
+  (the record forgotten by a planted fault, `Core::forget_decision_record`).
+- **`accept_linked`** draws the linked order's id through intake's `draw_order` (now `pub`), which refuses `request-` names.
+- **L-f, books pruning**: already per segment in closing (`Evidenced::recorded` forgets an order's records at the nodes it
+  read once its segment settles and they are kept in the log); nothing more here. `T-020-60` replaces the books with one
+  answer per pass.
+- **`Ports::started`, `Ports::decision_record`** are gone; the assembly defines none of the plan's ten names.
+
+### Defaults taken (reversible, each failing closed)
+
+1. **Core's run is the last job of a tick.** What it does is the next tick's jobs' to land, close, check, time, notify and
+   checkpoint, as a deployment's run between two ticks was; a scenario's old `run(); tick()` is now `tick(); tick()`.
+2. **One step of a part a tick.** A part runs, or, with nothing left to run and its route failed, is recalculated; the new
+   route runs on the next tick; a hand-on recorded on a tick starts its linked order on the next. Each step's entries are in the
+   log before the next step reads it.
+3. **(Withdrawn by round 1's M1; kept for the record.) Item 8: the platform's record decides whether a move may be handed again.** Past the plan's two ways (a status question,
+   a safe repeat), an operation is handed again under its own transaction through a decided `repeat_operation` effect at any
+   provider: the platform carries it out only where its record never held the transaction and refuses one it did
+   (`DuplicateTransaction`). So the plan's "operation repeated at a provider that declares a safe repeat" is read as "at a
+   provider that declares it, or one the platform never handed it to". Alternative: hand again only at a safe-repeat provider,
+   which leaves the crash-before-effect orders of seeds 115 and 116 (the exchange, no safe repeat) stuck. A reopened segment
+   whose provider's answer or evidence is the log's, its grading cut short, is not carried on: it waits for the stuck check, as
+   before (`no_value_moves_twice_after_core_reopens`'s third case).
+4. **A linked order's authorisation is registered by Core's run**, as its acceptance names it (the first order's destination
+   and to asset, the holding account the value was withdrawn from as its origin, given by the acceptance's customer), on the
+   tick after the hand-on, where policy holds none in force for it; its inputs are the destination's account alone, as a
+   reopened Core rebuilds them (the scenario's own inputs for a linked route are not in the log).
+5. **A refused move is a failure the run recalculates from** (`SegmentOutcome::NotPermitted` counts as ended unsettled), as a
+   refused, failed or not-handed-over segment does; a move policy refused stays refused, never asked again on each tick.
+6. **A filed order's `Started` is built by Core's run from the log** (its filing's inputs), on the tick after the filing, not by
+   arrivals' own accept path, which this row doesn't edit. The order's segments follow it once Core's resume builds it.
+7. **The quote rebuilt after a reopen is rebuilt at acceptance**, not at `Intake::reopened` (which has no holds): its validity is
+   the record's figures' and its hold's; a lapsed one is gone, and its hold lapses with it.
+8. **Scenarios read the round** (`on_tick::OnTick`): a recalculation a tick tried is kept for the reader until it reads it
+   (`Core::take_recalculation`), so a test that ticked for a landing and then asks for the recalculation reads that tick's.
+
+### Gaps, with owners
+
+1. **The zero-rebuilt confirmation's stuck naming** (the review Low of `T-020-57`): a part whose reversed first move's
+   confirmation was rebuilt as zero is refused recalculation (`NoSettledEnd`) and left as it stands: the stuck watch times it on
+   its figures. No scenario reaches a zero confirmation (both judges refuse anything but the amount asked), so no test drives it;
+   owner: `T-020-60`, whose reader confirms the return.
+2. **A second recalculation is Core's run's rule, not `Recalculations::recalculate`'s**: a gate there refused the recalc unit
+   paths' own legitimate recalculations (a pending floor wait, the customer's choice recorded by hand, a move policy refused
+   with no flight kept), so it was taken out. A direct caller of `recalculate` may still recalculate a route not yet run; every
+   caller in a deployment is Core's run.
+3. **`accept_linked` stays the assembly's**: the linked order's acceptance (its routing, the quote shown and the customer's
+   acceptance entry) is written by the assembly, with its id now drawn through `draw_order`. Moving the linked acceptance into
+   Core is a row of its own (owner: `T-020-61`'s follow-up, or `F-030`'s customer surface).
+5. **An answer only the platform's record holds** (item 9, at a provider with no status query and no safe repeat, such as the
+   simulated exchange): the platform refuses the repeat (`DuplicateTransaction`) and no port hands its kept answer back, so the
+   segment waits for the stuck check; nothing moves twice. Owner: `F-013` (a decided read of a carried answer from the platform's
+   record), `DEC-20` path, not this row's.
+6. **Item 9's Lows not taken here**: the "lose no order" snapshot of ids, states and amounts across a restart, the re-proof of
+   `INV-4`'s relaxed contradiction rule by its rule-off, the two-order `RestartWhileStuck` read by each order's own caught set,
+   and a test of `Landing::restore`'s `NotNow`. Owner: `T-024-21`'s follow-up (`F-024`), with this row's run in place.
+4. **The release acceptance in scenarios** (`T-020-49`'s gap 6) is unchanged: `accept_waiting_release` and the wallet's
+   `accept_release` still accept through the fleet; not this row's run.
+
+### Rule-off (each rule switched off alone, its test run, the file restored; script `ruleoff.py`)
+
+| Rule switched off | Result |
+|---|---|
+| R1 the decision record held to the log's digest (`held_record`) | `decision_record_that_does_not_match_the_logs_digest_starts_nothing` red |
+| R2 Core's run runs a part with work left (`Job::Run`) | `accepted_order_runs_on_ticks_with_no_test_caller` red |
+| R3 a segment begun before Core stopped is carried on (item 8) | `segment_begun_before_core_stopped_is_carried_on_after_it_reopens` red |
+| R3b the same, over item 9's crash after an effect | `restart_after_the_provider_moved_and_before_its_answer_was_logged_moves_nothing_twice` red |
+| R4 `answered` rebuilt for a reopened flight with an outcome (seed 117) | `late_answer_to_a_segment_left_unanswered_before_core_restarts_is_taken_after_it` red |
+| R5 `Reversals.later` rebuilt from the log (item 6) | `late_answer_kept_before_a_restart_is_reported_after_it` red |
+| R6 Core's run recalculates a part whose route failed | `failed_deposits_recalculated_route_runs_on_ticks` red |
+| R7 a quote shown before a reopen rebuilt from the log (item 7) | `quote_held_before_a_restart_is_accepted_after_core_reopens_while_its_validity_stands` red |
+| R8 a route Core can't name leaves its part with no route (L7) | `part_whose_current_route_core_cannot_name_is_left_no_route_on_its_tick` red |
+| R9 a linked order built from the log, its authorisation registered | `linked_order_and_its_hand_on_run_on_cores_ticks` red |
+| R10 the hand-ons done on Core's run | `linked_order_and_its_hand_on_run_on_cores_ticks` red |
+| R11 the held gate in `Intake::request_of` | stays green: `Intake::started` and `hold_started` refuse a held order too (defence in depth); the held tests hold on those |
+| R12 the owed-reversal gate in Core's run | stays green: the scenario's owed reversal is a ramp's, which `recalc::evidenced` already holds in flight; the gate is for a failed deposit whose reversal Core recorded owed, which no scenario reaches |
+| R13 a reopened segment whose answer is logged isn't carried on | stays green: carried on, its status answer is the one the log holds and its grading still refuses to go on, so nothing moves twice either way; kept as defence in depth |
+| R14 Core declares what a handed-over segment's inputs rest on (`Segments::declare_cited`, M3) | `provider_relying_on_a_verifiers_judgement_leaves_a_reliance_entry_naming_the_verifier_and_the_provider` and `false_judgement_is_recorded_as_its_verifiers_word_and_its_reliers_reliance` red (no reliance entry) |
+| R15 the judgement found by its kept bytes, and only where the log attributed it (`reliance::stated_judgement`) | `the_judgement_a_figure_carries_is_found_by_its_kept_bytes_and_its_attribution` red, each half switched off alone |
+| R16 Core's grant carried out in its catalogue (`settings::grant::carry_out_grant`) | `catalogues_grant_is_the_one_the_log_records` red (the catalogue holds no grant, so the advertisement's join refuses) |
+| R17 `decide_stuck` takes the part Core holds stuck, not the first (M4) | `stuck_command_decides_the_stuck_part_of_a_split_order` red (`NotStuck`) |
+| R18 `INV-4`'s relaxed contradiction rule, the test's: a second result statement is a violation only where its body was kept before | the strict count turns `silence_and_late_delivery_never_move_one_value_from_two_places` red on the pinned seed 105 (two result statements, the contradiction); Core's own same-body rule (`Reversals`, a re-signed answer of a kept body is that entry) switched off stays green: no run delivers a re-signed answer of the same body |
+| R19 `Landing::restore` answers `NotNow` where the account's module runs no process | stays green with `Unconfirmed` in its place: its one caller, `reconcile`, treats the two alike and reconciles again on the next confirmation or reopening, so `NotNow` has no effect of its own there; the test holds what it stands for (no transaction, nothing asked, landed once the wallet runs) |
+| R20 Core's run declares a part with no route left stuck (L6) | `stuck_command_is_a_core_entry_point` and `stuck_order_of_the_assembled_core_is_resolved_through_the_mover_and_the_real_engine` red (the part never stuck) |
+| R21 Core's rebuild grants each `done` grant again | `reopened_core_rebuilds_its_catalogue_from_its_log_alone` red (the advertisement's join refuses with no grant) |
+| R22 only the register's accepted advertisement is joined | `old_advertisement_replayed_after_a_newer_accepted_one_changes_nothing` red (the older one listed) |
+| R23 an advertisement judged by the cutovers held when it was received | `old_version_provider_survives_its_cutover_and_a_reopen_by_the_version_its_segment_began_under` red |
+| R24 an installed advertisement the log didn't commit to refuses the reopening | `reopened_core_joins_only_the_advertisement_its_log_committed_to` red |
+| R25 a reversal is sent once: a fresh ask only where every earlier one failed (`Reversals::ask_allowed`, round 2's H1) | `reversal_whose_outcome_is_unknown_is_never_asked_again_under_a_new_transaction` red |
+| R26 each reversal's asks rebuilt from the log on reopen (`Reversals::rebuild_asks`) | `reversal_whose_outcome_is_unknown_is_never_asked_again_under_a_new_transaction` red (asked again after the reopen) |
+| R27 a reversal's confirmations bounded by the cadence and the cap | `reversal_whose_outcome_is_unknown_is_never_asked_again_under_a_new_transaction` red |
+| R28 an ask whose outcome is unknown carried on once under its own transaction | `reversal_whose_outcome_is_unknown_is_never_asked_again_under_a_new_transaction` red |
+| R29 no recorded-answer read at a provider that answers status queries (round 2's Low) | `no_value_moves_twice_after_core_reopens` red |
+| R30 a live advertisement listed only where the key register accepted it (`settings::listing::advertise`, M2) | `old_advertisement_replayed_after_a_newer_accepted_one_changes_nothing` red (the replayed older one listed) |
+| R31 Core's reopen rebuilds the reversals (`schedule::reopen`, M3) | `core_reopened_through_its_own_entry_point_holds_what_the_core_that_ran_held` red |
+| R32 Core's reopen rebuilds the stuck orders | `stuck_parts_kept_decision_and_move_are_rebuilt_from_the_log` and `done_move_is_counted_as_moved_after_a_restart` red; the snapshot test stays green, as it reads a part stuck from the segments |
+| R33 `carried_on` rebuilt from the log | `no_value_moves_twice_after_core_reopens` red (carried on again after the second restart) |
+| R34 the repeat row's `read_recorded_answer` arm (round 2's M1) | `read_of_a_recorded_answer_is_held_to_the_segments_unsettled_move_at_its_provider` red |
+| R35 `reversal-is-asked-again-only-after-a-refusal` (core-internal) | `reversal_asked_again_after_an_ask_that_may_have_moved_is_refused_by_the_log` red |
+| R36 the repeat row's arm for a reversal whose ask has no final outcome | `reversal_asked_again_after_an_ask_that_may_have_moved_is_refused_by_the_log` red |
+| R37 a showing of fault kept before a restart rebuilt on reopen (`Reversals::rebuild_showings`) | `fault_shown_before_a_restart_is_accepted_after_it_without_a_new_showing` red |
+| R38 the operator's `reversal_retries` cadence taken as it is set | `reversal_retry_cadence_is_the_operators_setting_and_holds_across_a_restart` red |
+| R39 the same cadence put back as Core reopens (`Settings::apply`) | `reversal_retry_cadence_is_the_operators_setting_and_holds_across_a_restart` red |
+
+### Local checks
+
+fmt (root); clippy `--workspace --all-targets -D warnings`; `rutent-core-orch --lib` (63) and `rutent-core-authz --lib` (171, the
+entry-point scan included); the whole `rutent-scenarios` suite once, then every binary it touched after the last changes, with
+`invariants`, `assembly`, `reopened` and `protocol_cutover` on `RUTENT_SCENARIO_SEEDS=11..15,113..119` (the pinned 101..119
+included); plan-check and tag-check `--strict` (0 findings). Stand-ins and the plain wallet built privately and deleted.
+
+### T-020-61, review round 1 (#355, CHANGES at `2c96f5b6`), and item (10): first pass
+
+Merged `origin/m3` at `605a6c92` (T-020-67, the plan's item 10); the only conflict was these notes (both sides kept). The tests
+T-020-67 landed that still called the assembly's `run` move onto ticks.
+
+- **H3, done.** `draw_order`'s doc no longer links the private `REQUEST_NAME`.
+- **M1, done: item 8 reverted to `T-020-63`'s design.** A reopened segment is asked its status where its provider answers
+  status queries; its operation is repeated (`Modules::repeat_operation`, never `handle`) only at a provider that declares a
+  safe repeat and no status query; otherwise, and once carried on, it waits for the stuck check. The platform's record is a
+  guard, not the rule. Default 3 above is withdrawn. So a crash after the log took an effect and before the platform carried
+  it out ends stuck for the operator again (`RestartAfterRecord`, marked `stuck_for_the_operator`), and
+  `segment_begun_before_core_stopped_is_carried_on_after_it_reopens` now crashes after the platform carried the deposit out,
+  the reserve's status giving its result. `no_value_moves_twice_after_core_reopens` asserts nothing is handed again in each
+  case, and that a segment whose answer is the log's is not carried on at all: that is R13's test now. L4 is moot: no `handle`
+  under `repeat_operation` is left.
+- **M2, first half.** `plan_of`'s remap and seed 116's pin to the ramp are gone: the joined route's `RestartAfterEffect(1)` falls
+  at the exchange again, ends stuck under `stuck_for_the_operator`, and the item-9 test asserts each caught order's end by its
+  kind, `INV-8`, and that nothing is repeated. The decided read of the platform's recorded answer (core-internal and the
+  platform, `DEC-20`) and its test `answer the platform recorded before core lost it is read back and nothing is sent again`
+  are **not built yet**.
+- **M4, done.** `decide_stuck` takes the part Core holds stuck, any part of a split order. No split-order test yet.
+- **L5, done.** `Recalculations::recalculate`'s doc says the second-recalculation rule is Core's run's.
+- **H1, done: a failed segment's reversal is a job of Core's run.** `Jobs::reverse_owed` (`schedule/run.rs`) takes a step on
+  each segment of a part that failed owing its reversal, one step a tick, as recalculation does: on the tick after it failed,
+  recorded owed in the catalogue's list (`Reversals::owe`); on the next, while the failed provider carries it, the provider
+  asked (`Reversals::ask`, through policy); on the next, the origin reserve or the node's holder asked to confirm
+  (`Reversals::confirm_reversal`); and so in turn, the provider asked again and the confirmation asked again, until it completes
+  (`Reversals::took_step`/`asked_last` keep the turn; a reopened Core confirms first where the log holds an ask). Where the
+  provider can't be asked (no reserve at the node, policy's refusal), the confirmation is asked on the same tick. A reversal
+  the customer or the operator carries, on a showing they accepted, is theirs: Core asks no one. A stuck part's reversal still
+  runs, as before (a dispute's provider carries it meanwhile). A part whose reversal completed on a tick is recalculated on the
+  next. The deployment lends one more port, `Ports::with_reversal_desk` (`ReversalDesk`: the operator key, policy, the
+  platform as `ReversalPlatform` for a decided reversal and a reserve's question, the stuck orders, the register of actors).
+  The inbound commands are Core entry points over `Ports` (`reversal/command.rs`): `end` (the customer, as the log's
+  acceptance names it, or the operator by the register: core-internal has no decided `end` action, so Core holds the caller
+  itself, as `accept_fault` does the operator's), `show_fault`, `accept_fault` (the customer's through policy's
+  `accept_fault` decision, which Core asks itself, then reads from its log; the operator's by its command and the register),
+  `dispute`, `returned`, and, beside them, `late_approval`, `report_late` (a provider's result after its answer was taken,
+  with who the transport says handed it over) and `confirm_undone` (`AC-8`, a complete part's start asked of its origin
+  reserve). The assembly's `owe_reversal`, `ask_reversal`, `confirm_reversal` and its two private lenders are gone; it reads
+  what Core holds (`owed_reversal`) or what a tick told (`asked_on_tick`, `confirmed_on_tick`), and hands each command to the
+  entry point. `Reversals::confirm` is renamed `confirm_reversal`: core-authz's entry-point scan reads any call named
+  `confirm` as the platform's `confirm_releases` carrier, and Core now calls it from its own run. R12's gate is live: the run's recalculation of a part refuses while a segment of it owes an uncompleted
+  reversal, answering `NotNow(InFlight)`, the recalculations' own answer. Test `failed segment's reversal is owed asked and
+  confirmed by core's run` (`reversing.rs`): a failed middle segment owed, asked, confirmed (refused as the same publisher's
+  word), asked again and completed, recalculated and run, on ticks alone, the recalculation refused while it was owed.
+  Rule-off: the run's reversal step switched off turns it red (nothing owed on the first tick). Switching off the run's own
+  owed gate alone leaves it green, as the recalculations' rule refuses the same: two holds of one rule, neither the only one.
+  Tests that stepped a reversal by hand now tick: the showings script the failed provider before its ask, and
+  `gross_charged` counts only charge raises, since a tick also runs the holding check (`T-020-63`), which raises the stand-in
+  reserve's ledger node the scenario's register doesn't name.
+- **M2, done: the exchange's case closed by a decided read of the platform's recorded answer** (`DEC-20` paths:
+  `contracts/`, `components/core-authz/`, `components/prov/src/module/platform.rs`). core-internal 1.0.0 (unreleased) gains
+  `Action::ReadRecordedAnswer {order, segment, provider, transaction}` (`read_recorded_answer`), schema, two fixtures and a
+  changelog entry; `repeat-is-of-an-unsettled-segment-at-its-provider` holds it as it holds a repeat, so the relation count
+  is unmoved. core-authz holds it to the repeat's permission and scope (the same carrying-on of the same move, moving nothing),
+  and lists `recorded_answer` in `CARRY_OUT`. The platform's `recorded_answer` hands over its record's answer to that
+  provider's top-level operation under the transaction, running no module (`module_record`'s
+  `recorded_answer_is_read_back_after_a_restart_with_no_module_run`). Carry-on's third step (`segments/carry_on.rs`): at a
+  provider that declares neither a status query nor a safe repeat, the read, as a decided effect; an answer naming the
+  segment's transaction is the segment's; none, and it waits for the stuck check. So `RestartAfterEffect` completes at the
+  exchange: `stuck_for_the_operator` marks only `RestartAfterRecord`. Test `answer the platform recorded before core lost it
+  is read back and nothing is sent again` (`invariants.rs`, seed 116's pinned joined `RestartAfterEffect(1)`): the crash
+  fell, `INV-8` holds (`moved_once`), the order completes, one `read_recorded_answer` effect at the exchange and no
+  `repeat_operation` or `ask_status` of it.
+- **Rule-offs of this pass** (each alone, the file restored): the run's reversal step switched off
+  (`reverse_owed` returns nothing) turns `failed segment's reversal is owed asked and confirmed by core's run` red on its
+  first assertion (nothing owed); the recorded read switched off (carry-on waits at a provider with neither) turns `answer
+  the platform recorded before core lost it is read back and nothing is sent again` red (the caught order doesn't complete);
+  the run's own owed gate switched off alone leaves the H1 test green, the recalculations' rule answering the same.
+- **Local checks of this pass.** fmt; clippy `--workspace --all-targets -D warnings`; core-orch (lib and tests) and
+  core-authz `--lib` (171); contracts (`core-internal`, 108) and core-audit; prov's `module_record`; every scenario binary,
+  `invariants` (18) and `assembly` on seeds 11 to 15 and 113 to 119, `reopened` and `protocol_cutover`; the contract guard
+  against `origin/develop` and `origin/m3` (no violations); plan-check and tag-check `--strict` (0 findings).
+- **Not built yet in this pass, each owned by this row:** H2 (the linked order accepted by Core, its inputs logged and its
+  authorisation under the customer's floor; test `linked order is accepted by core with the customer's inputs logged`); M3
+  (open orders at a reserve, the reliance declarations, release acceptance through Core's decided path); M4's split-order
+  test; L1 (item 9's four Lows); L2 (item 7's: a lapsed quote's hold released; the owed-reversal refusal is now in the H1
+  test); L3 (`reserve_yes` recorded on the quote); L6 (the stuck tests reached through Core's run).
+
+### T-020-61, review round 1 continued (the coordinator's message after `428b91d6`)
+
+Merged `origin/m3` at `64309ac3` (T-024-25, #353) as its own commit; the only conflict was F-024's notes, both sides kept.
+
+- **`end` and `dispute` go through policy** (the coordinator's ruling; `DEC-20` paths `contracts/`, `components/core-authz/`).
+  core-internal 1.0.0 (unreleased) gains `Action::EndOrder {order}` and `Action::DisputeFault {order, segment}`, decided
+  and never an effect (`Effect::check` refuses one), with schema, four fixtures, CHANGELOG and README; no relation of their
+  own. core-authz: the order's requester in the customer's role, or an operator's login holding `Permission::EndOrder` or
+  `::DisputeFault`, both in the permission sweep (43 permissions, 46 calls) and in
+  `an_order_is_ended_and_a_fault_disputed_by_its_requester_or_the_operator_holding_the_permission`. Core's `end` and
+  `dispute` entry points ask policy first and act only on its permit; the self-check `end` had is gone. `ending.rs`
+  asserts another customer's `end` is refused (`NotPermitted`) and records nothing.
+- **The other entry points, checked.** `accept_fault`: the customer's is policy's decision of `accept_fault`, which Core
+  asks; the operator's is its `accept_fault` command, which core-internal lists among the commands that need no policy
+  decision (`OperatorCommand`), bound by the register of actors. `show_fault`, `returned`, `late_approval` and `report_late`
+  take no actor's request: each is a provider's or a reserve's signed statement, verified by its key and kept as its maker's,
+  moving nothing (`REQ-ORD-11`, `-31`, `-25`, `REQ-STM-6`); a decided action would let policy refuse to keep evidence,
+  which `INV-3`'s record of every result forbids. `confirm_undone` puts the same signed `reversal_confirmation` question to
+  the origin reserve that Core's run puts for every owed reversal, which is not decided anywhere (`T-020-12`'s design):
+  deciding it is a change to the reversal confirmation itself, named here as its gap, not this row's.
+- **M1, confirmed.** Carry-on (`segments/carry_on.rs`): a provider that declares a status query is asked its status; only a
+  provider that declares a safe repeat and no status query has its operation repeated (`repeat_operation`); any other has
+  the platform's recorded answer read back (`read_recorded_answer`), then waits for the stuck check. No `handle` is called
+  under `repeat_operation`, so the scan's `CARRY_OUT` listing needs nothing for it. R13's test stands
+  (`no_value_moves_twice_after_core_reopens`).
+- **H2, done: Core accepts a linked order** (`intake/linked.rs`). `accept_linked` routes it from the node with the rounds,
+  plans it, keeps the customer's inputs as the operator's statement of them (`ORDER_INPUTS_SHAPE`, the log holding the
+  commitment), shows the quote, takes the customer's acceptance on the starting provider's yes, and asks policy for the
+  authorisation the acceptance names, given by the customer under its own floor (`LinkedOrder.floor`). Core's run reads the
+  inputs back when it starts the linked order (`linked_inputs`) and composes no authorisation in the customer's name: with
+  none in force the order never starts. The assembly's `accept_linked` hands the request to Core and keeps the accepted
+  route. Test `linked order is accepted by core with the customer's inputs logged`. The reopen test's crash moved from
+  `authorise` to the first move's `decide`, since no authorisation is registered at start any more.
+- **L2, done.** A quote shown before Core reopened, past its validity, drops its hold when its acceptance is refused
+  (`shown_in_the_log`); `holds.rs` asserts the hold is gone and redeemed by nothing.
+- **L3, done.** The yes a rebuilt quote cites is the reserve's verified result about the order answering a question Core
+  stated under that transaction, never its last statement about the order. Recording the yes on the `shown` entry itself would
+  be a core-internal change; the shape-and-transaction selection is exact without it.
+- **The coordinator's rulings on this pass.** `show_fault`, `returned`, `late_approval` and `report_late` stay undecided:
+  they are signed statements Core keeps as their maker's, and policy must not be able to refuse to keep evidence.
+  `confirm_undone` is a named gap, for `T-025-05`'s security pass to rule on. The operator's `accept_fault` stays a command
+  needing no policy decision, as core-internal says. L3 stands without a contract change. The stand-in holding module that
+  would let the test worlds register their ledger nodes goes to `T-020-60`; the scenarios' counting around the raises stays.
+- **M3, first of three, done: the orders open at a reserve are Core's** (`arrival/open.rs`, `OpenAt`): derived from what
+  intake started and the segments the log took settled, each part whose first segment hasn't settled, its payer as holder,
+  its session, the part's amount on a split route. The deployment answers only which account a session speaks for, which
+  only its register of sessions holds (`REQ-CAT-3`). The assembly's derivation and its `requests` lookup go.
+- **Not built in this round, each owned by this row:** M3's other two (the reliance declarations made by Core: Core would
+  declare, as a segment carrying inputs is handed over, that each input its operation carries rests on the verifier's
+  judgement the operation's eligibility figure cites, the judgement's stated entry found in the log, in place of the
+  assembly's `rests_on`; and release acceptance through Core's decided accept, with the fleet and scenarios calling it in
+  place of the assembly's `grant` and `accept_release` writing effects); M4's split-order test (no assembled world plants a split order: the split worlds
+  are core-orch's test `Core::split`, which has no `Ports`); L1 (item 9's four Lows); L6 (the stuck tests reached through
+  Core's run); and the holding-check registration of the sim reserves' ledger nodes (item 8 of the message): every
+  `kit::join` registers a private node's holding as `holding`, a module the platform doesn't run, so registering it would
+  still raise (`NotAnswered`) rather than read; the scenarios keep counting around it, in `gross_charged`, `charge_check`,
+  `quoting` and `report_pairs`.
+
+### T-020-61, review round 1, third pass (a new author, from `9562981b`)
+
+Merged `origin/m3` at `3a53de34` (T-015-05, #354, the reader host) as its own commit, no conflict.
+
+- **M3, the reliance declarations, done (`REQ-CPL-12`).** Core declares what a segment's inputs rest on as its run hands
+  the part over (`Segments::declare_cited`, called by `Jobs::run_route` before `Segments::run_part`): every input a
+  segment's operation carries rests on the verifier's judgement the operation's eligibility figure carries, and Core
+  finds that judgement's stated entry in the log itself (`reliance::stated_judgement`: the judgement's shape,
+  attributed by the log to the maker the statement names, its bytes kept under the entry's commitment the figure's
+  statement). The `reliance` entry is then written before the send as before. The assembly's `rests_on` is gone; the
+  verifier scenario declares nothing and asserts the payer's account among the reliance's inputs.
+- **M3, release acceptance, done.** The wallets the assembly installs, a public node's holding account
+  (`install_wallet`) and a private node's publisher account (`install_publisher_account`), are admitted to the platform
+  waiting, and accepted through Core's decided accept (`Segments::change_release` with `ReleaseChange::Accept`): policy
+  first, the effect recorded before the platform accepts, its result after. A wallet's revoke goes through
+  `ReleaseChange::Revoke`. `log_wallet_release_change`, which asked policy and wrote the effect and a `done` result with
+  nothing carried out, is gone, and so is `accept_waiting_release` (the fleet's platform accept by a test reviewer):
+  `module_scenarios` accepts its widened release through Core. The platform runs no wallet Core hasn't accepted, so the
+  wallet test's "answer before acceptance is unattributed" half is gone with it.
+- **M3, the provider's grant, done.** `settings::grant::grant` is Core's decided grant of each tuple an advertisement
+  offers and each class a verifier offers: policy by the caller, the effect, the grant made in Core's catalogue at the
+  effect's time under the advertising key (`carry_out_grant`, which holds the effect; the catalogue's `grant` was
+  already in core-authz's `CARRY_OUT`, so the scan holds it to rule 3), its result `failed` where the catalogue
+  refused. The deployment hands in only what core-internal's grant doesn't carry (party, expiry, categories, reversal
+  capacity) and the log's names of the tuples. The assembly's `grant` hands Core the ask.
+- **M4, tested.** `decide_stuck` already took the part Core holds stuck. The schedule's bare deployment
+  (`schedule::jobs` tests) now lends the stuck orders over a log, a policy and a channel that take nothing, and
+  `stuck_command_decides_the_stuck_part_of_a_split_order` plants a split order of three parts, its second part stuck
+  (the state machine following the route and the declaration; `Stuck` holding it declared through a test-only
+  `plant_stuck`): Core's entry point decides the second part and goes on to its own checks, stopping at its ends
+  (`NoEnds`, the first check that needs the log's records); an order with no part stuck is `NotStuck`. A decision
+  carried through to policy needs a world whose log holds the authorisation and the evidence; the assembled worlds
+  plant no split order.
+- **L1, item 9's four Lows, done.** "Lose no order" reads what Core knows of its orders right before each restart of
+  Core and its platform and right after it (`Core::order_snapshot`: id, the state Core follows the order in, its
+  request's amount) and holds them equal. `INV-4`'s relaxed contradiction rule is re-proved by its rule-off (R18): the
+  reason it is re-proved now is the floor (`contradictions >= 1`, the pinned seed 105's contradicting late answer), which
+  makes the branch reached, so a strict count goes red rather than staying green for want of a contradiction. A
+  `RestartWhileStuck` run with two orders (the pinned seed 117) reads each order's end by its own place in the caught
+  set. `Landing::restore`'s `NotNow` is tested (`landing_owed_at_a_holding_account_that_runs_nothing_now_is_tried_once_it_runs`).
+- **L6, done where the run makes a part stuck naturally.** `assembly_stuck`'s two tests and `assembly_hand_on` reach the
+  stuck part through Core's run: the deposit's start refused, the reserve refuses the deposit's dry run as Core
+  recalculates the part from its ledger, so the recalculation finds no route and Core's run declares the part stuck.
+  `leave_no_route` stays for the tests where ticking on would change what they read: `measures_called` and
+  `bulk_measures` call it to keep a failed run out of the next orders' ticks, so the measures are of those runs alone;
+  `assembly_real_wallet`'s `stuck_before_the_schedule_runs` is the part stuck before the schedule lands anything, which a
+  tick would change; `reopened`'s two are restarts of a part stuck at a given point. Each is a test's setting, not a
+  behaviour a deployment reaches only through it: Core's run declares the same part stuck through `Stuck::no_route`.
+
+**What else in the assembly, checked (`conformance/scenarios/src/assembly/`).** Moved in this pass: `rests_on`,
+`grant`'s decided body, `log_wallet_release_change`, `accept_waiting_release`. What is left that writes to Core's log or
+catalogue, and why it stays:
+
+1. `relist` and `advertise`/`kit::join` as they rebuild: **moved, by the coordinator's ruling** (below).
+2. `change_public_network` (a public network listed or delisted with its reader service, `T-024-25`): decided and
+   recorded, but nothing carries it out, since Core's catalogue takes nothing from a listing until `T-020-60` puts Core on
+   its reader. Owner: `T-020-60` (the coordinator's ruling; started).
+3. The fleet's acceptance of each simulated provider's first release at build (`Fleet::install`, the platform's test
+   reviewer) is **test provisioning**, accepted as such by the coordinator for the reviewer to judge: the starting set,
+   admitted before Core is assembled. **In a deployment every release, the first included, is accepted through Core's
+   decided accept (`ReleaseChange::Accept`)**; nothing else accepts one. The assembled worlds hold to that wherever the
+   fleet hasn't pre-accepted a release: `widened_release_needs_fresh_acceptance_before_it_serves_an_order` (`module_scenarios`) (the release
+   waits, the version in force stays and no process of the waiting one runs; Core's decided accept puts it in force, its
+   effect and result in the log), and every wallet the assembly installs (the fleet asserts its release waits, and the
+   platform runs it only once Core accepted it; `release_of_an_operator_published_wallet_is_accepted_in_the_log_and_its_answers_are_verified`).
+4. Test hooks and planted faults, no v0 behaviour: `effect_without_its_result`, `append_advertisement`, `state_by`,
+   `plant_unpriced_route`, `leave_no_route` (above).
+5. Deployment wiring: the registers, sessions, installs, the ports Core is lent, `tick` on a timer.
+
+**The catalogue rebuilt by Core on reopening (the coordinator's ruling on item 1).** `settings::listing::relist` rebuilds
+Core's catalogue from the log alone, as `Closing::recorded` and `Holds::recorded` rebuild theirs, into the empty catalogue
+a reopened Core starts with: each `done` grant (a tuple's, or a verifier's class) granted again at its effect's time, by
+the decision's caller, under the key the effect names and the id Core's grant gave it, the tuple taken from the
+advertisement the log's key register accepted; each advertisement joined at the time the log received it, only the
+stated entry whose commitment is the register's accepted one, read back from the evidence store, and judged by the
+listings and cutovers the log held when it was received; any other `done` catalogue change refuses the reopening; every
+cutover put in force at the end in the catalogue and the platform. `T-024-21`'s guarantees hold: an installed
+advertisement no stated entry commits to refuses the reopening. The assembly hands Core only what the log doesn't hold:
+the installed advertisements (for that check), its grant terms, the log's names of tuples, what it sets on a joined
+advertisement (`kit::joined`: the module's version, the tuples' floors, the private nodes' holdings, the operator's public
+nodes) and the platform. Tests: `reopened_core_rebuilds_its_catalogue_from_its_log_alone` (a reopen from an empty
+catalogue lists every grant and advertisement as before) and `old_advertisement_replayed_after_a_newer_accepted_one_changes_nothing`
+(now across a reopen: the register's accepted advertisement is the one listed again). Each grant is made again on the
+effect the log holds (`regrant` takes the `Effect` built from the log's entry and the permit it names), so core-authz's
+entry-point scan holds the rebuild to rule 3 as it holds Core's grant. Local checks after it: fmt; clippy
+`--workspace --all-targets -D warnings`; core-orch (lib and tests); core-authz `--lib` (172); every scenario binary and
+`--lib` with the same seeds and the stand-ins and plain wallet built privately, then `assembly_policy`,
+`protocol_cutover`, `reopened`, `assembly_wiring` and `--lib` again after `regrant`; plan-check and tag-check `--strict`
+(0 findings, 2743 tests).
+
+**Defaults taken in this pass** (reversible, each failing closed):
+
+9. **An operation that cites more than one eligibility figure** has its inputs rest on the first whose judgement the log
+   holds; one whose judgement the log doesn't hold declares nothing, so no reliance is written for it.
+10. **An input already resting on another judgement keeps the first** (`Rests::Another`, the register's own rule): a
+    later segment carrying the same input under another verifier's judgement relies on the first. No v0 route carries
+    one input under two judgements.
+11. **A wallet the assembly installs is accepted at its install**, through Core's decided accept; `Core::relist` skips
+    any accepted release, which the platform's record holds.
+12. **A grant is made at its effect's own time**, in the catalogue's whole seconds.
+
+**Gaps of this pass, with owners.**
+
+- A reserve's judgement (its proof that its users may enact, `REQ-CPL-8`) is carried by no operation's figure, so Core
+  can't find it from the record: `Segments::rests_on` stays core-orch's API for it, with only tests calling it
+  (`reliance.rs`, `stuck_mover.rs`). Owner (the coordinator's ruling): `T-025-05` pass 3, which rules on whether v0
+  needs it, with `T-024-10`'s evidence table showing the row's status. Not built here.
+
+**Local checks of this pass** (after the merge of `3a53de34`, the stand-ins and the plain wallet built from this tree
+in a private directory and deleted after): fmt; clippy `--workspace --all-targets -D warnings`; `rutent-core-orch` (lib
+and tests) and `rutent-core-authz --lib` (172, the entry-point scan included); every `rutent-scenarios` binary and
+`--lib`, all with `RUTENT_SCENARIO_SEEDS=11,12,13,14,15,113,114,115,116,117,118,119` (so `invariants`, `assembly`,
+`reopened` and `protocol_cutover` on those seeds); plan-check and tag-check `--strict` (0 findings, 2742 tests). No
+contract, prov or module-guest file touched by this pass.
+
+### T-020-61, review round 2 (#355, CHANGES at `d671c898`)
+
+A new author, from `d671c898`. `origin/m3` (`3a53de34`) was already merged and didn't move. Edits `components/core-orch/`
+(`reversal/`, `schedule/`, `segments/`, `settings/`), `contracts/` (`DEC-20`: core-internal's unreleased 1.0.0) and the
+`F-024` files each commit body names.
+
+- **H1, a reversal sent once (`reversal/asks.rs`).** Each ask of a reversal goes under a fresh transaction, so a provider
+  can't tell a second ask from a new reversal of the same move. Now `Reversals::ask` claims a fresh transaction only where
+  every earlier ask of the reversal failed, which moved nothing (the provider refused it, or the platform refused before
+  the module passed anything out), and then only on the retry cadence and up to the cap; otherwise `AskedAlready`,
+  `NotDue` or `TriedEnough`. An ask whose outcome is unknown (`unanswered`, or no result after a stop) is carried on
+  once under its own transaction, in item (8)'s order: its status asked where the provider answers status queries, its
+  operation repeated where it declares a safe repeat and no status query, otherwise the platform's recorded answer read
+  back; each a decided effect, an answer of the reversal's transaction judged as the ask's would be
+  (`Reversals::carry_on_reversal`). An ask the provider carried out whose word doesn't count, and an unknown one carried
+  on, wait for the origin reserve's confirmation, asked on the same cadence and cap; past it the stuck check times the
+  part. Core's run takes the step `Reversals::next_step` names. A reopened Core rebuilds every ask, its outcome and
+  answer, whether it was carried on, the confirmations and the carrier from the log (`Reversals::rebuild_asks`);
+  `asked_last` and `took_step` are gone. **The log holds Core to it** (core-internal 1.0.0, folded, with fixtures and the
+  guard green against develop and m3): `reversal-is-asked-again-only-after-a-refusal` refuses an `ask_reversal` effect
+  after one of the same order and segment whose result isn't `failed`, and `repeat-is-of-an-unsettled-segment-at-its-provider`
+  admits a repeat or a recorded read of a failed segment whose `ask_reversal` has no final result (122 relations).
+  Tests: `reversal_whose_outcome_is_unknown_is_never_asked_again_under_a_new_transaction` (one ask and one reversal
+  operation at the exchange across ticks and a reopen, one recorded read, confirmations to the cap, then stuck) and
+  `reversal_asked_again_after_an_ask_that_may_have_moved_is_refused_by_the_log`; and
+  `reversal_state_dropped_from_memory_is_rebuilt_by_cores_reopen_and_nothing_is_asked_again` shows a forgetful Core's
+  second ask refused by the log, nothing handed over. The role suite gains no check of its own: Core can't send a second
+  ask of one reversal (its rule and the log's), and the stand-ins already refuse a second reversal of the same `reverses`.
+  The tests that stepped a reversal again now ask again only after a refusal and past the cadence
+  (`failed_segments_reversal_is_owed_asked_and_confirmed_by_cores_run`, `protocol_cutover`'s holdout), never after an
+  unknown or short answer (`simulated_faults`), and `confirmed_on_tick` waits out the cadence between confirmations.
+- **M1.** Admission cases for the repeat row's `read_recorded_answer` arm: `world--decide_read_recorded`,
+  `world--effect_read_recorded`, `--a-read-at-another-provider`, `--a-read-of-a-settled-segment`,
+  `--a-read-under-another-segments-transaction`, with the README cells; R34.
+- **M2, Core's entry point for an advertisement (`settings::listing::advertise`).** Its bytes kept, its stated entry
+  appended as its maker's claim, and joined only where the log's key register accepted that very statement, by
+  `relist`'s own reading (`join_received`, shared: the listings and cutovers held at receipt, the receipt's time, then what
+  the deployment sets on a joined advertisement). The assembly's `advertise` and `receive_advertisement` hand Core only
+  `kit::joined`; `kit::join` stays the log-less test kit's. `old_advertisement_replayed_after_a_newer_accepted_one_changes_nothing`
+  now holds the live path too.
+- **M3, Core's own reopen (`schedule::reopen`).** Every part rebuilt from the log in Core's order (the module's docs list
+  it), the deployment handing in only its pieces and holding what Core answers; the assembly's `reopen_core` wires it,
+  tells its own registers (policy's sources, the filings, the requests, the linked routes) and lets Core's run resume.
+  `relist`, `rebuild_from_log`, `relist_holdings`, `relist_publisher_accounts`, `recover_starts` and
+  `settle_reopened_erasures` are gone from the assembly. Tests:
+  `core_reopened_through_its_own_entry_point_holds_what_the_core_that_ran_held` (`Core::parts_snapshot` before and after)
+  and the dropped-state test above.
+- **Lows.** Carry-on at a status-query provider that knows no result waits for the stuck check and never reads the
+  platform's record (the coordinator's ruling on the reviewer's Low: item (8)'s order), now asserted. `carried_on` is
+  rebuilt from the log (a carrying-on of the segment after its move's effect), so a segment is carried on once across
+  restarts. `change_public_network`'s `done` result with nothing carried out stays: `T-020-60` owns it, in progress on a
+  branch stacked on this one.
+
+**Defaults taken in this round** (reversible, each failing closed):
+
+13. **A reversal ask that failed may be followed by another**, on the cadence and up to the cap: it moved nothing, so a
+    fresh transaction can't pay twice (the reviewer's fix). The coordinator's "never a fresh transaction" is read as of
+    an ask that may have moved: `unanswered`, no result, or `done`.
+14. **The retry cadence is 30 s and the cap 24** (`DEFAULT_REVERSAL_RETRY_SECONDS`, `MAX_REVERSAL_TRIES`), for the
+    confirmations and the asks after a refusal alike, so the stuck window of a provider that advertises settling in a
+    minute holds a few asks, until the operator sets another (`reversal_retries`, below). The cap is not a setting.
+15. **A carrying-on of a reversal policy refused is not tried again**: the reversal waits on its confirmations and the
+    stuck check.
+16. **An advertisement is not a decided action** (M2's "through policy"): what policy decided of it is the operator's
+    grant before it and the settings the log holds. At the build, an advertisement the register refuses is an error.
+17. **Core's reopen rebuilds the catalogue before the settings**, not after as the coordinator's list puts them: a
+    setting's missing result is completed against the rebuilt catalogue (it is `failed` where the catalogue refuses it),
+    and the listing judges each advertisement by the settings the log held when it was received.
+18. **The operator's confirmation of releases a restarted platform holds follows Core's reopen**: the landings owed are
+    asked again once the wallets run, as before.
+19. **A rebuilt showing counts as disputed** where the log holds any `dispute` stuck declaration of its order after it.
+
+**Gaps of this round, with owners.**
+
+- `change_public_network` records `done` with nothing carried out: `T-020-60` (stacked on this branch, in progress).
+- (Both closed in this row by the coordinator's ruling, below: the reversal cadence's operator setting, and a showing of
+  fault kept before a restart.)
+
+**The coordinator's ruling on round 3** (no follow-up row owns them, so this row does):
+
+- **A showing of fault kept before a restart is rebuilt** (`Reversals::rebuild_showings`, called by `Reversals::reopened`,
+  so by Core's reopen), as item (6) rebuilds `Reversals.later`: the last stated result of a failed segment's own
+  transaction by the provider its move went to, taken after the move's first result, whose kept bytes name a fault,
+  with its receipt; disputed where the log holds a `dispute` stuck declaration of the order after it (default 19: a
+  dispute of another part of the same order also settles it, failing closed). The party it names accepts it after a
+  restart with no new showing, the carrier resting on the showing the log took before:
+  `fault_shown_before_a_restart_is_accepted_after_it_without_a_new_showing`; R37.
+- **The reversal retry cadence is an operator setting**: core-internal 1.0.0 (folded, `DEC-20`) names
+  `REVERSAL_RETRIES_JOB` (`reversal_retries`), the `cadence` setting's job for how often Core asks a reversal again,
+  named for no provider; no shape change, one valid fixture, the README and CHANGELOG. Core takes it as it takes every
+  setting (`Targets::reversals`, `Settings::reversal_retry_seconds`), and again as it reopens; until set, 30 s, capped
+  at 24: `reversal_retry_cadence_is_the_operators_setting_and_holds_across_a_restart`; R38, R39.
+- **Local checks after the ruling** (through the lock, the stand-ins and plain wallet built privately and deleted after):
+  fmt; clippy `--workspace --all-targets -D warnings`; `rutent-core-orch` (lib and tests), `rutent-core-authz --lib`
+  (172), `rutent-contracts`, `rutent-core-audit`; the guard against `origin/develop` and `origin/m3` (no violations);
+  `rutent-scenarios` `--lib`, `reversing`, `simulated_faults`, `assembly_policy`, `protocol_cutover`, `ending`,
+  `invariants` (19) and `reopened` (11) with `RUTENT_SCENARIO_SEEDS=11..15,113..119`; plan-check and tag-check
+  `--strict` (0 findings).
+
+**Local checks of this round** (through the lock; the stand-ins and the plain wallet built from this tree in a private
+directory and deleted after): fmt; clippy `--workspace --all-targets -D warnings`; `rutent-core-orch` (lib and tests) and
+`rutent-core-authz --lib` (172, the entry-point scan included: the reversal's carry-on puts its carriers through `put`,
+which takes the effect); `rutent-contracts` (`core-internal` 111) and `rutent-core-audit`; the contract guard against
+`origin/develop` and `origin/m3` (no violations); prov's `module_record`; every `rutent-scenarios` binary and `--lib` with
+`RUTENT_SCENARIO_SEEDS=11,12,13,14,15,113,114,115,116,117,118,119` (so `invariants`, `assembly`, `reopened` and
+`protocol_cutover` on those seeds), then `--lib` and `ending` again after their last fixes; plan-check and tag-check
+`--strict` (0 findings, 2748 tests). Every confirmation Core asks, the operator's `confirm_undone` included, keeps the
+retry cadence, so `ending.rs` asks its second a cadence later.
+
 ## T-020-67: what the checks of `T-020-58` and `T-020-54` left
 
 Branch `f-020/t-020-67`, issue #349, from `19e6984d` (`m3-next`). Edits `components/core-orch/` (`segments/`, `closing/`,

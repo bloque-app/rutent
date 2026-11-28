@@ -50,6 +50,11 @@ impl Reopening for Reading<'_> {
         let kept = KeptStatements::kept(self.kept, commitment).ok()??;
         rutent_core_audit::receipts::store::bearing_out(&kept)
     }
+
+    fn in_force(&mut self, order: &Id, authorisation: &Id) -> Option<Authorisation> {
+        let logged: Vec<Entry> = self.entries.iter().map(|(_, e)| e.clone()).collect();
+        authorised(&logged, order, authorisation)
+    }
 }
 
 /// The decision record `id` Core's key signed, held to the digest the log names it by.
@@ -80,61 +85,6 @@ pub(super) fn held_record(
 }
 
 impl Core {
-    /// The host's holding accounts, which go on beside the platform, listed again in the reopened catalogue: each
-    /// wallet a module the operator publishes, its node public, the way to its account recorded, as
-    /// [`Core::install_wallet`] listed it (`REQ-CAT-23`, `T-020-46`).
-    pub(super) fn relist_holdings(&mut self) {
-        let accounts: Vec<(String, String)> = {
-            let holdings = self.holdings.borrow();
-            holdings
-                .attributions()
-                .into_iter()
-                .filter_map(|(node, _)| {
-                    let provider = holdings.account(&node)?.provider().to_owned();
-                    Some((node, provider))
-                })
-                .collect()
-        };
-        for (node, provider) in accounts {
-            let _ = self.catalogue.publish_operator_module(&provider);
-            let _ = self.catalogue.add_public_node(&node);
-            let _ = self.catalogue.register_public_holding(&node, &provider);
-        }
-    }
-
-    /// The decision records Core signed, read back from the evidence store (`T-020-46`): each the operator's stated
-    /// entry of router-api's decision-record shape, its kept bytes the record as signed, kept under the record's id
-    /// where the log's `decision_record` entry names those bytes by digest. A record the store no longer keeps, or
-    /// whose bytes aren't the ones the log names, is not read, and what rests on it fails closed.
-    fn records_in_the_store(&mut self, history: &[(Receipt, Entry)]) -> BTreeMap<String, Vec<u8>> {
-        let mut records = BTreeMap::new();
-        for (_, entry) in history {
-            let Entry::Stated(stated) = entry else {
-                continue;
-            };
-            if stated.what.statement.as_str() != DECISION_RECORD_SHAPE {
-                continue;
-            }
-            let Some(bytes) = KeptStatements::kept(&mut self.kept, &stated.commitment)
-                .ok()
-                .flatten()
-                .and_then(|kept| rutent_core_audit::receipts::store::bearing_out(&kept))
-            else {
-                continue;
-            };
-            let Some(record) = record_in(&bytes) else {
-                continue;
-            };
-            let id = record.record_id().as_str().to_owned();
-            let mut one = BTreeMap::new();
-            one.insert(id.clone(), bytes.clone());
-            if held_record(&one, history, record.record_id()).is_some() {
-                records.insert(id, bytes);
-            }
-        }
-        records
-    }
-
     /// Intake rebuilt from the log as a Core that reopened would rebuild it were the statement kept behind
     /// `commitment` unreadable (a test hook, `T-020-46`): the evidence store answers nothing for it, so an order whose
     /// inputs it holds is held, failing closed. The rest of Core's state is not changed.
@@ -202,35 +152,196 @@ impl Core {
         exposures.totals()
     }
 
-    /// Rebuilds Core's own state from the log the disk holds (see the module's docs).
-    pub(super) fn rebuild_from_log(&mut self) {
+    /// Reopens Core on the log the disk holds through Core's own entry point (`rutent_core_orch::schedule::reopen`, the
+    /// review of #355's round 2, M3), which rebuilds every part in its own order; the assembly hands it only the
+    /// deployment's pieces (the clock, the log's and the evidence store's handles, policy's register of authorisations,
+    /// the host's accounts, the installed advertisements and their grant terms, the platform, fresh ids) and then holds
+    /// what it answers, tells its own registers (policy's sources, the filings, the requests and the linked routes) and
+    /// lets Core's run resume.
+    ///
+    /// # Errors
+    ///
+    /// As Core refuses to reopen.
+    pub(super) fn reopen_core(&mut self) -> Result<(), AssemblyError> {
+        use rutent_core_orch::schedule::reopen::{Deployment, Kept, Platform, Relist, reopen};
+        struct Store<'a>(&'a mut LogsRead);
+        impl Kept for Store<'_> {
+            fn bytes(&mut self, commitment: &Digest) -> Option<Vec<u8>> {
+                let kept = KeptStatements::kept(self.0, commitment).ok()??;
+                rutent_core_audit::receipts::store::bearing_out(&kept)
+            }
+            fn statements(&mut self) -> &mut dyn KeptStatements {
+                self.0
+            }
+        }
+        struct Platformed<'a> {
+            fleet: &'a mut crate::sim::Fleet,
+            holdings: &'a Rc<RefCell<rutent_prov::holding::wallet::Holdings>>,
+            bounds: &'a rutent_contracts::router_api::PolicyBounds,
+            clock: &'a SharedClock,
+        }
+        impl Platform for Platformed<'_> {
+            fn cutovers(&mut self) -> &mut dyn rutent_core_orch::settings::Cutovers {
+                &mut self.fleet.platform
+            }
+            fn releases(
+                &mut self,
+                with: &mut dyn FnMut(&dyn rutent_core_orch::segments::lifecycle::Releases),
+            ) {
+                let releases = self.fleet.releases();
+                with(&releases);
+            }
+            fn landings(
+                &mut self,
+                with: &mut dyn FnMut(&mut dyn rutent_core_orch::segments::Landings),
+            ) {
+                let at = self.clock.instant();
+                self.fleet.platform.world.set_clock(at);
+                let Some(made_at) = rutent_core_orch::snapshot::Clock::now(self.clock).timestamp()
+                else {
+                    return;
+                };
+                let mut key = RealKey::assembly();
+                let operator = rutent_core_orch::stuck::OperatorSigns::new(
+                    &mut key,
+                    self.bounds,
+                    kit::operator().acts,
+                    made_at,
+                );
+                let mut holdings = self.holdings.borrow_mut();
+                let mut landing = holding::Landing {
+                    holdings: &mut holdings,
+                    platform: &mut self.fleet.platform,
+                    operator: &operator,
+                };
+                with(&mut landing);
+            }
+        }
         let history: Vec<(Receipt, Entry)> = self.log.borrow().entries().to_vec();
-        // The decision records Core signed, from the evidence store, never from memory.
-        self.signer.records = self.records_in_the_store(&history);
-        // The quotes reserves hold, kept again by Core from the log and what the evidence store keeps behind each
-        // hold, and which order redeemed which (`T-020-57`).
-        self.holds = {
-            let mut reading = Reading {
-                signed: &self.signer.records,
-                entries: &history,
-                kept: &mut self.kept,
-            };
-            rutent_core_orch::quote::Holds::reopened(&history, &mut reading)
+        let installed = self.installed.clone();
+        for one in &installed {
+            self.record_release(one);
+        }
+        let advertised: Vec<(String, Vec<u8>)> = installed
+            .iter()
+            .map(|one| {
+                (
+                    one.advertisement.statement().maker.clone(),
+                    one.advertisement.bytes().to_vec(),
+                )
+            })
+            .collect();
+        let register = Rc::clone(&self.log);
+        let accepted = move |maker: &str| {
+            register
+                .borrow()
+                .accepted_advertisement(maker)
+                .map(|a| a.commitment)
         };
-        self.issued = Issued::recorded(&history);
-        // The executed prices reported, so each order's is reported once (`REQ-QTE-7`).
-        self.reported = rutent_core_orch::quote::Prices::recorded(&history);
-        self.intake = {
-            let mut reading = Reading {
-                signed: &self.signer.records,
-                entries: &history,
-                kept: &mut self.kept,
-            };
-            Intake::reopened(&history, &mut reading)
+        let terms = |provider: &str, decider: &str, at: rutent_prov::catalogue::Instant| {
+            installed
+                .iter()
+                .find(|one| one.advertisement.statement().statement.provider == provider)
+                .map(|one| kit::grant_terms(one, decider, at))
         };
-        // The arrivals, the deposits held and the waits for a customer, rebuilt from the log as well (`T-020-51`): each
-        // order still waiting for its customer is told to policy's sources and to the assembly's filings again.
-        self.arrivals = rutent_core_orch::arrival::Arrivals::reopened(&history, &mut self.kept);
+        let mut joined = |catalogue: &mut Catalogue, bytes: &[u8]| {
+            let Ok(ad) = serde_json::from_slice::<
+                Statement<rutent_contracts::provider_role::Advertisement>,
+            >(bytes) else {
+                return;
+            };
+            if let Some(one) = installed
+                .iter()
+                .find(|one| one.advertisement.statement().maker == ad.maker)
+            {
+                kit::joined(catalogue, &ad.statement, &one.spec);
+            }
+        };
+        // The host's holding accounts and the publishers' accounts, as the deployment keeps them, listed first.
+        let holdings = Rc::clone(&self.holdings);
+        let registers = Rc::clone(&self.deployed.registers);
+        let mut listed = |catalogue: &mut Catalogue| {
+            let holdings = holdings.borrow();
+            for (node, _) in holdings.attributions() {
+                let Some(provider) = holdings.account(&node).map(|a| a.provider().to_owned())
+                else {
+                    continue;
+                };
+                let _ = catalogue.publish_operator_module(&provider);
+                let _ = catalogue.add_public_node(&node);
+                let _ = catalogue.register_public_holding(&node, &provider);
+            }
+            for account in registers.borrow().publisher_accounts.values() {
+                let _ = catalogue.register_private_holding(
+                    &account.node,
+                    &account.publisher,
+                    &account.module,
+                );
+            }
+        };
+        let logged: Vec<Entry> = history.iter().map(|(_, e)| e.clone()).collect();
+        let mut in_force =
+            |order: &Id, authorisation: &Id| authorised(&logged, order, authorisation);
+        let core_actor = kit::core();
+        let reopened = reopen(
+            &history,
+            &mut Deployment {
+                clock: &self.clock,
+                core: &core_actor,
+                log: &mut self.general,
+                kept: &mut Store(&mut self.kept),
+                in_force: &mut in_force,
+                catalogue: &mut self.catalogue,
+                listed: &mut listed,
+                relisting: Relist {
+                    accepted: &accepted,
+                    installed: &advertised,
+                    terms: &terms,
+                    tuple_id: &kit::tuple_id,
+                    joined: &mut joined,
+                },
+                platform: &mut Platformed {
+                    fleet: &mut self.fleet,
+                    holdings: &self.holdings,
+                    bounds: &self.bounds,
+                    clock: &self.clock,
+                },
+                fresh: &mut self.fresh,
+                erasing: &mut super::erasure::Bound(&self.bound),
+            },
+        )
+        .map_err(|e| {
+            use rutent_core_orch::schedule::reopen::ReopenRefused;
+            use rutent_core_orch::settings::listing::RelistRefused;
+            AssemblyError::Listing(match e {
+                ReopenRefused::Catalogue(RelistRefused::NotReplayed { change, provider }) => format!(
+                    "the log holds a {change:?} of {} that Core's catalogue rebuild doesn't replay",
+                    provider.as_str()
+                ),
+                ReopenRefused::Catalogue(RelistRefused::Uncommitted(maker)) => format!(
+                    "the advertisement installed for {maker} isn't one the log committed to: no commitment's bytes are its"
+                ),
+                other => format!("Core didn't reopen: {other:?}"),
+            })
+        })?;
+        // Core's parts, held.
+        self.signer.records = reopened.records;
+        self.settings = reopened.settings;
+        self.bounds = self.settings.bounds(&self.base_bounds);
+        self.closing = reopened.closing;
+        self.holds = reopened.holds;
+        self.issued = reopened.issued;
+        self.reported = reopened.prices;
+        self.intake = reopened.intake;
+        self.arrivals = reopened.arrivals;
+        self.segments = reopened.segments;
+        self.exposures = reopened.exposures;
+        self.hand_on = reopened.hand_on;
+        self.stuck = reopened.stuck;
+        self.life.reversals = reopened.reversals;
+        self.schedule = reopened.schedule;
+        // The deployment's own registers, told what Core rebuilt: each order still waiting for its customer told to
+        // policy's sources and the filings again (`T-020-51`, `T-020-55`), and intake's requests.
         for (_, entry) in &history {
             let Entry::Verified(VerifiedEntry {
                 what:
@@ -245,8 +356,6 @@ impl Core {
                 continue;
             };
             if let Some(record) = self.arrivals.record(order) {
-                // The filing's record, as arrivals rebuilt it from the log, handed to Core's sources again as the
-                // filing handed it over when the order opened (`T-020-55`).
                 self.sources.opened_orders().opened(
                     &record.order,
                     &record.parties,
@@ -265,91 +374,11 @@ impl Core {
                     .insert(order.as_str().to_owned(), request.clone());
             }
         }
-        let mut exposures = Exposures::new();
-        let segments = {
-            let mut reading = Reading {
-                signed: &self.signer.records,
-                entries: &history,
-                kept: &mut self.kept,
-            };
-            Segments::reopened(
-                &self.clock,
-                &self.catalogue,
-                &history,
-                &mut reading,
-                &mut exposures,
-            )
-        };
-        self.segments = segments;
-        // The retry of a node-record read belongs to the segments, which were just rebuilt (`T-020-67`).
-        self.sync_record_retry();
-        self.exposures = exposures;
-        // The routes handed on whose start the holding account's record proved (`T-020-26`), and the hand-ons the log
-        // holds half of.
-        self.recover_starts();
-        self.hand_on = {
-            let mut reading = Reading {
-                signed: &self.signer.records,
-                entries: &history,
-                kept: &mut self.kept,
-            };
-            rutent_core_orch::hand_on::HandOn::reopened(&history, &self.segments, &mut reading)
-        };
-        // The landings the segments owed: asked of the holding accounts, never made blind (`INV-1`).
-        self.reconcile_landings();
-        self.stuck = Stuck::reopened(&self.segments, &self.clock, &history, &mut self.exposures);
-        // A resolution done whose part's `stuck_resolved` the log doesn't hold is finished, as a Core that ran on
-        // would have (`T-020-46`).
-        {
-            let mut parts = StuckParts {
-                clock: &self.clock,
-                log: &mut self.general,
-                fresh: &mut self.fresh,
-                issued: &self.issued,
-                segments: &mut self.segments,
-                exposures: &mut self.exposures,
-            };
-            let _ = self.stuck.finish_reopened(&mut parts, &kit::core());
-        }
         let _ = self.feed();
-        self.restart_orders(&history);
+        // What each started order runs on, rebuilt by Core's own resume from the parts, all rebuilt now (`T-020-61`).
+        rutent_core_orch::schedule::resume(&mut super::schedule::Due(self));
         self.reaccept_linked(&history);
-        // The erasures decided and done that the log holds no record of, settled (`Unsettled::settle`'s resume).
-        self.settle_reopened_erasures();
-    }
-
-    /// What each order the log started needs to run on, from the log and the records Core's key signed.
-    fn restart_orders(&mut self, history: &[(Receipt, Entry)]) {
-        let logged: Vec<Entry> = history.iter().map(|(_, e)| e.clone()).collect();
-        for (_, entry) in history {
-            let Entry::Verified(VerifiedEntry {
-                what: What::Input { input },
-                ..
-            }) = entry
-            else {
-                continue;
-            };
-            let Observed::RouteChosen {
-                decision_record,
-                parts,
-                handed_on_from,
-            } = &input.observed
-            else {
-                continue;
-            };
-            let Some(order) = Id::new(input.subject.order.as_str()) else {
-                continue;
-            };
-            let started = match handed_on_from {
-                None => self.restarted_order(history, &logged, &order, decision_record, parts),
-                Some(from) => {
-                    self.restarted_linked(history, &logged, &order, from, decision_record, parts)
-                }
-            };
-            if let Some(started) = started {
-                self.started.insert(order.as_str().to_owned(), started);
-            }
-        }
+        Ok(())
     }
 
     /// The routes the linked orders were accepted on, rebuilt from the log (`Core::accepted_in_the_log`): every
@@ -376,142 +405,17 @@ impl Core {
             })
             .collect();
         for order in linked {
-            if let Some(route) = self.accepted_in_the_log(history, &order) {
+            let route = rutent_core_orch::hand_on::accepted_in_the_log(
+                history,
+                &mut |commitment| {
+                    let kept = KeptStatements::kept(&mut self.kept, commitment).ok()??;
+                    rutent_core_audit::receipts::store::bearing_out(&kept)
+                },
+                &order,
+            );
+            if let Some(route) = route {
                 self.linked.insert(order.as_str().to_owned(), route);
             }
         }
-    }
-
-    /// What a linked order the log started needs to run on (`T-020-46`): its record and plan, its acceptance's
-    /// authorisation as policy registered it (the first order's destination and to asset), the holding account the
-    /// route starts at, the first order's route end, the acceptance's session, and the destination's account as the
-    /// deposit's input. Policy's sources hold its parties and origin, as its acceptance names them. `None` where the log
-    /// holds no authorisation of it yet: the linked order hasn't run, and its caller starts it.
-    fn restarted_linked(
-        &mut self,
-        history: &[(Receipt, Entry)],
-        logged: &[Entry],
-        order: &Id,
-        from: &rutent_contracts::state_machine::Id,
-        decision_record: &rutent_contracts::state_machine::Id,
-        plan: &[PartPlan],
-    ) -> Option<Started> {
-        let record = held_record(
-            &self.signer.records,
-            history,
-            &Id::new(decision_record.as_str())?,
-        )?;
-        let (authorisation, session) = logged.iter().find_map(|e| match e {
-            Entry::Verified(VerifiedEntry {
-                what:
-                    What::Acceptance {
-                        order: o,
-                        authorisation,
-                        session,
-                        ..
-                    },
-                ..
-            }) if o == order => Some((authorisation.clone(), session.clone())),
-            _ => None,
-        })?;
-        let authorised = authorised(logged, order, &authorisation)?;
-        let original = self.started.get(from.as_str())?.route.clone();
-        let first = plan.first()?.segments.first()?;
-        let mut inputs = BTreeMap::new();
-        inputs.insert(
-            DESTINATION_INPUT.to_owned(),
-            authorised.destination.account.as_str().to_owned(),
-        );
-        Some(Started {
-            record,
-            plan: plan.to_vec(),
-            authorisation,
-            origin: Id::new(first.provider.as_str())?,
-            route: original,
-            session,
-            inputs,
-            floor: None,
-        })
-    }
-
-    fn restarted_order(
-        &self,
-        history: &[(Receipt, Entry)],
-        logged: &[Entry],
-        order: &Id,
-        decision_record: &rutent_contracts::state_machine::Id,
-        plan: &[PartPlan],
-    ) -> Option<Started> {
-        let record = held_record(
-            &self.signer.records,
-            history,
-            &Id::new(decision_record.as_str())?,
-        )?;
-        let whats = || {
-            logged.iter().filter_map(|e| match e {
-                Entry::Verified(v) => Some(&v.what),
-                Entry::Stated(_) => None,
-            })
-        };
-        let authorisation = whats().find_map(|w| match w {
-            What::Acceptance {
-                order: o,
-                authorisation,
-                ..
-            } if o == order => Some(authorisation.clone()),
-            _ => None,
-        })?;
-        let authorised = authorised(logged, order, &authorisation)?;
-        let (origin, session, destination) = whats().find_map(|w| match w {
-            What::OrderOpened {
-                order: o,
-                origin_reserve,
-                session,
-                destination,
-                ..
-            } if o == order => Some((origin_reserve.clone(), session.clone(), destination.clone())),
-            _ => None,
-        })?;
-        // What the route delivers: as its moves name it, or as the quote shown priced it from the record.
-        let delivers = whats()
-            .find_map(|w| match w {
-                What::Effect {
-                    action:
-                        Action::MoveValue {
-                            order: o, route, ..
-                        },
-                    ..
-                } if o == order => Some(route.delivers.clone()),
-                _ => None,
-            })
-            .or_else(|| {
-                let candidate = record.chosen()?;
-                let floor = authorised.floor.as_ref().map(|f| f.amount().clone());
-                rutent_core_orch::quote::show(&record, candidate, floor.as_ref())
-                    .ok()
-                    .map(|shown| shown.arrives)
-            })?;
-        // The order's inputs, as intake read them back from the operator's statement of them (`T-020-46`), the
-        // destination's account among them.
-        // Failing closed: an order whose inputs can't be read back isn't restarted (`Intake::held`).
-        let mut inputs = self.intake.request_of(order)?.inputs.clone();
-        inputs.insert(
-            DESTINATION_INPUT.to_owned(),
-            destination.account.as_str().to_owned(),
-        );
-        Some(Started {
-            record,
-            plan: plan.to_vec(),
-            authorisation,
-            origin,
-            route: RouteEnd {
-                destination: authorised.destination.clone(),
-                to_asset: authorised.to_asset.clone(),
-                delivers,
-            },
-            session: Some(session),
-            inputs,
-            floor: authorised.floor.clone(),
-        })
     }
 }
