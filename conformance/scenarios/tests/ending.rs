@@ -203,6 +203,10 @@ fn complete_order_whose_start_is_proven_undone_is_marked_failed_and_notified() {
     // origin reserve's own word, said so; the part, and so the order, is marked failed.
     core.world()
         .script(RESERVE, Behaviour::crediting_a_reversal());
+    // Asked again a retry cadence after the last question, as every reversal confirmation is (the review of #355's
+    // round 2, H1).
+    core.clock
+        .advance(rutent_core_orch::reversal::DEFAULT_REVERSAL_RETRY_SECONDS);
     let done = core
         .confirm_undone(&order, &withdrawal)
         .expect("the reserve was asked");

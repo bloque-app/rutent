@@ -310,7 +310,20 @@ impl Core {
                 erasing: &mut super::erasure::Bound(&self.bound),
             },
         )
-        .map_err(|e| AssemblyError::Listing(format!("Core didn't reopen: {e:?}")))?;
+        .map_err(|e| {
+            use rutent_core_orch::schedule::reopen::ReopenRefused;
+            use rutent_core_orch::settings::listing::RelistRefused;
+            AssemblyError::Listing(match e {
+                ReopenRefused::Catalogue(RelistRefused::NotReplayed { change, provider }) => format!(
+                    "the log holds a {change:?} of {} that Core's catalogue rebuild doesn't replay",
+                    provider.as_str()
+                ),
+                ReopenRefused::Catalogue(RelistRefused::Uncommitted(maker)) => format!(
+                    "the advertisement installed for {maker} isn't one the log committed to: no commitment's bytes are its"
+                ),
+                other => format!("Core didn't reopen: {other:?}"),
+            })
+        })?;
         // Core's parts, held.
         self.signer.records = reopened.records;
         self.settings = reopened.settings;
