@@ -22,7 +22,7 @@ use rutent_contracts::provider_role::{Operation, Statement};
 use rutent_contracts::router_api::{DecisionRecord, Id, PolicyBounds};
 use rutent_contracts::state_machine::SegmentPlan;
 use rutent_core_authz::roles::Permission;
-use rutent_core_orch::hand_on::{HandOn, HandOnError};
+use rutent_core_orch::hand_on::HandOnError;
 use rutent_core_orch::segments::{Answered, Landed, Landings, Modules};
 use rutent_core_orch::snapshot::Clock;
 use rutent_core_orch::stuck::{
@@ -788,18 +788,5 @@ impl Core {
     /// The mover's read of the log: the log's own handle, never a copy of its entries.
     pub fn log_read(&self) -> impl LogRead + use<> {
         LogHandle(Rc::clone(&self.log))
-    }
-
-    /// Proves again, from the log, the starts of the routes handed on whose `holding_withdrawal` it holds: what a
-    /// restarted Core's segments forget (`REQ-ORD-43`).
-    pub(super) fn recover_starts(&mut self) -> usize {
-        let entries: Vec<Entry> = self
-            .log
-            .borrow()
-            .entries()
-            .iter()
-            .map(|(_, entry)| entry.clone())
-            .collect();
-        HandOn::recover_starts(&mut self.segments, &entries)
     }
 }

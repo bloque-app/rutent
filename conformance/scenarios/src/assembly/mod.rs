@@ -1355,59 +1355,14 @@ impl Core {
             if confirm.is_some() {
                 core.reopen_holdings();
             }
-            // The providers were listed before Core stopped: its catalogue is rebuilt from what its log holds, the host's
-            // holding accounts listed again first.
-            core.relist_holdings();
-            core.relist_publisher_accounts();
-            core.relist()?;
+            // Core reopens itself on its log, every part rebuilt in Core's own order (`schedule::reopen`, the review of
+            // #355's round 2, M3); the assembly hands it only the deployment's pieces and holds what it answers.
+            core.reopen_core()?;
             // A platform restarted beside Core holds its releases until the operator confirms them, which the operator's
-            // login does through Core's decided path before anything is asked of a provider (`T-024-21`).
+            // login does through Core's decided path before anything is asked of a provider, and the landings owed are
+            // asked of the holding accounts again once their wallets run (`T-024-21`).
             if confirm == Some(true) {
                 core.confirm_releases()?;
-            }
-            // Core's own state, rebuilt from the log (`T-020-46`), the proven starts of `T-020-26` among it.
-            core.rebuild_from_log();
-            // The schedule's own state: when each segment was last asked its status, so the first tick after a restart
-            // keeps each provider's cadence (`T-020-63`).
-            core.schedule =
-                rutent_core_orch::schedule::Schedule::recorded(core.log.borrow().entries());
-            // The operator's settings, rebuilt from the log, a setting's missing result completed, and put back where they
-            // are read (`T-020-49`).
-            let (settings, completed) = rutent_core_orch::settings::Settings::reopen(
-                &mut core.general,
-                &core.clock,
-                &kit::core(),
-                &mut rutent_core_orch::settings::Targets {
-                    catalogue: Some(&mut core.catalogue),
-                    ..rutent_core_orch::settings::Targets::default()
-                },
-            );
-            completed.map_err(|e| {
-                AssemblyError::Listing(format!("a setting's result wasn't completed: {e:?}"))
-            })?;
-            core.settings = settings;
-            core.bounds = core.settings.bounds(&core.base_bounds);
-            core.settings
-                .apply(&mut rutent_core_orch::settings::Targets {
-                    catalogue: Some(&mut core.catalogue),
-                    cadences: Some(core.schedule.cadences_mut()),
-                    arrivals: Some(&mut core.arrivals),
-                    platform: Some(&mut core.fleet.platform),
-                    segments: None,
-                });
-            // The operator's `publishers_records` cadence, rebuilt from the log's settings, is also how often the segments ask
-            // again for a node's record Core didn't take (`T-020-67`).
-            core.sync_record_retry();
-            // A restrictive lifecycle effect whose result the log never took is completed from what the platform holds
-            // (`T-020-65`), as a setting's is.
-            {
-                let releases = core.fleet.releases();
-                Segments::reopen_lifecycle(&mut core.general, &releases, &core.clock, &kit::core())
-                    .map_err(|e| {
-                        AssemblyError::Listing(format!(
-                            "a lifecycle effect's result wasn't completed: {e:?}"
-                        ))
-                    })?;
             }
             return Ok(core);
         }
@@ -2153,93 +2108,6 @@ impl Core {
         }
     }
 
-    /// Core's catalogue rebuilt from its log, as after a restart, by Core ([`rutent_core_orch::settings::listing::relist`],
-    /// `T-020-61`): the assembly hands it only what the log doesn't hold, the deployment's installed advertisements,
-    /// its grant terms, the log's names of tuples, what it sets on a joined advertisement, and the platform, which takes
-    /// the cutovers. The verifiers' releases are recorded for the grading, as at the build.
-    ///
-    /// # Errors
-    ///
-    /// As Core refuses the rebuild: a catalogue change it doesn't replay, an installed advertisement the log didn't
-    /// commit to, an accepted one it can't read back.
-    fn relist(&mut self) -> Result<(), AssemblyError> {
-        use rutent_core_orch::settings::listing::{Relisting, relist};
-        let entries: Vec<(Receipt, Entry)> = self.log.borrow().entries().to_vec();
-        let shelf = rutent_core_audit::receipts::store::Shelf::load(&mut self.disk.shelf())
-            .map_err(|e| AssemblyError::Listing(format!("the evidence store's shelf: {e:?}")))?
-            .kept;
-        let installed = self.installed.clone();
-        for one in &installed {
-            self.record_release(one);
-        }
-        let advertised: Vec<(String, Vec<u8>)> = installed
-            .iter()
-            .map(|one| {
-                (
-                    one.advertisement.statement().maker.clone(),
-                    one.advertisement.bytes().to_vec(),
-                )
-            })
-            .collect();
-        let log = Rc::clone(&self.log);
-        let accepted = move |maker: &str| {
-            log.borrow()
-                .accepted_advertisement(maker)
-                .map(|a| a.commitment)
-        };
-        let mut kept = |c: &rutent_contracts::module_interface::Digest| {
-            shelf
-                .iter()
-                .find(|k| k.kept.commitment == *c)
-                .and_then(|k| rutent_core_audit::receipts::store::bearing_out(&k.kept))
-        };
-        let terms = |provider: &str, decider: &str, at: rutent_prov::catalogue::Instant| {
-            installed
-                .iter()
-                .find(|one| one.advertisement.statement().statement.provider == provider)
-                .map(|one| kit::grant_terms(one, decider, at))
-        };
-        let mut joined = |catalogue: &mut Catalogue, bytes: &[u8]| {
-            let Ok(ad) = serde_json::from_slice::<
-                Statement<rutent_contracts::provider_role::Advertisement>,
-            >(bytes) else {
-                return;
-            };
-            if let Some(one) = installed
-                .iter()
-                .find(|one| one.advertisement.statement().maker == ad.maker)
-            {
-                kit::joined(catalogue, &ad.statement, &one.spec);
-            }
-        };
-        relist(
-            &entries,
-            &mut self.catalogue,
-            Some(&mut self.fleet.platform),
-            &mut Relisting {
-                kept: &mut kept,
-                accepted: &accepted,
-                installed: &advertised,
-                terms: &terms,
-                tuple_id: &kit::tuple_id,
-                joined: &mut joined,
-            },
-        )
-        .map_err(|e| {
-            use rutent_core_orch::settings::listing::RelistRefused;
-            AssemblyError::Listing(match e {
-                RelistRefused::NotReplayed { change, provider } => format!(
-                    "the log holds a {change:?} of {} that Core's catalogue rebuild doesn't replay",
-                    provider.as_str()
-                ),
-                RelistRefused::Uncommitted(maker) => format!(
-                    "the advertisement installed for {maker} isn't one the log committed to: no commitment's bytes are its"
-                ),
-                other => format!("Core's catalogue wasn't rebuilt: {other:?}"),
-            })
-        })
-    }
-
     /// Records `installed`'s advertisement in the log, received now: its bytes kept, and its stated entry
     /// appended, claimed by its maker for its publisher.
     ///
@@ -2721,6 +2589,93 @@ impl Core {
             .collect()
     }
 
+    /// What Core's parts hold, read through each part's own reads (the review of #355's round 2, M3): what a reopen
+    /// through Core's entry point must rebuild, compared before a restart and after it. The orders and their states,
+    /// whether each runs, its parts stuck, every followed segment's reversal (its asks, its confirmations, its carrier),
+    /// the operator's settings, each job's cadence, the segments' node-record retry, the advertisement the catalogue
+    /// lists for each installed provider and the value Core holds in flight.
+    pub fn parts_snapshot(&self) -> PartsSnapshot {
+        let mut reversals = BTreeMap::new();
+        let mut running = BTreeMap::new();
+        let mut stuck = BTreeMap::new();
+        for order in self.intake.orders() {
+            let id = kit::id(order);
+            running.insert(order.to_owned(), self.intake.started(&id).is_some());
+            let Some(followed) = self.segments.order(&id) else {
+                continue;
+            };
+            for part in &followed.parts {
+                let part_id = kit::id(part.part_id.as_str());
+                stuck.insert(
+                    (order.to_owned(), part_id.as_str().to_owned()),
+                    self.segments.stuck(&id, &part_id),
+                );
+                for segment in &part.segments {
+                    let segment_id = kit::id(segment.segment_id.as_str());
+                    let asks = self.life.reversals.asks_sent(&id, &segment_id);
+                    let confirmations = self.life.reversals.confirmations_asked(&id, &segment_id);
+                    if asks == 0 && confirmations == 0 {
+                        continue;
+                    }
+                    reversals.insert(
+                        (order.to_owned(), segment_id.as_str().to_owned()),
+                        (
+                            asks,
+                            confirmations,
+                            self.life
+                                .reversals
+                                .carrier(&id, &segment_id)
+                                .map(|c| format!("{c:?}")),
+                        ),
+                    );
+                }
+            }
+        }
+        PartsSnapshot {
+            orders: self.order_snapshot(),
+            running,
+            stuck,
+            reversals,
+            settings: self.settings.clone(),
+            cadences: rutent_core_orch::schedule::Job::ALL
+                .iter()
+                .map(|job| (job.name().to_owned(), self.schedule.cadences().of(*job)))
+                .collect(),
+            record_retry: self.segments.record_retry_seconds(),
+            advertisements: self
+                .installed
+                .iter()
+                .map(|one| {
+                    let maker = one.advertisement.statement().maker.clone();
+                    let listed = self
+                        .catalogue
+                        .accepted_advertisement(&maker)
+                        .map(|a| a.made_at.clone());
+                    (maker, listed)
+                })
+                .collect(),
+            in_flight: self
+                .exposures
+                .totals()
+                .into_iter()
+                .map(|(provider, asset, amount)| {
+                    (
+                        provider.as_str().to_owned(),
+                        asset.id.clone(),
+                        amount.as_str().to_owned(),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    /// A planted fault (the review of #355's round 2, M3): the reversals' state, as Core held it in memory, dropped, as a
+    /// deployment that composed its own reopening and left `Reversals::reopened` out would hold it. Core's own reopen
+    /// rebuilds it from the log.
+    pub fn forget_reversals(&mut self) {
+        self.life.reversals = rutent_core_orch::reversal::Reversals::new();
+    }
+
     /// The first part of a started `order`'s plan.
     pub fn first_part(&self, order: &Id) -> Option<Id> {
         self.intake
@@ -2854,6 +2809,29 @@ pub fn inputs_of(log: &CoreLog) -> Vec<RecordedInput> {
             Entry::Stated(_) => None,
         })
         .collect()
+}
+
+/// What Core's parts hold, as [`Core::parts_snapshot`] reads them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartsSnapshot {
+    /// Each order, its state and amount ([`Core::order_snapshot`]).
+    pub orders: BTreeMap<String, (Option<String>, Option<String>)>,
+    /// Whether Core holds what each order runs on.
+    pub running: BTreeMap<String, bool>,
+    /// Whether each followed part is stuck.
+    pub stuck: BTreeMap<(String, String), bool>,
+    /// Each reversal Core took a step on: its asks sent, its confirmations asked, its carrier.
+    pub reversals: BTreeMap<(String, String), (usize, u32, Option<String>)>,
+    /// The operator's settings.
+    pub settings: rutent_core_orch::settings::Settings,
+    /// Each job's cadence, by name.
+    pub cadences: Vec<(String, u64)>,
+    /// The segments' node-record retry.
+    pub record_retry: u64,
+    /// The advertisement the catalogue lists for each installed provider, by its `made_at`.
+    pub advertisements: Vec<(String, Option<String>)>,
+    /// The value Core holds in flight: provider, asset and amount.
+    pub in_flight: Vec<(String, String, String)>,
 }
 
 /// The account the base order delivers to, held by the customer at the destination reserve.

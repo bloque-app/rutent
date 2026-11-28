@@ -58,6 +58,7 @@ use crate::segments::UnbuiltPair;
 use crate::stuck::Watch;
 
 pub mod jobs;
+pub mod reopen;
 pub mod run;
 
 pub use jobs::{

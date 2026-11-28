@@ -173,6 +173,11 @@ fn no_value_moves_twice_after_core_reopens() {
                 .when(Step::Restart)
                 .when(Step::Rerun)
                 .when(Step::Rerun)
+                // Restarted again after the segment was carried on: the log holds the carrying-on, so it isn't carried
+                // on a second time (the review of #355's round 2, its Low on `carried_on`).
+                .when(Step::Restart)
+                .when(Step::Rerun)
+                .when(Step::Rerun)
                 .play(seed, &mut Reference, reference());
             assert!(
                 run.crashed,
@@ -211,6 +216,10 @@ fn no_value_moves_twice_after_core_reopens() {
                 })
                 .count();
             assert_eq!(repeats, 0, "seed {seed}, {crash:?}: never handed again");
+            assert!(
+                carried_on <= 1,
+                "seed {seed}, {crash:?}: carried on once, across two restarts: {carried_on}"
+            );
             // The reserve answers status queries, so its status is the one step: a status that knows no result leaves
             // the segment for the stuck check, and the platform's recorded answer, item (8)'s step for a provider that
             // declares neither, is never read there (the review of #355's round 2, its Low).
